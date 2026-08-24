@@ -150,18 +150,19 @@ The release toolchain is pinned in `packaging/toolchain.env`.
 ```bash
 ./packaging/check-toolchain.sh all
 goreleaser check
-SOURCE_DATE_EPOCH=1787486400 PIGLET_COMMIT=uncommitted \
-  ./packaging/build-linux-packages.sh 0.1.0-dev.20260824 "$PWD/dist/linux-dev"
+SOURCE_DATE_EPOCH=1787576400 PIGLET_COMMIT="$(git rev-parse HEAD)" \
+  ./packaging/build-linux-packages.sh 0.1.3-next "$PWD/dist/linux-dev"
 ./packaging/verify-linux-packages.sh \
-  0.1.0-dev.20260824 uncommitted 1787486400 "$PWD/dist/linux-dev"
+  0.1.3-next "$(git rev-parse HEAD)" 1787576400 "$PWD/dist/linux-dev"
 ./packaging/test-cosign-roundtrip.sh "$PWD/dist/linux-dev/checksums.txt"
 ```
 
 Every archive/package also installs the mode-0755 `pigsty-vm` command on PATH;
 the verifiers bind package build info to the expected commit and source epoch.
-The checked-in tag workflow uses GitHub OIDC keyless Cosign and creates a draft
-only. It has not run because this worktree has no publishable commit, remote,
-tag, or approved production custody. Development artifacts remain explicitly
+The checked-in push/PR workflow runs source gates; the tag workflow uses GitHub
+OIDC keyless Cosign and creates a draft only. Local clean commits now exist,
+but no remote/tag or approved production custody has been configured, so the
+release workflow has not run. Development artifacts remain explicitly
 unsigned/unattested.
 
 ## Architecture and safety

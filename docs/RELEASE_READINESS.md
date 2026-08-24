@@ -91,7 +91,7 @@ VirtualBox-shaped exact `.1/24` fixture remains an exit-6 conflict. See
 | Signature/provenance | ephemeral Cosign v3 signature and SLSA-bundle positive/negative tests pass | PARTIAL: production OIDC workflow is checked in but unrun |
 | State N-1 | schema-0 backup/dry-run/apply/idempotence/newer-refusal and stopped-state guards pass | PARTIAL: no prior production release state exists |
 | Install/network/image/migration/security/troubleshooting docs | present | PASS for documentation presence; update with every gate |
-| Clean release commit/tag | repository has no publishable commit, remote, or v1.0 tag | BLOCKED |
+| Clean release commit/tag | local clean commits now exist; no remote, production tag, or publisher is configured | BLOCKED at publication/tag gate |
 
 Release/source evidence:
 
