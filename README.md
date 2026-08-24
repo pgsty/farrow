@@ -150,10 +150,11 @@ The release toolchain is pinned in `packaging/toolchain.env`.
 ```bash
 ./packaging/check-toolchain.sh all
 goreleaser check
-SOURCE_DATE_EPOCH=1787576400 PIGLET_COMMIT="$(git rev-parse HEAD)" \
-  ./packaging/build-linux-packages.sh 0.1.3-next "$PWD/dist/linux-dev"
+export PIGLET_COMMIT="$(git rev-parse HEAD)"
+export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+./packaging/build-linux-packages.sh 0.1.3-next "$PWD/dist/linux-dev"
 ./packaging/verify-linux-packages.sh \
-  0.1.3-next "$(git rev-parse HEAD)" 1787576400 "$PWD/dist/linux-dev"
+  0.1.3-next "${PIGLET_COMMIT}" "${SOURCE_DATE_EPOCH}" "$PWD/dist/linux-dev"
 ./packaging/test-cosign-roundtrip.sh "$PWD/dist/linux-dev/checksums.txt"
 ```
 
