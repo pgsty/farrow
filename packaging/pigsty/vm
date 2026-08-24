@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'usage: %s up|plan|preflight|init|inventory|status|start|stop|restart|recreate|destroy|ssh|exec|logs|repair|ssh-config|hosts|network [args...]\n' "$0" >&2
+}
+
+command_name=${1:-}
+if [[ -z ${command_name} ]]; then
+  usage
+  exit 2
+fi
+shift
+
+case ${command_name} in
+  up|plan|preflight|init|inventory|status|start|stop|restart|recreate|destroy|ssh|exec|logs|repair|ssh-config|hosts|network) ;;
+  *) usage; exit 2 ;;
+esac
+
+    piglet=${PIGLET_BIN:-piglet}
+    if [[ ${piglet} == */* ]]; then
+      [[ ${piglet} == /* && -x ${piglet} ]] || { printf 'PIGLET_BIN must be an executable absolute path\n' >&2; exit 2; }
+    else
+      piglet=$(command -v "${piglet}") || { printf 'piglet executable not found\n' >&2; exit 3; }
+    fi
+
+    host_arch=$(uname -m)
+    case ${host_arch} in
+      arm64|aarch64) host_arch=arm64 ;;
+      x86_64|amd64) host_arch=amd64 ;;
+      *) printf 'unsupported native host architecture: %s\n' "${host_arch}" >&2; exit 3 ;;
+    esac
+    requested_arch=${VM_ARCH:-native}
+    case ${requested_arch} in
+      native|"${host_arch}") ;;
+      aarch64) [[ ${host_arch} == arm64 ]] || { printf 'VM_ARCH=%s is not native (%s)\n' "${requested_arch}" "${host_arch}" >&2; exit 3; } ;;
+      x86_64) [[ ${host_arch} == amd64 ]] || { printf 'VM_ARCH=%s is not native (%s)\n' "${requested_arch}" "${host_arch}" >&2; exit 3; } ;;
+      *) printf 'VM_ARCH=%s is not native (%s)\n' "${requested_arch}" "${host_arch}" >&2; exit 3 ;;
+    esac
+
+    profile=${VM_SPEC:-meta}
+    scale=${VM_SCALE:-1}
+    image=${VM_IMAGE:-}
+    network_cidr=${VM_NETWORK_CIDR:-}
+    force_uniform=${VM_FORCE_UNIFORM_IMAGE:-0}
+    [[ ${profile} =~ ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$ || ${profile} =~ ^[a-z0-9]$ ]] || { printf 'unsafe VM_SPEC: %s\n' "${profile}" >&2; exit 2; }
+    if [[ ! ${scale} =~ ^[0-9]+$ ]] || (( scale < 1 || scale > 64 )); then
+      printf 'VM_SCALE must be 1..64\n' >&2
+      exit 2
+    fi
+    [[ -z ${image} || ${image} =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || { printf 'unsafe VM_IMAGE: %s\n' "${image}" >&2; exit 2; }
+    [[ -z ${network_cidr} || ${network_cidr} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/24$ ]] || { printf 'unsafe VM_NETWORK_CIDR: %s\n' "${network_cidr}" >&2; exit 2; }
+    [[ ${force_uniform} == 0 || ${force_uniform} == 1 ]] || { printf 'VM_FORCE_UNIFORM_IMAGE must be 0 or 1\n' >&2; exit 2; }
+
+    init_args=(init "${profile}" --scale "${scale}")
+    if [[ -n ${image} ]]; then
+      init_args+=(--image "${image}")
+    fi
+    if [[ -n ${network_cidr} ]]; then
+      init_args+=(--network-cidr "${network_cidr}")
+    fi
+    if [[ ${force_uniform} == 1 ]]; then
+      [[ -n ${image} ]] || { printf 'VM_FORCE_UNIFORM_IMAGE=1 requires VM_IMAGE\n' >&2; exit 2; }
+      init_args+=(--force-uniform-image)
+    fi
+
+    case ${command_name} in
+      init)
+        exec "${piglet}" "${init_args[@]}" "$@"
+        ;;
+      inventory)
+        pigsty_root=${PIGSTY_ROOT:-$(pwd -P)}
+        [[ ${pigsty_root} == /* && -d ${pigsty_root} ]] || { printf 'PIGSTY_ROOT must be an existing absolute directory\n' >&2; exit 2; }
+        inventory_args=(pigsty inventory --profile "${profile}" --root "${pigsty_root}" --scale "${scale}")
+        if [[ -n ${network_cidr} ]]; then
+          inventory_args+=(--network-cidr "${network_cidr}")
+        fi
+        exec "${piglet}" "${inventory_args[@]}" "$@"
+        ;;
+      up|plan|preflight|recreate)
+        temp_root=${TMPDIR:-/tmp}
+        [[ ${temp_root} == /* && -d ${temp_root} ]] || { printf 'TMPDIR must be an existing absolute directory\n' >&2; exit 2; }
+        generated=$(mktemp "${temp_root%/}/piglet-pigsty-profile.XXXXXX")
+        cleanup() {
+          case ${generated} in
+            "${temp_root%/}"/piglet-pigsty-profile.*) [[ ! -e ${generated} ]] || unlink "${generated}" ;;
+            *) printf 'refuse unsafe generated-config cleanup: %s\n' "${generated}" >&2 ;;
+          esac
+        }
+        trap cleanup EXIT INT TERM
+        chmod 0600 "${generated}"
+        "${piglet}" "${init_args[@]}" >"${generated}"
+        "${piglet}" validate -f "${generated}" >/dev/null
+        if [[ ${command_name} == preflight ]]; then
+          "${piglet}" network preflight -f "${generated}" "$@"
+        else
+          "${piglet}" "${command_name}" -f "${generated}" "$@"
+        fi
+        ;;
+      *)
+        exec "${piglet}" "${command_name}" "$@"
+        ;;
+    esac

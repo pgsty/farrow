@@ -1,0 +1,145 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve immutable release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ${GITHUB_REF_TYPE} == tag && ${GITHUB_REF_NAME} =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          git diff --quiet
+          git diff --cached --quiet
+          test "$(git rev-list -n1 "${GITHUB_REF_NAME}")" = "${GITHUB_SHA}"
+          printf 'PIGLET_VERSION=%s\n' "${GITHUB_REF_NAME#v}" >>"${GITHUB_ENV}"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$(git show -s --format=%ct "${GITHUB_SHA}")" >>"${GITHUB_ENV}"
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.0"
+          check-latest: false
+          cache: true
+
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Install pinned GoReleaser
+        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
+        with:
+          distribution: goreleaser
+          version: v2.16.0
+          install-only: true
+
+      - name: Install pinned nFPM and Syft
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          install -d -m 0755 "${RUNNER_TEMP}/bin"
+          curl -fsSLo "${RUNNER_TEMP}/syft.tar.gz" \
+            https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_amd64.tar.gz
+          printf '%s  %s\n' \
+            2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f \
+            "${RUNNER_TEMP}/syft.tar.gz" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/syft.tar.gz" -C "${RUNNER_TEMP}/bin" syft
+          printf '%s\n' "${RUNNER_TEMP}/bin" >>"${GITHUB_PATH}"
+
+      - name: Verify source and pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./packaging/check-toolchain.sh all
+          make check
+          goreleaser check
+
+      - name: Build and verify GoReleaser archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          goreleaser release --clean --skip=publish --parallelism 1
+          ./packaging/verify-goreleaser.sh "${PIGLET_VERSION}" "${GITHUB_WORKSPACE}/dist"
+
+      - name: Build and verify RPM and DEB packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          PIGLET_COMMIT="${GITHUB_SHA}" ./packaging/build-linux-packages.sh \
+            "${PIGLET_VERSION}" "${GITHUB_WORKSPACE}/dist/linux-packages"
+          ./packaging/verify-linux-packages.sh \
+            "${PIGLET_VERSION}" "${GITHUB_SHA}" "${SOURCE_DATE_EPOCH}" \
+            "${GITHUB_WORKSPACE}/dist/linux-packages"
+
+      - name: Assemble final checksum manifest and provenance predicate
+        shell: bash
+        env:
+          PIGLET_RELEASE_SIGNED: "true"
+          PIGLET_RELEASE_ATTESTED: "true"
+          PIGLET_BUILDER_ID: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+          PIGLET_INVOCATION_ID: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          ./packaging/assemble-release.sh "${PIGLET_VERSION}" "${GITHUB_SHA}" \
+            "${SOURCE_DATE_EPOCH}" "${GITHUB_WORKSPACE}/dist" \
+            "${GITHUB_WORKSPACE}/dist/linux-packages" "${GITHUB_WORKSPACE}/release-assets"
+
+      - name: Keyless-sign checksums and attest provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          cosign sign-blob --yes \
+            --bundle release-assets/checksums.txt.sigstore.json \
+            release-assets/checksums.txt
+          cosign attest-blob --yes --type slsaprovenance1 \
+            --predicate release-assets/provenance-predicate.json \
+            --bundle release-assets/checksums.provenance.sigstore.json \
+            release-assets/checksums.txt
+          cosign verify-blob --bundle release-assets/checksums.txt.sigstore.json \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            release-assets/checksums.txt
+          cosign verify-blob-attestation \
+            --bundle release-assets/checksums.provenance.sigstore.json \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --type slsaprovenance1 release-assets/checksums.txt
+
+      - name: Create immutable draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            printf 'release already exists; refusing to overwrite %s\n' "${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          gh release create "${GITHUB_REF_NAME}" release-assets/* \
+            --verify-tag --draft --title "Piglet ${PIGLET_VERSION}" \
+            --notes "Draft generated from ${GITHUB_SHA}; publish only after the external GA gates in docs/RELEASE.md are closed."

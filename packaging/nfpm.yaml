@@ -1,0 +1,153 @@
+name: piglet
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${PIGLET_VERSION}
+release: "1"
+section: utils
+priority: optional
+maintainer: Pigsty <repo@pigsty.cc>
+vendor: Pigsty
+homepage: https://github.com/pgsty/piglet
+license: Apache-2.0
+description: |-
+  Native Go/QEMU runtime for Pigsty development virtual machines.
+  Piglet provides unprivileged quick VMs and an explicitly installed private
+  network for fixed-IP multi-node labs.
+
+overrides:
+  deb:
+    recommends:
+      - ${PIGLET_DEB_QEMU}
+      - qemu-utils
+      - openssh-client
+      - iproute2
+  rpm:
+    recommends:
+      - qemu-kvm
+      - qemu-img
+      - openssh-clients
+      - iproute
+
+contents:
+  - dst: /opt/piglet
+    type: dir
+    packager: rpm
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - dst: /opt/piglet/libexec
+    type: dir
+    packager: rpm
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - dst: /usr/share/doc/piglet
+    type: dir
+    packager: rpm
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - dst: /usr/share/doc/piglet/licenses
+    type: dir
+    packager: rpm
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - dst: /usr/share/piglet
+    type: dir
+    packager: rpm
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - dst: /usr/share/piglet/schemas
+    type: dir
+    packager: rpm
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - src: ${PIGLET_PAYLOAD}/usr/bin/piglet
+    dst: /usr/bin/piglet
+    expand: true
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - src: ${PIGLET_PAYLOAD}/opt/piglet/libexec/piglet-hosts-helper
+    dst: /opt/piglet/libexec/piglet-hosts-helper
+    expand: true
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - src: ${PIGLET_PAYLOAD}/usr/bin/pigsty-vm
+    dst: /usr/bin/pigsty-vm
+    expand: true
+    file_info:
+      owner: root
+      group: root
+      mode: 0755
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/BUILD_INFO.json
+    dst: /usr/share/doc/piglet/BUILD_INFO.json
+    expand: true
+    file_info:
+      owner: root
+      group: root
+      mode: 0644
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/LICENSE
+    expand: true
+    dst: /usr/share/doc/piglet/LICENSE
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/README.md
+    expand: true
+    dst: /usr/share/doc/piglet/README.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/THIRD_PARTY_LICENSES.md
+    expand: true
+    dst: /usr/share/doc/piglet/THIRD_PARTY_LICENSES.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/ARCHITECTURE.md
+    expand: true
+    dst: /usr/share/doc/piglet/ARCHITECTURE.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/IMAGE_CONTRACT.md
+    expand: true
+    dst: /usr/share/doc/piglet/IMAGE_CONTRACT.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/NETWORKING.md
+    expand: true
+    dst: /usr/share/doc/piglet/NETWORKING.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/SECURITY.md
+    expand: true
+    dst: /usr/share/doc/piglet/SECURITY.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/TROUBLESHOOTING.md
+    expand: true
+    dst: /usr/share/doc/piglet/TROUBLESHOOTING.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/MIGRATION.md
+    expand: true
+    dst: /usr/share/doc/piglet/MIGRATION.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/INSTALL.md
+    expand: true
+    dst: /usr/share/doc/piglet/INSTALL.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/RELEASE.md
+    expand: true
+    dst: /usr/share/doc/piglet/RELEASE.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/TESTING.md
+    expand: true
+    dst: /usr/share/doc/piglet/TESTING.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/UPGRADE.md
+    expand: true
+    dst: /usr/share/doc/piglet/UPGRADE.md
+  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/licenses/*
+    expand: true
+    dst: /usr/share/doc/piglet/licenses/
+  - src: ${PIGLET_PAYLOAD}/usr/share/piglet/schemas/piglet-v1.schema.json
+    expand: true
+    dst: /usr/share/piglet/schemas/piglet-v1.schema.json
+
+rpm:
+  summary: Native Go/QEMU runtime for Pigsty development VMs
+
+deb:
+  fields:
+    Bugs: https://github.com/pgsty/piglet/issues

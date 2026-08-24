@@ -1,0 +1,38 @@
+# Piglet-owned profile: dual
+version: 1
+name: dual
+arch: native
+network:
+  mode: private
+  cidr: 10.10.10.0/24
+  host_address: 10.10.10.1
+  dhcp_end: 10.10.10.8
+defaults:
+  image: u24
+ssh:
+  user: dba
+nodes:
+  - name: meta-1
+    control: true
+    host_aliases: [meta, i.pigsty, api.pigsty, cli.pigsty, sss.pigsty, adm.pigsty, lab.pigsty, wiki.pigsty, git.pigsty]
+    address: 10.10.10.10
+    cpus: 1
+    memory: 2GiB
+    root_disk: 64GiB
+    disks:
+      - name: data
+        size: 128GiB
+        mount: /data
+        filesystem: auto
+        persistent: false
+  - name: meta-2
+    address: 10.10.10.11
+    cpus: 1
+    memory: 2GiB
+    root_disk: 64GiB
+    disks:
+      - name: data
+        size: 128GiB
+        mount: /data
+        filesystem: auto
+        persistent: false

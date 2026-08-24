@@ -1,0 +1,816 @@
+package preflight
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math/bits"
+	"net"
+	"net/netip"
+	"os"
+	"os/user"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/pgsty/piglet/internal/execx"
+	darwinnet "github.com/pgsty/piglet/internal/network/darwin"
+	linuxnet "github.com/pgsty/piglet/internal/network/linux"
+	"github.com/pgsty/piglet/internal/network/subnet"
+)
+
+type DialFunc func(network, address string, timeout time.Duration) (net.Conn, error)
+
+type Probe struct {
+	Runner   execx.Runner
+	Lstat    func(string) (os.FileInfo, error)
+	ReadFile func(string) ([]byte, error)
+	Dial     DialFunc
+}
+
+func (p Probe) lstat(path string) (os.FileInfo, error) {
+	if p.Lstat != nil {
+		return p.Lstat(path)
+	}
+	return os.Lstat(path)
+}
+
+func (p Probe) readFile(path string) ([]byte, error) {
+	if p.ReadFile != nil {
+		return p.ReadFile(path)
+	}
+	return os.ReadFile(path)
+}
+
+func (p Probe) dial(network, address string, timeout time.Duration) (net.Conn, error) {
+	if p.Dial != nil {
+		return p.Dial(network, address, timeout)
+	}
+	return net.DialTimeout(network, address, timeout)
+}
+
+func (p Probe) Collect(ctx context.Context, request Request) Snapshot {
+	snapshot := Snapshot{Addresses: make(map[string]string)}
+	if p.Runner == nil {
+		snapshot.Problems = append(snapshot.Problems, "network preflight requires a command runner")
+		return snapshot
+	}
+	switch request.OS {
+	case "darwin":
+		snapshot = p.collectDarwin(ctx, request)
+	case "linux":
+		snapshot = p.collectLinux(ctx, request)
+	default:
+		snapshot.Problems = append(snapshot.Problems, "network preflight does not support "+request.OS)
+	}
+	if snapshot.Addresses == nil {
+		snapshot.Addresses = make(map[string]string)
+	}
+	var addressMu sync.Mutex
+	var addressWG sync.WaitGroup
+	addressSlots := make(chan struct{}, 32)
+	for _, address := range request.Addresses {
+		address := address
+		addressWG.Add(1)
+		go func() {
+			defer addressWG.Done()
+			select {
+			case addressSlots <- struct{}{}:
+				defer func() { <-addressSlots }()
+			case <-ctx.Done():
+				return
+			}
+			connection, err := p.dial("tcp", net.JoinHostPort(address, "22"), 250*time.Millisecond)
+			if err != nil {
+				return
+			}
+			_ = connection.Close()
+			addressMu.Lock()
+			snapshot.Addresses[address] = address + ":22 accepts TCP while preflight expects an unused static address"
+			addressMu.Unlock()
+		}()
+	}
+	addressWG.Wait()
+	return snapshot
+}
+
+func Run(ctx context.Context, request Request, probe Probe) Report {
+	return Evaluate(request, probe.Collect(ctx, request))
+}
+
+func rootMetadata(info os.FileInfo, mode os.FileMode, kind string, group uint32, sticky bool) error {
+	statistics, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || statistics.Uid != 0 || statistics.Gid != group || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != mode || (sticky && info.Mode()&os.ModeSticky == 0) {
+		stickyText := ""
+		if sticky {
+			stickyText = " sticky"
+		}
+		return fmt.Errorf("not a root-owned group-%d non-symlink mode-%04o%s %s", group, mode, stickyText, kind)
+	}
+	switch kind {
+	case "file":
+		if !info.Mode().IsRegular() {
+			return errors.New("not a regular file")
+		}
+	case "directory":
+		if !info.IsDir() {
+			return errors.New("not a directory")
+		}
+	case "socket":
+		if info.Mode()&os.ModeSocket == 0 {
+			return errors.New("not a Unix socket")
+		}
+	}
+	return nil
+}
+
+func invalidate(installation *Installation, problem string) {
+	installation.Status = "invalid"
+	if installation.Problem == "" {
+		installation.Problem = problem
+	}
+}
+
+func digestBytes(data []byte) string {
+	digest := sha256.Sum256(data)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func (p Probe) exactPublicFile(path string, expected []byte, max int) error {
+	data, err := p.readFile(path)
+	if err != nil {
+		return err
+	}
+	if len(data) > max || !bytes.Equal(data, expected) {
+		return errors.New("content differs from the pinned plan")
+	}
+	return nil
+}
+
+func protectedInspectionError(err error) bool {
+	return errors.Is(err, os.ErrPermission)
+}
+
+func parseDarwinInterfaces(output string) []InterfaceAddress {
+	result := make([]InterfaceAddress, 0)
+	name := ""
+	for _, line := range strings.Split(output, "\n") {
+		if line != "" && line[0] != ' ' && line[0] != '\t' {
+			if colon := strings.IndexByte(line, ':'); colon > 0 {
+				name = line[:colon]
+			}
+			continue
+		}
+		fields := strings.Fields(line)
+		if name == "" || len(fields) < 4 || fields[0] != "inet" || fields[2] != "netmask" {
+			continue
+		}
+		address, err := netip.ParseAddr(fields[1])
+		if err != nil || !address.Is4() {
+			continue
+		}
+		maskValue, err := strconv.ParseUint(strings.TrimPrefix(fields[3], "0x"), 16, 32)
+		if err != nil {
+			continue
+		}
+		prefix := netip.PrefixFrom(address, bits.OnesCount32(uint32(maskValue)))
+		result = append(result, InterfaceAddress{Address: address, Prefix: prefix, Interface: name, Evidence: strings.TrimSpace(line)})
+	}
+	return result
+}
+
+func parseDarwinDestination(value string) (netip.Prefix, error) {
+	addressText, bitsText, hasBits := strings.Cut(value, "/")
+	parts := strings.Split(addressText, ".")
+	if len(parts) < 1 || len(parts) > 4 {
+		return netip.Prefix{}, fmt.Errorf("invalid Darwin route destination %q", value)
+	}
+	for len(parts) < 4 {
+		parts = append(parts, "0")
+	}
+	address, err := netip.ParseAddr(strings.Join(parts, "."))
+	if err != nil || !address.Is4() {
+		return netip.Prefix{}, fmt.Errorf("invalid Darwin IPv4 route destination %q", value)
+	}
+	prefixBits := 32
+	if hasBits {
+		prefixBits, err = strconv.Atoi(bitsText)
+		if err != nil || prefixBits < 0 || prefixBits > 32 {
+			return netip.Prefix{}, fmt.Errorf("invalid Darwin route prefix %q", value)
+		}
+	} else if len(strings.Split(addressText, ".")) < 4 {
+		prefixBits = len(strings.Split(addressText, ".")) * 8
+	}
+	return netip.PrefixFrom(address, prefixBits).Masked(), nil
+}
+
+func parseDarwinRoutes(output string) []Route {
+	result := make([]Route, 0)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[0] == "default" || fields[0] == "Destination" || fields[0] == "Internet:" {
+			continue
+		}
+		prefix, err := parseDarwinDestination(fields[0])
+		if err != nil {
+			continue
+		}
+		flags := fields[2]
+		// netstat includes cloned ARP/neighbor host entries in the routing
+		// table. They are observations on the connected network, not routes
+		// that claim an overlapping subnet.
+		if prefix.Bits() == 32 && (strings.Contains(flags, "L") || strings.Contains(flags, "W")) {
+			continue
+		}
+		result = append(result, Route{Prefix: prefix, Interface: fields[3], Kind: "route", Evidence: strings.TrimSpace(line)})
+	}
+	return result
+}
+
+func activeNetworkSharing(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 4 && fields[0] == "active" && fields[1] == "count" && fields[2] == "=" {
+			count, err := strconv.Atoi(fields[3])
+			return err == nil && count > 0
+		}
+	}
+	return false
+}
+
+func (p Probe) darwinSharingConflict(ctx context.Context, request Request, installation Installation) (string, string) {
+	if (installation.Status == "exact" || installation.Status == "protected") && installation.CIDR == request.Layout.CIDR() && installation.Healthy {
+		return "", ""
+	}
+	if installation.CIDR == request.Layout.CIDR() {
+		logResult, err := p.Runner.Run(ctx, "/usr/bin/tail", "-n", "80", darwinnet.LogDir+"/stderr.log")
+		logText := string(logResult.Stdout) + string(logResult.Stderr)
+		if err == nil && (strings.Contains(logText, "[1009]") || strings.Contains(logText, "VMNET_SHARING_SERVICE_BUSY")) {
+			return "socket_vmnet reported VMNET_SHARING_SERVICE_BUSY (1009) for the requested subnet", ""
+		}
+	}
+	sharing, err := p.Runner.Run(ctx, "/bin/launchctl", "print", "system/com.apple.NetworkSharing")
+	if err != nil || !activeNetworkSharing(string(sharing.Stdout)) {
+		return "", ""
+	}
+	const vmnetPlist = "/Library/Preferences/SystemConfiguration/com.apple.vmnet.plist"
+	hostResult, hostErr := p.Runner.Run(ctx, "/usr/bin/plutil", "-extract", "Host_Net_Address", "raw", "-o", "-", vmnetPlist)
+	maskResult, maskErr := p.Runner.Run(ctx, "/usr/bin/plutil", "-extract", "Host_Net_Mask", "raw", "-o", "-", vmnetPlist)
+	if hostErr != nil || maskErr != nil {
+		return "", "com.apple.NetworkSharing is active but its vmnet host/mask could not be read; subnet ownership is unknown"
+	}
+	if strings.TrimSpace(string(maskResult.Stdout)) != "255.255.255.0" {
+		return "", "com.apple.NetworkSharing is active but its vmnet mask is not a parseable /24; subnet ownership is unknown"
+	}
+	layout, err := subnet.FromHostAddress(strings.TrimSpace(string(hostResult.Stdout)))
+	if err != nil {
+		return "", "com.apple.NetworkSharing is active but its vmnet host address is invalid; subnet ownership is unknown"
+	}
+	if layout.CIDR() != request.Layout.CIDR() {
+		return "", ""
+	}
+	return fmt.Sprintf("com.apple.NetworkSharing is active and com.apple.vmnet.plist claims %s; socket_vmnet may return VMNET_SHARING_SERVICE_BUSY (1009)", layout.CIDR()), ""
+}
+
+func plistArguments(data []byte) (mode, interfaceID, gateway, dhcp string, err error) {
+	var args []string
+	if err = json.Unmarshal(data, &args); err != nil {
+		return "", "", "", "", err
+	}
+	for _, argument := range args {
+		switch {
+		case strings.HasPrefix(argument, "--vmnet-mode="):
+			mode = strings.TrimPrefix(argument, "--vmnet-mode=")
+		case strings.HasPrefix(argument, "--vmnet-interface-id="):
+			interfaceID = strings.TrimPrefix(argument, "--vmnet-interface-id=")
+		case strings.HasPrefix(argument, "--vmnet-gateway="):
+			gateway = strings.TrimPrefix(argument, "--vmnet-gateway=")
+		case strings.HasPrefix(argument, "--vmnet-dhcp-end="):
+			dhcp = strings.TrimPrefix(argument, "--vmnet-dhcp-end=")
+		}
+	}
+	if (mode != "host" && mode != "shared") || interfaceID == "" || gateway == "" || dhcp == "" {
+		err = errors.New("launchd ProgramArguments omit required vmnet fields")
+	}
+	return
+}
+
+func darwinInterfaceObserved(interfaces []InterfaceAddress, layout subnet.Layout, marker darwinnet.InterfaceMarker) bool {
+	if marker.CIDR != layout.CIDR() || marker.HostAddress != layout.HostAddress() {
+		return false
+	}
+	host, err := netip.ParseAddr(layout.HostAddress())
+	if err != nil {
+		return false
+	}
+	for _, address := range interfaces {
+		if address.Interface == marker.BSDName && address.Address == host && address.Prefix.Bits() == layout.Prefix().Bits() && address.Prefix.Masked() == layout.Prefix() {
+			return true
+		}
+	}
+	return false
+}
+
+func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
+	snapshot := Snapshot{Addresses: make(map[string]string), Installation: Installation{Status: "absent"}}
+	required := []struct {
+		path   string
+		mode   os.FileMode
+		kind   string
+		group  uint32
+		sticky bool
+	}{
+		{darwinnet.DaemonPath, 0o755, "file", 0, false},
+		{darwinnet.ClientPath, 0o755, "file", 0, false},
+		{darwinnet.PlistPath, 0o644, "file", 0, false},
+		{darwinnet.StateDir, 0o700, "directory", 0, false},
+		{darwinnet.InterfaceMarkerDir, 0o755, "directory", 0, false},
+		{darwinnet.InterfaceMarkerPath, 0o644, "file", 0, false},
+		{darwinnet.LogDir, 0o755, "directory", 0, false},
+		{darwinnet.LeaseRoot, 0o777, "directory", 0, true},
+		{darwinnet.LeaseRoot + "/private-lease.lock", 0o666, "file", 0, false},
+	}
+	present := 0
+	for _, target := range required {
+		info, err := p.lstat(target.path)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				invalidate(&snapshot.Installation, target.path+": "+err.Error())
+			}
+			continue
+		}
+		present++
+		if metadataErr := rootMetadata(info, target.mode, target.kind, target.group, target.sticky); metadataErr != nil {
+			invalidate(&snapshot.Installation, target.path+": "+metadataErr.Error())
+		}
+	}
+	if present != 0 && present != len(required) && snapshot.Installation.Status != "invalid" {
+		snapshot.Installation.Status = "partial"
+		snapshot.Installation.Problem = fmt.Sprintf("partial Darwin Piglet network installation: %d/%d required public paths", present, len(required))
+	}
+	socketExists, socketMetadataOK := false, false
+	socketProblem := ""
+	if socketInfo, socketErr := p.lstat(darwinnet.SocketPath); socketErr == nil {
+		socketExists = true
+		if metadataErr := rootMetadata(socketInfo, 0o770, "socket", 20, false); metadataErr != nil {
+			socketProblem = darwinnet.SocketPath + ": " + metadataErr.Error()
+		} else {
+			socketMetadataOK = true
+		}
+	} else if !errors.Is(socketErr, os.ErrNotExist) {
+		socketProblem = darwinnet.SocketPath + ": " + socketErr.Error()
+	}
+	if present == 0 && socketExists && snapshot.Installation.Status == "absent" {
+		snapshot.Installation.Status = "partial"
+		snapshot.Installation.Problem = "Darwin vmnet runtime socket exists without a static Piglet network installation"
+	}
+	interfacesResult, interfacesErr := p.Runner.Run(ctx, "/sbin/ifconfig")
+	if interfacesErr != nil {
+		snapshot.Problems = append(snapshot.Problems, "ifconfig: "+interfacesErr.Error())
+	} else {
+		snapshot.Interfaces = parseDarwinInterfaces(string(interfacesResult.Stdout))
+	}
+	if present == len(required) && snapshot.Installation.Status != "invalid" {
+		arguments, err := p.Runner.Run(ctx, "/usr/bin/plutil", "-extract", "ProgramArguments", "json", "-o", "-", darwinnet.PlistPath)
+		if err != nil {
+			invalidate(&snapshot.Installation, "cannot read Darwin launch arguments: "+err.Error())
+		} else {
+			var exactArgs []string
+			decodeErr := json.Unmarshal(arguments.Stdout, &exactArgs)
+			mode, interfaceID, gateway, dhcp, parseErr := plistArguments(arguments.Stdout)
+			layout, layoutErr := subnet.FromHostAddress(gateway)
+			if parseErr != nil || layoutErr != nil || dhcp != layout.DHCPEnd() {
+				invalidate(&snapshot.Installation, "Darwin launch arguments do not describe a valid Piglet /24")
+			} else {
+				protectedState := false
+				protectedInterfaceState := false
+				snapshot.Installation.Mode = mode
+				snapshot.Installation.CIDR = layout.CIDR()
+				snapshot.Installation.HostAddress = layout.HostAddress()
+				plan, planErr := darwinnet.NewInstallPlanModeNetwork(request.Arch, interfaceID, mode, layout.CIDR())
+				if decodeErr != nil || planErr != nil || !slices.Equal(exactArgs, plan.Args) {
+					invalidate(&snapshot.Installation, "Darwin launch arguments differ from the pinned network plan")
+				} else if expectedPlist, plistErr := plan.Plist(); plistErr != nil {
+					invalidate(&snapshot.Installation, "cannot reproduce the pinned Darwin plist: "+plistErr.Error())
+				} else if fileErr := p.exactPublicFile(darwinnet.PlistPath, expectedPlist, 1<<20); fileErr != nil {
+					invalidate(&snapshot.Installation, darwinnet.PlistPath+": "+fileErr.Error())
+				}
+				interfaceData, interfaceReadErr := p.readFile(darwinnet.InterfaceMarkerPath)
+				interfaceMarker, interfaceParseErr := darwinnet.StrictInterfaceMarker(interfaceData)
+				if interfaceReadErr != nil || interfaceParseErr != nil {
+					invalidate(&snapshot.Installation, darwinnet.InterfaceMarkerPath+": public interface identity is unreadable or invalid")
+				} else {
+					plan, planErr = plan.WithBSDInterface(interfaceMarker.BSDName)
+					if planErr != nil || plan.Interface != interfaceMarker {
+						invalidate(&snapshot.Installation, darwinnet.InterfaceMarkerPath+": interface identity differs from the pinned network plan")
+					} else if expectedInterface, markerErr := plan.InterfaceJSON(); markerErr != nil || !bytes.Equal(expectedInterface, interfaceData) {
+						invalidate(&snapshot.Installation, darwinnet.InterfaceMarkerPath+": interface identity bytes are not canonical")
+					}
+				}
+				release, releaseErr := darwinnet.PinnedRelease(request.Arch)
+				for _, binary := range []struct{ path, digest string }{{darwinnet.DaemonPath, release.SocketSHA256}, {darwinnet.ClientPath, release.ClientSHA256}} {
+					data, readErr := p.readFile(binary.path)
+					if releaseErr != nil || readErr != nil || len(data) == 0 || len(data) > 64<<20 || digestBytes(data) != binary.digest {
+						invalidate(&snapshot.Installation, binary.path+": installed digest differs from the pinned release")
+					}
+				}
+				if stateInfo, stateErr := p.lstat(darwinnet.StatePath); stateErr == nil {
+					if metadataErr := rootMetadata(stateInfo, 0o600, "file", 0, false); metadataErr != nil {
+						invalidate(&snapshot.Installation, darwinnet.StatePath+": "+metadataErr.Error())
+					} else if stateData, readErr := p.readFile(darwinnet.StatePath); readErr != nil {
+						invalidate(&snapshot.Installation, darwinnet.StatePath+": "+readErr.Error())
+					} else if state, stateErr := darwinnet.StrictNetworkState(stateData); stateErr != nil || state != plan.State {
+						invalidate(&snapshot.Installation, darwinnet.StatePath+": protected state differs from the pinned network plan")
+					}
+				} else if errors.Is(stateErr, os.ErrNotExist) {
+					invalidate(&snapshot.Installation, darwinnet.StatePath+": protected network state is missing")
+				} else if protectedInspectionError(stateErr) {
+					protectedState = true
+				} else {
+					invalidate(&snapshot.Installation, darwinnet.StatePath+": "+stateErr.Error())
+				}
+				if interfaceStateInfo, interfaceStateErr := p.lstat(darwinnet.InterfaceStatePath); interfaceStateErr == nil {
+					if metadataErr := rootMetadata(interfaceStateInfo, 0o600, "file", 0, false); metadataErr != nil {
+						invalidate(&snapshot.Installation, darwinnet.InterfaceStatePath+": "+metadataErr.Error())
+					} else if protectedData, readErr := p.readFile(darwinnet.InterfaceStatePath); readErr != nil || !bytes.Equal(protectedData, interfaceData) {
+						invalidate(&snapshot.Installation, darwinnet.InterfaceStatePath+": protected interface identity differs from the public root-owned marker")
+					}
+				} else if errors.Is(interfaceStateErr, os.ErrNotExist) {
+					invalidate(&snapshot.Installation, darwinnet.InterfaceStatePath+": protected interface identity is missing")
+				} else if protectedInspectionError(interfaceStateErr) {
+					protectedInterfaceState = true
+				} else {
+					invalidate(&snapshot.Installation, darwinnet.InterfaceStatePath+": "+interfaceStateErr.Error())
+				}
+				if snapshot.Installation.Status != "invalid" {
+					if protectedState || protectedInterfaceState {
+						snapshot.Installation.Status = "protected"
+					} else {
+						snapshot.Installation.Status = "exact"
+					}
+				}
+				interfaceObserved := false
+				if interfaceParseErr == nil && interfaceReadErr == nil {
+					snapshot.Installation.Interface = interfaceMarker.BSDName
+					interfaceObserved = darwinInterfaceObserved(snapshot.Interfaces, layout, interfaceMarker)
+				}
+				var dialErr error
+				if socketMetadataOK {
+					var connection net.Conn
+					connection, dialErr = p.dial("unix", darwinnet.SocketPath, time.Second)
+					if dialErr == nil {
+						_ = connection.Close()
+					}
+				} else {
+					dialErr = errors.New("runtime socket is absent or unsafe")
+				}
+				snapshot.Installation.Healthy = dialErr == nil && interfaceObserved
+				if !snapshot.Installation.Healthy && snapshot.Installation.Problem == "" {
+					if socketProblem != "" {
+						snapshot.Installation.Problem = socketProblem
+					} else {
+						snapshot.Installation.Problem = "owned Darwin socket_vmnet paths exist but runtime socket, host .1, or /24 interface is not ready"
+					}
+				}
+			}
+		}
+	}
+	routes, routeErr := p.Runner.Run(ctx, "/usr/sbin/netstat", "-rn", "-f", "inet")
+	if routeErr != nil {
+		snapshot.Problems = append(snapshot.Problems, "netstat IPv4 route table: "+routeErr.Error())
+	} else {
+		snapshot.Routes = parseDarwinRoutes(string(routes.Stdout))
+	}
+	sharingBusy, sharingProblem := p.darwinSharingConflict(ctx, request, snapshot.Installation)
+	snapshot.SharingBusy = sharingBusy
+	if sharingProblem != "" {
+		snapshot.Problems = append(snapshot.Problems, sharingProblem)
+	}
+	return snapshot
+}
+
+func parseLinuxInterfaces(output string) []InterfaceAddress {
+	result := make([]InterfaceAddress, 0)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[2] != "inet" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(fields[3])
+		if err != nil || !prefix.Addr().Is4() {
+			continue
+		}
+		result = append(result, InterfaceAddress{Address: prefix.Addr(), Prefix: prefix, Interface: strings.TrimSuffix(fields[1], ":"), Evidence: strings.TrimSpace(line)})
+	}
+	return result
+}
+
+func parseLinuxRoutes(output string) []Route {
+	result := make([]Route, 0)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] == "default" {
+			continue
+		}
+		prefixField := fields[0]
+		kind := "unicast"
+		switch fields[0] {
+		case "local", "unreachable", "blackhole", "prohibit", "throw", "nat", "anycast", "multicast", "broadcast":
+			if len(fields) < 2 {
+				continue
+			}
+			kind = fields[0]
+			prefixField = fields[1]
+		}
+		if kind == "broadcast" || kind == "multicast" || kind == "anycast" {
+			continue
+		}
+		if !strings.Contains(prefixField, "/") {
+			prefixField += "/32"
+		}
+		prefix, err := netip.ParsePrefix(prefixField)
+		if err != nil || !prefix.Addr().Is4() {
+			continue
+		}
+		device := ""
+		for index := range fields {
+			if fields[index] == "dev" && index+1 < len(fields) {
+				device = fields[index+1]
+			}
+		}
+		result = append(result, Route{Prefix: prefix.Masked(), Interface: device, Kind: kind, Evidence: strings.TrimSpace(line)})
+	}
+	return result
+}
+
+func linuxNetworkLayout(data []byte) (subnet.Layout, error) {
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "Address=") {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(strings.TrimPrefix(line, "Address="))
+		if err != nil || prefix.Bits() != 24 {
+			break
+		}
+		return subnet.FromHostAddress(prefix.Addr().String())
+	}
+	return subnet.Layout{}, errors.New("linux Piglet network unit lacks an exact host .1/24 address")
+}
+
+func linuxFamily(data []byte) (linuxnet.Family, error) {
+	lower := strings.ToLower(string(data))
+	if strings.Contains(lower, "ubuntu") || strings.Contains(lower, "debian") {
+		return linuxnet.Debian, nil
+	}
+	if strings.Contains(lower, "rhel") || strings.Contains(lower, "fedora") || strings.Contains(lower, "rocky") || strings.Contains(lower, "almalinux") || strings.Contains(lower, "centos") {
+		return linuxnet.RPM, nil
+	}
+	return "", errors.New("unsupported Linux distribution family")
+}
+
+func fullLinuxMode(info os.FileInfo) uint32 {
+	mode := uint32(info.Mode().Perm())
+	if info.Mode()&os.ModeSetuid != 0 {
+		mode |= 0o4000
+	}
+	if info.Mode()&os.ModeSetgid != 0 {
+		mode |= 0o2000
+	}
+	return mode
+}
+
+func validateLinuxHelper(info os.FileInfo, family linuxnet.Family) error {
+	statistics, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || statistics.Uid != 0 || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("helper is not a root-owned regular non-symlink file")
+	}
+	mode := fullLinuxMode(info)
+	switch family {
+	case linuxnet.Debian:
+		group, err := user.LookupGroupId(strconv.FormatUint(uint64(statistics.Gid), 10))
+		if err != nil || group.Name != "kvm" || mode != 0o4750 {
+			return errors.New("debian helper must be root:kvm mode-4750")
+		}
+	case linuxnet.RPM:
+		group, err := user.LookupGroupId(strconv.FormatUint(uint64(statistics.Gid), 10))
+		if err != nil || group.Name != "root" || mode != 0o4755 {
+			return errors.New("rpm helper must retain distribution-owned root:root mode-4755")
+		}
+	default:
+		return errors.New("unsupported Linux helper family")
+	}
+	return nil
+}
+
+func (p Probe) safeRootOwnedParents(path string) error {
+	for parent := filepath.Dir(filepath.Clean(path)); ; parent = filepath.Dir(parent) {
+		info, err := p.lstat(parent)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 {
+			return fmt.Errorf("unsafe helper parent %s", parent)
+		}
+		statistics, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || statistics.Uid != 0 {
+			return fmt.Errorf("helper parent is not root-owned: %s", parent)
+		}
+		if parent == "/" {
+			return nil
+		}
+	}
+}
+
+func exactLinuxNetwork(layout subnet.Layout) string {
+	return fmt.Sprintf("[Match]\nName=piglet0\n\n[Network]\nAddress=%s/24\nConfigureWithoutCarrier=yes\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Link]\nRequiredForOnline=no\n", layout.HostAddress())
+}
+
+const linuxBridgeMarker = "# BEGIN PIGLET MANAGED: piglet0\nallow piglet0\n# END PIGLET MANAGED: piglet0\n"
+
+func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
+	snapshot := Snapshot{Addresses: make(map[string]string), Installation: Installation{Status: "absent"}}
+	stateDir := filepath.Dir(linuxnet.StatePath)
+	anchorPaths := []string{linuxnet.NetDevPath, linuxnet.NetworkPath, linuxnet.NetworkManagerPath, linuxnet.TmpfilesPath, stateDir, linuxnet.LeaseRoot}
+	anchors := 0
+	for _, path := range anchorPaths {
+		if _, err := p.lstat(path); err == nil {
+			anchors++
+		} else if !errors.Is(err, os.ErrNotExist) {
+			invalidate(&snapshot.Installation, path+": "+err.Error())
+		}
+	}
+	if bridgeConf, err := p.readFile(linuxnet.BridgeConfPath); err == nil && strings.Contains(string(bridgeConf), linuxBridgeMarker) {
+		anchors++
+	}
+	required := []struct {
+		path   string
+		mode   os.FileMode
+		kind   string
+		sticky bool
+	}{
+		{linuxnet.NetDevPath, 0o644, "file", false},
+		{linuxnet.NetworkPath, 0o644, "file", false},
+		{linuxnet.BridgeConfPath, 0o644, "file", false},
+		{linuxnet.TmpfilesPath, 0o644, "file", false},
+		{stateDir, 0o700, "directory", false},
+		{linuxnet.LeaseRoot, 0o777, "directory", true},
+		{linuxnet.LeaseLockPath, 0o666, "file", false},
+	}
+	present := 0
+	if anchors > 0 || snapshot.Installation.Status == "invalid" {
+		for _, target := range required {
+			info, err := p.lstat(target.path)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					invalidate(&snapshot.Installation, target.path+": "+err.Error())
+				}
+				continue
+			}
+			present++
+			if metadataErr := rootMetadata(info, target.mode, target.kind, 0, target.sticky); metadataErr != nil {
+				invalidate(&snapshot.Installation, target.path+": "+metadataErr.Error())
+			}
+		}
+	}
+	if anchors > 0 && present != len(required) && snapshot.Installation.Status != "invalid" {
+		snapshot.Installation.Status = "partial"
+		snapshot.Installation.Problem = fmt.Sprintf("partial Linux Piglet network installation: %d/%d required public paths", present, len(required))
+	}
+	addresses, addressErr := p.Runner.Run(ctx, "/usr/sbin/ip", "-4", "-o", "address", "show")
+	if addressErr != nil {
+		snapshot.Problems = append(snapshot.Problems, "ip address show: "+addressErr.Error())
+	} else {
+		snapshot.Interfaces = parseLinuxInterfaces(string(addresses.Stdout))
+	}
+	routes, routeErr := p.Runner.Run(ctx, "/usr/sbin/ip", "-4", "route", "show", "table", "all")
+	if routeErr != nil {
+		snapshot.Problems = append(snapshot.Problems, "ip route show: "+routeErr.Error())
+	} else {
+		snapshot.Routes = parseLinuxRoutes(string(routes.Stdout))
+	}
+	if anchors > 0 && present == len(required) && snapshot.Installation.Status != "invalid" {
+		data, err := p.readFile(linuxnet.NetworkPath)
+		layout, layoutErr := linuxNetworkLayout(data)
+		if err != nil || layoutErr != nil {
+			invalidate(&snapshot.Installation, "cannot parse owned Linux Piglet network unit")
+		} else {
+			protectedState := false
+			snapshot.Installation.Mode = "bridge"
+			snapshot.Installation.CIDR = layout.CIDR()
+			snapshot.Installation.HostAddress = layout.HostAddress()
+			snapshot.Installation.Interface = linuxnet.BridgeName
+			for _, exact := range []struct {
+				path    string
+				content string
+			}{
+				{linuxnet.NetDevPath, "[NetDev]\nName=piglet0\nKind=bridge\n"},
+				{linuxnet.NetworkPath, exactLinuxNetwork(layout)},
+				{linuxnet.TmpfilesPath, "d /run/piglet 1777 root root -\n"},
+				{linuxnet.LeaseLockPath, ""},
+			} {
+				if fileErr := p.exactPublicFile(exact.path, []byte(exact.content), 1<<20); fileErr != nil {
+					invalidate(&snapshot.Installation, exact.path+": "+fileErr.Error())
+				}
+			}
+			bridgeConf, bridgeErr := p.readFile(linuxnet.BridgeConfPath)
+			if bridgeErr != nil || len(bridgeConf) > 1<<20 || strings.Count(string(bridgeConf), linuxBridgeMarker) != 1 {
+				invalidate(&snapshot.Installation, linuxnet.BridgeConfPath+": exact Piglet marker block is missing or duplicated")
+			}
+			if managerInfo, managerErr := p.lstat(linuxnet.NetworkManagerPath); managerErr == nil {
+				if metadataErr := rootMetadata(managerInfo, 0o644, "file", 0, false); metadataErr != nil {
+					invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+metadataErr.Error())
+				} else if fileErr := p.exactPublicFile(linuxnet.NetworkManagerPath, []byte("[keyfile]\nunmanaged-devices=interface-name:piglet0\n"), 1<<20); fileErr != nil {
+					invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+fileErr.Error())
+				}
+			} else if !errors.Is(managerErr, os.ErrNotExist) {
+				invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+managerErr.Error())
+			}
+
+			osRelease, familyErr := p.readFile("/etc/os-release")
+			family, parseFamilyErr := linuxFamily(osRelease)
+			if familyErr != nil || parseFamilyErr != nil {
+				invalidate(&snapshot.Installation, "cannot identify the installed Linux network family")
+			} else {
+				snapshot.Installation.Family = string(family)
+				helper := ""
+				var helperInfo os.FileInfo
+				for _, candidate := range []string{"/usr/lib/qemu/qemu-bridge-helper", "/usr/libexec/qemu-bridge-helper"} {
+					if candidateInfo, candidateErr := p.lstat(candidate); candidateErr == nil {
+						helper, helperInfo = candidate, candidateInfo
+						break
+					}
+				}
+				if helper == "" {
+					invalidate(&snapshot.Installation, "installed Linux network lacks qemu-bridge-helper")
+				} else if helperErr := validateLinuxHelper(helperInfo, family); helperErr != nil {
+					invalidate(&snapshot.Installation, helper+": "+helperErr.Error())
+				} else if parentErr := p.safeRootOwnedParents(helper); parentErr != nil {
+					invalidate(&snapshot.Installation, helper+": "+parentErr.Error())
+				} else {
+					ownershipOK := false
+					if family == linuxnet.Debian {
+						packageOwner, packageErr := p.Runner.Run(ctx, "/usr/bin/dpkg-query", "-S", helper)
+						override, overrideErr := p.Runner.Run(ctx, "/usr/bin/dpkg-statoverride", "--list", helper)
+						ownershipOK = packageErr == nil && strings.Contains(string(packageOwner.Stdout), ": "+helper) && overrideErr == nil && strings.TrimSpace(string(override.Stdout)) == "root kvm 4750 "+helper
+					} else {
+						packageOwner, packageErr := p.Runner.Run(ctx, "/usr/bin/rpm", "-qf", helper)
+						ownershipOK = packageErr == nil && strings.TrimSpace(string(packageOwner.Stdout)) != ""
+					}
+					if !ownershipOK {
+						invalidate(&snapshot.Installation, helper+": package ownership or reversible privilege policy is invalid")
+					} else {
+						snapshot.Installation.HelperPath = helper
+					}
+				}
+			}
+
+			if stateInfo, stateErr := p.lstat(linuxnet.StatePath); stateErr == nil {
+				if metadataErr := rootMetadata(stateInfo, 0o600, "file", 0, false); metadataErr != nil {
+					invalidate(&snapshot.Installation, linuxnet.StatePath+": "+metadataErr.Error())
+				} else if stateData, readErr := p.readFile(linuxnet.StatePath); readErr != nil {
+					invalidate(&snapshot.Installation, linuxnet.StatePath+": "+readErr.Error())
+				} else if manifest, manifestErr := linuxnet.StrictManifest(stateData); manifestErr != nil || manifest.CIDR != layout.CIDR() || manifest.HostAddress != layout.HostAddress() || manifest.DHCPEnd != layout.DHCPEnd() || (snapshot.Installation.Family != "" && string(manifest.Family) != snapshot.Installation.Family) || (snapshot.Installation.HelperPath != "" && manifest.HelperPath != snapshot.Installation.HelperPath) {
+					invalidate(&snapshot.Installation, linuxnet.StatePath+": protected ownership manifest differs from the installed network")
+				} else {
+					for path, expectedDigest := range manifest.Files {
+						content, readErr := p.readFile(path)
+						if readErr != nil || len(content) > 1<<20 || digestBytes(content) != expectedDigest {
+							invalidate(&snapshot.Installation, path+": content differs from the protected ownership manifest")
+						}
+					}
+				}
+			} else if errors.Is(stateErr, os.ErrNotExist) {
+				invalidate(&snapshot.Installation, linuxnet.StatePath+": protected ownership manifest is missing")
+			} else if protectedInspectionError(stateErr) {
+				protectedState = true
+			} else {
+				invalidate(&snapshot.Installation, linuxnet.StatePath+": "+stateErr.Error())
+			}
+			if snapshot.Installation.Status != "invalid" {
+				if protectedState {
+					snapshot.Installation.Status = "protected"
+				} else {
+					snapshot.Installation.Status = "exact"
+				}
+			}
+
+			addressReady := false
+			for _, address := range snapshot.Interfaces {
+				if address.Interface == linuxnet.BridgeName && address.Address.String() == layout.HostAddress() && address.Prefix.Bits() == 24 {
+					addressReady = true
+				}
+			}
+			active, activeErr := p.Runner.Run(ctx, "/usr/bin/systemctl", "is-active", "systemd-networkd.service")
+			link, linkErr := p.Runner.Run(ctx, "/usr/sbin/ip", "-d", "link", "show", "dev", linuxnet.BridgeName)
+			snapshot.Installation.Healthy = addressReady && activeErr == nil && strings.TrimSpace(string(active.Stdout)) == "active" && linkErr == nil && strings.Contains(string(link.Stdout), "bridge")
+			if !snapshot.Installation.Healthy && snapshot.Installation.Problem == "" {
+				snapshot.Installation.Problem = "owned Linux network exists but networkd, piglet0 bridge type, or configured host .1/24 is not ready"
+			}
+		}
+	}
+	return snapshot
+}

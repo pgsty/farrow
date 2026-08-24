@@ -1,0 +1,245 @@
+package private
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/pgsty/piglet/internal/lease"
+	"github.com/pgsty/piglet/internal/process"
+	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/piglet/internal/runtimepath"
+	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/piglet/internal/vm"
+)
+
+type StopLifecycle interface {
+	Stop(context.Context, state.NodeState, time.Duration) error
+}
+
+func (l NativeLifecycle) Stop(ctx context.Context, node state.NodeState, timeout time.Duration) error {
+	identityValue := process.Identity{PID: node.Process.PID, Executable: node.Process.Executable, Started: node.Process.Started, ArgvHash: node.Process.ArgvHash}
+	return l.VM.Stop(ctx, node.Runtime.QMP, node.Node, node.VMUUID, identityValue, node.Invocation, timeout)
+}
+
+type StopConfig struct {
+	Project        project.Project
+	LeaseStore     lease.Store
+	Lifecycle      StopLifecycle
+	Nodes          []string
+	Concurrency    int
+	GuestTimeout   time.Duration
+	CleanupRuntime func(state.NodeState) error
+	ReleaseLease   bool
+	Auditor        lease.RuntimeAuditor
+	Now            func() time.Time
+}
+
+type StopOutcome struct {
+	Node    string `json:"node"`
+	Stopped bool   `json:"stopped"`
+	Error   string `json:"error,omitempty"`
+}
+
+func (config StopConfig) now() time.Time {
+	if config.Now != nil {
+		return config.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func cleanupRuntime(node state.NodeState) error {
+	for _, pathname := range []string{node.Runtime.QMP, node.Runtime.PIDFile} {
+		info, err := os.Lstat(pathname)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("private runtime artifact is unsafe: %s", pathname)
+		}
+		if err := os.Remove(pathname); err != nil {
+			return err
+		}
+	}
+	entries, err := os.ReadDir(node.Runtime.Directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return runtimepath.PruneEmptyParents(node.Runtime.Directory, os.Getuid())
+	}
+	if err != nil {
+		return err
+	}
+	if len(entries) != 0 {
+		return errors.New("private runtime directory contains unexpected artifacts")
+	}
+	if err := os.Remove(node.Runtime.Directory); err != nil {
+		return err
+	}
+	return runtimepath.PruneEmptyParents(node.Runtime.Directory, os.Getuid())
+}
+
+func loadStoppableNodes(store state.Store, names []string) ([]state.NodeState, error) {
+	if len(names) == 0 {
+		return nil, errors.New("private stop requires at least one node")
+	}
+	result := make([]state.NodeState, 0, len(names))
+	seen := make(map[string]struct{})
+	for _, name := range names {
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("private stop repeats node %s", name)
+		}
+		seen[name] = struct{}{}
+		node, err := store.ReadNode(name)
+		if err != nil {
+			return nil, err
+		}
+		switch node.Phase {
+		case state.Running:
+			if node.Process.PID <= 0 {
+				return nil, fmt.Errorf("private node %s is recorded running without a process", name)
+			}
+		case state.Stopped, state.Prepared:
+			if node.Process.PID != 0 {
+				return nil, fmt.Errorf("inactive private node %s retains a process identity", name)
+			}
+		default:
+			return nil, fmt.Errorf("private node %s phase %s is not stoppable", name, node.Phase)
+		}
+		result = append(result, node)
+	}
+	return result, nil
+}
+
+func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, *lease.Lease, error) {
+	if config.Project.Root == "" || config.Lifecycle == nil {
+		return nil, nil, errors.New("private stop project or lifecycle is incomplete")
+	}
+	if config.Concurrency <= 0 {
+		config.Concurrency = 4
+	}
+	if config.Concurrency > 16 {
+		config.Concurrency = 16
+	}
+	if config.GuestTimeout <= 0 {
+		config.GuestTimeout = vm.GracefulGuestShutdownTimeout
+	}
+	if config.CleanupRuntime == nil {
+		config.CleanupRuntime = cleanupRuntime
+	}
+	store := state.Store{Project: config.Project}
+	nodes, err := loadStoppableNodes(store, config.Nodes)
+	if err != nil {
+		return nil, nil, err
+	}
+	hasRunning := false
+	for index := range nodes {
+		if nodes[index].Phase == state.Running {
+			hasRunning = true
+			nodes[index].Phase = state.Stopping
+			nodes[index].UpdatedAt = config.now()
+		} else if nodes[index].Phase == state.Prepared {
+			nodes[index].Phase = state.Stopped
+			nodes[index].UpdatedAt = config.now()
+		}
+	}
+	if !hasRunning {
+		leaseStatus, err := config.LeaseStore.Inspect()
+		if err != nil {
+			return nil, nil, err
+		}
+		if !leaseStatus.Active {
+			outcomes := make([]StopOutcome, len(nodes))
+			for index, node := range nodes {
+				outcomes[index] = StopOutcome{Node: node.Node, Stopped: true}
+			}
+			return outcomes, nil, nil
+		}
+	}
+	if err := writeNodes(store, nodes); err != nil {
+		return nil, nil, err
+	}
+	if _, err := synchronizeLeaseStore(ctx, config.LeaseStore, nodes); err != nil {
+		return nil, nil, fmt.Errorf("mirror stopping nodes into private lease: %w", err)
+	}
+	outcomes := make([]StopOutcome, len(nodes))
+	for index, node := range nodes {
+		outcomes[index].Node = node.Node
+		if node.Phase == state.Stopped {
+			outcomes[index].Stopped = true
+		}
+	}
+	jobs := make(chan int)
+	var wait sync.WaitGroup
+	for worker := 0; worker < config.Concurrency; worker++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range jobs {
+				node := nodes[index]
+				if err := config.Lifecycle.Stop(ctx, node, config.GuestTimeout); err != nil {
+					outcomes[index].Error = err.Error()
+					continue
+				}
+				if err := config.CleanupRuntime(node); err != nil {
+					outcomes[index].Error = err.Error()
+					continue
+				}
+				node.Phase = state.Stopped
+				node.Process = state.ProcessIdentity{}
+				node.UpdatedAt = config.now()
+				if err := store.WriteNode(node); err != nil {
+					outcomes[index].Error = err.Error()
+					continue
+				}
+				nodes[index] = node
+				outcomes[index].Stopped = true
+			}
+		}()
+	}
+	for index, node := range nodes {
+		if node.Phase == state.Stopping {
+			jobs <- index
+		}
+	}
+	close(jobs)
+	wait.Wait()
+	for index := range nodes {
+		persisted, readErr := store.ReadNode(nodes[index].Node)
+		if readErr != nil {
+			return outcomes, nil, readErr
+		}
+		nodes[index] = persisted
+	}
+	finalLease, err := synchronizeLeaseStore(ctx, config.LeaseStore, nodes)
+	if err != nil {
+		return outcomes, nil, fmt.Errorf("mirror final stop states into private lease: %w", err)
+	}
+	if config.ReleaseLease {
+		allStopped := true
+		for _, outcome := range outcomes {
+			if !outcome.Stopped {
+				allStopped = false
+				break
+			}
+		}
+		if allStopped {
+			if _, err := config.LeaseStore.Release(ctx, config.Project.Marker.ProjectID, true, config.Auditor); err != nil {
+				return outcomes, &finalLease, err
+			}
+			return outcomes, nil, nil
+		}
+	}
+	return outcomes, &finalLease, nil
+}
+
+func StoppedNames(outcomes []StopOutcome) []string {
+	result := make([]string, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if outcome.Stopped {
+			result = append(result, outcome.Node)
+		}
+	}
+	return result
+}

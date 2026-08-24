@@ -1,0 +1,15 @@
+.DS_Store
+/piglet
+/piglet-m0
+/piglet-*-m0
+/piglet-hosts-helper
+/piglet-net-stage
+/piglet-linux-net-stage
+/pigsty-vm
+/bin/
+/dist/
+/.goreleaser-companion/
+/.piglet/
+*.test
+*.out
+*.log

@@ -1,0 +1,8 @@
+[Match]
+Kind=veth
+Name=host0
+Virtualization=container
+
+[Network]
+DHCP=yes
+

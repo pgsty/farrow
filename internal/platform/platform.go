@@ -1,0 +1,162 @@
+// Package platform resolves the one supported QEMU backend for a native host.
+package platform
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"regexp"
+	"runtime"
+	"strconv"
+)
+
+// Tier describes release evidence, not whether a platform can compile.
+type Tier int
+
+const (
+	Unsupported Tier = iota
+	Tier2
+	Tier1
+)
+
+func (t Tier) String() string {
+	switch t {
+	case Tier1:
+		return "tier1"
+	case Tier2:
+		return "tier2"
+	default:
+		return "unsupported"
+	}
+}
+
+// Profile is the native QEMU machine/accelerator contract for one host tuple.
+type Profile struct {
+	OS           string
+	Arch         string
+	Tier         Tier
+	QEMUBinary   string
+	Machine      string
+	Accelerator  string
+	CPU          string
+	MinimumQEMU  Version
+	RequiresUEFI bool
+}
+
+var profiles = map[string]Profile{
+	"darwin/arm64": {OS: "darwin", Arch: "arm64", Tier: Tier1, QEMUBinary: "qemu-system-aarch64", Machine: "virt", Accelerator: "hvf", CPU: "host", MinimumQEMU: Version{Major: 8, Minor: 2, Patch: 1}, RequiresUEFI: true},
+	"darwin/amd64": {OS: "darwin", Arch: "amd64", Tier: Tier2, QEMUBinary: "qemu-system-x86_64", Machine: "q35", Accelerator: "hvf", CPU: "host", MinimumQEMU: Version{Major: 8, Minor: 2, Patch: 1}},
+	"linux/amd64":  {OS: "linux", Arch: "amd64", Tier: Tier1, QEMUBinary: "qemu-system-x86_64", Machine: "q35", Accelerator: "kvm", CPU: "host", MinimumQEMU: Version{Major: 6, Minor: 2}},
+	"linux/arm64":  {OS: "linux", Arch: "arm64", Tier: Tier2, QEMUBinary: "qemu-system-aarch64", Machine: "virt", Accelerator: "kvm", CPU: "host", MinimumQEMU: Version{Major: 6, Minor: 2}, RequiresUEFI: true},
+}
+
+type Firmware struct {
+	Code string
+	Vars string
+}
+
+// FirmwareCandidates are distribution/package locations to probe. The chosen
+// path is evidence and must be persisted by the caller.
+func FirmwareCandidates(profile Profile) []Firmware {
+	if profile.Arch == "amd64" {
+		return []Firmware{
+			{Code: "/opt/homebrew/share/qemu/edk2-x86_64-code.fd", Vars: "/opt/homebrew/share/qemu/edk2-i386-vars.fd"},
+			{Code: "/usr/local/share/qemu/edk2-x86_64-code.fd", Vars: "/usr/local/share/qemu/edk2-i386-vars.fd"},
+			{Code: "/usr/share/OVMF/OVMF_CODE_4M.fd", Vars: "/usr/share/OVMF/OVMF_VARS_4M.fd"},
+			{Code: "/usr/share/OVMF/OVMF_CODE.fd", Vars: "/usr/share/OVMF/OVMF_VARS.fd"},
+		}
+	}
+	if profile.Arch == "arm64" {
+		return []Firmware{
+			{Code: "/opt/homebrew/share/qemu/edk2-aarch64-code.fd", Vars: "/opt/homebrew/share/qemu/edk2-arm-vars.fd"},
+			{Code: "/usr/local/share/qemu/edk2-aarch64-code.fd", Vars: "/usr/local/share/qemu/edk2-arm-vars.fd"},
+			{Code: "/usr/share/AAVMF/AAVMF_CODE.fd", Vars: "/usr/share/AAVMF/AAVMF_VARS.fd"},
+			{Code: "/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw", Vars: "/usr/share/edk2/aarch64/vars-template-pflash.raw"},
+		}
+	}
+	return nil
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+func FindFirmware(profile Profile) (Firmware, error) {
+	if !profile.RequiresUEFI {
+		return Firmware{}, nil
+	}
+	return FindFirmwareForBoot(profile, "uefi")
+}
+
+func FindFirmwareForBoot(profile Profile, boot string) (Firmware, error) {
+	if boot == "bios" {
+		if profile.RequiresUEFI {
+			return Firmware{}, fmt.Errorf("BIOS image is incompatible with required UEFI host profile %s/%s", profile.OS, profile.Arch)
+		}
+		return Firmware{}, nil
+	}
+	if boot != "uefi" {
+		return Firmware{}, fmt.Errorf("unsupported image boot mode %q", boot)
+	}
+	for _, candidate := range FirmwareCandidates(profile) {
+		if regularFile(candidate.Code) && regularFile(candidate.Vars) {
+			return candidate, nil
+		}
+	}
+	return Firmware{}, fmt.Errorf("no matching UEFI code/vars pair found for %s/%s", profile.OS, profile.Arch)
+}
+
+// Native resolves the current process host.
+func Native() (Profile, error) { return Resolve(runtime.GOOS, runtime.GOARCH) }
+
+// Resolve returns a supported native profile. It does not select TCG or a
+// foreign guest architecture.
+func Resolve(goos, goarch string) (Profile, error) {
+	profile, ok := profiles[goos+"/"+goarch]
+	if !ok {
+		return Profile{}, fmt.Errorf("unsupported host %s/%s: Piglet v1 supports native darwin/linux arm64/amd64 only", goos, goarch)
+	}
+	return profile, nil
+}
+
+// Version is a comparable semantic prefix from QEMU's version output.
+type Version struct {
+	Major int
+	Minor int
+	Patch int
+}
+
+func (v Version) String() string { return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch) }
+
+func (v Version) AtLeast(min Version) bool {
+	if v.Major != min.Major {
+		return v.Major > min.Major
+	}
+	if v.Minor != min.Minor {
+		return v.Minor > min.Minor
+	}
+	return v.Patch >= min.Patch
+}
+
+var qemuVersionPattern = regexp.MustCompile(`(?i)(?:QEMU (?:emulator|disk image utility)|qemu-img) version\s+([0-9]+)\.([0-9]+)(?:\.([0-9]+))?`)
+
+// ParseQEMUVersion parses both qemu-system and qemu-img version banners.
+func ParseQEMUVersion(output string) (Version, error) {
+	match := qemuVersionPattern.FindStringSubmatch(output)
+	if len(match) == 0 {
+		return Version{}, errors.New("QEMU version banner not found")
+	}
+	values := [3]int{}
+	for i := 0; i < 3; i++ {
+		if match[i+1] == "" {
+			continue
+		}
+		value, err := strconv.Atoi(match[i+1])
+		if err != nil {
+			return Version{}, fmt.Errorf("parse QEMU version component %q: %w", match[i+1], err)
+		}
+		values[i] = value
+	}
+	return Version{Major: values[0], Minor: values[1], Patch: values[2]}, nil
+}

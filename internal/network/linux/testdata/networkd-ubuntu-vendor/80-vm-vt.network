@@ -1,0 +1,7 @@
+[Match]
+Kind=tun
+Name=vt-*
+
+[Network]
+Address=0.0.0.0/28
+

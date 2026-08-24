@@ -1,0 +1,7 @@
+[Match]
+Kind=sit
+Name=6rd-*
+
+[Network]
+DHCPPrefixDelegation=yes
+

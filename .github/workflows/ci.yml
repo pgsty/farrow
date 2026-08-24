@@ -1,0 +1,89 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: Go 1.27 source gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.0"
+          check-latest: false
+          cache: true
+
+      - name: Install pinned Staticcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.0
+
+      - name: Install pinned GoReleaser
+        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
+        with:
+          distribution: goreleaser
+          version: v2.16.0
+          install-only: true
+
+      - name: Verify pinned source toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          source packaging/toolchain.env
+          test "$(go env GOVERSION)" = "go${PIGLET_GO_VERSION}"
+          test "$(staticcheck -version | awk '{print $2; exit}')" = "${PIGLET_STATICCHECK_VERSION}"
+          test "$(goreleaser --version | awk '/GitVersion:/ {sub(/^v/, "", $2); print $2; exit}')" = "${PIGLET_GORELEASER_VERSION}"
+
+      - name: Source hygiene and module integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(find cmd internal profiles -type f -name '*.go' -print0 | xargs -0 gofmt -l)"
+          git diff --check
+          go mod verify
+
+      - name: Unit tests
+        run: make test
+
+      - name: Race tests
+        run: make race
+
+      - name: Vet
+        run: make vet
+
+      - name: Staticcheck
+        run: make staticcheck
+
+      - name: License inventory
+        run: make license-check
+
+      - name: Profile and Pigsty wrapper contracts
+        run: make profile-contract wrapper-test
+
+      - name: Image pipeline simulated and offline boundaries
+        run: ./tests/image-pipeline-test.sh
+
+      - name: Cross-build supported targets
+        run: make cross
+
+      - name: Validate GoReleaser configuration
+        run: goreleaser check

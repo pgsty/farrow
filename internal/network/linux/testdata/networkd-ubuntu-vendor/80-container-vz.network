@@ -1,0 +1,7 @@
+[Match]
+Kind=bridge
+Name=vz-*
+
+[Network]
+Address=0.0.0.0/24
+

@@ -1,0 +1,139 @@
+version: 2
+
+project_name: piglet
+
+builds:
+  - id: piglet
+    main: ./cmd/piglet
+    binary: bin/piglet
+    env:
+      - CGO_ENABLED=0
+      - GOFLAGS=-mod=readonly
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+      - -buildvcs=false
+      - -overlay=.goreleaser-companion/{{ .Os }}_{{ .Arch }}/overlay.json
+    hooks:
+      pre:
+        - cmd: './packaging/goreleaser-companion.sh prepare "{{ .Os }}" "{{ .Arch }}" .goreleaser-companion'
+          output: true
+      post:
+        - cmd: './packaging/goreleaser-companion.sh cleanup "{{ .Os }}" "{{ .Arch }}" .goreleaser-companion'
+    ldflags:
+      - >-
+        -buildid= -s -w
+        -X github.com/pgsty/piglet/internal/version.Version={{.Version}}
+        -X github.com/pgsty/piglet/internal/version.Commit={{.FullCommit}}
+        -X github.com/pgsty/piglet/internal/version.Date={{.CommitDate}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+  - id: piglet-hosts-helper
+    main: ./cmd/piglet-hosts-helper
+    binary: bin/piglet-hosts-helper
+    env:
+      - CGO_ENABLED=0
+      - GOFLAGS=-mod=readonly
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -buildid= -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: piglet
+    ids: [piglet, piglet-hosts-helper]
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    wrap_in_directory: true
+    builds_info:
+      owner: root
+      group: root
+      mtime: "{{ .CommitDate }}"
+    files:
+      - src: LICENSE
+        info: &archive_file_info
+          owner: root
+          group: root
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info: *archive_file_info
+      - src: THIRD_PARTY_LICENSES.md
+        info: *archive_file_info
+      - src: packaging/pigsty/vm
+        dst: bin/pigsty-vm
+        info:
+          owner: root
+          group: root
+          mode: 0755
+          mtime: "{{ .CommitDate }}"
+      - src: docs/ARCHITECTURE.md
+        dst: docs/ARCHITECTURE.md
+        info: *archive_file_info
+      - src: docs/IMAGE_CONTRACT.md
+        dst: docs/IMAGE_CONTRACT.md
+        info: *archive_file_info
+      - src: docs/INSTALL.md
+        dst: docs/INSTALL.md
+        info: *archive_file_info
+      - src: docs/MIGRATION.md
+        dst: docs/MIGRATION.md
+        info: *archive_file_info
+      - src: docs/NETWORKING.md
+        dst: docs/NETWORKING.md
+        info: *archive_file_info
+      - src: docs/RELEASE.md
+        dst: docs/RELEASE.md
+        info: *archive_file_info
+      - src: docs/SECURITY.md
+        dst: docs/SECURITY.md
+        info: *archive_file_info
+      - src: docs/TESTING.md
+        dst: docs/TESTING.md
+        info: *archive_file_info
+      - src: docs/TROUBLESHOOTING.md
+        dst: docs/TROUBLESHOOTING.md
+        info: *archive_file_info
+      - src: docs/UPGRADE.md
+        dst: docs/UPGRADE.md
+        info: *archive_file_info
+      - src: schemas/*
+        dst: schemas
+        info: *archive_file_info
+      - src: third_party/licenses/*
+        dst: third_party/licenses
+        info: *archive_file_info
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - id: archive-spdx
+    artifacts: archive
+    cmd: ../packaging/goreleaser-sbom.sh
+    documents:
+      - "{{ .ArtifactName }}.spdx.json"
+    args:
+      - "${artifact}"
+      - "${document}"
+    env:
+      - SOURCE_DATE_EPOCH={{ .Env.SOURCE_DATE_EPOCH }}
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: pgsty
+    name: piglet
+  draft: true
+  prerelease: auto

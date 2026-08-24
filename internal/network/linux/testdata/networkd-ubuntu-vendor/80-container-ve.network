@@ -1,0 +1,7 @@
+[Match]
+Kind=veth
+Name=ve-*
+
+[Network]
+Address=0.0.0.0/28
+

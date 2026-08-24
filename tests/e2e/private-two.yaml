@@ -1,0 +1,31 @@
+version: 1
+name: private-two
+arch: native
+network:
+  mode: private
+  cidr: 10.10.10.0/24
+  host_address: 10.10.10.1
+  dhcp_end: 10.10.10.8
+defaults:
+  image: u24
+  cpus: 1
+  memory: 2GiB
+  root_disk: 64GiB
+ssh:
+  user: dba
+nodes:
+  - name: meta
+    control: true
+    address: 10.10.10.10
+    cpus: 2
+    memory: 4GiB
+    disks:
+      - name: data
+        size: 8GiB
+        mount: /data
+  - name: node-1
+    address: 10.10.10.11
+    disks:
+      - name: data
+        size: 8GiB
+        mount: /data

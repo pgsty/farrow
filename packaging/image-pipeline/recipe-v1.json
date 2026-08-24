@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "recipe_id": "https://github.com/pgsty/piglet/packaging/image-pipeline/v1",
+  "max_source_bytes": 17179869184,
+  "copy_chunk_bytes": 8388608,
+  "timeouts_seconds": {
+    "qemu_img": 120,
+    "virt_customize": 1800,
+    "virt_cat": 300
+  },
+  "qemu_img_contract": {
+    "inspect": [
+      "info",
+      "--output=json",
+      "-f",
+      "qcow2"
+    ],
+    "inspect_chain": [
+      "info",
+      "--output=json",
+      "--backing-chain",
+      "-f",
+      "qcow2"
+    ],
+    "check": [
+      "check",
+      "--output=json",
+      "-f",
+      "qcow2"
+    ],
+    "required_format": "qcow2",
+    "required_chain_length": 1,
+    "reject_truthy_fields": [
+      "backing-filename",
+      "full-backing-filename",
+      "backing-filename-format",
+      "data-file",
+      "encrypted",
+      "incompatible-features",
+      "extended-l2",
+      "corrupt",
+      "dirty-flag"
+    ]
+  },
+  "normalization": {
+    "engine": "virt-customize",
+    "network": false,
+    "guest_script": "normalize-guest.sh",
+    "marker": "/var/lib/piglet-image/normalization.json",
+    "login_user": "dba",
+    "login_uid": 88,
+    "primary_group": "admin",
+    "primary_gid": 88,
+    "password_authentication": false,
+    "remove_authorized_keys": true,
+    "remove_private_ssh_keys": true,
+    "remove_ssh_host_keys": true,
+    "clear_machine_id": true,
+    "clear_cloud_init_cache": true
+  },
+  "promotion_policy": {
+    "candidate_status": "testing",
+    "supported_status_allowed": false,
+    "production_signing": false,
+    "native_smoke_required_after_build": true
+  }
+}

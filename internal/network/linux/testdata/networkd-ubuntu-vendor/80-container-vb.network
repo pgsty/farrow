@@ -1,0 +1,7 @@
+[Match]
+Kind=veth
+Name=vb-*
+
+[Network]
+KeepMaster=yes
+
