@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func absenceFixture(t *testing.T) (Manager, project.Project, state.ProjectState) {
@@ -28,11 +28,11 @@ func absenceFixture(t *testing.T) (Manager, project.Project, state.ProjectState)
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectState := state.ProjectState{Schema: state.ProjectSchema, PigletVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
+	projectState := state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
 	if err := (state.Store{Project: projectValue}).WriteProject(projectState); err != nil {
 		t.Fatal(err)
 	}
-	return Manager{CWD: work, PigletVersion: "test"}, projectValue, projectState
+	return Manager{CWD: work, FarrowVersion: "test"}, projectValue, projectState
 }
 
 func TestStatusReportsAbsentOnlyWithValidDestroyRecord(t *testing.T) {

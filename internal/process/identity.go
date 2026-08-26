@@ -16,8 +16,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/qemu"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/qemu"
 )
 
 type Identity struct {

@@ -14,11 +14,11 @@ repo=$(cd "$(dirname "$0")/.." && pwd -P)
 "${repo}/packaging/check-toolchain.sh" signing
 
 temporary_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
-temporary=$(mktemp -d "${temporary_parent}/piglet-cosign-test.XXXXXX")
+temporary=$(mktemp -d "${temporary_parent}/farrow-cosign-test.XXXXXX")
 temporary=$(cd "${temporary}" && pwd -P)
 cleanup() {
   case ${temporary} in
-    "${temporary_parent}"/piglet-cosign-test.*) rm -rf -- "${temporary}" ;;
+    "${temporary_parent}"/farrow-cosign-test.*) rm -rf -- "${temporary}" ;;
     *) printf 'refuse unsafe signing-test cleanup: %s\n' "${temporary}" >&2 ;;
   esac
 }
@@ -28,7 +28,7 @@ umask 077
 # This password protects only the short-lived development key below. Production
 # release keys, KMS references, identity tokens, and bundles are never accepted
 # or written by this test.
-export COSIGN_PASSWORD=piglet-development-test-only
+export COSIGN_PASSWORD=farrow-development-test-only
 key=${temporary}/ephemeral
 bundle=${temporary}/checksums.sigstore.json
 predicate=${temporary}/provenance-predicate.json
@@ -47,13 +47,13 @@ jq -e '
 
 jq -n '{
   buildDefinition: {
-    buildType: "https://github.com/pgsty/piglet/packaging/test-cosign-roundtrip/v1",
+    buildType: "https://github.com/pgsty/farrow/packaging/test-cosign-roundtrip/v1",
     externalParameters: {testOnly: true},
     internalParameters: {},
     resolvedDependencies: []
   },
   runDetails: {
-    builder: {id: "https://github.com/pgsty/piglet/packaging/test-cosign-roundtrip.sh"},
+    builder: {id: "https://github.com/pgsty/farrow/packaging/test-cosign-roundtrip.sh"},
     metadata: {invocationId: "ephemeral-local-test"}
   }
 }' >"${predicate}"

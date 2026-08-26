@@ -1,0 +1,61 @@
+# typed: strict
+# frozen_string_literal: true
+
+# Farrow installs the unprivileged native QEMU development-VM runtime.
+class Farrow < Formula
+  desc "Native Go/QEMU runtime for Pigsty development VMs"
+  homepage "https://github.com/pgsty/farrow"
+  version "@VERSION@"
+  license "Apache-2.0"
+
+  depends_on "qemu"
+
+  on_macos do
+    on_arm do
+      url "@BASE_URL@/farrow_@VERSION@_darwin_arm64.tar.gz"
+      sha256 "@DARWIN_ARM64_SHA@"
+    end
+    on_intel do
+      url "@BASE_URL@/farrow_@VERSION@_darwin_amd64.tar.gz"
+      sha256 "@DARWIN_AMD64_SHA@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "@BASE_URL@/farrow_@VERSION@_linux_arm64.tar.gz"
+      sha256 "@LINUX_ARM64_SHA@"
+    end
+    on_intel do
+      url "@BASE_URL@/farrow_@VERSION@_linux_amd64.tar.gz"
+      sha256 "@LINUX_AMD64_SHA@"
+    end
+  end
+
+  def install
+    bin.install "bin/farrow"
+    bin.install "bin/pigsty-vm"
+    libexec.install "bin/farrow-hosts-helper"
+    doc.install "README.md", "THIRD_PARTY_LICENSES.md"
+    doc.install "docs"
+    doc.install "tests"
+    doc.install "third_party/licenses"
+    pkgshare.install "schemas"
+  end
+
+  def caveats
+    <<~EOS
+      This development formula installs only the unprivileged Farrow CLI.
+      It does not install or run socket_vmnet or any root-owned network helper.
+
+      Private-project `farrow hosts ... --yes` requires an explicit root-owned
+      copy of the narrow helper. After reviewing that boundary, install it with:
+        sudo install -d -o root -g 0 -m 0755 /opt/farrow/libexec
+        sudo install -o root -g 0 -m 0755 #{libexec}/farrow-hosts-helper /opt/farrow/libexec/farrow-hosts-helper
+    EOS
+  end
+
+  test do
+    assert_match "farrow #{version}", shell_output("#{bin}/farrow version")
+  end
+end

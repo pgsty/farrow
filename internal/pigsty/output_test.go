@@ -26,7 +26,7 @@ func TestPublishManagedInventoryLifecycle(t *testing.T) {
 	if err != nil || !first.Changed {
 		t.Fatalf("first publish=%#v err=%v", first, err)
 	}
-	for _, path := range []string{output, output + ".piglet.json"} {
+	for _, path := range []string{output, output + ".farrow.json"} {
 		info, err := os.Stat(path)
 		if err != nil || info.Mode().Perm() != 0o600 {
 			t.Fatalf("managed path %s info=%v err=%v", path, info, err)

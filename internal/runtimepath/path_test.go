@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/project"
 )
 
 const testProject = "018f4b8e-1234-4abc-9def-0123456789ab"
@@ -52,7 +52,7 @@ func TestXDGDirectoryAndEnsure(t *testing.T) {
 	if err := PruneEmptyParents(directory, os.Getuid()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(root, "piglet")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(root, "farrow")); !os.IsNotExist(err) {
 		t.Fatalf("empty managed parents remain: %v", err)
 	}
 	if _, err := os.Lstat(root); err != nil {
@@ -120,7 +120,7 @@ func TestLegacyRuntimeCompatibility(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		directory := filepath.Join(root, "piglet-"+strconv.Itoa(os.Getuid())+"-"+projectID[:8]+"-meta")
+		directory := filepath.Join(root, "farrow-"+strconv.Itoa(os.Getuid())+"-"+projectID[:8]+"-meta")
 		if err := Ensure(directory, os.Getuid()); err != nil {
 			t.Fatal(err)
 		}

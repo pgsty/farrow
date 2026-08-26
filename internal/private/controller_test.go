@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func controllerFixture(t *testing.T, disks DiskOps, lifecycle NodeLifecycle) Controller {
@@ -109,6 +109,46 @@ func TestControllerCreateAndStartReturnsTypedPartialAndKeepsSuccess(t *testing.T
 	}
 	if _, err := os.Lstat(filepath.Join(controller.Project.Root, "nodes", "meta", "state.json")); err != nil {
 		t.Fatalf("failed-node rollback touched successful node: %v", err)
+	}
+}
+
+func TestControllerManagerStartSelectionSkipsPrepareFailure(t *testing.T) {
+	lifecycle := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
+	controller := controllerFixture(t, &fakePrivateDisks{failSubstring: "node-1/root.qcow2"}, lifecycle)
+	// Manager.Up supplies the selected create nodes explicitly, including a node
+	// that may subsequently fail PrepareSelected.
+	controller.StartNodes = []string{"meta", "node-1"}
+
+	result, err := controller.CreateAndStart(context.Background())
+	var partial *PartialError
+	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" {
+		t.Fatalf("manager-style start selection result=%#v partial=%#v err=%v", result, partial, err)
+	}
+	if ready := ReadyNames(result.Start); len(ready) != 1 || ready[0] != "meta" {
+		t.Fatalf("successful prepared peer did not start: result=%#v ready=%v", result, ready)
+	}
+	meta, metaErr := (state.Store{Project: controller.Project}).ReadNode("meta")
+	if metaErr != nil || meta.Phase != state.Running {
+		t.Fatalf("successful prepared peer state=%#v err=%v", meta, metaErr)
+	}
+	if _, nodeErr := (state.Store{Project: controller.Project}).ReadNode("node-1"); !errors.Is(nodeErr, os.ErrNotExist) {
+		t.Fatalf("failed prepare gained committed state: %v", nodeErr)
+	}
+}
+
+func TestControllerFailedSelectedStartDoesNotStartUnselectedPeer(t *testing.T) {
+	lifecycle := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
+	controller := controllerFixture(t, &fakePrivateDisks{failSubstring: "node-1/root.qcow2"}, lifecycle)
+	controller.StartNodes = []string{"node-1"}
+
+	result, err := controller.CreateAndStart(context.Background())
+	var partial *PartialError
+	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" || len(result.Start) != 0 {
+		t.Fatalf("failed selected start result=%#v partial=%#v err=%v", result, partial, err)
+	}
+	meta, metaErr := (state.Store{Project: controller.Project}).ReadNode("meta")
+	if metaErr != nil || meta.Phase != state.Prepared {
+		t.Fatalf("unselected successful peer state=%#v err=%v", meta, metaErr)
 	}
 }
 

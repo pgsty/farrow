@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/platform"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/platform"
 )
 
 type Status string

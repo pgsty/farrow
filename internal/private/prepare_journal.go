@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/project"
 )
 
 const maxPrepareJournalBytes = 1 << 20

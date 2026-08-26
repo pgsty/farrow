@@ -14,7 +14,7 @@ if [[ ! -f ${go_license} ]]; then
   go_license=$(cd "${go_root}/.." && pwd -P)/LICENSE
 fi
 [[ -f ${go_license} && ! -L ${go_license} ]] || { printf 'Go standard-library LICENSE is missing from the pinned toolchain\n' >&2; exit 1; }
-[[ $(go env GOVERSION) == "go${PIGLET_GO_VERSION}" ]] || { printf 'Go toolchain version differs from the license-review pin\n' >&2; exit 1; }
+[[ $(go env GOVERSION) == "go${FARROW_GO_VERSION}" ]] || { printf 'Go toolchain version differs from the license-review pin\n' >&2; exit 1; }
 expected=$(printf '%s\n' \
   $'aead.dev/minisign\tv0.3.0' \
   $'github.com/diskfs/go-diskfs\tv1.9.4' \
@@ -25,7 +25,7 @@ expected=$(printf '%s\n' \
   $'golang.org/x/term\tv0.43.0' | LC_ALL=C sort)
 actual=$(
   cd "${repo}"
-  go list -deps -json ./cmd/piglet ./cmd/piglet-hosts-helper |
+  go list -deps -json ./cmd/farrow ./cmd/farrow-hosts-helper |
     jq -r 'select(.Module != null and .Module.Main != true) | [.Module.Path,.Module.Version] | @tsv' |
     LC_ALL=C sort -u
 )
@@ -40,4 +40,4 @@ cmp "${repo}/third_party/licenses/golang.org-x-crypto-LICENSE" "${module_cache}/
 cmp "${repo}/third_party/licenses/golang.org-x-sys-LICENSE" "${module_cache}/golang.org/x/sys@v0.45.0/LICENSE"
 cmp "${repo}/third_party/licenses/golang.org-x-term-LICENSE" "${module_cache}/golang.org/x/term@v0.43.0/LICENSE"
 cmp "${repo}/third_party/licenses/golang.org-go-stdlib-LICENSE" "${go_license}"
-printf 'verified seven reachable module versions, Go %s stdlib license, and exact upstream license/notice bytes\n' "${PIGLET_GO_VERSION}"
+printf 'verified seven reachable module versions, Go %s stdlib license, and exact upstream license/notice bytes\n' "${FARROW_GO_VERSION}"

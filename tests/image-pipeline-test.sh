@@ -4,11 +4,11 @@ set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 pipeline=${repo}/packaging/image-pipeline/build.sh
 temporary_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
-temporary=$(mktemp -d "${temporary_parent}/piglet-image-pipeline-test.XXXXXX")
+temporary=$(mktemp -d "${temporary_parent}/farrow-image-pipeline-test.XXXXXX")
 temporary=$(cd "${temporary}" && pwd -P)
 cleanup() {
   case ${temporary} in
-    "${temporary_parent}"/piglet-image-pipeline-test.*) rm -rf -- "${temporary}" ;;
+    "${temporary_parent}"/farrow-image-pipeline-test.*) rm -rf -- "${temporary}" ;;
     *) printf 'refuse unsafe test cleanup: %s\n' "${temporary}" >&2 ;;
   esac
 }
@@ -97,8 +97,8 @@ if [[ ${1:-} == --version ]]; then
 fi
 guest_path=${!#}
 case ${guest_path} in
-  /var/lib/piglet-image/normalization.json)
-    printf '{"schema":1,"recipe":"piglet-official-image-normalization-v1","source_user":"ubuntu","source_date_epoch":1787486400,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied"}\n'
+  /var/lib/farrow-image/normalization.json)
+    printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","source_user":"ubuntu","source_date_epoch":1787486400,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied"}\n'
     ;;
   /etc/passwd) printf 'root:x:0:0:root:/root:/bin/bash\ndba:x:88:88::/home/dba:/bin/bash\n' ;;
   /etc/group) printf 'root:x:0:\nadmin:x:88:dba\n' ;;

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func leasePhase(phase state.Phase) (lease.NodePhase, error) {

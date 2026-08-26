@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/project"
 )
 
 type RollbackAction struct {

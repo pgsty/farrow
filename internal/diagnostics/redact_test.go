@@ -8,7 +8,7 @@ import (
 
 func TestRedactTextSecretForms(t *testing.T) {
 	t.Parallel()
-	canary := "PIGLET_SECRET_CANARY_4f34d3a1"
+	canary := "FARROW_SECRET_CANARY_4f34d3a1"
 	input := []byte("Authorization: Bearer " + canary + "\n" +
 		"--token=" + canary + "\n" +
 		"url=https://user:" + canary + "@example.invalid/path?access_token=" + canary + "\n" +
@@ -24,7 +24,7 @@ func TestRedactTextSecretForms(t *testing.T) {
 
 func TestRedactJSONPreservesShape(t *testing.T) {
 	t.Parallel()
-	canary := "PIGLET_SECRET_CANARY_59f0c7c2"
+	canary := "FARROW_SECRET_CANARY_59f0c7c2"
 	input := []byte(`{"node":"meta","nested":{"api_token":"` + canary + `","public_key":"ssh-ed25519 safe"},"args":["--password=` + canary + `"]}`)
 	output := RedactJSON(input)
 	if bytes.Contains(output, []byte(canary)) {

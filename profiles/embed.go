@@ -1,4 +1,4 @@
-// Package profiles exposes the immutable profile assets compiled into Piglet.
+// Package profiles exposes the immutable profile assets compiled into Farrow.
 package profiles
 
 import "embed"

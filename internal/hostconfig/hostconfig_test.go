@@ -33,7 +33,7 @@ func TestReconcileInstallUpdateUninstallPreservesUnownedBytes(t *testing.T) {
 	if err != nil || !changed || len(lines) != 2 {
 		t.Fatalf("install changed=%t lines=%v err=%v", changed, lines, err)
 	}
-	if !strings.HasPrefix(string(after), string(before)) || !strings.Contains(string(after), "# piglet:"+projectOne+":begin") {
+	if !strings.HasPrefix(string(after), string(before)) || !strings.Contains(string(after), "# farrow:"+projectOne+":begin") {
 		t.Fatalf("install did not preserve prefix or add block:\n%s", after)
 	}
 	idempotent, _, changed, err := ReconcileContent(after, projectOne, ActionInstall, fixtureEntries())
@@ -54,7 +54,7 @@ func TestReconcileInstallUpdateUninstallPreservesUnownedBytes(t *testing.T) {
 
 func TestReconcileRejectsMalformedMarkersAndConflictingNames(t *testing.T) {
 	t.Parallel()
-	malformed := []byte("127.0.0.1 localhost\n# piglet:" + projectOne + ":begin\n10.10.10.10 meta\n")
+	malformed := []byte("127.0.0.1 localhost\n# farrow:" + projectOne + ":begin\n10.10.10.10 meta\n")
 	if _, _, _, err := ReconcileContent(malformed, projectOne, ActionInstall, fixtureEntries()); err == nil {
 		t.Fatal("unterminated marker block was accepted")
 	}
@@ -106,11 +106,11 @@ func TestApplyHelperIsDigestBoundAtomicAndPreservesMetadata(t *testing.T) {
 	if err := os.WriteFile(target, before, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	xattrName := "user.piglet-test"
+	xattrName := "user.farrow-test"
 	xattrValue := []byte("preserve-me")
 	if err := unix.Setxattr(target, xattrName, xattrValue, 0); err != nil {
 		// Darwin reserves the user namespace differently; use a safe test name.
-		xattrName = "com.pgsty.piglet.test"
+		xattrName = "com.pgsty.farrow.test"
 		if err := unix.Setxattr(target, xattrName, xattrValue, 0); err != nil {
 			t.Skipf("test filesystem has no writable extended attributes: %v", err)
 		}
@@ -210,7 +210,7 @@ func TestValidateTransitionRechecksCrossProjectNameConflicts(t *testing.T) {
 func TestInstalledHelperValidationRejectsUserOwnedAndSymlinkPaths(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
-	helper := filepath.Join(directory, "piglet-hosts-helper")
+	helper := filepath.Join(directory, "farrow-hosts-helper")
 	if err := os.WriteFile(helper, []byte("fixture"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestInstalledHelperValidationRejectsUserOwnedAndSymlinkPaths(t *testing.T) 
 	if err := validateInstalledHelper(link); err == nil {
 		t.Fatal("symlink helper was accepted for privileged execution")
 	}
-	if err := validateInstalledHelper(filepath.Join(directory, "..", filepath.Base(directory), "piglet-hosts-helper")); err == nil {
+	if err := validateInstalledHelper(filepath.Join(directory, "..", filepath.Base(directory), "farrow-hosts-helper")); err == nil {
 		t.Fatal("non-canonical helper path was accepted")
 	}
 }

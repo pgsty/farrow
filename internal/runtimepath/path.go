@@ -13,13 +13,13 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/project"
 )
 
 var (
 	shortProjectPattern  = regexp.MustCompile(`^[0-9a-f]{8}$`)
 	shortNodePattern     = regexp.MustCompile(`^[0-9a-f]{10}$`)
-	legacyQuickPattern   = regexp.MustCompile(`^piglet-([0-9]+)-([0-9a-f]{8})-meta$`)
+	legacyQuickPattern   = regexp.MustCompile(`^farrow-([0-9]+)-([0-9a-f]{8})-meta$`)
 	legacyPrivatePattern = regexp.MustCompile(`^pl-([0-9]+)-([0-9a-f]{8})-([0-9a-f]{10})$`)
 )
 
@@ -28,7 +28,7 @@ func fallbackBase(uid int) string {
 	if runtime.GOOS == "darwin" {
 		root = "/private/tmp"
 	}
-	return filepath.Join(root, fmt.Sprintf("piglet-runtime-%d", uid))
+	return filepath.Join(root, fmt.Sprintf("farrow-runtime-%d", uid))
 }
 
 func ownerUID(info os.FileInfo) (int, bool) {
@@ -85,7 +85,7 @@ func Directory(projectID, node string, uid int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	directory := filepath.Join(base, "piglet", projectID[:8], nodeToken(projectID, node))
+	directory := filepath.Join(base, "farrow", projectID[:8], nodeToken(projectID, node))
 	if err := Validate(directory, projectID, node, uid); err != nil {
 		return "", err
 	}
@@ -107,9 +107,9 @@ func Validate(directory, projectID, node string, uid int) error {
 	}
 	nodeDir := filepath.Base(directory)
 	projectDir := filepath.Base(filepath.Dir(directory))
-	pigletDir := filepath.Dir(filepath.Dir(directory))
-	base := filepath.Dir(pigletDir)
-	if filepath.Base(pigletDir) != "piglet" || projectDir != projectID[:8] || nodeDir != nodeToken(projectID, node) || !shortProjectPattern.MatchString(projectDir) || !shortNodePattern.MatchString(nodeDir) || base == "/" || base == "." {
+	farrowDir := filepath.Dir(filepath.Dir(directory))
+	base := filepath.Dir(farrowDir)
+	if filepath.Base(farrowDir) != "farrow" || projectDir != projectID[:8] || nodeDir != nodeToken(projectID, node) || !shortProjectPattern.MatchString(projectDir) || !shortNodePattern.MatchString(nodeDir) || base == "/" || base == "." {
 		return errors.New("runtime directory does not match project/node identity")
 	}
 	if len(filepath.Join(directory, "qmp.sock")) > maxSocketPath() {
@@ -174,16 +174,16 @@ func Ensure(directory string, uid int) error {
 	}
 	nodeDir := directory
 	projectDir := filepath.Dir(nodeDir)
-	pigletDir := filepath.Dir(projectDir)
-	base := filepath.Dir(pigletDir)
-	if filepath.Base(pigletDir) != "piglet" || !shortProjectPattern.MatchString(filepath.Base(projectDir)) || !shortNodePattern.MatchString(filepath.Base(nodeDir)) {
+	farrowDir := filepath.Dir(projectDir)
+	base := filepath.Dir(farrowDir)
+	if filepath.Base(farrowDir) != "farrow" || !shortProjectPattern.MatchString(filepath.Base(projectDir)) || !shortNodePattern.MatchString(filepath.Base(nodeDir)) {
 		return errors.New("runtime directory has an invalid managed layout")
 	}
 	allowBaseCreate := base == fallbackBase(uid)
 	if err := ensureOne(base, uid, allowBaseCreate); err != nil {
 		return err
 	}
-	for _, path := range []string{pigletDir, projectDir, nodeDir} {
+	for _, path := range []string{farrowDir, projectDir, nodeDir} {
 		if err := ensureOne(path, uid, true); err != nil {
 			return err
 		}
@@ -201,12 +201,12 @@ func PruneEmptyParents(directory string, uid int) error {
 		return errors.New("runtime directory must be a clean absolute path")
 	}
 	projectDir := filepath.Dir(directory)
-	pigletDir := filepath.Dir(projectDir)
-	base := filepath.Dir(pigletDir)
-	if filepath.Base(pigletDir) != "piglet" || !shortProjectPattern.MatchString(filepath.Base(projectDir)) || !shortNodePattern.MatchString(filepath.Base(directory)) {
+	farrowDir := filepath.Dir(projectDir)
+	base := filepath.Dir(farrowDir)
+	if filepath.Base(farrowDir) != "farrow" || !shortProjectPattern.MatchString(filepath.Base(projectDir)) || !shortNodePattern.MatchString(filepath.Base(directory)) {
 		return errors.New("runtime directory has an invalid managed layout")
 	}
-	candidates := []string{projectDir, pigletDir}
+	candidates := []string{projectDir, farrowDir}
 	if base == fallbackBase(uid) {
 		candidates = append(candidates, base)
 	}

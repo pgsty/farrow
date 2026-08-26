@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func commitFixture(t *testing.T, disks DiskOps) (project.Project, PrepareConfig, []PrepareOutcome) {

@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/profile"
+	"github.com/pgsty/farrow/internal/profile"
 )
 
 func TestPigstyInventoryCorpus(t *testing.T) {

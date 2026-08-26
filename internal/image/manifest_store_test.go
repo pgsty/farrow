@@ -46,7 +46,7 @@ func signedCatalog(t *testing.T, directory string, version uint64, key minisign.
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	signature := minisign.SignWithComments(key, data, "timestamp:1787486400", "piglet test manifest")
+	signature := minisign.SignWithComments(key, data, "timestamp:1787486400", "farrow test manifest")
 	if err := os.WriteFile(path+".minisig", signature, 0o600); err != nil {
 		t.Fatal(err)
 	}

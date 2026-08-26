@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/pgsty/piglet/internal/config"
-	"github.com/pgsty/piglet/internal/image"
-	"github.com/pgsty/piglet/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/config"
+	"github.com/pgsty/farrow/internal/image"
+	"github.com/pgsty/farrow/internal/network/subnet"
 )
 
 const (

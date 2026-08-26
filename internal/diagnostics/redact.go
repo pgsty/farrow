@@ -1,5 +1,5 @@
 // Package diagnostics builds explicitly allowlisted, secret-redacted support
-// bundles for the current Piglet project.
+// bundles for the current Farrow project.
 package diagnostics
 
 import (

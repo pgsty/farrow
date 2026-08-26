@@ -1,9 +1,10 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 func TestParseSize(t *testing.T) {
@@ -34,6 +35,15 @@ func TestParseForward(t *testing.T) {
 	for _, input := range []string{"bad", "x:1:2", "0:2", "1:70000"} {
 		if _, err := ParseForward(input); err == nil {
 			t.Errorf("invalid forward %q accepted", input)
+		}
+	}
+}
+
+func TestParseForwardRejectsIPv6Bind(t *testing.T) {
+	t.Parallel()
+	for _, input := range []string{"[::1]:8080:80", "[2001:db8::1]:8080:80", "[::ffff:127.0.0.1]:8080:80"} {
+		if _, err := ParseForward(input); err == nil || !strings.Contains(err.Error(), "must be IPv4") {
+			t.Errorf("IPv6 forward %q was not rejected clearly: %v", input, err)
 		}
 	}
 }

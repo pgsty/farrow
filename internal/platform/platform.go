@@ -115,7 +115,7 @@ func Native() (Profile, error) { return Resolve(runtime.GOOS, runtime.GOARCH) }
 func Resolve(goos, goarch string) (Profile, error) {
 	profile, ok := profiles[goos+"/"+goarch]
 	if !ok {
-		return Profile{}, fmt.Errorf("unsupported host %s/%s: Piglet v1 supports native darwin/linux arm64/amd64 only", goos, goarch)
+		return Profile{}, fmt.Errorf("unsupported host %s/%s: Farrow v1 supports native darwin/linux arm64/amd64 only", goos, goarch)
 	}
 	return profile, nil
 }
@@ -159,4 +159,17 @@ func ParseQEMUVersion(output string) (Version, error) {
 		values[i] = value
 	}
 	return Version{Major: values[0], Minor: values[1], Patch: values[2]}, nil
+}
+
+// ValidateQEMUVersion parses a QEMU banner and enforces the selected host
+// profile's supported minimum.
+func ValidateQEMUVersion(profile Profile, output string) (Version, error) {
+	version, err := ParseQEMUVersion(output)
+	if err != nil {
+		return Version{}, err
+	}
+	if !version.AtLeast(profile.MinimumQEMU) {
+		return version, fmt.Errorf("unsupported QEMU version %s; minimum is %s", version, profile.MinimumQEMU)
+	}
+	return version, nil
 }

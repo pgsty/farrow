@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qmp"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qmp"
 )
 
 type boundedOutput struct {
@@ -41,7 +41,7 @@ func acceleratorSmoke(ctx context.Context, qemuPath string, profile platform.Pro
 	if runtime.GOOS == "darwin" {
 		parent = "/private/tmp"
 	}
-	root, err := os.MkdirTemp(parent, "piglet-accel-smoke.")
+	root, err := os.MkdirTemp(parent, "farrow-accel-smoke.")
 	if err != nil {
 		return "", err
 	}
@@ -58,7 +58,7 @@ func acceleratorSmoke(ctx context.Context, qemuPath string, profile platform.Pro
 	if err != nil {
 		return "", err
 	}
-	const name = "piglet-doctor-accelerator"
+	const name = "farrow-doctor-accelerator"
 	smokeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	args := []string{

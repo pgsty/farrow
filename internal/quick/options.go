@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/pgsty/piglet/internal/image"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/image"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 type Options struct {
@@ -108,7 +108,7 @@ func classifyDrift(before, after spec.Resolved) string {
 		if newNode.RootDisk != oldNode.RootDisk {
 			action = "stop"
 		}
-		if action == "no-op" && (newNode.CPUs != oldNode.CPUs || newNode.Memory != oldNode.Memory || !reflect.DeepEqual(newNode.Forwards, oldNode.Forwards)) {
+		if action == "no-op" && (newNode.CPUs != oldNode.CPUs || newNode.Memory != oldNode.Memory || !reflect.DeepEqual(newNode.Forwards, oldNode.Forwards) || !reflect.DeepEqual(newNode.Shares, oldNode.Shares)) {
 			action = "restart"
 		}
 	}
@@ -119,15 +119,7 @@ func classifyDrift(before, after spec.Resolved) string {
 }
 
 func materializeExistingPorts(desired, existing spec.Resolved) spec.Resolved {
-	for desiredIndex := range desired.Nodes[0].Forwards {
-		for _, current := range existing.Nodes[0].Forwards {
-			candidate := desired.Nodes[0].Forwards[desiredIndex]
-			if candidate.Bind == current.Bind && candidate.Guest == current.Guest && candidate.Protocol == current.Protocol {
-				desired.Nodes[0].Forwards[desiredIndex].Host = current.Host
-				break
-			}
-		}
-	}
+	desired.Nodes[0].Forwards = spec.ReuseMaterializedForwardPorts(desired.Nodes[0].Forwards, existing.Nodes[0].Forwards)
 	return desired
 }
 

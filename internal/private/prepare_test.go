@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/cloudinit"
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 type fakePrivateDisks struct {
@@ -111,7 +111,7 @@ func privatePrepareConfig(t *testing.T, root string, disks DiskOps) PrepareConfi
 		SSHPorts: map[string]uint16{"meta": 2222, "node-1": 2223},
 		Profile:  profile, QEMUBinary: "/opt/qemu/bin/qemu-system-aarch64",
 		Firmware: platform.Firmware{Code: code, Vars: vars},
-		Backend:  Backend{DarwinSocket: "/private/var/run/piglet-vmnet.sock", ReconnectMS: 1000},
+		Backend:  Backend{DarwinSocket: "/private/var/run/farrow-vmnet.sock", ReconnectMS: 1000},
 		Disks:    disks,
 	}
 }

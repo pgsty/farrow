@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/openssh"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/qmp"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/openssh"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/qmp"
 )
 
 type Lifecycle struct {
@@ -391,7 +391,7 @@ func (l Lifecycle) WaitReady(ctx context.Context, sshPath, key, knownHosts strin
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		args := SSHArgsForUser(l.sshUser(), key, knownHosts, port, "cat", "/var/lib/piglet/ready.json")
+		args := SSHArgsForUser(l.sshUser(), key, knownHosts, port, "cat", "/var/lib/farrow/ready.json")
 		if args == nil {
 			return fmt.Errorf("invalid SSH user %q", l.sshUser())
 		}

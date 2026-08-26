@@ -9,11 +9,11 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 type CommitResult struct {
@@ -23,7 +23,7 @@ type CommitResult struct {
 }
 
 func desiredProjectState(projectValue project.Project, resolved spec.Resolved, hash, version string, now time.Time) state.ProjectState {
-	return state.ProjectState{Schema: state.ProjectSchema, PigletVersion: version, ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}
+	return state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: version, ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}
 }
 
 func ensureProjectState(store state.Store, desired state.ProjectState) error {
@@ -75,7 +75,7 @@ func stateForArtifacts(config PrepareConfig, projectValue project.Project, artif
 		forwards = append(forwards, qemu.Forward{Bind: forward.Bind, Host: forward.Host, Guest: forward.Guest})
 	}
 	return state.NodeState{
-		Schema: state.NodeSchema, PigletVersion: version, ProjectID: projectValue.Marker.ProjectID,
+		Schema: state.NodeSchema, FarrowVersion: version, ProjectID: projectValue.Marker.ProjectID,
 		Node: artifacts.Name, VMUUID: nodePlan.VMUUID, Phase: state.Prepared, Generation: 1, SpecHash: config.SpecHash,
 		Image:    state.Image{Alias: base.Alias, Release: base.Release, Digest: base.Digest, VirtualSize: base.VirtualSize},
 		RootDisk: artifacts.Root, DataDisks: dataState, Seed: artifacts.Seed, NVRAM: artifacts.NVRAM,

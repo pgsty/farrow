@@ -6,19 +6,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func TestIntegrationRepairReconstructsLiveProcess(t *testing.T) {
-	workDir := os.Getenv("PIGLET_REPAIR_E2E_PROJECT")
+	workDir := os.Getenv("FARROW_REPAIR_E2E_PROJECT")
 	if workDir == "" {
-		t.Skip("set PIGLET_REPAIR_E2E_PROJECT to an existing stopped quick project")
+		t.Skip("set FARROW_REPAIR_E2E_PROJECT to an existing stopped quick project")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	manager := Manager{CWD: workDir, PigletVersion: "integration-test", ReadyTimeout: 3 * time.Minute}
+	manager := Manager{CWD: workDir, FarrowVersion: "integration-test", ReadyTimeout: 3 * time.Minute}
 	if _, err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func TestListDiscoversCurrentAndUninitializedProjectsWithoutMutation(t *testing.T) {
@@ -38,7 +38,7 @@ func TestListDiscoversCurrentAndUninitializedProjectsWithoutMutation(t *testing.
 		t.Fatal(err)
 	}
 	if err := (state.Store{Project: projectA}).WriteProject(state.ProjectState{
-		Schema: state.ProjectSchema, PigletVersion: "test", ProjectID: projectA.Marker.ProjectID,
+		Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectA.Marker.ProjectID,
 		SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
@@ -98,13 +98,13 @@ func TestListReportsEveryPrivateNode(t *testing.T) {
 	hash, _ := spec.Hash(resolved)
 	store := state.Store{Project: projectValue}
 	now := time.Now().UTC()
-	if err := store.WriteProject(state.ProjectState{Schema: state.ProjectSchema, PigletVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}); err != nil {
+	if err := store.WriteProject(state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	for index, definition := range resolved.Nodes {
 		nodeDir, _ := projectValue.NodeDir(definition.Name)
 		node := state.NodeState{
-			Schema: state.NodeSchema, PigletVersion: "test", ProjectID: projectValue.Marker.ProjectID,
+			Schema: state.NodeSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID,
 			Node: definition.Name, VMUUID: projectValue.Marker.ProjectID, Phase: state.Stopped, Generation: 1, SpecHash: hash,
 			Image:    state.Image{Alias: "u24", Release: "test", Digest: "digest", VirtualSize: spec.GiB},
 			RootDisk: filepath.Join(nodeDir, "root.qcow2"), Seed: filepath.Join(nodeDir, "seed.iso"), SSHPort: uint16(2222 + index),

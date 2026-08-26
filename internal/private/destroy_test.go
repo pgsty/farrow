@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/persistent"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/persistent"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func TestPrivateDestroyRemovesOnlyNodesAndPreservesKeysProjectCache(t *testing.T) {
@@ -32,7 +32,7 @@ func TestPrivateDestroyRemovesOnlyNodesAndPreservesKeysProjectCache(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	manager := Manager{CWD: projectValue.WorkDir, PigletVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{CWD: projectValue.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	result, err := manager.Destroy(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestPrivatePartialRecreateDestroyPreservesPeerStateAndLease(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manager := Manager{CWD: projectValue.WorkDir, PigletVersion: "test", LeaseStore: &startConfig.LeaseStore, Nodes: []string{"node-1"}, allowPartialDestroy: true}
+	manager := Manager{CWD: projectValue.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore, Nodes: []string{"node-1"}, allowPartialDestroy: true}
 	result, err := manager.Destroy(context.Background())
 	if err != nil || len(result.Nodes) != 1 || result.Nodes[0].Name != "node-1" || result.Nodes[0].State != state.Absent {
 		t.Fatalf("partial destroy result=%#v err=%v", result, err)
@@ -135,7 +135,7 @@ func TestControllerRecreatesOnlyMissingSelectedNode(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	destroyer := Manager{CWD: controller.Project.WorkDir, PigletVersion: "test", LeaseStore: &controller.LeaseStore, Nodes: []string{"node-1"}, allowPartialDestroy: true}
+	destroyer := Manager{CWD: controller.Project.WorkDir, FarrowVersion: "test", LeaseStore: &controller.LeaseStore, Nodes: []string{"node-1"}, allowPartialDestroy: true}
 	if _, err := destroyer.Destroy(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	manager := Manager{CWD: projectValue.WorkDir, PigletVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{CWD: projectValue.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	if _, err := manager.Destroy(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestPrivatePersistentDeleteRequiresDestroyedNodes(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
 	projectValue := startConfig.Project
 	_, _ = markFixtureDiskPersistent(t, state.Store{Project: projectValue})
-	manager := Manager{CWD: projectValue.WorkDir, PigletVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{CWD: projectValue.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	if _, err := manager.DeletePersistent(context.Background()); err == nil {
 		t.Fatal("persistent disks were deleted while nodes existed")
 	}

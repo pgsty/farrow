@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
+	"net/netip"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -14,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/image"
-	"github.com/pgsty/piglet/internal/network/subnet"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/image"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/spec"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -106,6 +107,22 @@ type ForwardConfig struct {
 	Protocol string `yaml:"protocol,omitempty"`
 }
 
+type ShareConfig struct {
+	Host     string `yaml:"host"`
+	Guest    string `yaml:"guest"`
+	Readonly *bool  `yaml:"readonly,omitempty"`
+}
+
+func shareReadonly(share ShareConfig) bool { return share.Readonly == nil || *share.Readonly }
+
+func shareReadonlyYAML(readonly bool) *bool {
+	if readonly {
+		return nil
+	}
+	value := false
+	return &value
+}
+
 type NodeConfig struct {
 	Name        string          `yaml:"name"`
 	Control     bool            `yaml:"control,omitempty"`
@@ -117,6 +134,7 @@ type NodeConfig struct {
 	RootDisk    Size            `yaml:"root_disk,omitempty"`
 	Disks       []DiskConfig    `yaml:"disks,omitempty"`
 	Forwards    []ForwardConfig `yaml:"forwards,omitempty"`
+	Shares      []ShareConfig   `yaml:"shares,omitempty"`
 }
 
 type File struct {
@@ -131,22 +149,44 @@ type File struct {
 }
 
 var (
-	dnsLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-	sshUser  = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
-	dnsName  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
-	diskName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	dnsLabel       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	sshUser        = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	dnsName        = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
+	diskName       = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	shareGuestPath = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
+	reservedMounts = []string{"/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var/lib/farrow"}
 )
 
-func safeDiskMount(path string) bool {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+func safeDiskMount(value string) bool {
+	if !filepath.IsAbs(value) || filepath.Clean(value) != value || value == "/" {
 		return false
 	}
-	for _, root := range []string{"/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var/lib/piglet"} {
-		if path == root || strings.HasPrefix(path, root+"/") {
+	for _, root := range reservedMounts {
+		if guestPathOverlap(value, root) {
 			return false
 		}
 	}
 	return true
+}
+
+func safeShareHost(value string) bool {
+	return filepath.IsAbs(value) && filepath.Clean(value) == value && value != "/" && !strings.ContainsAny(value, "\x00\r\n")
+}
+
+func safeShareGuest(value string) bool {
+	return shareGuestPath.MatchString(value) && pathpkg.IsAbs(value) && pathpkg.Clean(value) == value && safeDiskMount(value)
+}
+
+func cleanPathOverlap(first, second, separator string) bool {
+	return first == second || strings.HasPrefix(first, second+separator) || strings.HasPrefix(second, first+separator)
+}
+
+func hostPathOverlap(first, second string) bool {
+	return cleanPathOverlap(first, second, string(filepath.Separator))
+}
+
+func guestPathOverlap(first, second string) bool {
+	return cleanPathOverlap(first, second, "/")
 }
 
 func Decode(reader io.Reader) (File, error) {
@@ -306,6 +346,12 @@ func (f *File) Validate() error {
 	addresses := make(map[string]struct{})
 	allAliases := make(map[string]struct{})
 	controls := 0
+	type projectShareHost struct {
+		path     string
+		readonly bool
+		node     string
+	}
+	projectShareHosts := make([]projectShareHost, 0)
 	for _, node := range f.Nodes {
 		if !dnsLabel.MatchString(node.Name) {
 			return fmt.Errorf("invalid node name %q", node.Name)
@@ -367,10 +413,58 @@ func (f *File) Validate() error {
 			diskNames[disk.Name] = struct{}{}
 			mounts[disk.Mount] = struct{}{}
 		}
+		if len(node.Shares) > spec.MaxSharesPerNode {
+			return fmt.Errorf("node %s has %d shares; maximum is %d", node.Name, len(node.Shares), spec.MaxSharesPerNode)
+		}
+		shareHosts := make([]string, 0, len(node.Shares))
+		shareGuests := make([]string, 0, len(node.Shares))
+		sshDirectory := pathpkg.Join("/home", f.SSH.User, ".ssh")
+		for _, share := range node.Shares {
+			if !safeShareHost(share.Host) {
+				return fmt.Errorf("invalid share host %q on node %s", share.Host, node.Name)
+			}
+			if !safeShareGuest(share.Guest) {
+				return fmt.Errorf("invalid share guest %q on node %s", share.Guest, node.Name)
+			}
+			if guestPathOverlap(share.Guest, sshDirectory) {
+				return fmt.Errorf("share guest %q overlaps SSH directory %q on node %s", share.Guest, sshDirectory, node.Name)
+			}
+			for _, previous := range shareHosts {
+				if hostPathOverlap(previous, share.Host) {
+					return fmt.Errorf("overlapping share hosts %q and %q on node %s", previous, share.Host, node.Name)
+				}
+			}
+			for _, previous := range shareGuests {
+				if guestPathOverlap(previous, share.Guest) {
+					return fmt.Errorf("overlapping share guests %q and %q on node %s", previous, share.Guest, node.Name)
+				}
+			}
+			for mount := range mounts {
+				if guestPathOverlap(mount, share.Guest) {
+					return fmt.Errorf("share guest %q overlaps data disk mount %q on node %s", share.Guest, mount, node.Name)
+				}
+			}
+			readonly := shareReadonly(share)
+			for _, previous := range projectShareHosts {
+				if previous.node != node.Name && hostPathOverlap(previous.path, share.Host) && (!previous.readonly || !readonly) {
+					return fmt.Errorf("cross-node share hosts %q on %s and %q on %s overlap with read-write access", previous.path, previous.node, share.Host, node.Name)
+				}
+			}
+			shareHosts = append(shareHosts, share.Host)
+			shareGuests = append(shareGuests, share.Guest)
+			projectShareHosts = append(projectShareHosts, projectShareHost{path: share.Host, readonly: readonly, node: node.Name})
+		}
+		if len(node.Shares) == 0 {
+			node.Shares = nil
+		}
 		forwardKeys := make(map[string]struct{})
 		for _, forward := range node.Forwards {
-			if forward.Protocol != "tcp" || net.ParseIP(forward.Bind) == nil || forward.Host == 0 || forward.Guest == 0 {
+			address, err := netip.ParseAddr(forward.Bind)
+			if forward.Protocol != "tcp" || err != nil || forward.Host == 0 || forward.Guest == 0 {
 				return fmt.Errorf("invalid forward on node %s", node.Name)
+			}
+			if !address.Is4() {
+				return fmt.Errorf("v1 forward bind address %q on node %s must be IPv4", forward.Bind, node.Name)
 			}
 			key := fmt.Sprintf("%s/%d", forward.Bind, forward.Host)
 			if _, exists := forwardKeys[key]; exists {
@@ -408,6 +502,9 @@ func (f File) Resolve() (spec.Resolved, error) {
 				filesystem = ""
 			}
 			node.Disks = append(node.Disks, spec.Disk{Name: sourceDisk.Name, Size: int64(sourceDisk.Size), Mount: sourceDisk.Mount, Filesystem: filesystem, Persistent: sourceDisk.Persistent})
+		}
+		for _, sourceShare := range source.Shares {
+			node.Shares = append(node.Shares, spec.Share{Host: sourceShare.Host, Guest: sourceShare.Guest, Readonly: shareReadonly(sourceShare)})
 		}
 		for _, sourceForward := range source.Forwards {
 			node.Forwards = append(node.Forwards, spec.Forward{Bind: sourceForward.Bind, Host: sourceForward.Host, Guest: sourceForward.Guest, Protocol: sourceForward.Protocol})
@@ -471,8 +568,11 @@ func FromResolved(resolved spec.Resolved) (File, error) {
 		for _, sourceDisk := range source.Disks {
 			node.Disks = append(node.Disks, DiskConfig{Name: sourceDisk.Name, Size: Size(sourceDisk.Size), Mount: sourceDisk.Mount, Filesystem: sourceDisk.Filesystem, Persistent: sourceDisk.Persistent})
 		}
+		for _, sourceShare := range source.Shares {
+			node.Shares = append(node.Shares, ShareConfig{Host: sourceShare.Host, Guest: sourceShare.Guest, Readonly: shareReadonlyYAML(sourceShare.Readonly)})
+		}
 		for _, sourceForward := range source.Forwards {
-			node.Forwards = append(node.Forwards, ForwardConfig{Bind: sourceForward.Bind, Host: sourceForward.Host, Guest: sourceForward.Guest, Protocol: sourceForward.Protocol})
+			node.Forwards = append(node.Forwards, ForwardConfig{Bind: sourceForward.Bind, Host: spec.RequestedHostPort(sourceForward), Guest: sourceForward.Guest, Protocol: sourceForward.Protocol})
 		}
 		file.Nodes = append(file.Nodes, node)
 	}

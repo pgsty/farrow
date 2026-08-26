@@ -11,15 +11,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgsty/piglet/internal/cloudinit"
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/identity"
-	"github.com/pgsty/piglet/internal/persistent"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/hostshare"
+	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/persistent"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 type DiskOps interface {
@@ -201,7 +202,7 @@ func privateBackend(config PrepareConfig, node NodePlan) *qemu.PrivateNetwork {
 		}
 		return &qemu.PrivateNetwork{MAC: node.PrivateMAC, StreamSocket: config.Backend.DarwinSocket, ReconnectMS: config.Backend.ReconnectMS}
 	}
-	return &qemu.PrivateNetwork{MAC: node.PrivateMAC, Bridge: "piglet0", BridgeHelper: config.Backend.LinuxBridgeHelper}
+	return &qemu.PrivateNetwork{MAC: node.PrivateMAC, Bridge: "farrow0", BridgeHelper: config.Backend.LinuxBridgeHelper}
 }
 
 func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeArtifacts, error) {
@@ -318,7 +319,7 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 		CPUs: definition.CPUs, Memory: definition.Memory, Firmware: firmware,
 		Root: qemu.Disk{Path: artifacts.Root, Serial: artifacts.RootSerial}, Data: qemuData, Seed: artifacts.Seed,
 		QMP: nodePlan.Runtime.QMP, PIDFile: nodePlan.Runtime.PIDFile, SerialLog: artifacts.SerialLog,
-		MgmtMAC: nodePlan.ManagementMAC, Forwards: forwards, Private: privateBackend(config, nodePlan), Detach: true,
+		MgmtMAC: nodePlan.ManagementMAC, Forwards: forwards, Private: privateBackend(config, nodePlan), Shares: hostshare.QEMU(definition.Shares), Detach: true,
 	})
 	if err != nil {
 		return artifacts, err

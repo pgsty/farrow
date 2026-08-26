@@ -1,6 +1,6 @@
 // Package lease owns the host-global single-active-project private-network
 // reservation. The privileged network installer creates the fixed sticky
-// runtime root; unprivileged Piglet processes coordinate beneath it.
+// runtime root; unprivileged Farrow processes coordinate beneath it.
 package lease
 
 import (
@@ -21,11 +21,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/network/subnet"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qemu"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qemu"
 	"golang.org/x/sys/unix"
 )
 
@@ -120,9 +120,9 @@ type Store struct {
 func DefaultRoot() (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/private/var/run/piglet", nil
+		return "/private/var/run/farrow", nil
 	case "linux":
-		return "/run/piglet", nil
+		return "/run/farrow", nil
 	default:
 		return "", fmt.Errorf("private lease has no root for %s", runtime.GOOS)
 	}

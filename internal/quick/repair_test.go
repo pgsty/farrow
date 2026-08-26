@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func TestRepairOrphanDryRunAndApply(t *testing.T) {
@@ -45,11 +45,11 @@ func TestRepairOrphanDryRunAndApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	transaction := state.Transaction{Schema: 1, PigletVersion: "dev", OperationID: "op", ProjectID: projectValue.Marker.ProjectID, Node: nodeName, From: state.Absent, To: state.Preparing, Completed: []state.Action{{Name: "project-key", Resource: keys}, {Name: "root-overlay", Resource: rootDisk}, {Name: "data-disk", Resource: dataDisk}}, StartedAt: now, UpdatedAt: now}
+	transaction := state.Transaction{Schema: 1, FarrowVersion: "dev", OperationID: "op", ProjectID: projectValue.Marker.ProjectID, Node: nodeName, From: state.Absent, To: state.Preparing, Completed: []state.Action{{Name: "project-key", Resource: keys}, {Name: "root-overlay", Resource: rootDisk}, {Name: "data-disk", Resource: dataDisk}}, StartedAt: now, UpdatedAt: now}
 	if err := (state.Store{Project: projectValue}).WriteTransaction(transaction); err != nil {
 		t.Fatal(err)
 	}
-	manager := Manager{CWD: work, PigletVersion: "dev"}
+	manager := Manager{CWD: work, FarrowVersion: "dev"}
 	dryRun, err := manager.Repair(context.Background(), false)
 	if err != nil || len(dryRun.Actions) < 3 {
 		t.Fatalf("dry run = %#v, %v", dryRun, err)
@@ -96,7 +96,7 @@ func newOrphanRepairFixture(t *testing.T) orphanRepairFixture {
 		t.Fatal(err)
 	}
 	return orphanRepairFixture{
-		manager:  Manager{CWD: work, PigletVersion: "dev"},
+		manager:  Manager{CWD: work, FarrowVersion: "dev"},
 		store:    state.Store{Project: projectValue},
 		nodeDir:  nodeDir,
 		rootDisk: filepath.Join(nodeDir, "root.qcow2"),
@@ -107,7 +107,7 @@ func (fixture orphanRepairFixture) writeTransaction(t *testing.T, completed ...s
 	t.Helper()
 	now := time.Now().UTC()
 	transaction := state.Transaction{
-		Schema: state.TransactionSchema, PigletVersion: "dev", OperationID: "op",
+		Schema: state.TransactionSchema, FarrowVersion: "dev", OperationID: "op",
 		ProjectID: fixture.store.Project.Marker.ProjectID, Node: nodeName,
 		From: state.Absent, To: state.Preparing, Completed: completed,
 		StartedAt: now, UpdatedAt: now,

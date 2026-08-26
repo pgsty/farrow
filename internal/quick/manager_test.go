@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 func TestChoosePortsMaterializesConflict(t *testing.T) {
@@ -26,6 +27,9 @@ func TestChoosePortsMaterializesConflict(t *testing.T) {
 	if resolved.Nodes[0].Forwards[0].Host != 25432 {
 		t.Fatalf("PostgreSQL port = %d, want 25432", resolved.Nodes[0].Forwards[0].Host)
 	}
+	if resolved.Nodes[0].Forwards[0].RequestedHost != 15432 {
+		t.Fatalf("PostgreSQL requested port = %d, want 15432", resolved.Nodes[0].Forwards[0].RequestedHost)
+	}
 }
 
 func TestDataRootPrefersPersistedProjectMarker(t *testing.T) {
@@ -38,7 +42,7 @@ func TestDataRootPrefersPersistedProjectMarker(t *testing.T) {
 	if _, err := project.Create(workDir, persisted); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PIGLET_DATA_HOME", filepath.Join(root, "different-environment-root"))
+	t.Setenv("FARROW_DATA_HOME", filepath.Join(root, "different-environment-root"))
 	actual, err := (Manager{CWD: workDir}).dataRoot()
 	if err != nil || actual != persisted {
 		t.Fatalf("data root = %q, %v; want persisted %q", actual, err, persisted)
@@ -52,7 +56,7 @@ func TestPlanMaterializesConfiguredDataRootWithEnvironmentPrecedence(t *testing.
 		t.Fatal(err)
 	}
 	environmentRoot := filepath.Join(root, "environment-data")
-	t.Setenv("PIGLET_DATA_HOME", environmentRoot)
+	t.Setenv("FARROW_DATA_HOME", environmentRoot)
 	desired := spec.Quick(true, true)
 	desired.DataRoot = filepath.Join(root, "configured-data")
 	plan, err := (Manager{CWD: workDir}).PlanResolved(context.Background(), desired)
@@ -73,7 +77,7 @@ func TestConfiguredDataRootChangeRequiresMigration(t *testing.T) {
 	if _, err := project.Create(workDir, filepath.Join(root, "persisted-data")); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PIGLET_DATA_HOME", "")
+	t.Setenv("FARROW_DATA_HOME", "")
 	desired := spec.Quick(true, true)
 	desired.DataRoot = filepath.Join(root, "different-data")
 	_, err := (Manager{CWD: workDir}).PlanResolved(context.Background(), desired)
@@ -142,6 +146,7 @@ func TestPrivateUpCapabilityGateIsReadOnly(t *testing.T) {
 	workDir := t.TempDir()
 	missingRoot := filepath.Join(t.TempDir(), "not-installed")
 	leaseStore := lease.Store{Root: missingRoot, OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid()}
+	qemuRunner := &quickVersionRunner{result: execx.Result{Stdout: []byte("QEMU emulator version 99.0.0\n")}}
 	resolved := spec.Resolved{
 		Schema: 1, Name: "full", Image: "u24", Network: "private", SSHUser: "dba",
 		Private: &spec.PrivateNetwork{CIDR: "10.10.10.0/24", HostAddress: "10.10.10.1", DHCPEnd: "10.10.10.8"},
@@ -150,13 +155,16 @@ func TestPrivateUpCapabilityGateIsReadOnly(t *testing.T) {
 			{Name: "node-1", Address: "10.10.10.11", CPUs: 1, Memory: spec.GiB, RootDisk: 8 * spec.GiB},
 		},
 	}
-	_, err := (Manager{CWD: workDir, LeaseStore: &leaseStore}).UpResolvedWithPolicy(context.Background(), resolved, UpPolicy{})
+	_, err := (Manager{CWD: workDir, LeaseStore: &leaseStore, Runner: qemuRunner}).UpResolvedWithPolicy(context.Background(), resolved, UpPolicy{})
 	var capability *CapabilityError
 	if !errors.As(err, &capability) {
 		t.Fatalf("private up error = %T %v", err, err)
 	}
-	if _, err := os.Lstat(filepath.Join(workDir, ".piglet")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(workDir, ".farrow")); !os.IsNotExist(err) {
 		t.Fatalf("capability preflight mutated workspace: %v", err)
+	}
+	if qemuRunner.calls != 0 {
+		t.Fatalf("private capability rejection ran QEMU preflight %d times", qemuRunner.calls)
 	}
 }
 

@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/identity"
-	"github.com/pgsty/piglet/internal/lock"
-	"github.com/pgsty/piglet/internal/persistent"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/persistent"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func normalizedFilesystem(value string) string {

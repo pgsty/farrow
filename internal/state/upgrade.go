@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/lock"
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/project"
 )
 
 type NewerSchemaError struct {
@@ -125,13 +125,13 @@ func injectV1(data []byte, version string) ([]byte, int, error) {
 	if schema == 1 {
 		return append([]byte(nil), data...), schema, nil
 	}
-	if _, exists := object["piglet_version"]; exists {
-		return nil, 0, errors.New("schema-0 state unexpectedly contains piglet_version")
+	if _, exists := object["farrow_version"]; exists {
+		return nil, 0, errors.New("schema-0 state unexpectedly contains farrow_version")
 	}
 	schemaJSON, _ := json.Marshal(1)
 	versionJSON, _ := json.Marshal(version)
 	object["schema"] = schemaJSON
-	object["piglet_version"] = versionJSON
+	object["farrow_version"] = versionJSON
 	upgraded, err := json.MarshalIndent(object, "", "  ")
 	if err != nil {
 		return nil, 0, err

@@ -12,11 +12,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/network/subnet"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 const (
@@ -49,7 +49,7 @@ func validPhase(phase Phase) bool {
 
 type ProjectState struct {
 	Schema        int           `json:"schema"`
-	PigletVersion string        `json:"piglet_version"`
+	FarrowVersion string        `json:"farrow_version"`
 	ProjectID     string        `json:"project_id"`
 	SpecHash      string        `json:"spec_hash"`
 	Resolved      spec.Resolved `json:"resolved"`
@@ -64,12 +64,14 @@ type Image struct {
 }
 
 type DataDisk struct {
-	Name       string `json:"name"`
-	Path       string `json:"path"`
-	Serial     string `json:"serial"`
-	Size       int64  `json:"size"`
-	Mount      string `json:"mount"`
-	Persistent bool   `json:"persistent"`
+	Name                string `json:"name"`
+	Path                string `json:"path"`
+	Serial              string `json:"serial"`
+	Size                int64  `json:"size"`
+	Mount               string `json:"mount"`
+	Persistent          bool   `json:"persistent"`
+	RequestedFilesystem string `json:"requested_filesystem,omitempty"`
+	ActualFilesystem    string `json:"actual_filesystem,omitempty"`
 }
 
 type RuntimePaths struct {
@@ -87,7 +89,7 @@ type ProcessIdentity struct {
 
 type NodeState struct {
 	Schema        int             `json:"schema"`
-	PigletVersion string          `json:"piglet_version"`
+	FarrowVersion string          `json:"farrow_version"`
 	ProjectID     string          `json:"project_id"`
 	Node          string          `json:"node"`
 	VMUUID        string          `json:"vm_uuid"`
@@ -122,7 +124,7 @@ type ReconcileIntent struct {
 
 type Transaction struct {
 	Schema        int              `json:"schema"`
-	PigletVersion string           `json:"piglet_version"`
+	FarrowVersion string           `json:"farrow_version"`
 	OperationID   string           `json:"operation_id"`
 	ProjectID     string           `json:"project_id"`
 	Node          string           `json:"node"`
@@ -184,7 +186,7 @@ func validateProject(value ProjectState, expectedID string) error {
 	if value.Schema != ProjectSchema {
 		return fmt.Errorf("unsupported project state schema %d", value.Schema)
 	}
-	if value.PigletVersion == "" || value.ProjectID != expectedID || value.SpecHash == "" || value.UpdatedAt.IsZero() {
+	if value.FarrowVersion == "" || value.ProjectID != expectedID || value.SpecHash == "" || value.UpdatedAt.IsZero() {
 		return errors.New("project state version/identity/hash/time is invalid")
 	}
 	actualHash, err := spec.Hash(value.Resolved)
@@ -193,6 +195,13 @@ func validateProject(value ProjectState, expectedID string) error {
 	}
 	if actualHash != value.SpecHash {
 		return errors.New("project resolved spec hash mismatch")
+	}
+	for _, node := range value.Resolved.Nodes {
+		for _, forward := range node.Forwards {
+			if forward.RequestedHost != 0 && forward.RequestedHost == forward.Host {
+				return fmt.Errorf("project resolved forward %s:%d requested_host must differ from its materialized host port", forward.Bind, forward.Host)
+			}
+		}
 	}
 	if value.Resolved.Network == "private" {
 		if value.Resolved.Private == nil {
@@ -233,8 +242,18 @@ func validateNode(value NodeState, expectedID, expectedNode string) error {
 	if value.Schema != NodeSchema {
 		return fmt.Errorf("unsupported node state schema %d", value.Schema)
 	}
-	if value.PigletVersion == "" || value.ProjectID != expectedID || value.Node != expectedNode || value.VMUUID == "" || !validPhase(value.Phase) || value.Generation == 0 || value.SpecHash == "" || value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() {
+	if value.FarrowVersion == "" || value.ProjectID != expectedID || value.Node != expectedNode || value.VMUUID == "" || !validPhase(value.Phase) || value.Generation == 0 || value.SpecHash == "" || value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() {
 		return errors.New("node state version, identity, phase, generation, hash, or time is invalid")
+	}
+	for _, disk := range value.DataDisks {
+		requested := disk.RequestedFilesystem
+		if requested != "" && requested != "auto" && requested != "xfs" && requested != "ext4" {
+			return fmt.Errorf("data disk %s has invalid requested filesystem %q", disk.Name, requested)
+		}
+		actual := disk.ActualFilesystem
+		if actual != "" && actual != "xfs" && actual != "ext4" {
+			return fmt.Errorf("data disk %s has invalid actual filesystem %q", disk.Name, actual)
+		}
 	}
 	return nil
 }
@@ -269,7 +288,7 @@ func (s Store) ReadNode(name string) (NodeState, error) {
 }
 
 func validateTransaction(value Transaction, expectedID string) error {
-	if value.Schema != TransactionSchema || value.PigletVersion == "" || value.ProjectID != expectedID || value.OperationID == "" || value.Node == "" || !validPhase(value.From) || !validPhase(value.To) || value.StartedAt.IsZero() || value.UpdatedAt.IsZero() {
+	if value.Schema != TransactionSchema || value.FarrowVersion == "" || value.ProjectID != expectedID || value.OperationID == "" || value.Node == "" || !validPhase(value.From) || !validPhase(value.To) || value.StartedAt.IsZero() || value.UpdatedAt.IsZero() {
 		return errors.New("transaction schema, version, or fields are invalid")
 	}
 	if value.Reconcile != nil {

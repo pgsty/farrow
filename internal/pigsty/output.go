@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/pgsty/piglet/internal/fsutil"
+	"github.com/pgsty/farrow/internal/fsutil"
 )
 
 var (
@@ -38,10 +38,10 @@ type PublishResult struct {
 	Changed    bool
 }
 
-func markerPath(output string) string { return output + ".piglet.json" }
+func markerPath(output string) string { return output + ".farrow.json" }
 
 // Publish writes a mode-0600 inventory and ownership manifest. Existing
-// output is replaceable only when its strict marker proves Piglet ownership
+// output is replaceable only when its strict marker proves Farrow ownership
 // and its current digest still matches that marker.
 func Publish(output string, rendered Result, force bool) (PublishResult, error) {
 	if output == "" || !filepath.IsAbs(output) || filepath.Clean(output) != output {

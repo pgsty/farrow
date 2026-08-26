@@ -10,12 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/lock"
-	"github.com/pgsty/piglet/internal/persistent"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/persistent"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/state"
 	"golang.org/x/sys/unix"
 )
 

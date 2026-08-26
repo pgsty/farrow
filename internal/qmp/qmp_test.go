@@ -14,7 +14,7 @@ import (
 
 func startServer(t *testing.T, handler func(*json.Decoder, *json.Encoder) error) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "piglet-qmp-")
+	dir, err := os.MkdirTemp("/tmp", "farrow-qmp-")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,4 @@
-// Package subnet defines Piglet's one host-global private IPv4 /24 layout.
+// Package subnet defines Farrow's one host-global private IPv4 /24 layout.
 package subnet
 
 import (

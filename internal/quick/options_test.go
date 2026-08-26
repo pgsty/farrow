@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 func TestOptionsResolve(t *testing.T) {
@@ -31,14 +31,21 @@ func TestOptionsResolve(t *testing.T) {
 func TestDriftClassificationAndPortReuse(t *testing.T) {
 	t.Parallel()
 	existing := spec.Quick(true, true)
-	existing.Nodes[0].Forwards[0].Host = 25432
+	existing.Nodes[0].Forwards[0] = spec.WithMaterializedHost(existing.Nodes[0].Forwards[0], 25432)
 	desired := materializeExistingPorts(spec.Quick(true, true), existing)
 	if err := compareDesired(existing, desired); err != nil {
 		t.Fatalf("materialized port should be reused: %v", err)
 	}
-	desired.Nodes[0].CPUs = 4
-	err := compareDesired(existing, desired)
+	changedRequest := spec.Quick(true, true)
+	changedRequest.Nodes[0].Forwards[0].Host = 16432
+	changedRequest = materializeExistingPorts(changedRequest, existing)
+	err := compareDesired(existing, changedRequest)
 	var drift *DriftError
+	if !errors.As(err, &drift) || drift.Action != "restart" || changedRequest.Nodes[0].Forwards[0].Host != 16432 {
+		t.Fatalf("changed host request was hidden: desired=%#v drift=%#v err=%v", changedRequest.Nodes[0].Forwards[0], drift, err)
+	}
+	desired.Nodes[0].CPUs = 4
+	err = compareDesired(existing, desired)
 	if !errors.As(err, &drift) || drift.Action != "restart" {
 		t.Fatalf("CPU drift = %#v, %v", drift, err)
 	}
@@ -47,5 +54,21 @@ func TestDriftClassificationAndPortReuse(t *testing.T) {
 	err = compareDesired(existing, desired)
 	if !errors.As(err, &drift) || drift.Action != "recreate" {
 		t.Fatalf("image drift = %#v, %v", drift, err)
+	}
+}
+
+func TestLegacyRemappedForwardUsesMaterializedHostAsCompatibilityBaseline(t *testing.T) {
+	t.Parallel()
+	legacy := spec.Quick(true, true)
+	legacy.Nodes[0].Forwards[0].Host = 25432
+	unchangedOldRequest := materializeExistingPorts(spec.Quick(true, true), legacy)
+	if err := compareDesired(legacy, unchangedOldRequest); err == nil {
+		t.Fatal("legacy remap guessed an unavailable original request and hid drift")
+	}
+	explicitPersistedPort := spec.Quick(true, true)
+	explicitPersistedPort.Nodes[0].Forwards[0].Host = 25432
+	explicitPersistedPort = materializeExistingPorts(explicitPersistedPort, legacy)
+	if err := compareDesired(legacy, explicitPersistedPort); err != nil {
+		t.Fatalf("legacy materialized host was not accepted as compatibility baseline: %v", err)
 	}
 }

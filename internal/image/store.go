@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/lock"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/lock"
 )
 
 const (

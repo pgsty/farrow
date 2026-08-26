@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qemu"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qemu"
 )
 
 func testStore(t *testing.T) Store {
@@ -146,13 +146,13 @@ func TestConcurrentAcquireHasExactlyOneWinner(t *testing.T) {
 }
 
 func TestLeaseProcessHelper(t *testing.T) {
-	if os.Getenv("PIGLET_LEASE_PROCESS_HELPER") != "1" {
+	if os.Getenv("FARROW_LEASE_PROCESS_HELPER") != "1" {
 		return
 	}
-	root := os.Getenv("PIGLET_LEASE_PROCESS_ROOT")
-	projectID := os.Getenv("PIGLET_LEASE_PROCESS_PROJECT")
-	address := os.Getenv("PIGLET_LEASE_PROCESS_ADDRESS")
-	vmUUID := os.Getenv("PIGLET_LEASE_PROCESS_VM_UUID")
+	root := os.Getenv("FARROW_LEASE_PROCESS_ROOT")
+	projectID := os.Getenv("FARROW_LEASE_PROCESS_PROJECT")
+	address := os.Getenv("FARROW_LEASE_PROCESS_ADDRESS")
+	vmUUID := os.Getenv("FARROW_LEASE_PROCESS_VM_UUID")
 	desired := Lease{
 		ProjectID: projectID, CIDR: "10.10.10.0/24", HostAddress: "10.10.10.1", DHCPEnd: "10.10.10.8",
 		Nodes: []Node{{Name: "meta", Address: address, ManagementMAC: "02:11:22:33:44:55", PrivateMAC: "02:aa:bb:cc:dd:ee", VMUUID: vmUUID, Phase: Reserved}},
@@ -183,11 +183,11 @@ func TestCrossProcessAcquireHasOneWinner(t *testing.T) {
 	for index := 0; index < 2; index++ {
 		command := exec.Command(executable, "-test.run=^TestLeaseProcessHelper$")
 		command.Env = append(os.Environ(),
-			"PIGLET_LEASE_PROCESS_HELPER=1",
-			"PIGLET_LEASE_PROCESS_ROOT="+store.Root,
-			"PIGLET_LEASE_PROCESS_PROJECT="+projects[index],
-			"PIGLET_LEASE_PROCESS_ADDRESS="+addresses[index],
-			"PIGLET_LEASE_PROCESS_VM_UUID="+uuids[index],
+			"FARROW_LEASE_PROCESS_HELPER=1",
+			"FARROW_LEASE_PROCESS_ROOT="+store.Root,
+			"FARROW_LEASE_PROCESS_PROJECT="+projects[index],
+			"FARROW_LEASE_PROCESS_ADDRESS="+addresses[index],
+			"FARROW_LEASE_PROCESS_VM_UUID="+uuids[index],
 		)
 		if err := command.Start(); err != nil {
 			t.Fatal(err)
@@ -214,7 +214,7 @@ func TestCrossProcessAcquireHasOneWinner(t *testing.T) {
 }
 
 func preparedNode(node Node) Node {
-	runtimeDir := "/tmp/piglet-lease-meta"
+	runtimeDir := "/tmp/farrow-lease-meta"
 	node.Phase = Prepared
 	node.Runtime = RuntimePaths{Directory: runtimeDir, QMP: filepath.Join(runtimeDir, "qmp.sock"), PIDFile: filepath.Join(runtimeDir, "qemu.pid")}
 	node.Invocation = qemu.Invocation{Binary: "/usr/bin/qemu-system-aarch64", Args: []string{"-name", node.Name}}

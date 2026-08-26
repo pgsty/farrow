@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/execx"
+	"github.com/pgsty/farrow/internal/execx"
 )
 
 type fakeRunner struct {

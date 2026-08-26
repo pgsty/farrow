@@ -1,5 +1,5 @@
 // Package pigsty implements the narrow, audited integration boundary between
-// Piglet-owned VM profiles and Pigsty inventory templates.
+// Farrow-owned VM profiles and Pigsty inventory templates.
 package pigsty
 
 import (
@@ -17,8 +17,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pgsty/piglet/internal/network/subnet"
-	"github.com/pgsty/piglet/internal/profile"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/profile"
 	"go.yaml.in/yaml/v3"
 )
 

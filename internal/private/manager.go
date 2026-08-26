@@ -12,24 +12,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/diagnostics"
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/image"
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/lock"
-	netpreflight "github.com/pgsty/piglet/internal/network/preflight"
-	"github.com/pgsty/piglet/internal/network/subnet"
-	usernet "github.com/pgsty/piglet/internal/network/user"
-	"github.com/pgsty/piglet/internal/openssh"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qmp"
-	"github.com/pgsty/piglet/internal/quick"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
-	"github.com/pgsty/piglet/internal/vm"
+	"github.com/pgsty/farrow/internal/diagnostics"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/image"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/lock"
+	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	usernet "github.com/pgsty/farrow/internal/network/user"
+	"github.com/pgsty/farrow/internal/openssh"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/quick"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
+	"github.com/pgsty/farrow/internal/vm"
 )
 
 type ImageResolver func(context.Context, string) (image.Entry, string, image.Metadata, error)
@@ -51,7 +51,7 @@ func (e *NetworkPreflightError) Error() string {
 
 type Manager struct {
 	CWD                 string
-	PigletVersion       string
+	FarrowVersion       string
 	OperationID         string
 	Runner              execx.Runner
 	LeaseStore          *lease.Store
@@ -256,7 +256,7 @@ func (m Manager) openProject(create bool) (project.Project, error) {
 	}
 	opened, err := project.Open(cwd)
 	if err == nil {
-		if m.ConfiguredDataRoot != "" || os.Getenv("PIGLET_DATA_HOME") != "" {
+		if m.ConfiguredDataRoot != "" || os.Getenv("FARROW_DATA_HOME") != "" {
 			selected, selectErr := project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
 			if selectErr != nil {
 				return project.Project{}, selectErr
@@ -312,6 +312,26 @@ func cloneResolved(value spec.Resolved) spec.Resolved {
 		result.Nodes[index].Aliases = append([]string(nil), node.Aliases...)
 		result.Nodes[index].Disks = append([]spec.Disk(nil), node.Disks...)
 		result.Nodes[index].Forwards = append([]spec.Forward(nil), node.Forwards...)
+		result.Nodes[index].Shares = append([]spec.Share(nil), node.Shares...)
+	}
+	return result
+}
+
+// materializeExistingForwardPorts preserves the finite host-port choices that
+// were committed on first create. Without this normalization, a preferred
+// port collision makes the original YAML look like destructive drift forever.
+func materializeExistingForwardPorts(desired, existing spec.Resolved) spec.Resolved {
+	result := cloneResolved(desired)
+	existingNodes := make(map[string]spec.Node, len(existing.Nodes))
+	for _, node := range existing.Nodes {
+		existingNodes[node.Name] = node
+	}
+	for nodeIndex := range result.Nodes {
+		current, ok := existingNodes[result.Nodes[nodeIndex].Name]
+		if !ok {
+			continue
+		}
+		result.Nodes[nodeIndex].Forwards = spec.ReuseMaterializedForwardPorts(result.Nodes[nodeIndex].Forwards, current.Forwards)
 	}
 	return result
 }
@@ -440,12 +460,12 @@ func materializePortsWithProbe(value spec.Resolved, reserved map[uint16]struct{}
 		sshPorts[resolved.Nodes[index].Name] = port
 		for forwardIndex := range resolved.Nodes[index].Forwards {
 			forward := &resolved.Nodes[index].Forwards[forwardIndex]
-			port, err := usernet.Choose(forward.Host, available(forward.Bind))
+			port, err := usernet.Choose(spec.RequestedHostPort(*forward), available(forward.Bind))
 			if err != nil {
 				return spec.Resolved{}, nil, fmt.Errorf("allocate forward for %s: %w", resolved.Nodes[index].Name, err)
 			}
 			selected[port] = struct{}{}
-			forward.Host = port
+			*forward = spec.WithMaterializedHost(*forward, port)
 		}
 	}
 	return resolved, sshPorts, nil
@@ -496,7 +516,7 @@ func (m Manager) resolveOneImage(ctx context.Context, alias string) (image.Entry
 	if m.ResolveImage != nil {
 		return m.ResolveImage(ctx, alias)
 	}
-	resolver := quick.Manager{CWD: m.CWD, PigletVersion: m.PigletVersion, Runner: m.Runner, ConfiguredDataRoot: m.ConfiguredDataRoot}
+	resolver := quick.Manager{CWD: m.CWD, FarrowVersion: m.FarrowVersion, Runner: m.Runner, ConfiguredDataRoot: m.ConfiguredDataRoot}
 	return resolver.ResolveImage(ctx, alias)
 }
 
@@ -535,7 +555,7 @@ func (m Manager) ensureKeys(ctx context.Context, projectValue project.Project) (
 	return quick.EnsureProjectKeys(ctx, m.runner(), projectValue.Root)
 }
 
-func (m Manager) statusFor(ctx context.Context, projectValue project.Project, message string) (Status, error) {
+func (m Manager) statusForLocked(ctx context.Context, projectValue project.Project, message string) (Status, error) {
 	store := state.Store{Project: projectValue}
 	projectState, err := store.ReadProject()
 	if err != nil {
@@ -551,6 +571,9 @@ func (m Manager) statusFor(ctx context.Context, projectValue project.Project, me
 	selectedSet := nodeNameSet(selected)
 	result := Status{ProjectID: projectValue.Marker.ProjectID, OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message, Nodes: make([]NodeStatus, 0, len(projectState.Resolved.Nodes))}
 	lifecycle := vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}
+	nodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
+	convergenceCandidates := make([]state.NodeState, 0)
+	needsLeaseSync := false
 	for _, definition := range projectState.Resolved.Nodes {
 		node, err := store.ReadNode(definition.Name)
 		if err != nil {
@@ -559,16 +582,85 @@ func (m Manager) statusFor(ctx context.Context, projectValue project.Project, me
 		runtimeState := "inactive"
 		if node.Phase == state.Running {
 			identity := process.Identity{PID: node.Process.PID, Executable: node.Process.Executable, Started: node.Process.Started, ArgvHash: node.Process.ArgvHash}
-			if lifecycle.ValidateIdentity(ctx, node.Runtime.QMP, node.Node, node.VMUUID) != nil || !process.MatchesLive(ctx, m.runner(), identity, node.Invocation) {
-				return Status{}, fmt.Errorf("private node %s is recorded running but runtime identity does not match; repair is required", node.Node)
+			qmpErr := lifecycle.ValidateIdentity(ctx, node.Runtime.QMP, node.Node, node.VMUUID)
+			if err := ctx.Err(); err != nil {
+				return Status{}, err
 			}
-			runtimeState = "running"
+			processMatches := process.MatchesLive(ctx, m.runner(), identity, node.Invocation)
+			if err := ctx.Err(); err != nil {
+				return Status{}, err
+			}
+			switch {
+			case qmpErr == nil && processMatches:
+				runtimeState = "running"
+			case qmpErr == nil:
+				return Status{}, fmt.Errorf("private node %s has matching QMP but its recorded process identity does not match; repair is required", node.Node)
+			case errors.Is(qmpErr, vm.ErrQMPIdentityMismatch):
+				return Status{}, fmt.Errorf("private node %s has mismatched QMP identity; repair is required: %w", node.Node, qmpErr)
+			case processMatches:
+				return Status{}, fmt.Errorf("private node %s process identity matches but QMP is unavailable; repair is required", node.Node)
+			case !completePrivateRuntimeIdentity(node):
+				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete runtime identity; repair is required", node.Node)
+			case !completePrivateProcessIdentity(node):
+				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete process identity; repair is required", node.Node)
+			case process.Alive(node.Process.PID):
+				return Status{}, fmt.Errorf("private node %s recorded PID %d is alive but full process identity does not match; repair is required", node.Node, node.Process.PID)
+			default:
+				// ValidateIdentity alone cannot distinguish a wholly stale QMP
+				// socket from a live endpoint whose name responded but UUID query
+				// failed. Require the stricter runtime auditor to prove the whole
+				// QMP/process/pidfile identity dead before converging.
+				observation, auditErr := lease.RuntimeIdentityAuditor(m.runner(), time.Second)(ctx, privateLeaseNode(node))
+				if auditErr != nil {
+					return Status{}, fmt.Errorf("private node %s runtime death audit is inconclusive; repair is required: %w", node.Node, auditErr)
+				}
+				if observation.Live || observation.Authority != "dead" {
+					return Status{}, fmt.Errorf("private node %s runtime became live during death audit; repair is required: %s", node.Node, observation.Evidence)
+				}
+				// This is the safe self-halt case. Converge durable state without
+				// touching stale runtime files.
+				node.Phase = state.Stopped
+				node.Process = state.ProcessIdentity{}
+				node.UpdatedAt = time.Now().UTC()
+				convergenceCandidates = append(convergenceCandidates, node)
+				needsLeaseSync = true
+			}
 		}
+		needsLeaseSync = needsLeaseSync || node.Phase == state.Stopped
+		nodes = append(nodes, node)
 		if _, include := selectedSet[node.Node]; include {
 			result.Nodes = append(result.Nodes, NodeStatus{Name: node.Node, Address: definition.Address, State: node.Phase, Runtime: runtimeState, SSHHost: "127.0.0.1", SSHPort: node.SSHPort, ProcessID: node.Process.PID})
 		}
 	}
+	var leasePlan statusLeaseSyncPlan
+	if needsLeaseSync {
+		leasePlan, err = m.planStatusLeaseSyncLocked(ctx, projectValue, nodes)
+		if err != nil {
+			return Status{}, err
+		}
+	}
+	for _, node := range convergenceCandidates {
+		if err := store.WriteNode(node); err != nil {
+			return Status{}, err
+		}
+	}
+	if needsLeaseSync {
+		if err := applyStatusLeaseSyncLocked(ctx, projectValue.Marker.ProjectID, leasePlan); err != nil {
+			return Status{}, err
+		}
+	}
 	return result, nil
+}
+
+func (m Manager) statusFor(ctx context.Context, projectValue project.Project, message string) (Status, error) {
+	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	if err != nil {
+		return Status{}, err
+	}
+	defer projectLock.Release()
+	return m.statusForLocked(ctx, projectValue, message)
 }
 
 func (m Manager) Status(ctx context.Context) (Status, error) {
@@ -777,12 +869,13 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 			return Status{}, err
 		} else {
 			hadExistingState = true
+			requested = materializeExistingForwardPorts(requested, persisted.Resolved)
 			requestedHash, err := spec.Hash(requested)
 			if err != nil {
 				return Status{}, err
 			}
 			if persisted.SpecHash != requestedHash {
-				return Status{}, fmt.Errorf("%w; run piglet plan, then piglet recreate -f <config> --force", ErrRecreateRequired)
+				return Status{}, fmt.Errorf("%w; run farrow plan, then farrow recreate -f <config> --force", ErrRecreateRequired)
 			}
 			allRunning, allRunnable := true, true
 			for _, definition := range persisted.Resolved.Nodes {
@@ -805,7 +898,14 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 				reusableProject = &existing
 				requested = persisted.Resolved
 			} else if allRunning {
-				return m.statusFor(ctx, existing, "already running")
+				status, err := m.statusFor(ctx, existing, "already running")
+				if err != nil {
+					return Status{}, err
+				}
+				if statusNodesRunning(status) {
+					return status, nil
+				}
+				return m.startExisting(ctx, existing, persisted, profile, backend)
 			} else if allRunnable {
 				return m.startExisting(ctx, existing, persisted, profile, backend)
 			} else {
@@ -832,6 +932,11 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err != nil {
 		return Status{}, err
 	}
+	if selectedHasShares(requested, selected) {
+		if err := validatePrivateShareDeviceHelp(ctx, m.runner(), []string{qemuPath}); err != nil {
+			return Status{}, err
+		}
+	}
 	qemuImg, err := m.lookPath("qemu-img")
 	if err != nil {
 		return Status{}, err
@@ -848,6 +953,9 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		if err != nil {
 			return Status{}, err
 		}
+	}
+	if err := selectedShareSources(projectValue, requested, selected); err != nil {
+		return Status{}, err
 	}
 	if err := validatePrivatePersistentDesired(projectValue, requested); err != nil {
 		return Status{}, err
@@ -922,7 +1030,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		Profile: profile, QEMUBinary: qemuPath, Firmware: firmware, UseUEFI: boot == "uefi", Backend: backend,
 		Disks: disk.Manager{QEMUImg: qemuImg, Runner: m.runner()},
 	}
-	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: resolved.SSHUser}, SSHPath: sshPath, PrivateKey: privateKeyPath, KnownHosts: knownHosts, DarwinSocket: backend.DarwinSocket}
+	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: resolved.SSHUser}, Project: projectValue, Shares: shareSourcesByNode(resolved), SSHPath: sshPath, PrivateKey: privateKeyPath, KnownHosts: knownHosts, DarwinSocket: backend.DarwinSocket}
 	readyTimeout, err := m.readyTimeout(resolved)
 	if err != nil {
 		return Status{}, err
@@ -931,7 +1039,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if len(createNodes) != 0 {
 		startNodes = append([]string(nil), createNodes...)
 	}
-	controller := Controller{Project: projectValue, LeaseStore: m.leaseStore(), Prepare: prepare, Lifecycle: lifecycle, Concurrency: boundedConcurrency(len(resolved.Nodes)), ReadyTimeout: readyTimeout, NoWait: m.NoWait, CreateNodes: createNodes, StartNodes: startNodes, Version: m.PigletVersion}
+	controller := Controller{Project: projectValue, LeaseStore: m.leaseStore(), Prepare: prepare, Lifecycle: lifecycle, Concurrency: boundedConcurrency(len(resolved.Nodes)), ReadyTimeout: readyTimeout, NoWait: m.NoWait, CreateNodes: createNodes, StartNodes: startNodes, Version: m.FarrowVersion}
 	createResult, err := controller.CreateAndStart(ctx)
 	if err != nil {
 		if m.RollbackFailed {
@@ -992,12 +1100,22 @@ func (m Manager) startExisting(ctx context.Context, projectValue project.Project
 	if err != nil {
 		return Status{}, err
 	}
+	if err := selectedShareSources(projectValue, projectState.Resolved, selected); err != nil {
+		return Status{}, err
+	}
+	preStartStore := state.Store{Project: projectValue}
+	shareBinaries, err := selectedShareInvocationBinaries(preStartStore, projectState.Resolved, selected)
+	if err != nil {
+		return Status{}, err
+	}
+	if err := validatePrivateShareDeviceHelp(ctx, m.runner(), shareBinaries); err != nil {
+		return Status{}, err
+	}
 	selectedSet := nodeNameSet(selected)
 	if _, err := m.statusFor(ctx, projectValue, "pre-start identity audit"); err != nil {
 		return Status{}, err
 	}
 	startableDefinitions := make([]spec.Node, 0, len(projectState.Resolved.Nodes))
-	preStartStore := state.Store{Project: projectValue}
 	for _, definition := range projectState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
 			continue
@@ -1058,7 +1176,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue project.Project
 		return Status{}, err
 	}
 	keysDir := filepath.Join(projectValue.Root, "keys")
-	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}, SSHPath: sshPath, PrivateKey: filepath.Join(keysDir, "id_ed25519"), KnownHosts: filepath.Join(keysDir, "known_hosts"), DarwinSocket: backend.DarwinSocket}
+	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}, Project: projectValue, Shares: shareSourcesByNode(projectState.Resolved), SSHPath: sshPath, PrivateKey: filepath.Join(keysDir, "id_ed25519"), KnownHosts: filepath.Join(keysDir, "known_hosts"), DarwinSocket: backend.DarwinSocket}
 	names := make([]string, 0, len(projectState.Resolved.Nodes))
 	store := state.Store{Project: projectValue}
 	for _, definition := range projectState.Resolved.Nodes {
@@ -1079,7 +1197,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue project.Project
 		}
 	}
 	if len(names) == 0 {
-		return m.statusFor(ctx, projectValue, "already running")
+		return m.statusForLocked(ctx, projectValue, "already running")
 	}
 	readyTimeout, err := m.readyTimeout(projectState.Resolved)
 	if err != nil {
@@ -1092,7 +1210,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue project.Project
 	if failed := failedStartNames(outcomes); len(failed) > 0 {
 		return Status{}, &PartialError{Nodes: failed}
 	}
-	return m.statusFor(ctx, projectValue, "started private project")
+	return m.statusForLocked(ctx, projectValue, "started private project")
 }
 
 func failedStartNames(outcomes []StartOutcome) []string {
@@ -1178,7 +1296,7 @@ func (m Manager) Stop(ctx context.Context) (Status, error) {
 	if releaseLease {
 		message = "stopped private project and released lease"
 	}
-	return m.statusFor(ctx, projectValue, message)
+	return m.statusForLocked(ctx, projectValue, message)
 }
 
 func (m Manager) Restart(ctx context.Context) (Status, error) {
@@ -1195,6 +1313,20 @@ func (m Manager) Restart(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	if _, err := m.preflight(ctx, profile, projectState.Resolved); err != nil {
+		return Status{}, err
+	}
+	selected, err := selectedNodeNames(projectState.Resolved, m.Nodes)
+	if err != nil {
+		return Status{}, err
+	}
+	if err := selectedShareSources(projectValue, projectState.Resolved, selected); err != nil {
+		return Status{}, err
+	}
+	shareBinaries, err := selectedShareInvocationBinaries(state.Store{Project: projectValue}, projectState.Resolved, selected)
+	if err != nil {
+		return Status{}, err
+	}
+	if err := validatePrivateShareDeviceHelp(ctx, m.runner(), shareBinaries); err != nil {
 		return Status{}, err
 	}
 	if _, err := m.Stop(ctx); err != nil {
@@ -1254,6 +1386,12 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	if err != nil {
 		return LifecyclePlan{}, err
 	}
+	requested = materializeExistingForwardPorts(requested, projectState.Resolved)
+	hash, err = spec.Hash(requested)
+	if err != nil {
+		return LifecyclePlan{}, err
+	}
+	result.SpecHash = hash
 	if projectState.SpecHash != hash {
 		result.Action = "recreate"
 		result.Destructive = true

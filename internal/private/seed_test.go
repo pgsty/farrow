@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 func TestRenderSeedsPrivateContractAndKeyBoundary(t *testing.T) {
@@ -85,7 +85,7 @@ func TestSingleNodePrivateDoesNotReceiveLateralKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(files["meta"].UserData, []byte("PRIVATE KEY")) || bytes.Contains(files["meta"].UserData, []byte("piglet-install-control-ssh")) {
+	if bytes.Contains(files["meta"].UserData, []byte("PRIVATE KEY")) || bytes.Contains(files["meta"].UserData, []byte("farrow-install-control-ssh")) {
 		t.Fatal("single-node private guest received a lateral private key")
 	}
 }

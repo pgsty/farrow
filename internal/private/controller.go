@@ -9,9 +9,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/lock"
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/project"
 )
 
 type PartialError struct {
@@ -88,6 +88,9 @@ func failedCreateNodes(result CreateResult) []string {
 			failed[outcome.Node] = struct{}{}
 		}
 	}
+	for _, node := range result.Commit.Failed {
+		failed[node] = struct{}{}
+	}
 	for _, outcome := range result.Start {
 		if outcome.Error != "" || !outcome.Ready {
 			failed[outcome.Node] = struct{}{}
@@ -153,9 +156,18 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 		}
 	}
 	startNames := make([]string, 0, len(result.Commit.Nodes))
+	startAll := len(controller.StartNodes) == 0
 	selected := nodeNameSet(controller.StartNodes)
+	// Manager supplies the complete requested create set as StartNodes. A node
+	// that failed offline prepare is therefore still present in that selection,
+	// but it has no committed state and must not prevent successfully prepared
+	// peers from starting. Keep rejecting genuinely out-of-scope selections by
+	// removing only names that CommitPrepared classified as failed.
+	for _, node := range result.Commit.Failed {
+		delete(selected, node)
+	}
 	for _, node := range result.Commit.Nodes {
-		if len(selected) == 0 {
+		if startAll {
 			startNames = append(startNames, node.Node)
 		} else if _, include := selected[node.Node]; include {
 			startNames = append(startNames, node.Node)
@@ -165,13 +177,15 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 	if len(selected) != 0 {
 		return result, fmt.Errorf("private controller start selection contains nodes outside committed project")
 	}
-	result.Start, result.Lease, err = StartPrepared(ctx, StartConfig{
-		Project: controller.Project, LeaseStore: controller.LeaseStore, Lifecycle: controller.Lifecycle,
-		Nodes: startNames, Concurrency: controller.Concurrency, ReadyTimeout: controller.ReadyTimeout, NoWait: controller.NoWait,
-		SetupRuntime: controller.SetupRuntime,
-	})
-	if err != nil {
-		return result, err
+	if len(startNames) != 0 {
+		result.Start, result.Lease, err = StartPrepared(ctx, StartConfig{
+			Project: controller.Project, LeaseStore: controller.LeaseStore, Lifecycle: controller.Lifecycle,
+			Nodes: startNames, Concurrency: controller.Concurrency, ReadyTimeout: controller.ReadyTimeout, NoWait: controller.NoWait,
+			SetupRuntime: controller.SetupRuntime,
+		})
+		if err != nil {
+			return result, err
+		}
 	}
 	failed := failedCreateNodes(result)
 	if len(failed) > 0 {

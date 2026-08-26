@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/config"
+	"github.com/pgsty/farrow/internal/config"
 )
 
 func TestScaleChangesOnlyCPUAndMemory(t *testing.T) {

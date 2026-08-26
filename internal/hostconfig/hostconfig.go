@@ -19,9 +19,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/project"
 	"golang.org/x/sys/unix"
 )
 
@@ -29,7 +29,7 @@ const (
 	maxHostsBytes       = 1 << 20
 	ActionInstall       = "install"
 	ActionUninstall     = "uninstall"
-	InstalledHelperPath = "/opt/piglet/libexec/piglet-hosts-helper"
+	InstalledHelperPath = "/opt/farrow/libexec/farrow-hosts-helper"
 )
 
 // ExpectedHelperSHA256 is injected into packaged/main binaries after the
@@ -39,7 +39,7 @@ const (
 var ExpectedHelperSHA256 string
 
 var (
-	markerPattern = regexp.MustCompile(`^# piglet:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(begin|end)$`)
+	markerPattern = regexp.MustCompile(`^# farrow:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(begin|end)$`)
 	hashPattern   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	hostPattern   = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,251}[A-Za-z0-9])?$`)
 )
@@ -98,7 +98,7 @@ func digest(data []byte) string {
 }
 
 func markers(projectID string) (string, string) {
-	return "# piglet:" + projectID + ":begin", "# piglet:" + projectID + ":end"
+	return "# farrow:" + projectID + ":begin", "# farrow:" + projectID + ":end"
 }
 
 func parseBlocks(data []byte) ([]ownedBlock, error) {
@@ -122,26 +122,26 @@ func parseBlocks(data []byte) ([]ownedBlock, error) {
 			offset = len(data)
 		}
 		line := string(data[lineStart:lineEnd])
-		if !strings.Contains(line, "# piglet:") {
+		if !strings.Contains(line, "# farrow:") {
 			continue
 		}
 		match := markerPattern.FindStringSubmatch(line)
 		if match == nil {
-			return nil, fmt.Errorf("malformed Piglet hosts marker at byte %d", lineStart)
+			return nil, fmt.Errorf("malformed Farrow hosts marker at byte %d", lineStart)
 		}
 		projectID, kind := match[1], match[2]
 		if kind == "begin" {
 			if active != nil {
-				return nil, errors.New("nested Piglet hosts marker blocks are unsafe")
+				return nil, errors.New("nested Farrow hosts marker blocks are unsafe")
 			}
 			if _, exists := seen[projectID]; exists {
-				return nil, fmt.Errorf("duplicate Piglet hosts block for project %s", projectID)
+				return nil, fmt.Errorf("duplicate Farrow hosts block for project %s", projectID)
 			}
 			active = &ownedBlock{projectID: projectID, start: lineStart}
 			continue
 		}
 		if active == nil || active.projectID != projectID {
-			return nil, fmt.Errorf("unmatched Piglet hosts end marker for project %s", projectID)
+			return nil, fmt.Errorf("unmatched Farrow hosts end marker for project %s", projectID)
 		}
 		active.end = offset
 		blocks = append(blocks, *active)
@@ -149,7 +149,7 @@ func parseBlocks(data []byte) ([]ownedBlock, error) {
 		active = nil
 	}
 	if active != nil {
-		return nil, fmt.Errorf("unterminated Piglet hosts block for project %s", active.projectID)
+		return nil, fmt.Errorf("unterminated Farrow hosts block for project %s", active.projectID)
 	}
 	return blocks, nil
 }
@@ -391,7 +391,7 @@ func (e Executor) Execute(ctx context.Context, projectID, action string, entries
 	if helperErr != nil {
 		return Report{}, helperErr
 	}
-	staging, err := os.CreateTemp("", "piglet-hosts-stage-")
+	staging, err := os.CreateTemp("", "farrow-hosts-stage-")
 	if err != nil {
 		return Report{}, err
 	}
@@ -481,9 +481,9 @@ func installedHelperDigest(path string) (string, error) {
 func nativeLockPath() (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/private/etc/.piglet-hosts.lock", nil
+		return "/private/etc/.farrow-hosts.lock", nil
 	case "linux":
-		return "/etc/.piglet-hosts.lock", nil
+		return "/etc/.farrow-hosts.lock", nil
 	default:
 		return "", fmt.Errorf("hosts lock is unsupported on %s", runtime.GOOS)
 	}
@@ -623,7 +623,7 @@ func atomicReplace(target string, data []byte, mode os.FileMode, uid, gid int, e
 	if err != nil {
 		return err
 	}
-	temp, tempPath, err := createMetadataTemp(target, parent, ".piglet-hosts-apply-")
+	temp, tempPath, err := createMetadataTemp(target, parent, ".farrow-hosts-apply-")
 	if err != nil {
 		return err
 	}

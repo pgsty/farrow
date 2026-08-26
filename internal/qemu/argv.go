@@ -1,4 +1,4 @@
-// Package qemu builds the typed argv for Piglet's single QEMU backend.
+// Package qemu builds the typed argv for Farrow's single QEMU backend.
 package qemu
 
 import (
@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/pgsty/piglet/internal/platform"
+	"github.com/pgsty/farrow/internal/platform"
 )
 
 const MiB int64 = 1024 * 1024
@@ -41,6 +42,20 @@ type PrivateNetwork struct {
 	BridgeHelper string `json:"bridge_helper,omitempty"`
 }
 
+// Share is the guest-visible half of one host directory export. The host path
+// is deliberately absent: callers open it as a directory descriptor and QEMU
+// receives only the corresponding inherited-FD path.
+type Share struct {
+	Tag      string
+	Readonly bool
+}
+
+type InheritedFile struct {
+	FD   int    `json:"fd"`
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
 type Config struct {
 	Profile   platform.Profile
 	Binary    string
@@ -58,15 +73,24 @@ type Config struct {
 	MgmtMAC   string
 	Forwards  []Forward
 	Private   *PrivateNetwork
+	Shares    []Share
 	Detach    bool
 }
 
 type Invocation struct {
-	Binary string   `json:"binary"`
-	Args   []string `json:"args"`
+	Binary         string          `json:"binary"`
+	Args           []string        `json:"args"`
+	InheritedFiles []InheritedFile `json:"inherited_files,omitempty"`
 }
 
 func (i Invocation) UsesPrivateFD3() bool {
+	for _, file := range i.InheritedFiles {
+		if file.Kind == "private-network" && file.FD == 3 {
+			return true
+		}
+	}
+	// Compatibility with node state written before inherited files became a
+	// typed part of the invocation.
 	for index := 0; index+1 < len(i.Args); index++ {
 		if i.Args[index] == "-netdev" && i.Args[index+1] == "socket,id=private,fd=3" {
 			return true
@@ -75,9 +99,20 @@ func (i Invocation) UsesPrivateFD3() bool {
 	return false
 }
 
+func (i Invocation) ShareFiles() []InheritedFile {
+	result := make([]InheritedFile, 0, len(i.InheritedFiles))
+	for _, file := range i.InheritedFiles {
+		if file.Kind == "share" {
+			result = append(result, file)
+		}
+	}
+	return result
+}
+
 var (
-	namePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-	uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+	namePattern     = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	uuidPattern     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+	shareTagPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
 )
 
 func validateAbsolute(label, path string) error {
@@ -164,9 +199,12 @@ func validate(config Config) error {
 		if forward.Host == 0 || forward.Guest == 0 {
 			return errors.New("forward ports must be non-zero")
 		}
-		ip := net.ParseIP(forward.Bind)
-		if ip == nil {
+		address, err := netip.ParseAddr(forward.Bind)
+		if err != nil {
 			return fmt.Errorf("invalid forward bind address %q", forward.Bind)
+		}
+		if !address.Is4() {
+			return fmt.Errorf("v1 forward bind address %q must be IPv4", forward.Bind)
 		}
 		key := net.JoinHostPort(forward.Bind, strconv.Itoa(int(forward.Host)))
 		if _, ok := seenHost[key]; ok {
@@ -206,8 +244,8 @@ func validate(config Config) error {
 		} else if hasFD && config.Private.FD != 3 {
 			return fmt.Errorf("private inherited FD must be 3, got %d", config.Private.FD)
 		} else if hasBridge {
-			if config.Private.Bridge != "piglet0" {
-				return fmt.Errorf("v1 private bridge must be piglet0, got %q", config.Private.Bridge)
+			if config.Private.Bridge != "farrow0" {
+				return fmt.Errorf("v1 private bridge must be farrow0, got %q", config.Private.Bridge)
 			}
 			if err := validateAbsolute("qemu bridge helper", config.Private.BridgeHelper); err != nil {
 				return err
@@ -216,6 +254,22 @@ func validate(config Config) error {
 				return errors.New("qemu bridge helper path containing comma is unsupported")
 			}
 		}
+	}
+	if len(config.Shares) > 8 {
+		return errors.New("QEMU supports at most 8 host shares per node")
+	}
+	if len(config.Shares) != 0 && config.Profile.Machine != "q35" && config.Profile.Machine != "virt" {
+		return fmt.Errorf("QEMU host shares require the non-hotpluggable pcie.0 root bus, not machine %q", config.Profile.Machine)
+	}
+	seenTags := make(map[string]struct{}, len(config.Shares))
+	for index, share := range config.Shares {
+		if !shareTagPattern.MatchString(share.Tag) {
+			return fmt.Errorf("invalid QEMU share %d tag %q", index, share.Tag)
+		}
+		if _, duplicate := seenTags[share.Tag]; duplicate {
+			return fmt.Errorf("duplicate QEMU share tag %q", share.Tag)
+		}
+		seenTags[share.Tag] = struct{}{}
 	}
 	return nil
 }
@@ -267,6 +321,7 @@ func Build(config Config) (Invocation, error) {
 		"-pidfile", config.PIDFile,
 		"-serial", "file:" + config.SerialLog,
 	}
+	var inheritedFiles []InheritedFile
 	if config.Detach {
 		args = append(args, "-daemonize")
 	}
@@ -313,6 +368,7 @@ func Build(config Config) (Invocation, error) {
 			privateNetdev = fmt.Sprintf("stream,id=private,server=off,addr.type=unix,addr.path=%s,reconnect-ms=%d", config.Private.StreamSocket, config.Private.ReconnectMS)
 		} else if config.Private.FD != 0 {
 			privateNetdev = fmt.Sprintf("socket,id=private,fd=%d", config.Private.FD)
+			inheritedFiles = append(inheritedFiles, InheritedFile{FD: config.Private.FD, Kind: "private-network", ID: "private"})
 		} else {
 			privateNetdev = fmt.Sprintf("bridge,id=private,br=%s,helper=%s", config.Private.Bridge, config.Private.BridgeHelper)
 		}
@@ -321,5 +377,29 @@ func Build(config Config) (Invocation, error) {
 			"-device", "virtio-net-pci,netdev=private,mac="+strings.ToLower(config.Private.MAC),
 		)
 	}
-	return Invocation{Binary: config.Binary, Args: args}, nil
+	shareFD := 3
+	if config.Private != nil && config.Private.FD == 3 {
+		shareFD = 4
+	}
+	for index, share := range config.Shares {
+		id := "share" + strconv.Itoa(index)
+		fdPath := "/proc/self/fd/" + strconv.Itoa(shareFD)
+		if config.Profile.OS == "darwin" {
+			fdPath = "/dev/fd/" + strconv.Itoa(shareFD)
+		}
+		fsdev := fmt.Sprintf("local,id=%s,path=%s,security_model=mapped-xattr,multidevs=remap,fmode=0600,dmode=0700", id, fdPath)
+		if share.Readonly {
+			fsdev += ",readonly=on"
+		}
+		args = append(args,
+			"-fsdev", fsdev,
+			// Security invariant: pcie.0 on both supported machines is a
+			// cold-plug-only root bus. Do not move 9p behind a hotpluggable
+			// root port; guest-triggered device eject has caused 9p UAFs.
+			"-device", fmt.Sprintf("virtio-9p-pci,id=%sdev,bus=pcie.0,fsdev=%s,mount_tag=%s", id, id, share.Tag),
+		)
+		inheritedFiles = append(inheritedFiles, InheritedFile{FD: shareFD, Kind: "share", ID: share.Tag})
+		shareFD++
+	}
+	return Invocation{Binary: config.Binary, Args: args, InheritedFiles: inheritedFiles}, nil
 }

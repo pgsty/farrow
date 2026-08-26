@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"sort"
 
-	"github.com/pgsty/piglet/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/network/subnet"
 )
 
 type Purpose string
@@ -129,7 +129,7 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 	installed := snapshot.Installation.Status != "" && snapshot.Installation.Status != "absent"
 	installedExact := installed && snapshot.Installation.CIDR == request.Layout.CIDR()
 	if snapshot.Installation.Status == "partial" || snapshot.Installation.Status == "invalid" {
-		add(&report, Finding{Code: "installation.integrity", Severity: Error, Class: Integrity, Evidence: snapshot.Installation.Problem, Fix: "inspect the exact Piglet ownership manifest; do not adopt or broadly delete unknown paths"})
+		add(&report, Finding{Code: "installation.integrity", Severity: Error, Class: Integrity, Evidence: snapshot.Installation.Problem, Fix: "inspect the exact Farrow ownership manifest; do not adopt or broadly delete unknown paths"})
 	} else if installed {
 		if snapshot.Installation.CIDR != request.Layout.CIDR() {
 			add(&report, Finding{Code: "installation.network_mismatch", Severity: Error, Class: State, Evidence: fmt.Sprintf("installed=%s requested=%s", snapshot.Installation.CIDR, request.Layout.CIDR()), Fix: "stop all private projects, uninstall the owned network, then install the requested global /24"})
@@ -138,7 +138,7 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 			add(&report, Finding{Code: "installation.not_ready", Severity: Error, Class: Capability, Evidence: snapshot.Installation.Problem, Fix: "repair or reinstall the owned backend; a listening socket without the host address/route is not ready"})
 		}
 	} else if request.Purpose == Use {
-		add(&report, Finding{Code: "installation.absent", Severity: Error, Class: Capability, Evidence: "private network backend is not installed", Fix: "run piglet network preflight, then network install after reviewing its privileged plan"})
+		add(&report, Finding{Code: "installation.absent", Severity: Error, Class: Capability, Evidence: "private network backend is not installed", Fix: "run farrow network preflight, then network install after reviewing its privileged plan"})
 	} else if request.Purpose == Inspect {
 		add(&report, Finding{Code: "installation.absent", Severity: Warning, Evidence: "private network backend is not installed; the requested subnet can still be checked for eligibility"})
 	}

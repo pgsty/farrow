@@ -6,9 +6,9 @@ import (
 	"net"
 	"strings"
 
-	"github.com/pgsty/piglet/internal/cloudinit"
-	"github.com/pgsty/piglet/internal/identity"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 type SeedInput struct {
@@ -96,7 +96,7 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 			PublicKey: strings.TrimSpace(input.PublicKey), PrivateKey: privateKey,
 			Control: nodeSpec.Control, MgmtMAC: nodePlan.ManagementMAC,
 			Private: &cloudinit.PrivateNetwork{MAC: nodePlan.PrivateMAC, Address: nodeSpec.Address, Prefix: prefix, HostAddress: resolved.Private.HostAddress},
-			Hosts:   hosts, Disks: disks,
+			Hosts:   hosts, Disks: disks, Shares: privateCloudShares(nodeSpec.Shares),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("render private seed for %s: %w", nodeSpec.Name, err)

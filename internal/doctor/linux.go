@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	linuxnet "github.com/pgsty/piglet/internal/network/linux"
+	linuxnet "github.com/pgsty/farrow/internal/network/linux"
 )
 
 func parseLinuxFamily(content string) linuxnet.Family {
@@ -54,19 +54,19 @@ func helperCheck(pathname string, family linuxnet.Family) Check {
 		if mode == 0o4750 && groupName == "kvm" {
 			return Check{Name: "bridge-helper", Status: OK, Evidence: fmt.Sprintf("%s root:%s mode=%04o", pathname, groupName, mode)}
 		}
-		return Check{Name: "bridge-helper", Status: Warn, Evidence: fmt.Sprintf("%s root:%s mode=%04o requires reversible dpkg-statoverride", pathname, groupName, mode), Fix: "network install must prove no non-Piglet dpkg-statoverride before applying root:kvm 4750"}
+		return Check{Name: "bridge-helper", Status: Warn, Evidence: fmt.Sprintf("%s root:%s mode=%04o requires reversible dpkg-statoverride", pathname, groupName, mode), Fix: "network install must prove no non-Farrow dpkg-statoverride before applying root:kvm 4750"}
 	case linuxnet.RPM:
 		if mode == 0o4755 {
 			return Check{Name: "bridge-helper", Status: Warn, Evidence: fmt.Sprintf("%s root:%s mode=4755 permits every local user to request an allowed bridge attach", pathname, groupName)}
 		}
-		return Check{Name: "bridge-helper", Status: Error, Evidence: fmt.Sprintf("unsupported RPM helper mode %04o", mode), Fix: "restore the distribution helper; Piglet does not mutate RPM helper permissions"}
+		return Check{Name: "bridge-helper", Status: Error, Evidence: fmt.Sprintf("unsupported RPM helper mode %04o", mode), Fix: "restore the distribution helper; Farrow does not mutate RPM helper permissions"}
 	default:
 		return Check{Name: "bridge-helper", Status: Error, Evidence: "unsupported Linux distribution family for private helper policy"}
 	}
 }
 
 func protectedLinuxStateDir() bool {
-	info, err := os.Lstat("/var/lib/piglet")
+	info, err := os.Lstat("/var/lib/farrow")
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
 		return false
 	}
@@ -125,13 +125,13 @@ func (p Probe) linuxPrivateChecks(ctx context.Context) []Check {
 		bridgeResult, bridgeErr := p.runner().Run(ctx, ipBinary, "-json", "link", "show", "dev", linuxnet.BridgeName)
 		bridgeExists := bridgeErr == nil && len(strings.TrimSpace(string(bridgeResult.Stdout))) > 2
 		if bridgeExists && !stateExists {
-			checks = append(checks, Check{Name: "private-bridge", Status: Error, Evidence: "piglet0 exists without the root-owned Piglet manifest", Fix: "do not adopt or overwrite the existing bridge"})
+			checks = append(checks, Check{Name: "private-bridge", Status: Error, Evidence: "farrow0 exists without the root-owned Farrow manifest", Fix: "do not adopt or overwrite the existing bridge"})
 		} else if bridgeExists && stateProtected {
-			checks = append(checks, Check{Name: "private-bridge", Status: Warn, Evidence: "piglet0 exists and its mode-0700 ownership state is intentionally not inspectable by this user", Fix: "run the same read-only status command as root to verify network.json metadata"})
+			checks = append(checks, Check{Name: "private-bridge", Status: Warn, Evidence: "farrow0 exists and its mode-0700 ownership state is intentionally not inspectable by this user", Fix: "run the same read-only status command as root to verify network.json metadata"})
 		} else if bridgeExists {
-			checks = append(checks, Check{Name: "private-bridge", Status: OK, Evidence: "piglet0 and ownership manifest exist; install/status must verify exact metadata"})
+			checks = append(checks, Check{Name: "private-bridge", Status: OK, Evidence: "farrow0 and ownership manifest exist; install/status must verify exact metadata"})
 		} else {
-			checks = append(checks, Check{Name: "private-bridge", Status: OK, Evidence: "piglet0 is absent"})
+			checks = append(checks, Check{Name: "private-bridge", Status: OK, Evidence: "farrow0 is absent"})
 		}
 	}
 	return checks

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qmp"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 type ListedNode struct {

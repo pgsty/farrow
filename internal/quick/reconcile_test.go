@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/cloudinit"
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 type reconcileRunner struct {
@@ -93,7 +93,7 @@ func newReconcileFixture(t *testing.T) reconcileFixture {
 	}
 	now := time.Now().UTC()
 	projectState := state.ProjectState{
-		Schema: state.ProjectSchema, PigletVersion: "test", ProjectID: projectValue.Marker.ProjectID,
+		Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID,
 		SpecHash: hash, Resolved: resolved, UpdatedAt: now,
 	}
 	store := state.Store{Project: projectValue}
@@ -121,7 +121,7 @@ func newReconcileFixture(t *testing.T) reconcileFixture {
 		t.Fatal(err)
 	}
 	node := state.NodeState{
-		Schema: state.NodeSchema, PigletVersion: "test", ProjectID: projectValue.Marker.ProjectID,
+		Schema: state.NodeSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID,
 		Node: nodeName, VMUUID: vmUUID, Phase: state.Stopped, Generation: 1, SpecHash: hash,
 		Image:    state.Image{Alias: "u24", Release: "test", Digest: "digest", VirtualSize: 1},
 		RootDisk: rootDisk, DataDisks: dataState, Seed: filepath.Join(nodeDir, "seed.iso"), NVRAM: nvram,
@@ -149,7 +149,7 @@ func newReconcileFixture(t *testing.T) reconcileFixture {
 	}
 	runner := &reconcileRunner{sizes: map[string]int64{rootDisk: resolved.Nodes[0].RootDisk, dataDisk: resolved.Nodes[0].Disks[0].Size}}
 	return reconcileFixture{
-		manager: Manager{CWD: workDir, PigletVersion: "test-next", OperationID: operationID, QEMUImg: "/fake/qemu-img", Runner: runner},
+		manager: Manager{CWD: workDir, FarrowVersion: "test-next", OperationID: operationID, QEMUImg: "/fake/qemu-img", Runner: runner},
 		store:   store, projectState: projectState, node: node, runner: runner,
 	}
 }
@@ -180,6 +180,30 @@ func TestReconcileAppliesOfflineRootAndDataGrowth(t *testing.T) {
 	}
 	if _, err := fixture.store.ReadTransaction(nodeName); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("reconcile transaction remains: %v", err)
+	}
+}
+
+func TestReconcileSeedFilesIncludeDesiredShares(t *testing.T) {
+	fixture := newReconcileFixture(t)
+	desired := fixture.projectState
+	share := spec.Share{Host: "/host/source", Guest: "/src", Readonly: true}
+	desired.Resolved.Nodes[0].Shares = []spec.Share{share}
+	specHash, err := spec.Hash(desired.Resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired.SpecHash = specHash
+	node := fixture.node
+	node.Generation++
+	node.SpecHash = specHash
+	files, err := reconcileSeedFiles(fixture.store.Project, desired, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userData := string(files.UserData)
+	want := spec.ShareTag(share) + " /src 9p version=9p2000.L,trans=virtio,cache=none,msize=262144,access=any,nofail,nodev,nosuid,ro 0 0"
+	if !strings.Contains(userData, want) {
+		t.Fatalf("reconcile seed omitted desired share mount %q", want)
 	}
 }
 

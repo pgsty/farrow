@@ -2,9 +2,13 @@ package quick
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 func TestResolvedSSHUserAcceptsCustomAndFallsBackForOldState(t *testing.T) {
@@ -88,5 +92,26 @@ func TestStatusUsesResolvedSSHUser(t *testing.T) {
 				t.Fatalf("status SSH user = %q, want %q", status.SSHUser, test.want)
 			}
 		})
+	}
+}
+
+func TestConnectionLockedRequiresAndReusesExclusiveProjectLock(t *testing.T) {
+	fixture := newReconcileFixture(t)
+	if _, err := fixture.manager.ConnectionLocked(context.Background(), fixture.store.Project, nil); err == nil || !strings.Contains(err.Error(), "exclusive project lock") {
+		t.Fatalf("missing token error = %v", err)
+	}
+	projectLock, err := lock.Acquire(context.Background(), filepath.Join(fixture.store.Project.Root, "project.lock"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer projectLock.Release()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = fixture.manager.ConnectionLocked(ctx, fixture.store.Project, projectLock)
+	if err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Fatalf("locked snapshot error = %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("locked helper attempted to reacquire its own project lock: %v", ctx.Err())
 	}
 }

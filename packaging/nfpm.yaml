@@ -1,23 +1,23 @@
-name: piglet
+name: farrow
 arch: ${NFPM_ARCH}
 platform: linux
-version: ${PIGLET_VERSION}
+version: ${FARROW_VERSION}
 release: "1"
 section: utils
 priority: optional
 maintainer: Pigsty <repo@pigsty.cc>
 vendor: Pigsty
-homepage: https://github.com/pgsty/piglet
+homepage: https://github.com/pgsty/farrow
 license: Apache-2.0
 description: |-
   Native Go/QEMU runtime for Pigsty development virtual machines.
-  Piglet provides unprivileged quick VMs and an explicitly installed private
+  Farrow provides unprivileged quick VMs and an explicitly installed private
   network for fixed-IP multi-node labs.
 
 overrides:
   deb:
     recommends:
-      - ${PIGLET_DEB_QEMU}
+      - ${FARROW_DEB_QEMU}
       - qemu-utils
       - openssh-client
       - iproute2
@@ -29,125 +29,131 @@ overrides:
       - iproute
 
 contents:
-  - dst: /opt/piglet
+  - dst: /opt/farrow
     type: dir
     packager: rpm
     file_info:
       owner: root
       group: root
       mode: 0755
-  - dst: /opt/piglet/libexec
+  - dst: /opt/farrow/libexec
     type: dir
     packager: rpm
     file_info:
       owner: root
       group: root
       mode: 0755
-  - dst: /usr/share/doc/piglet
+  - dst: /usr/share/doc/farrow
     type: dir
     packager: rpm
     file_info:
       owner: root
       group: root
       mode: 0755
-  - dst: /usr/share/doc/piglet/licenses
+  - dst: /usr/share/doc/farrow/licenses
     type: dir
     packager: rpm
     file_info:
       owner: root
       group: root
       mode: 0755
-  - dst: /usr/share/piglet
+  - dst: /usr/share/farrow
     type: dir
     packager: rpm
     file_info:
       owner: root
       group: root
       mode: 0755
-  - dst: /usr/share/piglet/schemas
+  - dst: /usr/share/farrow/schemas
     type: dir
     packager: rpm
     file_info:
       owner: root
       group: root
       mode: 0755
-  - src: ${PIGLET_PAYLOAD}/usr/bin/piglet
-    dst: /usr/bin/piglet
+  - src: ${FARROW_PAYLOAD}/usr/bin/farrow
+    dst: /usr/bin/farrow
     expand: true
     file_info:
       owner: root
       group: root
       mode: 0755
-  - src: ${PIGLET_PAYLOAD}/opt/piglet/libexec/piglet-hosts-helper
-    dst: /opt/piglet/libexec/piglet-hosts-helper
+  - src: ${FARROW_PAYLOAD}/opt/farrow/libexec/farrow-hosts-helper
+    dst: /opt/farrow/libexec/farrow-hosts-helper
     expand: true
     file_info:
       owner: root
       group: root
       mode: 0755
-  - src: ${PIGLET_PAYLOAD}/usr/bin/pigsty-vm
+  - src: ${FARROW_PAYLOAD}/usr/bin/pigsty-vm
     dst: /usr/bin/pigsty-vm
     expand: true
     file_info:
       owner: root
       group: root
       mode: 0755
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/BUILD_INFO.json
-    dst: /usr/share/doc/piglet/BUILD_INFO.json
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/BUILD_INFO.json
+    dst: /usr/share/doc/farrow/BUILD_INFO.json
     expand: true
     file_info:
       owner: root
       group: root
       mode: 0644
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/LICENSE
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/LICENSE
     expand: true
-    dst: /usr/share/doc/piglet/LICENSE
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/README.md
+    dst: /usr/share/doc/farrow/LICENSE
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/README.md
     expand: true
-    dst: /usr/share/doc/piglet/README.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/THIRD_PARTY_LICENSES.md
+    dst: /usr/share/doc/farrow/README.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/THIRD_PARTY_LICENSES.md
     expand: true
-    dst: /usr/share/doc/piglet/THIRD_PARTY_LICENSES.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/ARCHITECTURE.md
+    dst: /usr/share/doc/farrow/THIRD_PARTY_LICENSES.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/architecture.md
     expand: true
-    dst: /usr/share/doc/piglet/ARCHITECTURE.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/IMAGE_CONTRACT.md
+    dst: /usr/share/doc/farrow/docs/architecture.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/cli.md
     expand: true
-    dst: /usr/share/doc/piglet/IMAGE_CONTRACT.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/NETWORKING.md
+    dst: /usr/share/doc/farrow/docs/cli.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/config.md
     expand: true
-    dst: /usr/share/doc/piglet/NETWORKING.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/SECURITY.md
+    dst: /usr/share/doc/farrow/docs/config.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/development.md
     expand: true
-    dst: /usr/share/doc/piglet/SECURITY.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/TROUBLESHOOTING.md
+    dst: /usr/share/doc/farrow/docs/development.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/images.md
     expand: true
-    dst: /usr/share/doc/piglet/TROUBLESHOOTING.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/MIGRATION.md
+    dst: /usr/share/doc/farrow/docs/images.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/networking.md
     expand: true
-    dst: /usr/share/doc/piglet/MIGRATION.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/INSTALL.md
+    dst: /usr/share/doc/farrow/docs/networking.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/phase-2.md
     expand: true
-    dst: /usr/share/doc/piglet/INSTALL.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/RELEASE.md
+    dst: /usr/share/doc/farrow/docs/phase-2.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/pigsty.md
     expand: true
-    dst: /usr/share/doc/piglet/RELEASE.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/TESTING.md
+    dst: /usr/share/doc/farrow/docs/pigsty.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/security.md
     expand: true
-    dst: /usr/share/doc/piglet/TESTING.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/UPGRADE.md
+    dst: /usr/share/doc/farrow/docs/security.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/status.md
     expand: true
-    dst: /usr/share/doc/piglet/UPGRADE.md
-  - src: ${PIGLET_PAYLOAD}/usr/share/doc/piglet/licenses/*
+    dst: /usr/share/doc/farrow/docs/status.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/troubleshooting.md
     expand: true
-    dst: /usr/share/doc/piglet/licenses/
-  - src: ${PIGLET_PAYLOAD}/usr/share/piglet/schemas/piglet-v1.schema.json
+    dst: /usr/share/doc/farrow/docs/troubleshooting.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/licenses/*
     expand: true
-    dst: /usr/share/piglet/schemas/piglet-v1.schema.json
+    dst: /usr/share/doc/farrow/licenses/
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/tests/e2e/README.md
+    expand: true
+    dst: /usr/share/doc/farrow/tests/e2e/README.md
+  - src: ${FARROW_PAYLOAD}/usr/share/farrow/schemas/farrow-v1.schema.json
+    expand: true
+    dst: /usr/share/farrow/schemas/farrow-v1.schema.json
 
 rpm:
   summary: Native Go/QEMU runtime for Pigsty development VMs
 
 deb:
   fields:
-    Bugs: https://github.com/pgsty/piglet/issues
+    Bugs: https://github.com/pgsty/farrow/issues

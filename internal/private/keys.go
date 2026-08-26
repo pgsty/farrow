@@ -3,7 +3,7 @@ package private
 import (
 	"context"
 
-	"github.com/pgsty/piglet/internal/quick"
+	"github.com/pgsty/farrow/internal/quick"
 )
 
 type KeyPurgeAction = quick.KeyPurgeAction

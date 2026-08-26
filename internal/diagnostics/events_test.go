@@ -20,7 +20,7 @@ func TestAppendEventConcurrentAtomicAndRedacted(t *testing.T) {
 		t.Fatal(err)
 	}
 	pathname := filepath.Join(directory, "events.jsonl")
-	canary := "PIGLET_SECRET_CANARY_938ca270"
+	canary := "FARROW_SECRET_CANARY_938ca270"
 	const count = 32
 	var wait sync.WaitGroup
 	errorsFound := make(chan error, count)
@@ -79,7 +79,7 @@ func TestAppendQEMULogRedactsAndBoundsIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	pathname := filepath.Join(directory, "qemu.log")
-	canary := "PIGLET_SECRET_CANARY_2f78ae0e"
+	canary := "FARROW_SECRET_CANARY_2f78ae0e"
 	record := QEMULogRecord{
 		Schema: 1, Time: time.Now().UTC(), Level: "error", ProjectID: "12345678-project",
 		Node: "meta", OperationID: "operation-12345678", Action: "launch",

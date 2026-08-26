@@ -44,8 +44,8 @@ func TestInstallIdempotentAndRemovePreservesUserConfig(t *testing.T) {
 		t.Fatalf("fragment = %s", fragment)
 	}
 	installedConfig, _ := os.ReadFile(configPath)
-	if strings.Index(string(installedConfig), "# piglet:") > strings.Index(string(installedConfig), "Host user-owned") {
-		t.Fatalf("Piglet Include was placed inside a user Host stanza:\n%s", installedConfig)
+	if strings.Index(string(installedConfig), "# farrow:") > strings.Index(string(installedConfig), "Host user-owned") {
+		t.Fatalf("Farrow Include was placed inside a user Host stanza:\n%s", installedConfig)
 	}
 	if ssh, err := exec.LookPath("ssh"); err == nil {
 		effective, err := exec.Command(ssh, "-G", "-F", configPath, "lab-meta").CombinedOutput()
@@ -145,7 +145,7 @@ func TestInstallRefusesMalformedOwnedInclude(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := Entry{ProjectID: "12345678-project", Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known")}
-	marker := "# piglet:" + entry.ProjectID + ":include\n"
+	marker := "# farrow:" + entry.ProjectID + ":include\n"
 	if err := os.WriteFile(filepath.Join(sshDir, "config"), []byte(marker+"Host unrelated\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestConcurrentDifferentFragmentsPreserveBothIncludes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		marker := "# piglet:" + entry.ProjectID + ":include"
+		marker := "# farrow:" + entry.ProjectID + ":include"
 		include := "Include \"" + filepath.Join(home, ".ssh", entry.Name+"_config") + "\""
 		if strings.Count(string(config), marker) != 1 || strings.Count(string(config), include) != 1 {
 			t.Fatalf("config lost concurrent block %s:\n%s", entry.Name, config)
@@ -247,7 +247,7 @@ func TestConcurrentSameFragmentNeverMixesProjectOwnership(t *testing.T) {
 	}
 	fragment, _ := os.ReadFile(filepath.Join(home, ".ssh", "lab_config"))
 	config, _ := os.ReadFile(filepath.Join(home, ".ssh", "config"))
-	marker := "# piglet:" + entries[winner].ProjectID
+	marker := "# farrow:" + entries[winner].ProjectID
 	if !strings.Contains(string(fragment), marker+":begin") || !strings.Contains(string(config), marker+":include") {
 		t.Fatalf("fragment/config ownership split:\nfragment=%s\nconfig=%s", fragment, config)
 	}

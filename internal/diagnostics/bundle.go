@@ -20,12 +20,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/doctor"
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/doctor"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 const maxCollectedFileBytes = 4 << 20
@@ -125,7 +125,7 @@ func readDiagnostic(pathname string, tail bool) ([]byte, error) {
 		if _, err := handle.Seek(-maxCollectedFileBytes, io.SeekEnd); err != nil {
 			return nil, err
 		}
-		prefix = []byte(fmt.Sprintf("[piglet: log truncated to final %d bytes]\n", maxCollectedFileBytes))
+		prefix = []byte(fmt.Sprintf("[farrow: log truncated to final %d bytes]\n", maxCollectedFileBytes))
 	}
 	data, err := io.ReadAll(io.LimitReader(handle, maxCollectedFileBytes+1))
 	if err != nil {
@@ -207,7 +207,7 @@ func (b Builder) defaultHost(ctx context.Context) ([]BundleFile, []string) {
 		result, runErr := b.runner().Run(ctx, binary, command.args...)
 		data := append(append([]byte(nil), result.Stdout...), result.Stderr...)
 		if runErr != nil {
-			data = append(data, []byte("\n[piglet: "+runErr.Error()+"]\n")...)
+			data = append(data, []byte("\n[farrow: "+runErr.Error()+"]\n")...)
 		}
 		_ = addFile(&files, command.name, RedactText(data))
 	}
@@ -230,10 +230,10 @@ func (b Builder) Build(ctx context.Context) (BundlePlan, error) {
 	generatedAt := b.now()
 	plan := BundlePlan{
 		Schema: 1, ProjectID: projectValue.Marker.ProjectID, GeneratedAt: generatedAt,
-		SuggestedName: fmt.Sprintf("piglet-debug-%s-%s.tar.gz", projectValue.Marker.ProjectID[:8], generatedAt.Format("20060102T150405Z")),
+		SuggestedName: fmt.Sprintf("farrow-debug-%s-%s.tar.gz", projectValue.Marker.ProjectID[:8], generatedAt.Format("20060102T150405Z")),
 	}
 	versionData, err := marshalRedacted(map[string]any{
-		"piglet": b.Version, "go": runtime.Version(), "os": runtime.GOOS, "arch": runtime.GOARCH,
+		"farrow": b.Version, "go": runtime.Version(), "os": runtime.GOOS, "arch": runtime.GOARCH,
 	})
 	if err != nil {
 		return BundlePlan{}, err
@@ -249,7 +249,7 @@ func (b Builder) Build(ctx context.Context) (BundlePlan, error) {
 		return BundlePlan{}, err
 	}
 
-	collectPath(&plan.Files, &plan.Skipped, "source/piglet.yaml", filepath.Join(projectValue.WorkDir, "piglet.yaml"), false, false)
+	collectPath(&plan.Files, &plan.Skipped, "source/farrow.yaml", filepath.Join(projectValue.WorkDir, "farrow.yaml"), false, false)
 	collectPath(&plan.Files, &plan.Skipped, "state/project.json", filepath.Join(projectValue.Root, "project.json"), true, false)
 	collectPath(&plan.Files, &plan.Skipped, "state/resolved.json", filepath.Join(projectValue.Root, "resolved.json"), true, false)
 	collectPath(&plan.Files, &plan.Skipped, "logs/project/events.jsonl", filepath.Join(projectValue.Root, "events.jsonl"), false, true)
@@ -287,7 +287,7 @@ func (b Builder) Build(ctx context.Context) (BundlePlan, error) {
 		name string
 		path string
 	}{
-		{"network/global.json", "/private/var/db/piglet/network.json"},
+		{"network/global.json", "/private/var/db/farrow/network.json"},
 	}
 	if leaseRoot, leaseErr := lease.DefaultRoot(); leaseErr == nil {
 		networkCandidates = append(networkCandidates, struct {
@@ -346,7 +346,7 @@ func writeArchive(output io.Writer, digest hash.Hash, plan BundlePlan) error {
 	}
 	gzipWriter.Header.ModTime = time.Unix(0, 0).UTC()
 	tarWriter := tar.NewWriter(gzipWriter)
-	prefix := "piglet-debug-" + plan.ProjectID[:8]
+	prefix := "farrow-debug-" + plan.ProjectID[:8]
 	for _, file := range plan.Files {
 		if !safeBundleName(file.Name) || len(file.Data) != file.Size {
 			_ = closeWriters(tarWriter, gzipWriter)
@@ -382,7 +382,7 @@ func WriteBundle(outputPath string, plan BundlePlan) (BundleResult, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return BundleResult{}, err
 	}
-	temporary, err := os.CreateTemp(parent, ".piglet-debug-*.partial")
+	temporary, err := os.CreateTemp(parent, ".farrow-debug-*.partial")
 	if err != nil {
 		return BundleResult{}, err
 	}

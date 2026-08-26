@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/config"
-	"github.com/pgsty/piglet/internal/spec"
-	profileassets "github.com/pgsty/piglet/profiles"
+	"github.com/pgsty/farrow/internal/config"
+	"github.com/pgsty/farrow/internal/spec"
+	profileassets "github.com/pgsty/farrow/profiles"
 )
 
 var expectedProfileNodeCounts = map[string]int{
@@ -33,19 +33,19 @@ var expectedProfileInventoryRefs = map[string]string{
 }
 
 var expectedProfileSHA256 = map[string]string{
-	"all":   "6d9097a5ee1b684585984ad26812bd500af9beff4b33b59d54762b3920f1224b",
-	"citus": "3c5a29c821d295ce79112830dd769ff429954bbce539c24d05a6174eac4eff03",
-	"deb":   "65b6d3bdb214433d2df1d277c240be3b1f732542c4eb6d490b917f6c75947830",
-	"deci":  "553e261524ff2684cb490c45f678cc873f3ee98a4af1f71b0aa57985f9f64cb8",
-	"dual":  "ec4bbceb689335eea45031a9aaad6d5f69c8450b09ae1bd7d5e3d60161ef4289",
-	"full":  "912fea61bf1602c2a437570561a6ab4d0a5a8c152695147ad9e96ae831bc9336",
-	"meta":  "441eedd8aa3066e8018255a4f885648c53fa76d582c59047d79e9a0abf1d75a9",
-	"minio": "73fb74903787aa6dd5b3f955d56c11aa4235a57ac70c705b8e88785ff11246c3",
-	"oss":   "ef885d71e3175c12206ceb491e7c7b02bf5072febd6802e9751b8e0985971fa8",
-	"pro":   "11f7740644abbaacce476800585833a4f9121aadf6c4c4556c43588da51e2a85",
-	"rpm":   "d0b0244ad6bc62e4a11b9b9c63c9ef2f5137597b8ce4d4665341ebbe98ecab4f",
-	"simu":  "ff3299eb874761498372f419ef7afff9dd268d2e60de0cd80a9892b8dfe2a05c",
-	"trio":  "34f7c4f3ba7810728b19291c4a332e464c6783d17872359e28773240a6b4be43",
+	"all":   "dd5cfcdc794a0f8e873ecae14b2aa68ac7068f9194ae21497784ca9ac0466c2a",
+	"citus": "3df3059b54be7886f2d5064d776125a4b693c98eb439a130b68f4cd0abf45de0",
+	"deb":   "7937feba9e813f237660c9ca18c3ae7160038c9406829fdc1b81ee2bae2812cf",
+	"deci":  "2799b88ba4d33fb968c89e29bccfdd89c76371548cfae829a9e5b48d80d731c2",
+	"dual":  "23a83835e02c63bcc49cd1fa73855142ec9b274996864911aaffb912ad955419",
+	"full":  "b4fa643af40d48ea69e97e6472b8a4300bc9a952306b2fc7c0c01d89bd991230",
+	"meta":  "0f5161a4d438cbaa31da6c4edaad9fd3187dbb88fd4ea9d36d22f2609e84f7c1",
+	"minio": "b674e4edcaed4090dcc1327eac8295d23e47f126f34b2489c6da8d733d940072",
+	"oss":   "76f66d402f4b46c1cc8b155fd2ca7dd0ca16f05ffb8ad8395d08e56f00ac7828",
+	"pro":   "6d9a16c9fdf6bb3a3859244fa708f8858085c988566394658b06bf9965bcbaaf",
+	"rpm":   "cb068622fe5a7954fa04a8157f70e2bffa8bb1d4d9da954d9441a5d3d89f595e",
+	"simu":  "bff51f8e64fb3eca93d8a5152417373d37681d337fbbcbbbbbe34d6eea5fcc0d",
+	"trio":  "77591e9d49b1149f9b100d98bdee24bb8cfadc2fbef9ff18a05c26639b89bb99",
 }
 
 var expectedResolvedSHA256 = map[string]string{
@@ -64,7 +64,7 @@ var expectedResolvedSHA256 = map[string]string{
 	"trio":  "bc570d0bfaceb161701eed5aa26187b7a436be9b189f322c481c93b66709b601",
 }
 
-func TestCatalogHasExactPigletSet(t *testing.T) {
+func TestCatalogHasExactFarrowSet(t *testing.T) {
 	t.Parallel()
 	catalog, err := LoadCatalog()
 	if err != nil {

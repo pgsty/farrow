@@ -20,10 +20,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
-	darwinnet "github.com/pgsty/piglet/internal/network/darwin"
-	linuxnet "github.com/pgsty/piglet/internal/network/linux"
-	"github.com/pgsty/piglet/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/execx"
+	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
+	linuxnet "github.com/pgsty/farrow/internal/network/linux"
+	"github.com/pgsty/farrow/internal/network/subnet"
 )
 
 type DialFunc func(network, address string, timeout time.Duration) (net.Conn, error)
@@ -353,7 +353,7 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 	}
 	if present != 0 && present != len(required) && snapshot.Installation.Status != "invalid" {
 		snapshot.Installation.Status = "partial"
-		snapshot.Installation.Problem = fmt.Sprintf("partial Darwin Piglet network installation: %d/%d required public paths", present, len(required))
+		snapshot.Installation.Problem = fmt.Sprintf("partial Darwin Farrow network installation: %d/%d required public paths", present, len(required))
 	}
 	socketExists, socketMetadataOK := false, false
 	socketProblem := ""
@@ -369,7 +369,7 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 	}
 	if present == 0 && socketExists && snapshot.Installation.Status == "absent" {
 		snapshot.Installation.Status = "partial"
-		snapshot.Installation.Problem = "Darwin vmnet runtime socket exists without a static Piglet network installation"
+		snapshot.Installation.Problem = "Darwin vmnet runtime socket exists without a static Farrow network installation"
 	}
 	interfacesResult, interfacesErr := p.Runner.Run(ctx, "/sbin/ifconfig")
 	if interfacesErr != nil {
@@ -387,7 +387,7 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 			mode, interfaceID, gateway, dhcp, parseErr := plistArguments(arguments.Stdout)
 			layout, layoutErr := subnet.FromHostAddress(gateway)
 			if parseErr != nil || layoutErr != nil || dhcp != layout.DHCPEnd() {
-				invalidate(&snapshot.Installation, "Darwin launch arguments do not describe a valid Piglet /24")
+				invalidate(&snapshot.Installation, "Darwin launch arguments do not describe a valid Farrow /24")
 			} else {
 				protectedState := false
 				protectedInterfaceState := false
@@ -561,7 +561,7 @@ func linuxNetworkLayout(data []byte) (subnet.Layout, error) {
 		}
 		return subnet.FromHostAddress(prefix.Addr().String())
 	}
-	return subnet.Layout{}, errors.New("linux Piglet network unit lacks an exact host .1/24 address")
+	return subnet.Layout{}, errors.New("linux Farrow network unit lacks an exact host .1/24 address")
 }
 
 func linuxFamily(data []byte) (linuxnet.Family, error) {
@@ -626,10 +626,10 @@ func (p Probe) safeRootOwnedParents(path string) error {
 }
 
 func exactLinuxNetwork(layout subnet.Layout) string {
-	return fmt.Sprintf("[Match]\nName=piglet0\n\n[Network]\nAddress=%s/24\nConfigureWithoutCarrier=yes\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Link]\nRequiredForOnline=no\n", layout.HostAddress())
+	return fmt.Sprintf("[Match]\nName=farrow0\n\n[Network]\nAddress=%s/24\nConfigureWithoutCarrier=yes\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Link]\nRequiredForOnline=no\n", layout.HostAddress())
 }
 
-const linuxBridgeMarker = "# BEGIN PIGLET MANAGED: piglet0\nallow piglet0\n# END PIGLET MANAGED: piglet0\n"
+const linuxBridgeMarker = "# BEGIN FARROW MANAGED: farrow0\nallow farrow0\n# END FARROW MANAGED: farrow0\n"
 
 func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 	snapshot := Snapshot{Addresses: make(map[string]string), Installation: Installation{Status: "absent"}}
@@ -678,7 +678,7 @@ func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 	}
 	if anchors > 0 && present != len(required) && snapshot.Installation.Status != "invalid" {
 		snapshot.Installation.Status = "partial"
-		snapshot.Installation.Problem = fmt.Sprintf("partial Linux Piglet network installation: %d/%d required public paths", present, len(required))
+		snapshot.Installation.Problem = fmt.Sprintf("partial Linux Farrow network installation: %d/%d required public paths", present, len(required))
 	}
 	addresses, addressErr := p.Runner.Run(ctx, "/usr/sbin/ip", "-4", "-o", "address", "show")
 	if addressErr != nil {
@@ -696,7 +696,7 @@ func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 		data, err := p.readFile(linuxnet.NetworkPath)
 		layout, layoutErr := linuxNetworkLayout(data)
 		if err != nil || layoutErr != nil {
-			invalidate(&snapshot.Installation, "cannot parse owned Linux Piglet network unit")
+			invalidate(&snapshot.Installation, "cannot parse owned Linux Farrow network unit")
 		} else {
 			protectedState := false
 			snapshot.Installation.Mode = "bridge"
@@ -707,9 +707,9 @@ func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 				path    string
 				content string
 			}{
-				{linuxnet.NetDevPath, "[NetDev]\nName=piglet0\nKind=bridge\n"},
+				{linuxnet.NetDevPath, "[NetDev]\nName=farrow0\nKind=bridge\n"},
 				{linuxnet.NetworkPath, exactLinuxNetwork(layout)},
-				{linuxnet.TmpfilesPath, "d /run/piglet 1777 root root -\n"},
+				{linuxnet.TmpfilesPath, "d /run/farrow 1777 root root -\n"},
 				{linuxnet.LeaseLockPath, ""},
 			} {
 				if fileErr := p.exactPublicFile(exact.path, []byte(exact.content), 1<<20); fileErr != nil {
@@ -718,12 +718,12 @@ func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 			}
 			bridgeConf, bridgeErr := p.readFile(linuxnet.BridgeConfPath)
 			if bridgeErr != nil || len(bridgeConf) > 1<<20 || strings.Count(string(bridgeConf), linuxBridgeMarker) != 1 {
-				invalidate(&snapshot.Installation, linuxnet.BridgeConfPath+": exact Piglet marker block is missing or duplicated")
+				invalidate(&snapshot.Installation, linuxnet.BridgeConfPath+": exact Farrow marker block is missing or duplicated")
 			}
 			if managerInfo, managerErr := p.lstat(linuxnet.NetworkManagerPath); managerErr == nil {
 				if metadataErr := rootMetadata(managerInfo, 0o644, "file", 0, false); metadataErr != nil {
 					invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+metadataErr.Error())
-				} else if fileErr := p.exactPublicFile(linuxnet.NetworkManagerPath, []byte("[keyfile]\nunmanaged-devices=interface-name:piglet0\n"), 1<<20); fileErr != nil {
+				} else if fileErr := p.exactPublicFile(linuxnet.NetworkManagerPath, []byte("[keyfile]\nunmanaged-devices=interface-name:farrow0\n"), 1<<20); fileErr != nil {
 					invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+fileErr.Error())
 				}
 			} else if !errors.Is(managerErr, os.ErrNotExist) {
@@ -808,7 +808,7 @@ func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 			link, linkErr := p.Runner.Run(ctx, "/usr/sbin/ip", "-d", "link", "show", "dev", linuxnet.BridgeName)
 			snapshot.Installation.Healthy = addressReady && activeErr == nil && strings.TrimSpace(string(active.Stdout)) == "active" && linkErr == nil && strings.Contains(string(link.Stdout), "bridge")
 			if !snapshot.Installation.Healthy && snapshot.Installation.Problem == "" {
-				snapshot.Installation.Problem = "owned Linux network exists but networkd, piglet0 bridge type, or configured host .1/24 is not ready"
+				snapshot.Installation.Problem = "owned Linux network exists but networkd, farrow0 bridge type, or configured host .1/24 is not ready"
 			}
 		}
 	}

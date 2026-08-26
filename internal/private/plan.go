@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/identity"
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/network/subnet"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/runtimepath"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/runtimepath"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 var nodePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)

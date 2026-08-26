@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/platform"
+	"github.com/pgsty/farrow/internal/platform"
 )
 
 func TestIntegrationRealQEMUHandshakeIdentityAndQuit(t *testing.T) {
@@ -22,7 +22,7 @@ func TestIntegrationRealQEMUHandshakeIdentityAndQuit(t *testing.T) {
 	if err != nil {
 		t.Skip(profile.QEMUBinary + " is not installed")
 	}
-	dir, err := os.MkdirTemp("/tmp", "piglet-qmp-int-")
+	dir, err := os.MkdirTemp("/tmp", "farrow-qmp-int-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestIntegrationRealQEMUHandshakeIdentityAndQuit(t *testing.T) {
 		"-machine", "none",
 		"-nodefaults",
 		"-display", "none",
-		"-name", "piglet-qmp-test",
+		"-name", "farrow-qmp-test",
 		"-uuid", "018f4b8e-1234-7abc-9def-0123456789ab",
 		"-qmp", "unix:"+socket+",server=on,wait=off",
 		"-S",
@@ -69,7 +69,7 @@ func TestIntegrationRealQEMUHandshakeIdentityAndQuit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query-name: %v", err)
 	}
-	if name.Name != "piglet-qmp-test" {
+	if name.Name != "farrow-qmp-test" {
 		t.Fatalf("query-name = %#v", name)
 	}
 	uuid, err := client.QueryUUID(ctx, socket)

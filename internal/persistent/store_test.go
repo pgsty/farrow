@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/project"
 )
 
 func persistentFixture(t *testing.T) (project.Project, Identity, string) {

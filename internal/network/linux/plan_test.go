@@ -34,7 +34,7 @@ func safeInactiveNetworkdActivation() *NetworkdActivationSafety {
 	return &NetworkdActivationSafety{Checked: true, Links: []NetworkdLink{
 		{Name: "eth0", Type: "ether"},
 		{Name: "lo", Type: "loopback"},
-		{Name: BridgeName, Kind: "bridge", Type: "bridge", PigletOwned: true},
+		{Name: BridgeName, Kind: "bridge", Type: "bridge", FarrowOwned: true},
 	}}
 }
 
@@ -48,7 +48,7 @@ func TestDebianInstallPlanIsTypedAndMarkerPreserving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Manifest.AppliedOverride == nil || plan.Manifest.AppliedOverride.Mode != "4750" || len(plan.Files) != 7 || len(plan.Directories) != 2 || plan.Manifest.LeaseRoot != "/run/piglet" {
+	if plan.Manifest.AppliedOverride == nil || plan.Manifest.AppliedOverride.Mode != "4750" || len(plan.Files) != 7 || len(plan.Directories) != 2 || plan.Manifest.LeaseRoot != "/run/farrow" {
 		t.Fatalf("plan = %#v", plan)
 	}
 	foundOverride := false
@@ -110,8 +110,8 @@ func TestBridgeConfInstallRemoveAndOwnershipRefusal(t *testing.T) {
 	if err != nil || removed != original+"\n" {
 		t.Fatalf("removed bridge block = %q, %v", removed, err)
 	}
-	if _, err := ReconcileBridgeConf("allow piglet0 # unowned\n", true); err == nil {
-		t.Fatal("unmarked piglet0 allow rule was adopted")
+	if _, err := ReconcileBridgeConf("allow farrow0 # unowned\n", true); err == nil {
+		t.Fatal("unmarked farrow0 allow rule was adopted")
 	}
 	if _, err := ReconcileBridgeConf(markerBegin+"\nallow other\n"+markerEnd+"\n", false); err == nil {
 		t.Fatal("modified managed block was removed")
@@ -123,7 +123,7 @@ func TestHelperAndBridgeSafetyBoundaries(t *testing.T) {
 	facts := debianFacts()
 	facts.Helper.Override = &Override{Owner: "root", Group: "unowned", Mode: "4750"}
 	if _, err := NewInstallPlan(facts, testConfig()); err == nil {
-		t.Fatal("non-Piglet dpkg override accepted")
+		t.Fatal("non-Farrow dpkg override accepted")
 	}
 	facts = debianFacts()
 	facts.BridgeExists = true
@@ -161,7 +161,7 @@ func TestInactiveNetworkdPlanRecordsPrestateAndOrdersNMFirst(t *testing.T) {
 	for _, command := range plan.Commands {
 		commands += command.Binary + " " + strings.Join(command.Args, " ") + "\n"
 	}
-	for _, want := range []string{"nmcli general reload", "systemctl start systemd-networkd.service", "networkctl reconfigure piglet0", "systemctl enable systemd-networkd.service"} {
+	for _, want := range []string{"nmcli general reload", "systemctl start systemd-networkd.service", "networkctl reconfigure farrow0", "systemctl enable systemd-networkd.service"} {
 		if !strings.Contains(commands, want) {
 			t.Errorf("inactive plan missing %q:\n%s", want, commands)
 		}

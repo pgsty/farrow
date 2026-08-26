@@ -8,7 +8,7 @@ a signing key.
 
 The default `validate` mode is useful on any host with Python 3 and
 `qemu-img`. It safely copies and re-hashes the source, forces qcow2 parsing with
-the same `qemu-img info --output=json -f qcow2` contract used by Piglet, checks
+the same `qemu-img info --output=json -f qcow2` contract used by Farrow, checks
 for a one-element backing chain, runs `qemu-img check`, and emits a reproducible
 but explicitly unpublishable evidence bundle. **It does not mutate guest
 credentials.** Both stdout and `validation.json` say `NATIVE MUTATION NOT RUN`.
@@ -89,7 +89,7 @@ Every successful bundle contains exactly:
 - `build-recipe.json` and the checksummed `normalize-guest.sh` recipe;
 - an in-toto/SLSA v1 `provenance.intoto.json` statement;
 - an SPDX 2.3 `sbom.spdx.json` artifact-boundary SBOM;
-- a Piglet schema-1 `manifest-candidate.json`, always `status: testing`;
+- a Farrow schema-1 `manifest-candidate.json`, always `status: testing`;
 - `validation.json`, including before/after qemu facts and remaining gates;
 - `checksums.txt`, covering every other file.
 

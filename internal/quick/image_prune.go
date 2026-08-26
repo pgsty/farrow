@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pgsty/piglet/internal/image"
-	"github.com/pgsty/piglet/internal/lock"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/image"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func validDigest(value string) bool {

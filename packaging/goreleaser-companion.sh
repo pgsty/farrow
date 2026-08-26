@@ -36,12 +36,12 @@ for tool in go jq; do
 done
 install -d -m 0700 "${stage}"
 
-helper=${stage}/piglet-hosts-helper
+helper=${stage}/farrow-hosts-helper
 (
   cd "${repo}"
   CGO_ENABLED=0 GOOS=${goos} GOARCH=${goarch} GOFLAGS=-mod=readonly \
     go build -trimpath -buildvcs=false -ldflags '-buildid= -s -w' \
-      -o "${helper}" ./cmd/piglet-hosts-helper
+      -o "${helper}" ./cmd/farrow-hosts-helper
 )
 if command -v sha256sum >/dev/null 2>&1; then
   helper_sha=$(sha256sum "${helper}" | awk '{print $1}')

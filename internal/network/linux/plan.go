@@ -14,22 +14,22 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pgsty/piglet/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/network/subnet"
 )
 
 const (
-	BridgeName         = "piglet0"
+	BridgeName         = "farrow0"
 	QEMUConfigDir      = "/etc/qemu"
 	BridgeConfPath     = "/etc/qemu/bridge.conf"
-	NetDevPath         = "/etc/systemd/network/80-piglet0.netdev"
-	NetworkPath        = "/etc/systemd/network/80-piglet0.network"
-	NetworkManagerPath = "/etc/NetworkManager/conf.d/90-piglet-unmanaged.conf"
-	TmpfilesPath       = "/etc/tmpfiles.d/piglet.conf"
-	StatePath          = "/var/lib/piglet/network.json"
-	LeaseRoot          = "/run/piglet"
-	LeaseLockPath      = "/run/piglet/private-lease.lock"
-	markerBegin        = "# BEGIN PIGLET MANAGED: piglet0"
-	markerEnd          = "# END PIGLET MANAGED: piglet0"
+	NetDevPath         = "/etc/systemd/network/80-farrow0.netdev"
+	NetworkPath        = "/etc/systemd/network/80-farrow0.network"
+	NetworkManagerPath = "/etc/NetworkManager/conf.d/90-farrow-unmanaged.conf"
+	TmpfilesPath       = "/etc/tmpfiles.d/farrow.conf"
+	StatePath          = "/var/lib/farrow/network.json"
+	LeaseRoot          = "/run/farrow"
+	LeaseLockPath      = "/run/farrow/private-lease.lock"
+	markerBegin        = "# BEGIN FARROW MANAGED: farrow0"
+	markerEnd          = "# END FARROW MANAGED: farrow0"
 )
 
 var NetworkdUnitNames = []string{
@@ -60,20 +60,20 @@ type UnitState struct {
 }
 
 // NetworkdLink is the bounded link identity used to prove that starting an
-// inactive systemd-networkd cannot claim a pre-existing non-Piglet link. The
-// planned piglet0 identity is included even when the bridge does not yet exist
+// inactive systemd-networkd cannot claim a pre-existing non-Farrow link. The
+// planned farrow0 identity is included even when the bridge does not yet exist
 // so an earlier, unowned .network file cannot win systemd's first-match rule.
 type NetworkdLink struct {
 	Name             string   `json:"name"`
 	AlternativeNames []string `json:"alternative_names,omitempty"`
 	Kind             string   `json:"kind,omitempty"`
 	Type             string   `json:"type"`
-	PigletOwned      bool     `json:"piglet_owned,omitempty"`
+	FarrowOwned      bool     `json:"farrow_owned,omitempty"`
 }
 
 // NetworkdConfiguration records an effective .network or .netdev identity and
 // the supported positive match predicates from .network files. A predicate is
-// retained only when Piglet can parse it exactly; unsupported predicates can
+// retained only when Farrow can parse it exactly; unsupported predicates can
 // never be used as safety proof.
 type NetworkdConfiguration struct {
 	Path       string   `json:"path"`
@@ -246,12 +246,12 @@ func validateNetworkdActivationSafety(safety *NetworkdActivationSafety) error {
 			return fmt.Errorf("networkd activation safety proof repeats link %s", link.Name)
 		}
 		seenLinks[link.Name] = struct{}{}
-		if link.Name == BridgeName && link.PigletOwned {
+		if link.Name == BridgeName && link.FarrowOwned {
 			plannedBridge = true
 		}
 	}
 	if !plannedBridge {
-		return errors.New("networkd activation safety proof omits the planned Piglet bridge identity")
+		return errors.New("networkd activation safety proof omits the planned Farrow bridge identity")
 	}
 	for _, configuration := range safety.Configurations {
 		if configuration.Path == "" || (configuration.Kind != "network" && configuration.Kind != "netdev") {
@@ -315,12 +315,12 @@ func ReconcileBridgeConf(existing string, install bool) (string, error) {
 	beginCount := strings.Count(existing, markerBegin)
 	endCount := strings.Count(existing, markerEnd)
 	if beginCount != endCount || beginCount > 1 {
-		return "", errors.New("qemu bridge.conf has malformed or duplicate Piglet markers")
+		return "", errors.New("qemu bridge.conf has malformed or duplicate Farrow markers")
 	}
 	block := managedBridgeBlock()
 	if beginCount == 1 {
 		if !strings.Contains(existing, block) {
-			return "", errors.New("qemu bridge.conf Piglet block was modified")
+			return "", errors.New("qemu bridge.conf Farrow block was modified")
 		}
 		if install {
 			return existing, nil
@@ -333,7 +333,7 @@ func ReconcileBridgeConf(existing string, install bool) (string, error) {
 	for _, line := range strings.Split(existing, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && fields[0] == "allow" && fields[1] == BridgeName {
-			return "", errors.New("refuse adoption of unmarked allow piglet0 bridge rule")
+			return "", errors.New("refuse adoption of unmarked allow farrow0 bridge rule")
 		}
 	}
 	result := existing
@@ -361,7 +361,7 @@ func validateHelper(facts Facts) (*Override, []Command, []string, error) {
 		desired := &Override{Owner: "root", Group: "kvm", Mode: "4750"}
 		if helper.Override != nil {
 			if facts.ExistingManifest == nil || facts.ExistingManifest.AppliedOverride == nil || *helper.Override != *facts.ExistingManifest.AppliedOverride {
-				return nil, nil, nil, errors.New("refuse Debian helper mutation with a non-Piglet dpkg-statoverride")
+				return nil, nil, nil, errors.New("refuse Debian helper mutation with a non-Farrow dpkg-statoverride")
 			}
 			return desired, nil, nil, nil
 		}
@@ -394,7 +394,7 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 		return Plan{}, err
 	}
 	if facts.BridgeExists && !facts.BridgeOwned {
-		return Plan{}, errors.New("refuse adoption of existing unowned piglet0 bridge")
+		return Plan{}, errors.New("refuse adoption of existing unowned farrow0 bridge")
 	}
 	serviceState := facts.NetworkdUnits["systemd-networkd.service"]
 	if serviceState.ActiveState != "active" {
@@ -410,17 +410,17 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	netdev := "[NetDev]\nName=piglet0\nKind=bridge\n"
-	network := fmt.Sprintf("[Match]\nName=piglet0\n\n[Network]\nAddress=%s/%s\nConfigureWithoutCarrier=yes\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Link]\nRequiredForOnline=no\n", config.HostAddress, strings.Split(config.CIDR, "/")[1])
+	netdev := "[NetDev]\nName=farrow0\nKind=bridge\n"
+	network := fmt.Sprintf("[Match]\nName=farrow0\n\n[Network]\nAddress=%s/%s\nConfigureWithoutCarrier=yes\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Link]\nRequiredForOnline=no\n", config.HostAddress, strings.Split(config.CIDR, "/")[1])
 	files := []File{
 		{Path: BridgeConfPath, Owner: "root:root", Mode: "0644", Content: bridgeConf},
 		{Path: NetDevPath, Owner: "root:root", Mode: "0644", Content: netdev},
 		{Path: NetworkPath, Owner: "root:root", Mode: "0644", Content: network},
-		{Path: TmpfilesPath, Owner: "root:root", Mode: "0644", Content: "d /run/piglet 1777 root root -\n"},
+		{Path: TmpfilesPath, Owner: "root:root", Mode: "0644", Content: "d /run/farrow 1777 root root -\n"},
 		{Path: LeaseLockPath, Owner: "root:root", Mode: "0666", Content: ""},
 	}
 	if facts.NetworkManagerActive {
-		files = append(files, File{Path: NetworkManagerPath, Owner: "root:root", Mode: "0644", Content: "[keyfile]\nunmanaged-devices=interface-name:piglet0\n"})
+		files = append(files, File{Path: NetworkManagerPath, Owner: "root:root", Mode: "0644", Content: "[keyfile]\nunmanaged-devices=interface-name:farrow0\n"})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	originalHelper := Override{Owner: "root", Group: facts.Helper.Group, Mode: fmt.Sprintf("%04o", facts.Helper.Mode)}
@@ -479,7 +479,7 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 	for _, phase := range phases {
 		commands = append(commands, phase.Commands...)
 	}
-	directories := []Directory{{Path: "/var/lib/piglet", Owner: "root:root", Mode: "0700"}, {Path: LeaseRoot, Owner: "root:root", Mode: "1777"}}
+	directories := []Directory{{Path: "/var/lib/farrow", Owner: "root:root", Mode: "0700"}, {Path: LeaseRoot, Owner: "root:root", Mode: "1777"}}
 	if !facts.QEMUConfigDirExisted {
 		directories = append([]Directory{{Path: QEMUConfigDir, Owner: "root:root", Mode: "0755"}}, directories...)
 	}
@@ -586,7 +586,7 @@ func NewUninstallPlan(manifest Manifest, facts UninstallFacts) (UninstallPlan, e
 		return UninstallPlan{}, errors.New("refuse Linux network uninstall while a private lease is active")
 	}
 	if len(facts.BridgeMembers) > 0 {
-		return UninstallPlan{}, fmt.Errorf("refuse Linux network uninstall while piglet0 has members: %v", facts.BridgeMembers)
+		return UninstallPlan{}, fmt.Errorf("refuse Linux network uninstall while farrow0 has members: %v", facts.BridgeMembers)
 	}
 	for pathname, expectedDigest := range manifest.Files {
 		content, ok := facts.CurrentFiles[pathname]
@@ -598,7 +598,7 @@ func NewUninstallPlan(manifest Manifest, facts UninstallFacts) (UninstallPlan, e
 	helperCommands := make([]Command, 0, 3)
 	if manifest.AppliedOverride != nil {
 		if facts.CurrentOverride == nil || *facts.CurrentOverride != *manifest.AppliedOverride || facts.CurrentHelper != *manifest.AppliedOverride {
-			return UninstallPlan{}, errors.New("qemu-bridge-helper override/current state no longer matches Piglet manifest")
+			return UninstallPlan{}, errors.New("qemu-bridge-helper override/current state no longer matches Farrow manifest")
 		}
 		helperCommands = append(helperCommands,
 			Command{Binary: "/usr/bin/dpkg-statoverride", Args: []string{"--remove", manifest.HelperPath}},
@@ -627,7 +627,7 @@ func NewUninstallPlan(manifest Manifest, facts UninstallFacts) (UninstallPlan, e
 		removeFiles = append(removeFiles, BridgeConfPath)
 	}
 	removeFiles = append(removeFiles, StatePath)
-	removeDirectories := []string{LeaseRoot, "/var/lib/piglet"}
+	removeDirectories := []string{LeaseRoot, "/var/lib/farrow"}
 	if manifest.QEMUConfigCreated {
 		removeDirectories = append(removeDirectories, QEMUConfigDir)
 	}

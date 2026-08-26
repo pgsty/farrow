@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/lock"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/lock"
 )
 
 const LocalAliasesSchema = 1

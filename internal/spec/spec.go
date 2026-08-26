@@ -6,16 +6,65 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 )
 
 const GiB int64 = 1024 * 1024 * 1024
 
 type Forward struct {
-	Bind     string `json:"bind"`
-	Host     uint16 `json:"host"`
-	Guest    uint16 `json:"guest"`
-	Protocol string `json:"protocol"`
+	Bind          string `json:"bind"`
+	Host          uint16 `json:"host"`
+	RequestedHost uint16 `json:"requested_host,omitempty"`
+	Guest         uint16 `json:"guest"`
+	Protocol      string `json:"protocol"`
+}
+
+// RequestedHostPort returns the user's original preferred host port. Older
+// resolved documents did not preserve this evidence, so their materialized
+// host port is the only safe compatibility baseline.
+func RequestedHostPort(forward Forward) uint16 {
+	if forward.RequestedHost != 0 {
+		return forward.RequestedHost
+	}
+	return forward.Host
+}
+
+// WithMaterializedHost records the original request only when allocation had
+// to choose a different port. Keeping the field optional preserves the
+// canonical JSON and hash of projects whose preferred port was available.
+func WithMaterializedHost(forward Forward, host uint16) Forward {
+	requested := RequestedHostPort(forward)
+	forward.Host = host
+	if host == requested {
+		forward.RequestedHost = 0
+	} else {
+		forward.RequestedHost = requested
+	}
+	return forward
+}
+
+// ReuseMaterializedForwardPorts carries forward committed allocation choices
+// only when both the route identity and the original request still match. Each
+// persisted entry may satisfy at most one desired entry so duplicate routes
+// are paired one-to-one instead of all reusing the first match.
+func ReuseMaterializedForwardPorts(desired, persisted []Forward) []Forward {
+	result := append([]Forward(nil), desired...)
+	consumed := make([]bool, len(persisted))
+	for desiredIndex := range result {
+		candidate := result[desiredIndex]
+		requested := RequestedHostPort(candidate)
+		for persistedIndex, current := range persisted {
+			if consumed[persistedIndex] || candidate.Bind != current.Bind || candidate.Guest != current.Guest || candidate.Protocol != current.Protocol || requested != RequestedHostPort(current) {
+				continue
+			}
+			result[desiredIndex].Host = current.Host
+			result[desiredIndex].RequestedHost = current.RequestedHost
+			consumed[persistedIndex] = true
+			break
+		}
+	}
+	return result
 }
 
 type Disk struct {
@@ -24,6 +73,23 @@ type Disk struct {
 	Mount      string `json:"mount"`
 	Filesystem string `json:"filesystem,omitempty"`
 	Persistent bool   `json:"persistent"`
+}
+
+const MaxSharesPerNode = 8
+
+type Share struct {
+	Host     string `json:"host"`
+	Guest    string `json:"guest"`
+	Readonly bool   `json:"readonly"`
+}
+
+// ShareTag returns the stable virtio-9p mount tag for one resolved share.
+// The separators make the digest unambiguous without exposing either path in
+// QEMU device identifiers. Twenty hexadecimal digits keep the complete tag
+// below QEMU's 31-byte mount-tag limit.
+func ShareTag(share Share) string {
+	digest := sha256.Sum256([]byte(share.Host + "\x00" + share.Guest + "\x00" + strconv.FormatBool(share.Readonly)))
+	return "farrow-" + hex.EncodeToString(digest[:])[:20]
 }
 
 type Node struct {
@@ -37,6 +103,7 @@ type Node struct {
 	RootDisk int64     `json:"root_disk_bytes"`
 	Disks    []Disk    `json:"disks,omitempty"`
 	Forwards []Forward `json:"forwards,omitempty"`
+	Shares   []Share   `json:"shares,omitempty"`
 }
 
 type PrivateNetwork struct {

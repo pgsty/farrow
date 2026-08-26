@@ -1,4 +1,4 @@
-// Package profile loads and applies policy to Piglet's embedded Pigsty
+// Package profile loads and applies policy to Farrow's embedded Pigsty
 // profiles.
 package profile
 
@@ -13,8 +13,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pgsty/piglet/internal/config"
-	profileassets "github.com/pgsty/piglet/profiles"
+	"github.com/pgsty/farrow/internal/config"
+	profileassets "github.com/pgsty/farrow/profiles"
 )
 
 const (
@@ -42,7 +42,7 @@ const (
 )
 
 // InventoryMode defines how a bound Pigsty inventory template relates to the
-// Piglet VM topology.
+// Farrow VM topology.
 type InventoryMode string
 
 const (
@@ -50,7 +50,7 @@ const (
 	InventoryBuildSubset InventoryMode = "build_subset"
 )
 
-// Descriptor records one Piglet-owned embedded profile and its override
+// Descriptor records one Farrow-owned embedded profile and its override
 // policy.
 type Descriptor struct {
 	Name                 string        `json:"name"`

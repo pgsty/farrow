@@ -25,7 +25,7 @@ func TestResolveDataRootSafety(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	environment := fakeEnv{home: home, values: map[string]string{"PIGLET_DATA_HOME": filepath.Join(root, "data")}}
+	environment := fakeEnv{home: home, values: map[string]string{"FARROW_DATA_HOME": filepath.Join(root, "data")}}
 	got, err := ResolveDataRoot(work, environment)
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func TestResolveDataRootSafety(t *testing.T) {
 		t.Fatalf("data root = %s", got)
 	}
 	for _, unsafe := range []string{home, work, "/", "relative"} {
-		environment.values["PIGLET_DATA_HOME"] = unsafe
+		environment.values["FARROW_DATA_HOME"] = unsafe
 		if _, err := ResolveDataRoot(work, environment); err == nil {
 			t.Errorf("unsafe root %q accepted", unsafe)
 		}
@@ -61,14 +61,14 @@ func TestResolveDataRootWithConfigPrecedence(t *testing.T) {
 	if err != nil || got != configured {
 		t.Fatalf("configured root = %q, %v; want %q", got, err, configured)
 	}
-	environment.values["PIGLET_DATA_HOME"] = override
+	environment.values["FARROW_DATA_HOME"] = override
 	got, err = ResolveDataRootWithConfig(work, configured, environment)
 	if err != nil || got != override {
 		t.Fatalf("environment root = %q, %v; want %q", got, err, override)
 	}
-	delete(environment.values, "PIGLET_DATA_HOME")
+	delete(environment.values, "FARROW_DATA_HOME")
 	got, err = ResolveDataRootWithConfig(work, "", environment)
-	if err != nil || got != filepath.Join(xdg, "piglet") {
+	if err != nil || got != filepath.Join(xdg, "farrow") {
 		t.Fatalf("XDG root = %q, %v", got, err)
 	}
 

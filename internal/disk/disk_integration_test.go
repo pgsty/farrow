@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
+	"github.com/pgsty/farrow/internal/execx"
 )
 
 func TestIntegrationQEMUImgOverlayResizeAndChain(t *testing.T) {

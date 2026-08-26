@@ -1,0 +1,437 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os/exec"
+	"strings"
+	"testing"
+
+	"go.yaml.in/yaml/v3"
+)
+
+func TestPrepareOutputDefaultsToTextAndExtractsGlobalFlags(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args, out, errOut, err := prepareOutput([]string{"--verbose", "status", "--yaml"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(args, " ") != "status" || outputFormatFor(out) != outputYAML || !verboseOutput(errOut) {
+		t.Fatalf("prepared args=%v format=%s verbose=%t", args, outputFormatFor(out), verboseOutput(errOut))
+	}
+	if writerColor(out) || writerColor(errOut) {
+		t.Fatal("buffer output unexpectedly enabled ANSI color")
+	}
+}
+
+func TestPrepareOutputDoesNotConsumeRemoteArguments(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args, out, _, err := prepareOutput([]string{"exec", "--json", "--", "tool", "--yaml", "-json"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(args, " "), "exec -- tool --yaml -json"; got != want {
+		t.Fatalf("args = %q, want %q", got, want)
+	}
+	if outputFormatFor(out) != outputJSON {
+		t.Fatalf("format = %s, want json", outputFormatFor(out))
+	}
+}
+
+func TestPrepareOutputRejectsConflictingFormats(t *testing.T) {
+	var output bytes.Buffer
+	if _, _, _, err := prepareOutput([]string{"status", "--json", "--yaml"}, &output, &output); err == nil {
+		t.Fatal("conflicting structured formats were accepted")
+	}
+}
+
+func TestPrepareOutputYAML(t *testing.T) {
+	var output bytes.Buffer
+	args, out, _, err := prepareOutput([]string{"--yaml", "version"}, &output, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(args, " "); got != "version" || outputFormatFor(out) != outputYAML {
+		t.Fatalf("args=%q format=%s", got, outputFormatFor(out))
+	}
+}
+
+func TestRunRejectsUndocumentedPresentationAliases(t *testing.T) {
+	for _, alias := range []string{"--yml", "--yml=true", "-yml", "-yaml", "-json", "-json=false", "-verbose"} {
+		t.Run(alias, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			if code := run([]string{"status", alias}, &stdout, &stderr); code != exitUsage {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 || !strings.Contains(stderr.String(), "use --json, --yaml, or --verbose") {
+				t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestCommandHelpShowsOnlyDocumentedPresentationFlags(t *testing.T) {
+	for _, arguments := range [][]string{{"status", "-h"}, {"image", "list", "--help"}} {
+		t.Run(strings.Join(arguments, "_"), func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			if code := run(arguments, &stdout, &stderr); code != exitOK {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("help leaked to stdout: %q", stdout.String())
+			}
+			help := stderr.String()
+			for _, option := range []string{"--json", "--yaml", "--verbose"} {
+				if !strings.Contains(help, option) {
+					t.Fatalf("help missing %s:\n%s", option, help)
+				}
+			}
+			for _, alias := range []string{"\n  -json ", "--yml", "\n  -yaml ", "\n  -verbose "} {
+				if strings.Contains(help, alias) {
+					t.Fatalf("help exposes unsupported alias %q:\n%s", alias, help)
+				}
+			}
+		})
+	}
+}
+
+func TestEncodeOutputYAMLPreservesJSONFieldNames(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	_, out, _, err := prepareOutput([]string{"status", "--yaml"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := struct {
+		OperationID string `json:"operation_id"`
+		Ready       bool   `json:"ready"`
+		Count       int    `json:"count"`
+	}{OperationID: "op-1", Ready: true, Count: 123}
+	if err := encodeOutput(out, value); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "operation_id: op-1") || !strings.Contains(got, "ready: true") || !strings.Contains(got, "count: 123") {
+		t.Fatalf("unexpected YAML:\n%s", got)
+	}
+	var decoded map[string]any
+	if err := yaml.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if count, ok := decoded["count"].(int); !ok || count != 123 {
+		t.Fatalf("YAML count=%#v (%T), want integer 123", decoded["count"], decoded["count"])
+	}
+}
+
+func TestJSONAndYAMLDecodeToEquivalentTypedResults(t *testing.T) {
+	type result struct {
+		OperationID string `json:"operation_id" yaml:"operation_id"`
+		Count       int    `json:"count" yaml:"count"`
+		Ready       bool   `json:"ready" yaml:"ready"`
+	}
+	want := result{OperationID: "op-2", Count: 42, Ready: true}
+	var decoded []result
+	for _, format := range []string{"--json", "--yaml"} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		_, out, _, err := prepareOutput([]string{"status", format}, &stdout, &stderr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := encodeOutput(out, want); err != nil {
+			t.Fatal(err)
+		}
+		var got result
+		if format == "--json" {
+			err = json.Unmarshal(stdout.Bytes(), &got)
+		} else {
+			err = yaml.Unmarshal(stdout.Bytes(), &got)
+		}
+		if err != nil {
+			t.Fatalf("decode %s: %v\n%s", format, err, stdout.String())
+		}
+		decoded = append(decoded, got)
+	}
+	if decoded[0] != want || decoded[1] != want || decoded[0] != decoded[1] {
+		t.Fatalf("json=%+v yaml=%+v want=%+v", decoded[0], decoded[1], want)
+	}
+}
+
+type failingJSONValue struct{}
+
+func (failingJSONValue) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("intentional marshal failure")
+}
+
+func TestEncodeOutputIsAtomicOnMarshalFailure(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	_, out, _, err := prepareOutput([]string{"version", "--json"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := encodeOutput(out, failingJSONValue{}); err == nil {
+		t.Fatal("marshal failure was accepted")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("partial structured document leaked: %q", stdout.String())
+	}
+}
+
+func TestStructuredStdoutStaysPlainWhileTerminalStderrCanUseColor(t *testing.T) {
+	state := &outputContext{format: outputJSON, color: true, stdoutTTY: true, stderrTTY: true}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	out := &outputWriter{Writer: &stdout, context: state}
+	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
+	if writerColor(out) {
+		t.Fatal("structured stdout enabled ANSI color")
+	}
+	if !writerColor(errOut) {
+		t.Fatal("terminal diagnostics unexpectedly disabled ANSI color")
+	}
+	if strings.Contains(styled(out, ansiGreen, "ok"), "\x1b[") || !strings.Contains(styled(errOut, ansiGreen, "ok"), "\x1b[") {
+		t.Fatal("color did not remain scoped to terminal diagnostics")
+	}
+}
+
+func TestVerboseDiagnosticsAreRedacted(t *testing.T) {
+	state := &outputContext{format: outputJSON, verbose: true}
+	var stderr bytes.Buffer
+	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
+	debugf(errOut, "launch tool --token super-secret-value")
+	if got := stderr.String(); strings.Contains(got, "super-secret-value") || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("verbose diagnostic was not redacted: %q", got)
+	}
+}
+
+func TestDiagnosticsAndProgressDoNotPolluteStructuredStdout(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	_, out, errOut, err := prepareOutput([]string{"--verbose", "status", "--json"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warningf(errOut, "check the selected subnet")
+	debugf(errOut, "phase=preflight")
+	item := startProgress(context.Background(), errOut, "Checking readiness")
+	item.Stop(nil)
+	if err := encodeOutput(out, map[string]any{"ready": true}); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil || decoded["ready"] != true {
+		t.Fatalf("stdout=%q decoded=%v err=%v", stdout.String(), decoded, err)
+	}
+	if strings.Contains(stdout.String(), "WARNING") || strings.Contains(stdout.String(), "debug") || strings.Contains(stdout.String(), "Checking readiness") || strings.Contains(stdout.String(), "\x1b[") {
+		t.Fatalf("diagnostics leaked to stdout: %q", stdout.String())
+	}
+	for _, marker := range []string{"WARNING:", "debug", "Checking readiness"} {
+		if !strings.Contains(stderr.String(), marker) {
+			t.Fatalf("stderr missing %q: %q", marker, stderr.String())
+		}
+	}
+	if strings.Contains(stderr.String(), "\x1b[") {
+		t.Fatalf("redirected diagnostics contain ANSI: %q", stderr.String())
+	}
+}
+
+func TestProgressUsesNoANSIWhenTerminalStylingIsDisabled(t *testing.T) {
+	state := &outputContext{format: outputText, verbose: true, stderrTTY: true, color: false}
+	var stderr bytes.Buffer
+	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
+	item := startProgress(context.Background(), errOut, "Checking readiness")
+	item.Stop(nil)
+	if strings.Contains(stderr.String(), "\x1b[") {
+		t.Fatalf("plain terminal progress contains ANSI: %q", stderr.String())
+	}
+}
+
+func TestRawWriterUnwrapsPresentationLayer(t *testing.T) {
+	var base bytes.Buffer
+	state := &outputContext{format: outputText}
+	wrapped := &outputWriter{Writer: &outputWriter{Writer: &base, context: state}, context: state}
+	if rawWriter(wrapped) != &base {
+		t.Fatal("raw writer did not return the underlying passthrough writer")
+	}
+}
+
+func TestExecuteSSHProcessCapturesStructuredRemoteResult(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	_, out, errOut, err := prepareOutput([]string{"exec", "--json", "--", "ignored"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, runErr := executeSSHProcess(
+		context.Background(), "exec", "meta", "dba", "127.0.0.1", 2222,
+		"/bin/sh", []string{"-c", "printf remote-out; printf remote-err >&2; exit 7"}, []string{"false"}, out, errOut,
+	)
+	var exitError *exec.ExitError
+	if !errors.As(runErr, &exitError) || exitError.ExitCode() != 7 {
+		t.Fatalf("run error=%v, want exit 7", runErr)
+	}
+	if result.ExitCode != 7 || result.Stdout != "remote-out" || result.Stderr != "remote-err" || result.Success {
+		t.Fatalf("result=%+v", result)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("captured command leaked raw output stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestBoundedCaptureReportsTruncation(t *testing.T) {
+	capture := boundedCapture{limit: 4}
+	if written, err := capture.Write([]byte("abcdef")); err != nil || written != 6 {
+		t.Fatalf("write=%d err=%v", written, err)
+	}
+	if capture.String() != "abcd" || !capture.truncated {
+		t.Fatalf("capture=%q truncated=%t", capture.String(), capture.truncated)
+	}
+}
+
+func TestSplitLogArgsAcceptsFlagsAfterNode(t *testing.T) {
+	node, flagArgs, err := splitLogArgs([]string{"meta", "--source", "events", "--follow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node != "meta" || strings.Join(flagArgs, " ") != "--source events --follow" {
+		t.Fatalf("node=%q flags=%v", node, flagArgs)
+	}
+	if _, _, err := splitLogArgs([]string{"meta", "other"}); err == nil {
+		t.Fatal("multiple log nodes were accepted")
+	}
+}
+
+func TestStructuredLogChunksBoundLongLines(t *testing.T) {
+	payload := strings.Repeat("x", structuredLogRecordLimit+5) + "\n"
+	reader := bufio.NewReaderSize(strings.NewReader(payload), structuredLogRecordLimit)
+	first, continued, err := readStructuredLogChunk(reader)
+	if err != nil || !continued || len(first) != structuredLogRecordLimit {
+		t.Fatalf("first bytes=%d continued=%t err=%v", len(first), continued, err)
+	}
+	second, continued, err := readStructuredLogChunk(reader)
+	if err != nil || continued || first+second != payload {
+		t.Fatalf("second=%q continued=%t err=%v", second, continued, err)
+	}
+}
+
+func TestStructuredStreamEncodings(t *testing.T) {
+	value := logStreamRecord{Type: "line", Node: "meta", Source: "events", Sequence: 1, Content: "ready\n"}
+	for _, format := range []string{"--json", "--yaml"} {
+		t.Run(format, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			_, out, _, err := prepareOutput([]string{"logs", format, "--follow"}, &stdout, &stderr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := encodeStreamOutput(out, value); err != nil {
+				t.Fatal(err)
+			}
+			if format == "--json" {
+				var decoded logStreamRecord
+				if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil || decoded.Content != value.Content {
+					t.Fatalf("NDJSON=%q decoded=%+v err=%v", stdout.String(), decoded, err)
+				}
+				if strings.Count(stdout.String(), "\n") != 1 {
+					t.Fatalf("stream JSON was not one compact line: %q", stdout.String())
+				}
+			} else {
+				if !strings.HasPrefix(stdout.String(), "---\n") {
+					t.Fatalf("YAML stream lacks document marker: %q", stdout.String())
+				}
+				var decoded logStreamRecord
+				if err := yaml.Unmarshal(stdout.Bytes(), &decoded); err != nil || decoded.Content != value.Content {
+					t.Fatalf("YAML=%q decoded=%+v err=%v", stdout.String(), decoded, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRunVersionSupportsGlobalStructuredFormats(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{name: "json-before-command", args: []string{"--json", "version"}},
+		{name: "yaml-after-command", args: []string{"version", "--yaml"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			if code := run(test.args, &stdout, &stderr); code != exitOK {
+				t.Fatalf("code=%d stderr=%s", code, stderr.String())
+			}
+			if strings.Contains(stdout.String(), "\x1b[") {
+				t.Fatalf("structured output contains ANSI: %q", stdout.String())
+			}
+			var decoded map[string]any
+			var err error
+			if strings.Contains(test.name, "json") {
+				err = json.Unmarshal(stdout.Bytes(), &decoded)
+			} else {
+				err = yaml.Unmarshal(stdout.Bytes(), &decoded)
+			}
+			if err != nil || decoded["name"] != "farrow" {
+				t.Fatalf("output=%q decoded=%v err=%v", stdout.String(), decoded, err)
+			}
+		})
+	}
+}
+
+func TestStructuredInteractiveSSHKeepsSessionOffStdout(t *testing.T) {
+	for _, format := range []string{"--json", "--yaml"} {
+		t.Run(format, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			_, out, errOut, err := prepareOutput([]string{"ssh", format}, &stdout, &stderr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, runErr := executeSSHProcess(
+				context.Background(), "ssh", "meta", "dba", "127.0.0.1", 2222,
+				"/bin/sh", []string{"-c", "printf interactive-session"}, nil, out, errOut,
+			)
+			if runErr != nil || !result.Interactive || result.SessionStream != "stderr" || result.ExitCode != 0 {
+				t.Fatalf("result=%+v err=%v", result, runErr)
+			}
+			if stdout.Len() != 0 || stderr.String() != "interactive-session" {
+				t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			if code := encodeJSON(out, errOut, result); code != exitOK {
+				t.Fatalf("encode code=%d stderr=%q", code, stderr.String())
+			}
+			var decoded map[string]any
+			if format == "--json" {
+				err = json.Unmarshal(stdout.Bytes(), &decoded)
+			} else {
+				err = yaml.Unmarshal(stdout.Bytes(), &decoded)
+			}
+			if err != nil || decoded["command"] != "ssh" || decoded["session_stream"] != "stderr" {
+				t.Fatalf("output=%q decoded=%v err=%v", stdout.String(), decoded, err)
+			}
+		})
+	}
+}
+
+func TestCompletionStructuredEnvelope(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"completion", "bash", "--json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	var result struct {
+		Shell  string `json:"shell"`
+		Script string `json:"script"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Shell != "bash" || !strings.Contains(result.Script, "complete -F _farrow_complete farrow") {
+		t.Fatalf("result=%+v err=%v output=%s", result, err, stdout.String())
+	}
+}

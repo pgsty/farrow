@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
+	"github.com/pgsty/farrow/internal/execx"
 )
 
 type rejectingRunner struct{}
@@ -58,7 +58,7 @@ func serveQMPIdentity(t *testing.T, socket, name, uuid string) {
 
 func TestRuntimeIdentityAuditorQMPFirstAuthority(t *testing.T) {
 	t.Parallel()
-	directory, err := os.MkdirTemp("/tmp", "piglet-lease-qmp-")
+	directory, err := os.MkdirTemp("/tmp", "farrow-lease-qmp-")
 	if err != nil {
 		t.Fatal(err)
 	}

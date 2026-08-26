@@ -8,10 +8,10 @@ source_root=${PIGSTY_SOURCE:-}
 }
 source_root=$(cd "${source_root}" && pwd -P)
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
-root=$(mktemp -d "${TMPDIR:-/tmp}/piglet-pigsty-source-test.XXXXXX")
+root=$(mktemp -d "${TMPDIR:-/tmp}/farrow-pigsty-source-test.XXXXXX")
 cleanup() {
   case ${root} in
-    "${TMPDIR:-/tmp}"/piglet-pigsty-source-test.*) rm -rf -- "${root}" ;;
+    "${TMPDIR:-/tmp}"/farrow-pigsty-source-test.*) rm -rf -- "${root}" ;;
     *) printf 'refuse unsafe Pigsty source test cleanup: %s\n' "${root}" >&2 ;;
   esac
 }
@@ -19,11 +19,11 @@ trap cleanup EXIT
 
 makefile=${source_root}/Makefile
 section=${root}/sandbox-section
-sed -n '/#                       5[.] Piglet/,/#                       6[.] Testing/p' "${makefile}" >"${section}"
+sed -n '/#                       5[.] Farrow/,/#                       6[.] Testing/p' "${makefile}" >"${section}"
 rg -F 'PIGSTY_VM?=pigsty-vm' "${makefile}" >/dev/null
-rg -F 'PIGSTY_INVENTORY?=$(CURDIR)/.piglet/pigsty.yml' "${makefile}" >/dev/null
-rg -F 'PIGSTY_SSH_CONFIG?=$(CURDIR)/.piglet/ssh_config' "${makefile}" >/dev/null
-rg -F '.piglet/' "${source_root}/.gitignore" >/dev/null
+rg -F 'PIGSTY_INVENTORY?=$(CURDIR)/.farrow/pigsty.yml' "${makefile}" >/dev/null
+rg -F 'PIGSTY_SSH_CONFIG?=$(CURDIR)/.farrow/ssh_config' "${makefile}" >/dev/null
+rg -F '.farrow/' "${source_root}/.gitignore" >/dev/null
 if rg -i '\bvagrant\b|virtualbox|libvirt|VM_PROVIDER|suspend|resume|nuke' "${section}" >/dev/null; then
   printf 'Pigsty sandbox section retains a predecessor runtime concept\n' >&2
   exit 1
@@ -40,7 +40,7 @@ bash -n "${source_root}/bin/release"
 
 dry=${root}/dry-run
 make -C "${source_root}" -n sandbox \
-  PIGSTY_VM="${repo}/bin/pigsty-vm" PIGLET_BIN="${repo}/bin/piglet" \
+  PIGSTY_VM="${repo}/bin/pigsty-vm" FARROW_BIN="${repo}/bin/farrow" \
   VM_SPEC=full VM_SCALE=2 VM_IMAGE=u24 VM_NETWORK_CIDR=172.31.251.0/24 \
   PIGSTY_INVENTORY="${root}/pigsty.yml" PIGSTY_SSH_CONFIG="${root}/ssh_config" >"${dry}"
 rg -F 'VM_SPEC="full" VM_IMAGE="u24" VM_SCALE="2" VM_ARCH="native" VM_NETWORK_CIDR="172.31.251.0/24"' "${dry}" >/dev/null

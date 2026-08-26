@@ -12,8 +12,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/openssh"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/openssh"
 	"golang.org/x/sys/unix"
 )
 
@@ -59,9 +59,9 @@ func validateEntry(entry Entry) error {
 }
 
 func markers(projectID string) (string, string, string) {
-	begin := "# piglet:" + projectID + ":begin"
-	end := "# piglet:" + projectID + ":end"
-	include := "# piglet:" + projectID + ":include"
+	begin := "# farrow:" + projectID + ":begin"
+	end := "# farrow:" + projectID + ":end"
+	include := "# farrow:" + projectID + ":include"
 	return begin, end, include
 }
 
@@ -167,7 +167,7 @@ func ensureSSHDir(home string) (string, error) {
 }
 
 func acquireLock(directory string) (func(), error) {
-	path := filepath.Join(directory, ".piglet.lock")
+	path := filepath.Join(directory, ".farrow.lock")
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
@@ -180,7 +180,7 @@ func acquireLock(directory string) (func(), error) {
 	}()
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || int(stat.Uid) != os.Geteuid() || stat.Nlink != 1 || stat.Mode&0o777 != 0o600 {
-		return nil, errors.New("piglet SSH integration lock metadata is unsafe")
+		return nil, errors.New("farrow SSH integration lock metadata is unsafe")
 	}
 	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
 		return nil, err
@@ -289,7 +289,7 @@ func InstallMany(home string, entries []Entry) (Result, error) {
 	if fragmentExists {
 		trimmed := strings.TrimSuffix(string(existingFragment), "\n")
 		if !strings.HasPrefix(trimmed, begin+"\n") || !strings.HasSuffix(trimmed, "\n"+end) || strings.Count(trimmed, begin) != 1 || strings.Count(trimmed, end) != 1 {
-			return Result{}, errors.New("refuse overwrite of SSH fragment without exact Piglet ownership markers")
+			return Result{}, errors.New("refuse overwrite of SSH fragment without exact Farrow ownership markers")
 		}
 	}
 	fragmentModeChanged, err := wrongMode(fragment, fragmentExists, 0o600)
@@ -314,7 +314,7 @@ func InstallMany(home string, entries []Entry) (Result, error) {
 	markerCount := strings.Count(configText, includeMarker)
 	blockCount := strings.Count(configText, block)
 	if markerCount > 1 || blockCount > 1 || markerCount != blockCount {
-		return Result{}, errors.New("refuse adoption of malformed Piglet SSH Include block")
+		return Result{}, errors.New("refuse adoption of malformed Farrow SSH Include block")
 	}
 	if strings.Contains(configText, includeLine) && blockCount == 0 {
 		return Result{}, errors.New("refuse adoption of unmarked matching SSH Include")
@@ -386,7 +386,7 @@ func Remove(home, projectID, name string) (Result, error) {
 	if fragmentExists {
 		trimmed := strings.TrimSuffix(string(fragmentData), "\n")
 		if !strings.HasPrefix(trimmed, begin+"\n") || !strings.HasSuffix(trimmed, "\n"+end) || strings.Count(trimmed, begin) != 1 || strings.Count(trimmed, end) != 1 {
-			return Result{}, errors.New("refuse removal of SSH fragment without exact Piglet ownership markers")
+			return Result{}, errors.New("refuse removal of SSH fragment without exact Farrow ownership markers")
 		}
 	}
 	configText := string(config)
@@ -398,7 +398,7 @@ func Remove(home, projectID, name string) (Result, error) {
 	configChanged := false
 	if configExists && strings.Contains(configText, includeMarker) {
 		if strings.Count(string(config), includeMarker) != 1 || strings.Count(string(config), block) != 1 {
-			return Result{}, errors.New("refuse removal of malformed Piglet SSH Include block")
+			return Result{}, errors.New("refuse removal of malformed Farrow SSH Include block")
 		}
 		updatedConfig = strings.Replace(configText, block, "", 1)
 		configChanged = true

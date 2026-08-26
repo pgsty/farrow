@@ -34,44 +34,46 @@ wrapper_sha=$(shasum -a 256 "${repo}/packaging/pigsty/vm" | awk '{print $1}')
 source "${repo}/packaging/toolchain.env"
 
 temporary_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
-temporary=$(mktemp -d "${temporary_parent}/piglet-package-verify.XXXXXX")
+temporary=$(mktemp -d "${temporary_parent}/farrow-package-verify.XXXXXX")
 temporary=$(cd "${temporary}" && pwd -P)
 cleanup() {
   case ${temporary} in
-    "${temporary_parent}"/piglet-package-verify.*) rm -rf -- "${temporary}" ;;
+    "${temporary_parent}"/farrow-package-verify.*) rm -rf -- "${temporary}" ;;
     *) printf 'refuse unsafe verification cleanup: %s\n' "${temporary}" >&2 ;;
   esac
 }
 trap cleanup EXIT
 
 expected_paths=(
-  opt/piglet/libexec/piglet-hosts-helper
-  usr/bin/piglet
+  opt/farrow/libexec/farrow-hosts-helper
+  usr/bin/farrow
   usr/bin/pigsty-vm
-  usr/share/doc/piglet/ARCHITECTURE.md
-  usr/share/doc/piglet/BUILD_INFO.json
-  usr/share/doc/piglet/IMAGE_CONTRACT.md
-  usr/share/doc/piglet/INSTALL.md
-  usr/share/doc/piglet/LICENSE
-  usr/share/doc/piglet/MIGRATION.md
-  usr/share/doc/piglet/NETWORKING.md
-  usr/share/doc/piglet/README.md
-  usr/share/doc/piglet/RELEASE.md
-  usr/share/doc/piglet/SECURITY.md
-  usr/share/doc/piglet/TESTING.md
-  usr/share/doc/piglet/THIRD_PARTY_LICENSES.md
-  usr/share/doc/piglet/TROUBLESHOOTING.md
-  usr/share/doc/piglet/UPGRADE.md
-  usr/share/doc/piglet/licenses/aead.dev-minisign-LICENSE
-  usr/share/doc/piglet/licenses/github.com-diskfs-go-diskfs-LICENSE
-  usr/share/doc/piglet/licenses/github.com-djherbis-times-LICENSE
-  usr/share/doc/piglet/licenses/go.yaml.in-yaml-v3-LICENSE
-  usr/share/doc/piglet/licenses/go.yaml.in-yaml-v3-NOTICE
-  usr/share/doc/piglet/licenses/golang.org-go-stdlib-LICENSE
-  usr/share/doc/piglet/licenses/golang.org-x-crypto-LICENSE
-  usr/share/doc/piglet/licenses/golang.org-x-sys-LICENSE
-  usr/share/doc/piglet/licenses/golang.org-x-term-LICENSE
-  usr/share/piglet/schemas/piglet-v1.schema.json
+  usr/share/doc/farrow/BUILD_INFO.json
+  usr/share/doc/farrow/LICENSE
+  usr/share/doc/farrow/README.md
+  usr/share/doc/farrow/THIRD_PARTY_LICENSES.md
+  usr/share/doc/farrow/docs/architecture.md
+  usr/share/doc/farrow/docs/cli.md
+  usr/share/doc/farrow/docs/config.md
+  usr/share/doc/farrow/docs/development.md
+  usr/share/doc/farrow/docs/images.md
+  usr/share/doc/farrow/docs/networking.md
+  usr/share/doc/farrow/docs/phase-2.md
+  usr/share/doc/farrow/docs/pigsty.md
+  usr/share/doc/farrow/docs/security.md
+  usr/share/doc/farrow/docs/status.md
+  usr/share/doc/farrow/docs/troubleshooting.md
+  usr/share/doc/farrow/licenses/aead.dev-minisign-LICENSE
+  usr/share/doc/farrow/licenses/github.com-diskfs-go-diskfs-LICENSE
+  usr/share/doc/farrow/licenses/github.com-djherbis-times-LICENSE
+  usr/share/doc/farrow/licenses/go.yaml.in-yaml-v3-LICENSE
+  usr/share/doc/farrow/licenses/go.yaml.in-yaml-v3-NOTICE
+  usr/share/doc/farrow/licenses/golang.org-go-stdlib-LICENSE
+  usr/share/doc/farrow/licenses/golang.org-x-crypto-LICENSE
+  usr/share/doc/farrow/licenses/golang.org-x-sys-LICENSE
+  usr/share/doc/farrow/licenses/golang.org-x-term-LICENSE
+  usr/share/doc/farrow/tests/e2e/README.md
+  usr/share/farrow/schemas/farrow-v1.schema.json
 )
 expected_list=$(printf '%s\n' "${expected_paths[@]}" | LC_ALL=C sort)
 
@@ -190,7 +192,7 @@ verify_deb_control() {
   verify_archive_member_mtimes "${control_archives[0]}" "${control_root}" "${package} control" "${source_epoch}"
   control=${control_root}/control
   [[ -f ${control} && ! -L ${control} ]] || { printf 'DEB control file is missing or unsafe: %s\n' "${package}" >&2; exit 1; }
-  grep -Fx 'Package: piglet' "${control}" >/dev/null
+  grep -Fx 'Package: farrow' "${control}" >/dev/null
   grep -Fx "Version: ${debian_version}-1" "${control}" >/dev/null
   grep -Fx "Architecture: ${arch}" "${control}" >/dev/null
   grep -Fx 'Maintainer: Pigsty <repo@pigsty.cc>' "${control}" >/dev/null
@@ -209,8 +211,8 @@ checksum_names=$(awk '{print $2}' "${directory}/checksums.txt" | LC_ALL=C sort)
 expected_checksum_names=$(
   for arch in amd64 arm64; do
     for format in deb rpm; do
-      printf 'piglet_%s_linux_%s.%s\n' "${version}" "${arch}" "${format}"
-      printf 'piglet_%s_linux_%s.%s.spdx.json\n' "${version}" "${arch}" "${format}"
+      printf 'farrow_%s_linux_%s.%s\n' "${version}" "${arch}" "${format}"
+      printf 'farrow_%s_linux_%s.%s.spdx.json\n' "${version}" "${arch}" "${format}"
     done
   done | LC_ALL=C sort
 )
@@ -221,24 +223,24 @@ for arch in amd64 arm64; do
     arm64) architecture_pattern='ARM aarch64' ;;
   esac
   for format in deb rpm; do
-    package=${directory}/piglet_${version}_linux_${arch}.${format}
+    package=${directory}/farrow_${version}_linux_${arch}.${format}
     sbom=${package}.spdx.json
     [[ -s ${package} && -s ${sbom} ]] || { printf 'missing package/SBOM: %s\n' "${package}" >&2; exit 1; }
     package_sha=$(shasum -a 256 "${package}" | awk '{print $1}')
-    namespace=https://github.com/pgsty/piglet/sbom/${version}/${arch}/${format}/${package_sha}
+    namespace=https://github.com/pgsty/farrow/sbom/${version}/${arch}/${format}/${package_sha}
     jq -e --arg name "$(basename "${package}")" --arg version "${version}" --arg digest "${package_sha}" \
-      --arg created "${build_date}" --arg namespace "${namespace}" --arg go_version "go${PIGLET_GO_VERSION}" --arg wrapper_sha "${wrapper_sha}" '
+      --arg created "${build_date}" --arg namespace "${namespace}" --arg go_version "go${FARROW_GO_VERSION}" --arg wrapper_sha "${wrapper_sha}" '
       .spdxVersion == "SPDX-2.3" and
       .name == $name and
       .creationInfo.created == $created and .documentNamespace == $namespace and
       any(.packages[]?; .name == $name and .versionInfo == $version and any(.checksums[]?; .algorithm == "SHA256" and .checksumValue == $digest)) and
-      any(.packages[]?; .name == "github.com/pgsty/piglet") and
+      any(.packages[]?; .name == "github.com/pgsty/farrow") and
       any(.packages[]?; .name == "github.com/diskfs/go-diskfs") and
       any(.packages[]?; .name == "go.yaml.in/yaml/v3") and
       any(.packages[]?; .name == "stdlib" and .versionInfo == $go_version and .licenseDeclared == "BSD-3-Clause") and
-      any(.files[]?; .fileName == "usr/bin/piglet") and
+      any(.files[]?; .fileName == "usr/bin/farrow") and
       any(.files[]?; .fileName == "usr/bin/pigsty-vm" and any(.checksums[]?; .algorithm == "SHA256" and .checksumValue == $wrapper_sha)) and
-      any(.files[]?; .fileName == "opt/piglet/libexec/piglet-hosts-helper") and
+      any(.files[]?; .fileName == "opt/farrow/libexec/farrow-hosts-helper") and
       ((.packages | length) >= 10) and ((.files | length) >= 3)
     ' "${sbom}" >/dev/null
 
@@ -247,32 +249,32 @@ for arch in amd64 arm64; do
     [[ -z $(find "${root}" -type l -print -quit) ]] || { printf 'package contains a symbolic link: %s\n' "${package}" >&2; exit 1; }
     actual_list=$(cd "${root}" && find . -type f -print | sed 's#^\./##' | LC_ALL=C sort)
     [[ ${actual_list} == "${expected_list}" ]] || { printf 'unexpected package payload in %s\n' "${package}" >&2; diff -u <(printf '%s\n' "${expected_list}") <(printf '%s\n' "${actual_list}") >&2 || true; exit 1; }
-    [[ $(file_mode "${root}/usr/bin/piglet") == 755 ]]
-    [[ $(file_mode "${root}/opt/piglet/libexec/piglet-hosts-helper") == 755 ]]
+    [[ $(file_mode "${root}/usr/bin/farrow") == 755 ]]
+    [[ $(file_mode "${root}/opt/farrow/libexec/farrow-hosts-helper") == 755 ]]
     [[ $(file_mode "${root}/usr/bin/pigsty-vm") == 755 ]]
     cmp "${repo}/packaging/pigsty/vm" "${root}/usr/bin/pigsty-vm"
-    for path in opt/piglet opt/piglet/libexec usr/share/doc/piglet usr/share/doc/piglet/licenses usr/share/piglet usr/share/piglet/schemas; do
+    for path in opt/farrow opt/farrow/libexec usr/share/doc/farrow usr/share/doc/farrow/licenses usr/share/farrow usr/share/farrow/schemas; do
       [[ -d ${root}/${path} && $(file_mode "${root}/${path}") == 755 ]] || { printf 'unexpected package directory mode for %s in %s\n' "${path}" "${package}" >&2; exit 1; }
     done
     for path in "${expected_paths[@]}"; do
-      case ${path} in opt/piglet/libexec/piglet-hosts-helper|usr/bin/piglet|usr/bin/pigsty-vm) continue ;; esac
+      case ${path} in opt/farrow/libexec/farrow-hosts-helper|usr/bin/farrow|usr/bin/pigsty-vm) continue ;; esac
       [[ $(file_mode "${root}/${path}") == 644 ]] || { printf 'unexpected mode for %s in %s\n' "${path}" "${package}" >&2; exit 1; }
     done
-    file -b "${root}/usr/bin/piglet" | grep -F "${architecture_pattern}" >/dev/null
-    file -b "${root}/opt/piglet/libexec/piglet-hosts-helper" | grep -F "${architecture_pattern}" >/dev/null
-    go version -m "${root}/usr/bin/piglet" | sed -n '1p' | grep -F "go${PIGLET_GO_VERSION}" >/dev/null
-    go version -m "${root}/opt/piglet/libexec/piglet-hosts-helper" | sed -n '1p' | grep -F "go${PIGLET_GO_VERSION}" >/dev/null
-    piglet_sha=$(shasum -a 256 "${root}/usr/bin/piglet" | awk '{print $1}')
-    helper_sha=$(shasum -a 256 "${root}/opt/piglet/libexec/piglet-hosts-helper" | awk '{print $1}')
-    grep -a -F "${helper_sha}" "${root}/usr/bin/piglet" >/dev/null
-    grep -a -F "${commit}" "${root}/usr/bin/piglet" >/dev/null
-    grep -a -F "${build_date}" "${root}/usr/bin/piglet" >/dev/null
+    file -b "${root}/usr/bin/farrow" | grep -F "${architecture_pattern}" >/dev/null
+    file -b "${root}/opt/farrow/libexec/farrow-hosts-helper" | grep -F "${architecture_pattern}" >/dev/null
+    go version -m "${root}/usr/bin/farrow" | sed -n '1p' | grep -F "go${FARROW_GO_VERSION}" >/dev/null
+    go version -m "${root}/opt/farrow/libexec/farrow-hosts-helper" | sed -n '1p' | grep -F "go${FARROW_GO_VERSION}" >/dev/null
+    farrow_sha=$(shasum -a 256 "${root}/usr/bin/farrow" | awk '{print $1}')
+    helper_sha=$(shasum -a 256 "${root}/opt/farrow/libexec/farrow-hosts-helper" | awk '{print $1}')
+    grep -a -F "${helper_sha}" "${root}/usr/bin/farrow" >/dev/null
+    grep -a -F "${commit}" "${root}/usr/bin/farrow" >/dev/null
+    grep -a -F "${build_date}" "${root}/usr/bin/farrow" >/dev/null
     jq -e --arg version "${version}" --arg arch "${arch}" --arg commit "${commit}" --arg date "${build_date}" \
-      --argjson source_epoch "${source_epoch}" --arg piglet_sha "${piglet_sha}" --arg helper_sha "${helper_sha}" '
+      --argjson source_epoch "${source_epoch}" --arg farrow_sha "${farrow_sha}" --arg helper_sha "${helper_sha}" '
       .schema == 1 and .version == $version and .goos == "linux" and .goarch == $arch and
       .commit == $commit and .date == $date and .source_date_epoch == $source_epoch and
-      .cgo_enabled == false and .piglet_sha256 == $piglet_sha and .hosts_helper_sha256 == $helper_sha
-    ' "${root}/usr/share/doc/piglet/BUILD_INFO.json" >/dev/null
+      .cgo_enabled == false and .farrow_sha256 == $farrow_sha and .hosts_helper_sha256 == $helper_sha
+    ' "${root}/usr/share/doc/farrow/BUILD_INFO.json" >/dev/null
     if [[ ${format} == deb ]]; then
       verify_deb_control "${package}" "${arch}"
     fi

@@ -20,16 +20,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/cloudinit"
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/identity"
-	usernet "github.com/pgsty/piglet/internal/network/user"
-	"github.com/pgsty/piglet/internal/openssh"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/qmp"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/identity"
+	usernet "github.com/pgsty/farrow/internal/network/user"
+	"github.com/pgsty/farrow/internal/openssh"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 type QuickOptions struct {
@@ -311,7 +311,7 @@ func waitSSHReady(ctx context.Context, runner execx.Runner, sshPath, key, knownH
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		args := sshArgs(key, knownHosts, port, "cat", "/var/lib/piglet/ready.json")
+		args := sshArgs(key, knownHosts, port, "cat", "/var/lib/farrow/ready.json")
 		if args == nil {
 			return "", errors.New("invalid OpenSSH known_hosts path")
 		}
@@ -589,7 +589,7 @@ func QuickSmoke(ctx context.Context, options QuickOptions) (evidence QuickEviden
 	evidence.SSHPort, evidence.Forwards = sshPort, forwards
 
 	keyPath := filepath.Join(options.WorkDir, "id_ed25519")
-	if _, err := runner.Run(ctx, sshKeygenPath, "-q", "-t", "ed25519", "-N", "", "-C", "piglet-m0", "-f", keyPath); err != nil {
+	if _, err := runner.Run(ctx, sshKeygenPath, "-q", "-t", "ed25519", "-N", "", "-C", "farrow-m0", "-f", keyPath); err != nil {
 		return evidence, err
 	}
 	publicKey, err := os.ReadFile(keyPath + ".pub")
@@ -637,7 +637,7 @@ func QuickSmoke(ctx context.Context, options QuickOptions) (evidence QuickEviden
 		qemuFirmware = &qemu.Firmware{Code: firmware.Code, Vars: nvramPath}
 	}
 
-	runtimeDir := filepath.Join("/tmp", "piglet-m0-"+strings.ReplaceAll(projectID[:8], "-", ""))
+	runtimeDir := filepath.Join("/tmp", "farrow-m0-"+strings.ReplaceAll(projectID[:8], "-", ""))
 	if err := os.Mkdir(runtimeDir, 0o700); err != nil {
 		return evidence, fmt.Errorf("create short runtime directory: %w", err)
 	}
@@ -690,7 +690,7 @@ func QuickSmoke(ctx context.Context, options QuickOptions) (evidence QuickEviden
 		"arch":     {"uname", "-m"},
 		"data":     {"findmnt", "-n", "-o", "SOURCE,FSTYPE,OPTIONS", "/data"},
 		"dns":      {"getent", "hosts", "archive.ubuntu.com"},
-		"internet": {"/usr/local/libexec/piglet-network-check"},
+		"internet": {"/usr/local/libexec/farrow-network-check"},
 	} {
 		output, checkErr := runSSHCheck(ctx, runner, sshPath, keyPath, knownHosts, sshPort, command...)
 		if checkErr != nil {
@@ -747,7 +747,7 @@ func QuickSmoke(ctx context.Context, options QuickOptions) (evidence QuickEviden
 		return evidence, err
 	}
 	evidence.Checks["ntp-synchronized"] = ntp
-	if _, err := runSSHCheck(ctx, runner, sshPath, keyPath, knownHosts, sshPort, "sudo", "touch", "/data/piglet-m0-persist"); err != nil {
+	if _, err := runSSHCheck(ctx, runner, sshPath, keyPath, knownHosts, sshPort, "sudo", "touch", "/data/farrow-m0-persist"); err != nil {
 		return evidence, fmt.Errorf("create data persistence canary: %w", err)
 	}
 	if err := stopQEMU(ctx, client, qmpSocket, "meta", projectID, pid); err != nil {
@@ -775,7 +775,7 @@ func QuickSmoke(ctx context.Context, options QuickOptions) (evidence QuickEviden
 	if _, err := waitSSHReady(ctx, runner, sshPath, keyPath, knownHosts, sshPort, expectedReady, options.ReadyTimeout); err != nil {
 		return evidence, fmt.Errorf("ready after restart: %w", err)
 	}
-	if _, err := runSSHCheck(ctx, runner, sshPath, keyPath, knownHosts, sshPort, "sudo", "test", "-f", "/data/piglet-m0-persist"); err != nil {
+	if _, err := runSSHCheck(ctx, runner, sshPath, keyPath, knownHosts, sshPort, "sudo", "test", "-f", "/data/farrow-m0-persist"); err != nil {
 		return evidence, fmt.Errorf("data persistence canary missing after restart: %w", err)
 	}
 	evidence.Checks["data-persistence"] = "passed"

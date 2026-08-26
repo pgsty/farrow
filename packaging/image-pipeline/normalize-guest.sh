@@ -69,22 +69,22 @@ for user in root "${source_user}" dba "${normal_users[@]}"; do
 done
 
 install -d -o root -g root -m 0755 /etc/sudoers.d
-printf 'dba ALL=(ALL) NOPASSWD: ALL\n' >/etc/sudoers.d/90-piglet-dba
-chown root:root /etc/sudoers.d/90-piglet-dba
-chmod 0440 /etc/sudoers.d/90-piglet-dba
+printf 'dba ALL=(ALL) NOPASSWD: ALL\n' >/etc/sudoers.d/90-farrow-dba
+chown root:root /etc/sudoers.d/90-farrow-dba
+chmod 0440 /etc/sudoers.d/90-farrow-dba
 if command -v visudo >/dev/null; then
   visudo -cf /etc/sudoers >/dev/null
 fi
 
 install -d -o root -g root -m 0755 /etc/ssh/sshd_config.d
-cat >/etc/ssh/sshd_config.d/99-piglet-image.conf <<'EOF'
+cat >/etc/ssh/sshd_config.d/99-farrow-image.conf <<'EOF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PermitRootLogin no
 PubkeyAuthentication yes
 EOF
-chmod 0644 /etc/ssh/sshd_config.d/99-piglet-image.conf
+chmod 0644 /etc/ssh/sshd_config.d/99-farrow-image.conf
 rm -f -- /etc/ssh/ssh_host_*
 
 : >/etc/machine-id
@@ -124,10 +124,10 @@ if [[ -d /var/lib/cloud ]]; then
   [[ -z ${residual} ]] || { printf 'residual cloud-init cache: %s\n' "${residual}" >&2; exit 5; }
 fi
 
-install -d -o root -g root -m 0755 /var/lib/piglet-image
-printf '{"schema":1,"recipe":"piglet-official-image-normalization-v1","source_user":"%s","source_date_epoch":%s,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied"}\n' \
-  "${source_user}" "${source_date_epoch}" >/var/lib/piglet-image/normalization.json
-chmod 0644 /var/lib/piglet-image/normalization.json
+install -d -o root -g root -m 0755 /var/lib/farrow-image
+printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","source_user":"%s","source_date_epoch":%s,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied"}\n' \
+  "${source_user}" "${source_date_epoch}" >/var/lib/farrow-image/normalization.json
+chmod 0644 /var/lib/farrow-image/normalization.json
 
 # Normalize the metadata of files created by this recipe. Filesystem journals
 # and allocation are still part of the pinned native toolchain boundary; the
@@ -135,9 +135,9 @@ chmod 0644 /var/lib/piglet-image/normalization.json
 touch -d "@${source_date_epoch}" \
   /home/dba /home/dba/.ssh \
   /etc/machine-id \
-  /etc/sudoers.d/90-piglet-dba \
-  /etc/ssh/sshd_config.d/99-piglet-image.conf \
-  /var/lib/piglet-image /var/lib/piglet-image/normalization.json
+  /etc/sudoers.d/90-farrow-dba \
+  /etc/ssh/sshd_config.d/99-farrow-image.conf \
+  /var/lib/farrow-image /var/lib/farrow-image/normalization.json
 
 # EL guests enforce SELinux labels. A blanket virt-customize
 # --selinux-relabel is not valid for the Debian/Ubuntu inputs, so relabel only
@@ -145,7 +145,7 @@ touch -d "@${source_date_epoch}" \
 # is present. Native boot/readiness remains a promotion gate.
 if command -v restorecon >/dev/null; then
   restorecon -F /etc/passwd /etc/group /etc/shadow /etc/gshadow /etc/machine-id
-  restorecon -RF /home/dba /etc/sudoers.d/90-piglet-dba \
-    /etc/ssh/sshd_config.d/99-piglet-image.conf /var/lib/piglet-image
+  restorecon -RF /home/dba /etc/sudoers.d/90-farrow-dba \
+    /etc/ssh/sshd_config.d/99-farrow-image.conf /var/lib/farrow-image
   [[ ! -e /var/lib/dbus/machine-id ]] || restorecon -F /var/lib/dbus/machine-id
 fi

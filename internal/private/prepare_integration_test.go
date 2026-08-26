@@ -9,19 +9,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/cloudinit"
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 func TestIntegrationRealPrivateOfflinePrepare(t *testing.T) {
-	imagePath := os.Getenv("PIGLET_PRIVATE_PREPARE_IMAGE")
-	output := os.Getenv("PIGLET_PRIVATE_PREPARE_OUTPUT")
+	imagePath := os.Getenv("FARROW_PRIVATE_PREPARE_IMAGE")
+	output := os.Getenv("FARROW_PRIVATE_PREPARE_OUTPUT")
 	if imagePath == "" || output == "" {
-		t.Skip("set PIGLET_PRIVATE_PREPARE_IMAGE and PIGLET_PRIVATE_PREPARE_OUTPUT")
+		t.Skip("set FARROW_PRIVATE_PREPARE_IMAGE and FARROW_PRIVATE_PREPARE_OUTPUT")
 	}
 	entries, err := os.ReadDir(output)
 	if err != nil || len(entries) != 0 {
@@ -72,7 +72,7 @@ func TestIntegrationRealPrivateOfflinePrepare(t *testing.T) {
 		Bases:    map[string]BaseImage{"u24": {Path: imagePath, Alias: "u24", Release: "20260801", Digest: strings.Repeat("a", 64), VirtualSize: 3758096384}},
 		SSHPorts: map[string]uint16{"meta": 2222, "node-1": 2223}, Profile: profile,
 		QEMUBinary: qemuPath, Firmware: firmware,
-		Backend: Backend{DarwinSocket: "/private/var/run/piglet-vmnet.sock", ReconnectMS: 1000},
+		Backend: Backend{DarwinSocket: "/private/var/run/farrow-vmnet.sock", ReconnectMS: 1000},
 		Disks:   disk.Manager{QEMUImg: qemuImg, Runner: runner},
 	}
 	outcomes := PrepareAll(context.Background(), config, 2)

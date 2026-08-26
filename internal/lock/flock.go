@@ -1,4 +1,4 @@
-// Package lock implements bounded advisory file locks for Piglet's fixed lock
+// Package lock implements bounded advisory file locks for Farrow's fixed lock
 // order: cache/global, private lease, project, then node.
 package lock
 
@@ -8,14 +8,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
 
 type File struct {
+	mu     sync.Mutex
 	handle *os.File
 	path   string
+	shared bool
 }
 
 func Acquire(ctx context.Context, path string, shared bool) (*File, error) {
@@ -37,7 +40,7 @@ func Acquire(ctx context.Context, path string, shared bool) (*File, error) {
 	}
 	for {
 		if err := unix.Flock(int(handle.Fd()), operation); err == nil {
-			return &File{handle: handle, path: path}, nil
+			return &File{handle: handle, path: path, shared: shared}, nil
 		} else if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
 			_ = handle.Close()
 			return nil, fmt.Errorf("lock %s: %w", path, err)
@@ -53,8 +56,37 @@ func Acquire(ctx context.Context, path string, shared bool) (*File, error) {
 
 func (f *File) Path() string { return f.path }
 
+// ValidateExclusive proves that the token still owns an unreleased exclusive
+// lock for exactly path. Locked helpers use this instead of relying on a
+// naming convention that callers could accidentally violate.
+func (f *File) ValidateExclusive(path string) error {
+	if f == nil {
+		return errors.New("exclusive lock token is nil")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.handle == nil {
+		return errors.New("exclusive lock token has been released")
+	}
+	if f.shared {
+		return errors.New("lock token is shared, not exclusive")
+	}
+	if path == "" || f.path != path {
+		return fmt.Errorf("lock token path mismatch: held %q, required %q", f.path, path)
+	}
+	if _, err := f.handle.Stat(); err != nil {
+		return fmt.Errorf("exclusive lock token is not live: %w", err)
+	}
+	return nil
+}
+
 func (f *File) Release() error {
-	if f == nil || f.handle == nil {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.handle == nil {
 		return nil
 	}
 	unlockErr := unix.Flock(int(f.handle.Fd()), unix.LOCK_UN)

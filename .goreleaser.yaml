@@ -1,11 +1,11 @@
 version: 2
 
-project_name: piglet
+project_name: farrow
 
 builds:
-  - id: piglet
-    main: ./cmd/piglet
-    binary: bin/piglet
+  - id: farrow
+    main: ./cmd/farrow
+    binary: bin/farrow
     env:
       - CGO_ENABLED=0
       - GOFLAGS=-mod=readonly
@@ -24,13 +24,13 @@ builds:
     ldflags:
       - >-
         -buildid= -s -w
-        -X github.com/pgsty/piglet/internal/version.Version={{.Version}}
-        -X github.com/pgsty/piglet/internal/version.Commit={{.FullCommit}}
-        -X github.com/pgsty/piglet/internal/version.Date={{.CommitDate}}
+        -X github.com/pgsty/farrow/internal/version.Version={{.Version}}
+        -X github.com/pgsty/farrow/internal/version.Commit={{.FullCommit}}
+        -X github.com/pgsty/farrow/internal/version.Date={{.CommitDate}}
     mod_timestamp: "{{ .CommitTimestamp }}"
-  - id: piglet-hosts-helper
-    main: ./cmd/piglet-hosts-helper
-    binary: bin/piglet-hosts-helper
+  - id: farrow-hosts-helper
+    main: ./cmd/farrow-hosts-helper
+    binary: bin/farrow-hosts-helper
     env:
       - CGO_ENABLED=0
       - GOFLAGS=-mod=readonly
@@ -44,8 +44,8 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
-  - id: piglet
-    ids: [piglet, piglet-hosts-helper]
+  - id: farrow
+    ids: [farrow, farrow-hosts-helper]
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
@@ -72,35 +72,41 @@ archives:
           group: root
           mode: 0755
           mtime: "{{ .CommitDate }}"
-      - src: docs/ARCHITECTURE.md
-        dst: docs/ARCHITECTURE.md
+      - src: docs/architecture.md
+        dst: docs/architecture.md
         info: *archive_file_info
-      - src: docs/IMAGE_CONTRACT.md
-        dst: docs/IMAGE_CONTRACT.md
+      - src: docs/cli.md
+        dst: docs/cli.md
         info: *archive_file_info
-      - src: docs/INSTALL.md
-        dst: docs/INSTALL.md
+      - src: docs/config.md
+        dst: docs/config.md
         info: *archive_file_info
-      - src: docs/MIGRATION.md
-        dst: docs/MIGRATION.md
+      - src: docs/development.md
+        dst: docs/development.md
         info: *archive_file_info
-      - src: docs/NETWORKING.md
-        dst: docs/NETWORKING.md
+      - src: docs/images.md
+        dst: docs/images.md
         info: *archive_file_info
-      - src: docs/RELEASE.md
-        dst: docs/RELEASE.md
+      - src: docs/networking.md
+        dst: docs/networking.md
         info: *archive_file_info
-      - src: docs/SECURITY.md
-        dst: docs/SECURITY.md
+      - src: docs/phase-2.md
+        dst: docs/phase-2.md
         info: *archive_file_info
-      - src: docs/TESTING.md
-        dst: docs/TESTING.md
+      - src: docs/pigsty.md
+        dst: docs/pigsty.md
         info: *archive_file_info
-      - src: docs/TROUBLESHOOTING.md
-        dst: docs/TROUBLESHOOTING.md
+      - src: docs/security.md
+        dst: docs/security.md
         info: *archive_file_info
-      - src: docs/UPGRADE.md
-        dst: docs/UPGRADE.md
+      - src: docs/status.md
+        dst: docs/status.md
+        info: *archive_file_info
+      - src: docs/troubleshooting.md
+        dst: docs/troubleshooting.md
+        info: *archive_file_info
+      - src: tests/e2e/README.md
+        dst: tests/e2e/README.md
         info: *archive_file_info
       - src: schemas/*
         dst: schemas
@@ -134,6 +140,6 @@ changelog:
 release:
   github:
     owner: pgsty
-    name: piglet
+    name: farrow
   draft: true
   prerelease: auto

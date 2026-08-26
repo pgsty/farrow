@@ -49,9 +49,9 @@ jobs:
         run: |
           set -euo pipefail
           source packaging/toolchain.env
-          test "$(go env GOVERSION)" = "go${PIGLET_GO_VERSION}"
-          test "$(staticcheck -version | awk '{print $2; exit}')" = "${PIGLET_STATICCHECK_VERSION}"
-          test "$(goreleaser --version | awk '/GitVersion:/ {sub(/^v/, "", $2); print $2; exit}')" = "${PIGLET_GORELEASER_VERSION}"
+          test "$(go env GOVERSION)" = "go${FARROW_GO_VERSION}"
+          test "$(staticcheck -version | awk '{print $2; exit}')" = "${FARROW_STATICCHECK_VERSION}"
+          test "$(goreleaser --version | awk '/GitVersion:/ {sub(/^v/, "", $2); print $2; exit}')" = "${FARROW_GORELEASER_VERSION}"
 
       - name: Source hygiene and module integrity
         shell: bash

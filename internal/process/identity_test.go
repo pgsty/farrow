@@ -3,7 +3,7 @@ package process
 import (
 	"testing"
 
-	"github.com/pgsty/piglet/internal/qemu"
+	"github.com/pgsty/farrow/internal/qemu"
 )
 
 func TestHashInvocationStable(t *testing.T) {

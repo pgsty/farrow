@@ -5,11 +5,11 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 var sizeUnits = []struct {
@@ -40,8 +40,8 @@ func ParseSize(value string) (int64, error) {
 	return 0, fmt.Errorf("size %q requires B, KiB, MiB, GiB, TiB, KB, MB, GB, or TB", value)
 }
 
-// ParseForward accepts host:guest or bind:host:guest. IPv6 binds use
-// [address]:host:guest. Protocol is TCP in v1.
+// ParseForward accepts host:guest or bind:host:guest. Bind addresses are IPv4
+// only and the protocol is TCP in v1.
 func ParseForward(value string) (spec.Forward, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -71,8 +71,12 @@ func ParseForward(value string) (spec.Forward, error) {
 			return spec.Forward{}, fmt.Errorf("invalid forward %q", value)
 		}
 	}
-	if net.ParseIP(bind) == nil {
+	address, err := netip.ParseAddr(bind)
+	if err != nil {
 		return spec.Forward{}, fmt.Errorf("invalid forward bind address %q", bind)
+	}
+	if !address.Is4() {
+		return spec.Forward{}, fmt.Errorf("v1 forward bind address %q must be IPv4", bind)
 	}
 	host, err := strconv.ParseUint(hostText, 10, 16)
 	if err != nil || host == 0 {

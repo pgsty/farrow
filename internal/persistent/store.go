@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/project"
 )
 
 const (
@@ -44,7 +44,7 @@ type Identity struct {
 }
 
 // Record is the on-disk ownership marker.  Path and OwnerUID bind the marker
-// to the exact Piglet-owned file and local account.
+// to the exact Farrow-owned file and local account.
 type Record struct {
 	Schema      int       `json:"schema"`
 	ProjectID   string    `json:"project_id"`

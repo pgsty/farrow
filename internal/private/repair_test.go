@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func TestPrivateRepairConvergesDeadRunningStateAndReleasesLease(t *testing.T) {
@@ -48,7 +48,7 @@ func TestPrivateRepairConvergesDeadRunningStateAndReleasesLease(t *testing.T) {
 	if _, err := startConfig.LeaseStore.Update(context.Background(), desired); err != nil {
 		t.Fatal(err)
 	}
-	manager := Manager{CWD: startConfig.Project.WorkDir, PigletVersion: "test", LeaseStore: &startConfig.LeaseStore, Nodes: []string{"meta"}}
+	manager := Manager{CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore, Nodes: []string{"meta"}}
 	dryRun, err := manager.Repair(context.Background(), false)
 	if err != nil || len(dryRun.Actions) < 3 {
 		t.Fatalf("private repair dry run = %#v, %v", dryRun, err)

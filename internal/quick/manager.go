@@ -15,34 +15,35 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/cloudinit"
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/identity"
-	"github.com/pgsty/piglet/internal/image"
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/lock"
-	usernet "github.com/pgsty/piglet/internal/network/user"
-	"github.com/pgsty/piglet/internal/openssh"
-	"github.com/pgsty/piglet/internal/persistent"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/qmp"
-	"github.com/pgsty/piglet/internal/runtimepath"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/sshconfig"
-	"github.com/pgsty/piglet/internal/state"
-	"github.com/pgsty/piglet/internal/vm"
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/hostshare"
+	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/image"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/lock"
+	usernet "github.com/pgsty/farrow/internal/network/user"
+	"github.com/pgsty/farrow/internal/openssh"
+	"github.com/pgsty/farrow/internal/persistent"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/runtimepath"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/sshconfig"
+	"github.com/pgsty/farrow/internal/state"
+	"github.com/pgsty/farrow/internal/vm"
 )
 
 const nodeName = "meta"
 
 type Manager struct {
 	CWD                string
-	PigletVersion      string
+	FarrowVersion      string
 	OperationID        string
 	QEMUImg            string
 	LogLevel           string
@@ -51,6 +52,8 @@ type Manager struct {
 	ReadyTimeout       time.Duration
 	ConfiguredDataRoot string
 	NoWait             bool
+	NativeProfile      func() (platform.Profile, error)
+	LookPath           func(string) (string, error)
 }
 
 type Status struct {
@@ -295,7 +298,7 @@ func (m Manager) openProject(create bool) (project.Project, error) {
 	}
 	opened, err := project.Open(cwd)
 	if err == nil {
-		if m.ConfiguredDataRoot != "" || os.Getenv("PIGLET_DATA_HOME") != "" {
+		if m.ConfiguredDataRoot != "" || os.Getenv("FARROW_DATA_HOME") != "" {
 			selected, selectErr := project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
 			if selectErr != nil {
 				return project.Project{}, selectErr
@@ -358,7 +361,7 @@ func ensureKeys(ctx context.Context, runner execx.Runner, root string) (string, 
 		if lookErr != nil {
 			return "", "", "", lookErr
 		}
-		if _, runErr := runner.Run(ctx, sshKeygen, "-q", "-t", "ed25519", "-N", "", "-C", "piglet-project", "-f", privateKey); runErr != nil {
+		if _, runErr := runner.Run(ctx, sshKeygen, "-q", "-t", "ed25519", "-N", "", "-C", "farrow-project", "-f", privateKey); runErr != nil {
 			return "", "", "", runErr
 		}
 	} else if err != nil {
@@ -505,12 +508,13 @@ func choosePortsWithProbe(desired spec.Resolved, reserved map[uint16]struct{}, p
 	}
 	selected[sshPort] = struct{}{}
 	for index := range desired.Nodes[0].Forwards {
-		port, err := usernet.Choose(desired.Nodes[0].Forwards[index].Host, available)
+		forward := desired.Nodes[0].Forwards[index]
+		port, err := usernet.Choose(spec.RequestedHostPort(forward), available)
 		if err != nil {
 			return 0, spec.Resolved{}, err
 		}
 		selected[port] = struct{}{}
-		desired.Nodes[0].Forwards[index].Host = port
+		desired.Nodes[0].Forwards[index] = spec.WithMaterializedHost(forward, port)
 	}
 	return sshPort, desired, nil
 }
@@ -528,7 +532,7 @@ func ensureRuntime(path string) error {
 }
 
 func legacyRuntimeDirectory(projectID string) string {
-	return filepath.Join("/tmp", fmt.Sprintf("piglet-%d-%s-%s", os.Getuid(), projectID[:8], nodeName))
+	return filepath.Join("/tmp", fmt.Sprintf("farrow-%d-%s-%s", os.Getuid(), projectID[:8], nodeName))
 }
 
 func qemuForwards(resolved spec.Resolved, sshPort uint16) []qemu.Forward {
@@ -537,6 +541,14 @@ func qemuForwards(resolved spec.Resolved, sshPort uint16) []qemu.Forward {
 		forwards = append(forwards, qemu.Forward{Bind: forward.Bind, Host: forward.Host, Guest: forward.Guest})
 	}
 	return forwards
+}
+
+func cloudShares(shares []spec.Share) []cloudinit.Share {
+	result := make([]cloudinit.Share, 0, len(shares))
+	for _, share := range shares {
+		result = append(result, cloudinit.Share{Tag: spec.ShareTag(share), Guest: share.Guest, Readonly: share.Readonly})
+	}
+	return result
 }
 
 func (m Manager) ensureImage(ctx context.Context, profile platform.Profile, dataRoot, alias string) (image.Entry, string, image.Metadata, error) {
@@ -576,13 +588,13 @@ func (m Manager) ResolveImage(ctx context.Context, alias string) (image.Entry, s
 
 func transaction(store state.Store, version, projectID, operationID string, from, to state.Phase, completed []state.Action, started time.Time) error {
 	return store.WriteTransaction(state.Transaction{
-		Schema: state.TransactionSchema, PigletVersion: version, OperationID: operationID,
+		Schema: state.TransactionSchema, FarrowVersion: version, OperationID: operationID,
 		ProjectID: projectID, Node: nodeName, From: from, To: to, Completed: completed,
 		StartedAt: started, UpdatedAt: time.Now().UTC(),
 	})
 }
 
-func (m Manager) prepare(ctx context.Context, projectValue project.Project, resolved spec.Resolved, specHash string, sshPort uint16, entry image.Entry, basePath string, metadata image.Metadata) (state.NodeState, error) {
+func (m Manager) prepare(ctx context.Context, projectValue project.Project, resolved spec.Resolved, specHash string, sshPort uint16, entry image.Entry, basePath string, metadata image.Metadata, profile platform.Profile, qemuPath string) (state.NodeState, error) {
 	runner := m.runner()
 	store := state.Store{Project: projectValue}
 	persistentIdentities, err := quickPersistentIdentities(projectValue, resolved)
@@ -602,7 +614,7 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 	}
 	started := time.Now().UTC()
 	completed := make([]state.Action, 0, 8)
-	if err := transaction(store, m.PigletVersion, projectValue.Marker.ProjectID, operationID, state.Absent, state.Preparing, completed, started); err != nil {
+	if err := transaction(store, m.FarrowVersion, projectValue.Marker.ProjectID, operationID, state.Absent, state.Preparing, completed, started); err != nil {
 		return state.NodeState{}, err
 	}
 	privateKey, knownHosts, publicKey, err := ensureKeys(ctx, runner, projectValue.Root)
@@ -641,13 +653,14 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 			completed = append(completed, state.Action{Name: "data-disk", Resource: dataPath})
 		}
 		qemuData = []qemu.Disk{{Path: dataPath, Serial: dataSerial}}
-		stateData = []state.DataDisk{{Name: dataSpec.Name, Path: dataPath, Serial: dataSerial, Size: dataSpec.Size, Mount: dataSpec.Mount, Persistent: dataSpec.Persistent}}
-		cloudDisks = []cloudinit.Disk{{Serial: dataSerial, Mount: dataSpec.Mount, Filesystem: "auto"}}
+		stateDisk, cloudDisk := quickDiskRecords(dataSpec, dataPath, dataSerial)
+		stateData = []state.DataDisk{stateDisk}
+		cloudDisks = []cloudinit.Disk{cloudDisk}
 	}
 	seedFiles, err := cloudinit.Render(cloudinit.Input{
 		ProjectID: projectValue.Marker.ProjectID, Node: nodeName, Hostname: nodeName,
 		Generation: 1, SpecHash: specHash, SSHUser: resolved.SSHUser, PublicKey: publicKey,
-		MgmtMAC: mgmtMAC, Disks: cloudDisks,
+		MgmtMAC: mgmtMAC, Disks: cloudDisks, Shares: cloudShares(resolved.Nodes[0].Shares),
 	})
 	if err != nil {
 		return state.NodeState{}, err
@@ -657,10 +670,6 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 		return state.NodeState{}, err
 	}
 	completed = append(completed, state.Action{Name: "seed", Resource: seedPath})
-	profile, err := platform.Native()
-	if err != nil {
-		return state.NodeState{}, err
-	}
 	firmware, err := platform.FindFirmwareForBoot(profile, entry.Boot)
 	if err != nil {
 		return state.NodeState{}, err
@@ -687,10 +696,6 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 	if err != nil {
 		return state.NodeState{}, err
 	}
-	qemuPath, err := exec.LookPath(profile.QEMUBinary)
-	if err != nil {
-		return state.NodeState{}, err
-	}
 	var qemuFirmware *qemu.Firmware
 	if useUEFI {
 		qemuFirmware = &qemu.Firmware{Code: firmware.Code, Vars: nvramPath}
@@ -701,14 +706,14 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 		Firmware: qemuFirmware, Root: qemu.Disk{Path: rootPath, Serial: rootSerial},
 		Data: qemuData, Seed: seedPath,
 		QMP: qmpPath, PIDFile: pidfile, SerialLog: filepath.Join(nodeDir, "serial.log"),
-		MgmtMAC: mgmtMAC, Forwards: qemuForwards(resolved, sshPort), Detach: true,
+		MgmtMAC: mgmtMAC, Forwards: qemuForwards(resolved, sshPort), Shares: hostshare.QEMU(resolved.Nodes[0].Shares), Detach: true,
 	})
 	if err != nil {
 		return state.NodeState{}, err
 	}
 	now := time.Now().UTC()
 	node := state.NodeState{
-		Schema: state.NodeSchema, PigletVersion: m.PigletVersion, ProjectID: projectValue.Marker.ProjectID,
+		Schema: state.NodeSchema, FarrowVersion: m.FarrowVersion, ProjectID: projectValue.Marker.ProjectID,
 		Node: nodeName, VMUUID: vmUUID, Phase: state.Prepared, Generation: 1, SpecHash: specHash,
 		Image:     state.Image{Alias: entry.Alias, Release: entry.Release, Digest: entry.SHA256, VirtualSize: metadata.VirtualSize},
 		RootDisk:  rootPath,
@@ -718,7 +723,7 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 		CreatedAt: now, UpdatedAt: now,
 	}
 	completed = append(completed, state.Action{Name: "invocation", Resource: qmpPath})
-	if err := transaction(store, m.PigletVersion, projectValue.Marker.ProjectID, operationID, state.Absent, state.Prepared, completed, started); err != nil {
+	if err := transaction(store, m.FarrowVersion, projectValue.Marker.ProjectID, operationID, state.Absent, state.Prepared, completed, started); err != nil {
 		return state.NodeState{}, err
 	}
 	if err := store.WriteNode(node); err != nil {
@@ -821,7 +826,7 @@ func ensureNoPendingTransaction(store state.Store, name string) error {
 	if err != nil {
 		return fmt.Errorf("transaction journal is unreadable; run repair: %w", err)
 	}
-	return fmt.Errorf("operation %s has a pending %s->%s transaction; run piglet repair --dry-run", transaction.OperationID, transaction.From, transaction.To)
+	return fmt.Errorf("operation %s has a pending %s->%s transaction; run farrow repair --dry-run", transaction.OperationID, transaction.From, transaction.To)
 }
 
 func buildInvocation(projectValue project.Project, projectState state.ProjectState, node state.NodeState) (qemu.Invocation, error) {
@@ -860,7 +865,7 @@ func buildInvocation(projectValue project.Project, projectState state.ProjectSta
 		Data: qemuData, Seed: node.Seed,
 		QMP: node.Runtime.QMP, PIDFile: node.Runtime.PIDFile,
 		SerialLog: filepath.Join(filepath.Dir(node.RootDisk), "serial.log"),
-		MgmtMAC:   mgmtMAC, Forwards: qemuForwards(projectState.Resolved, node.SSHPort), Detach: true,
+		MgmtMAC:   mgmtMAC, Forwards: qemuForwards(projectState.Resolved, node.SSHPort), Shares: hostshare.QEMU(projectState.Resolved.Nodes[0].Shares), Detach: true,
 	})
 
 }
@@ -877,11 +882,26 @@ func validateInvocation(projectValue project.Project, projectState state.Project
 }
 
 func (m Manager) start(ctx context.Context, projectValue project.Project, node state.NodeState) (state.NodeState, error) {
+	// Callers must establish QEMU version and any required device evidence
+	// before entering this mutating launch path.
 	if err := validateNodePaths(projectValue, node); err != nil {
 		return state.NodeState{}, err
 	}
 	if process.Alive(node.Process.PID) {
 		return state.NodeState{}, errors.New("refuse start while recorded QEMU PID is alive")
+	}
+	store := state.Store{Project: projectValue}
+	projectState, err := store.ReadProject()
+	if err != nil {
+		return state.NodeState{}, err
+	}
+	shareBundle, err := hostshare.Open(projectValue, projectState.Resolved.Nodes[0].Shares)
+	if err != nil {
+		return state.NodeState{}, err
+	}
+	defer shareBundle.Close()
+	if err := shareBundle.ValidateInvocation(node.Invocation, 0); err != nil {
+		return state.NodeState{}, err
 	}
 	if err := ensureRuntime(node.Runtime.Directory); err != nil {
 		return state.NodeState{}, err
@@ -898,11 +918,6 @@ func (m Manager) start(ctx context.Context, projectValue project.Project, node s
 			return state.NodeState{}, err
 		}
 	}
-	store := state.Store{Project: projectValue}
-	projectState, err := store.ReadProject()
-	if err != nil {
-		return state.NodeState{}, err
-	}
 	readyTimeout, err := m.readyTimeout(projectState.Resolved)
 	if err != nil {
 		return state.NodeState{}, err
@@ -914,10 +929,26 @@ func (m Manager) start(ctx context.Context, projectValue project.Project, node s
 	}
 	life := lifecycle(m.runner())
 	life.SSHUser = projectState.Resolved.SSHUser
-	identityValue, err := life.Start(ctx, node.Invocation, node.Runtime.QMP, node.Runtime.PIDFile, node.Node, node.VMUUID)
+	var identityValue process.Identity
+	if files := shareBundle.Files(); len(files) != 0 {
+		identityValue, err = life.StartWithExtraFiles(ctx, node.Invocation, node.Runtime.QMP, node.Runtime.PIDFile, node.Node, node.VMUUID, files)
+	} else {
+		identityValue, err = life.Start(ctx, node.Invocation, node.Runtime.QMP, node.Runtime.PIDFile, node.Node, node.VMUUID)
+	}
 	if err != nil {
 		_ = m.recordQEMULog(ctx, projectValue, node, operationID, "launch", "error", err.Error())
 		return state.NodeState{}, err
+	}
+	if err := shareBundle.Recheck(); err != nil {
+		stopErr := life.Stop(ctx, node.Runtime.QMP, node.Node, node.VMUUID, identityValue, node.Invocation, 0)
+		if stopErr == nil {
+			_ = cleanupRuntime(node)
+			node.Phase = state.Stopped
+			node.Process = state.ProcessIdentity{}
+			node.UpdatedAt = time.Now().UTC()
+			_ = store.WriteNode(node)
+		}
+		return state.NodeState{}, fmt.Errorf("host share changed while QEMU launched: %w", errors.Join(err, stopErr))
 	}
 	node.Process = processToState(identityValue)
 	node.Phase = state.Running
@@ -1000,35 +1031,60 @@ func (m Manager) UpResolved(ctx context.Context, requested spec.Resolved) (Statu
 
 func (m Manager) UpResolvedWithPolicy(ctx context.Context, requested spec.Resolved, policy UpPolicy) (Status, error) {
 	m.ConfiguredDataRoot = requested.DataRoot
-	if _, err := requested.SSHWaitTimeout(); err != nil {
+	requested, err := m.validateQuickResolved(requested)
+	if err != nil {
 		return Status{}, err
+	}
+	return m.upDesired(ctx, requested, true, policy)
+}
+
+func (m Manager) validateQuickResolved(requested spec.Resolved) (spec.Resolved, error) {
+	if _, err := requested.SSHWaitTimeout(); err != nil {
+		return spec.Resolved{}, err
 	}
 	sshUser, err := resolvedSSHUser(requested.SSHUser)
 	if err != nil {
-		return Status{}, err
+		return spec.Resolved{}, err
 	}
 	requested.SSHUser = sshUser
 	if requested.Schema == 1 && requested.Network == "private" && requested.Private != nil && len(requested.Nodes) >= 2 {
 		leaseStatus, err := m.privateLeaseStore().Inspect()
 		if err != nil {
-			return Status{}, &CapabilityError{Reason: "private lease root failed integrity inspection: " + err.Error()}
+			return spec.Resolved{}, &CapabilityError{Reason: "private lease root failed integrity inspection: " + err.Error()}
 		}
 		if !leaseStatus.Available {
-			return Status{}, &CapabilityError{Reason: "private network/lease root is not installed; run piglet network status"}
+			return spec.Resolved{}, &CapabilityError{Reason: "private network/lease root is not installed; run farrow network status"}
 		}
-		return Status{}, &CapabilityError{Reason: "private multi-node runtime remains gated until native M0 network validation passes"}
+		return spec.Resolved{}, &CapabilityError{Reason: "private multi-node runtime remains gated until native M0 network validation passes"}
 	}
 	if requested.Schema != 1 || requested.Network != "user" || requested.Private != nil || len(requested.Nodes) != 1 || requested.Nodes[0].Name != nodeName || len(requested.Nodes[0].Disks) > 1 {
-		return Status{}, errors.New("current product runtime supports declarative user mode with one meta node; private/multi-node is not silently downgraded")
+		return spec.Resolved{}, errors.New("current product runtime supports declarative user mode with one meta node; private/multi-node is not silently downgraded")
 	}
-	return m.upDesired(ctx, requested, true, policy)
+	return requested, nil
 }
 
 func (m Manager) upDesired(ctx context.Context, requested spec.Resolved, hasOverrides bool, policy UpPolicy) (Status, error) {
-	profile, err := platform.Native()
+	return m.upDesiredWithPreflight(ctx, requested, hasOverrides, policy, qemuPreflightEvidence{})
+}
+
+func (m Manager) upDesiredWithPreflight(ctx context.Context, requested spec.Resolved, hasOverrides bool, policy UpPolicy, preflight qemuPreflightEvidence) (Status, error) {
+	profile, err := m.nativeProfile()
 	if err != nil {
 		return Status{}, err
 	}
+	needsShareCapability, err := m.upNeedsShareCapability(requested, hasOverrides)
+	if err != nil {
+		return Status{}, err
+	}
+	if preflight.Binary == "" {
+		preflight, err = m.preflightNativeQEMU(ctx, profile, needsShareCapability)
+		if err != nil {
+			return Status{}, err
+		}
+	} else if err := validateQEMUPreflight(preflight, preflight.Binary, needsShareCapability); err != nil {
+		return Status{}, err
+	}
+	qemuPath := preflight.Binary
 	projectValue, err := m.openProject(true)
 	if err != nil {
 		return Status{}, err
@@ -1078,6 +1134,9 @@ func (m Manager) upDesired(ctx context.Context, requested spec.Resolved, hasOver
 				}
 			}
 		}
+		if err := validateQEMUPreflight(preflight, node.Invocation.Binary, resolvedHasShares(desired)); err != nil {
+			return Status{}, err
+		}
 		life := lifecycle(m.runner())
 		qmpRunning := life.ValidateIdentity(ctx, node.Runtime.QMP, node.Node, node.VMUUID) == nil
 		if drift != nil {
@@ -1089,6 +1148,9 @@ func (m Manager) upDesired(ctx context.Context, requested spec.Resolved, hasOver
 			}
 			if qmpRunning && !policy.Restart {
 				return Status{}, drift
+			}
+			if err := hostshare.Validate(projectValue, desired.Nodes[0].Shares); err != nil {
+				return Status{}, err
 			}
 			if !qmpRunning && process.MatchesLive(ctx, m.runner(), processFromState(node.Process), node.Invocation) {
 				return Status{}, errors.New("QEMU process matches state but QMP identity is unavailable; run repair after diagnosis")
@@ -1112,6 +1174,9 @@ func (m Manager) upDesired(ctx context.Context, requested spec.Resolved, hasOver
 		}
 		if process.MatchesLive(ctx, m.runner(), processFromState(node.Process), node.Invocation) {
 			return Status{}, errors.New("QEMU process matches state but QMP identity is unavailable; run repair after diagnosis")
+		}
+		if err := hostshare.Validate(projectValue, projectState.Resolved.Nodes[0].Shares); err != nil {
+			return Status{}, err
 		}
 		node.Phase = state.Stopped
 		node.Process = state.ProcessIdentity{}
@@ -1152,15 +1217,21 @@ func (m Manager) upDesired(ctx context.Context, requested spec.Resolved, hasOver
 	if err != nil {
 		return Status{}, err
 	}
+	if err := validateQEMUPreflight(preflight, qemuPath, resolvedHasShares(resolved)); err != nil {
+		return Status{}, err
+	}
+	if err := hostshare.Validate(projectValue, resolved.Nodes[0].Shares); err != nil {
+		return Status{}, err
+	}
 	specHash, err := spec.Hash(resolved)
 	if err != nil {
 		return Status{}, err
 	}
-	projectState = state.ProjectState{Schema: state.ProjectSchema, PigletVersion: m.PigletVersion, ProjectID: projectValue.Marker.ProjectID, SpecHash: specHash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
+	projectState = state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: m.FarrowVersion, ProjectID: projectValue.Marker.ProjectID, SpecHash: specHash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
 	if err := store.WriteProject(projectState); err != nil {
 		return Status{}, err
 	}
-	node, err = m.prepare(ctx, projectValue, resolved, specHash, sshPort, entry, basePath, metadata)
+	node, err = m.prepare(ctx, projectValue, resolved, specHash, sshPort, entry, basePath, metadata, profile, qemuPath)
 	if err != nil {
 		return Status{}, err
 	}
@@ -1298,7 +1369,7 @@ func (m Manager) Stop(ctx context.Context) (Status, error) {
 	return statusFrom(projectValue, node, projectState.Resolved.SSHUser, message), err
 }
 
-func (m Manager) Start(ctx context.Context) (Status, error) {
+func (m Manager) startExisting(ctx context.Context, preflight qemuPreflightEvidence) (Status, error) {
 	projectValue, err := m.openProject(false)
 	if err != nil {
 		return Status{}, err
@@ -1317,7 +1388,7 @@ func (m Manager) Start(ctx context.Context) (Status, error) {
 			persisted, projectErr := store.ReadProject()
 			if projectErr == nil {
 				if _, absenceErr := readAbsence(projectValue, persisted); absenceErr == nil {
-					return Status{}, errors.New("quick node is absent; run piglet up to create it")
+					return Status{}, errors.New("quick node is absent; run farrow up to create it")
 				}
 			}
 		}
@@ -1332,17 +1403,34 @@ func (m Manager) Start(ctx context.Context) (Status, error) {
 	if process.MatchesLive(ctx, m.runner(), processFromState(node.Process), node.Invocation) {
 		return Status{}, errors.New("refuse start: recorded process is alive without QMP identity")
 	}
+	shares := resolvedHasShares(projectState.Resolved)
+	if preflight.Binary == "" {
+		preflight, err = m.preflightQEMU(ctx, node.Invocation.Binary, shares)
+		if err != nil {
+			return Status{}, err
+		}
+	} else if err := validateQEMUPreflight(preflight, node.Invocation.Binary, shares); err != nil {
+		return Status{}, err
+	}
 	node.Process = state.ProcessIdentity{}
 	node.Phase = state.Stopped
 	node, err = m.start(ctx, projectValue, node)
 	return statusFrom(projectValue, node, projectState.Resolved.SSHUser, "started"), err
 }
 
+func (m Manager) Start(ctx context.Context) (Status, error) {
+	return m.startExisting(ctx, qemuPreflightEvidence{})
+}
+
 func (m Manager) Restart(ctx context.Context) (Status, error) {
+	preflight, err := m.preflightExistingQEMU(ctx)
+	if err != nil {
+		return Status{}, err
+	}
 	if _, err := m.Stop(ctx); err != nil {
 		return Status{}, err
 	}
-	return m.Start(ctx)
+	return m.startExisting(ctx, preflight)
 }
 
 func (m Manager) Recreate(ctx context.Context) (Status, error) {
@@ -1360,28 +1448,60 @@ func (m Manager) Recreate(ctx context.Context) (Status, error) {
 // RecreateResolved validates the desired quick spec and plan before destroy,
 // then recreates the node from that exact desired state.
 func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) (Status, error) {
-	plan, err := m.PlanResolved(ctx, requested)
+	m.ConfiguredDataRoot = requested.DataRoot
+	requested, err := m.validateQuickResolved(requested)
+	if err != nil {
+		return Status{}, err
+	}
+	plan, err := m.planDesired(ctx, requested, true)
 	if err != nil {
 		return Status{}, err
 	}
 	if plan.Action == "create" {
-		return Status{}, errors.New("quick node is absent; use piglet up instead of recreate")
+		return Status{}, errors.New("quick node is absent; use farrow up instead of recreate")
+	}
+	projectValue, err := m.openProject(false)
+	if err != nil {
+		return Status{}, err
+	}
+	if err := hostshare.Validate(projectValue, requested.Nodes[0].Shares); err != nil {
+		return Status{}, err
+	}
+	profile, err := m.nativeProfile()
+	if err != nil {
+		return Status{}, err
+	}
+	needsShareCapability := resolvedHasShares(requested)
+	if plan.Before != nil {
+		needsShareCapability = needsShareCapability || resolvedHasShares(*plan.Before)
+	}
+	preflight, err := m.preflightNativeQEMU(ctx, profile, needsShareCapability)
+	if err != nil {
+		return Status{}, err
 	}
 	if _, err := m.Destroy(ctx); err != nil {
 		return Status{}, err
 	}
-	return m.UpResolved(ctx, requested)
+	return m.upDesiredWithPreflight(ctx, requested, true, UpPolicy{}, preflight)
 }
 
 func (m Manager) Connection(ctx context.Context) (Connection, error) {
-	connection, node, err := m.connectionState(ctx)
+	projectValue, err := m.openProject(false)
 	if err != nil {
 		return Connection{}, err
 	}
-	if err := lifecycle(m.runner()).ValidateIdentity(ctx, node.Runtime.QMP, node.Node, node.VMUUID); err != nil {
-		return Connection{}, fmt.Errorf("node is not QMP-verified running: %w", err)
+	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	if err != nil {
+		return Connection{}, err
 	}
-	return connection, nil
+	defer projectLock.Release()
+	projectValue, err = m.openProject(false)
+	if err != nil {
+		return Connection{}, err
+	}
+	return m.ConnectionLocked(ctx, projectValue, projectLock)
 }
 
 func (m Manager) connectionState(ctx context.Context) (Connection, state.NodeState, error) {
@@ -1396,6 +1516,17 @@ func (m Manager) connectionState(ctx context.Context) (Connection, state.NodeSta
 		return Connection{}, state.NodeState{}, err
 	}
 	defer projectLock.Release()
+	projectValue, err = m.openProject(false)
+	if err != nil {
+		return Connection{}, state.NodeState{}, err
+	}
+	if err := projectLock.ValidateExclusive(filepath.Join(projectValue.Root, "project.lock")); err != nil {
+		return Connection{}, state.NodeState{}, fmt.Errorf("quick connection state requires the matching exclusive project lock: %w", err)
+	}
+	return m.connectionStateLocked(projectValue)
+}
+
+func (m Manager) connectionStateLocked(projectValue project.Project) (Connection, state.NodeState, error) {
 	store := state.Store{Project: projectValue}
 	projectState, node, err := readConsistent(store, nodeName)
 	if err != nil {
@@ -1413,6 +1544,44 @@ func (m Manager) connectionState(ctx context.Context) (Connection, state.NodeSta
 		PrivateKey: filepath.Join(projectValue.Root, "keys", "id_ed25519"),
 		KnownHosts: filepath.Join(projectValue.Root, "keys", "known_hosts"),
 	}, node, nil
+}
+
+// ConnectionLocked is the non-locking provisioning entrypoint. The caller
+// must pass the live exclusive project.lock token and retain it for the full
+// remote operation so the verified state, process, and trust paths cannot be
+// invalidated by another Farrow lifecycle command.
+func (m Manager) ConnectionLocked(ctx context.Context, projectValue project.Project, projectLock *lock.File) (Connection, error) {
+	if err := projectLock.ValidateExclusive(filepath.Join(projectValue.Root, "project.lock")); err != nil {
+		return Connection{}, fmt.Errorf("quick connection requires the matching exclusive project lock: %w", err)
+	}
+	refreshed, err := project.Open(projectValue.WorkDir)
+	if err != nil {
+		return Connection{}, fmt.Errorf("re-open quick project under its exclusive lock: %w", err)
+	}
+	if err := projectLock.ValidateExclusive(filepath.Join(refreshed.Root, "project.lock")); err != nil {
+		return Connection{}, fmt.Errorf("quick project marker changed while locked: %w", err)
+	}
+	projectValue = refreshed
+	connection, node, err := m.connectionStateLocked(projectValue)
+	if err != nil {
+		return Connection{}, err
+	}
+	if node.Phase != state.Running {
+		return Connection{}, fmt.Errorf("quick node %s is not running", node.Node)
+	}
+	privateKey, knownHosts, err := project.ValidateSSHArtifacts(projectValue)
+	if err != nil {
+		return Connection{}, err
+	}
+	if err := lifecycle(m.runner()).ValidateIdentity(ctx, node.Runtime.QMP, node.Node, node.VMUUID); err != nil {
+		return Connection{}, fmt.Errorf("node is not QMP-verified running: %w", err)
+	}
+	if !process.MatchesLive(ctx, m.runner(), processFromState(node.Process), node.Invocation) {
+		return Connection{}, errors.New("quick node recorded process identity does not match")
+	}
+	connection.PrivateKey = privateKey
+	connection.KnownHosts = knownHosts
+	return connection, nil
 }
 
 func (m Manager) SSHConfig(ctx context.Context) (string, error) {

@@ -1,4 +1,4 @@
-module github.com/pgsty/piglet
+module github.com/pgsty/farrow
 
 go 1.27.0
 

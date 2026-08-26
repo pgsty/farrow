@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	netpreflight "github.com/pgsty/piglet/internal/network/preflight"
-	"github.com/pgsty/piglet/internal/network/subnet"
-	"github.com/pgsty/piglet/internal/platform"
+	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/platform"
 )
 
 func readableNetworkInstallation(status string) bool {

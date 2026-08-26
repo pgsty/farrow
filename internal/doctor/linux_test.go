@@ -3,7 +3,7 @@ package doctor
 import (
 	"testing"
 
-	linuxnet "github.com/pgsty/piglet/internal/network/linux"
+	linuxnet "github.com/pgsty/farrow/internal/network/linux"
 )
 
 func TestParseLinuxFamily(t *testing.T) {

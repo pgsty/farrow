@@ -16,13 +16,13 @@ for tool in ruby sed shasum; do
   command -v "${tool}" >/dev/null || { printf 'required formula tool is missing: %s\n' "${tool}" >&2; exit 3; }
 done
 archive_directory=$(cd "${archive_directory}" && pwd -P)
-template=$(cd "$(dirname "$0")" && pwd -P)/homebrew/piglet.rb.tmpl
+template=$(cd "$(dirname "$0")" && pwd -P)/homebrew/farrow.rb.tmpl
 [[ -f ${template} && ! -L ${template} ]] || { printf 'Homebrew template is missing or unsafe\n' >&2; exit 1; }
 
-darwin_arm64=${archive_directory}/piglet_${version}_darwin_arm64.tar.gz
-darwin_amd64=${archive_directory}/piglet_${version}_darwin_amd64.tar.gz
-linux_arm64=${archive_directory}/piglet_${version}_linux_arm64.tar.gz
-linux_amd64=${archive_directory}/piglet_${version}_linux_amd64.tar.gz
+darwin_arm64=${archive_directory}/farrow_${version}_darwin_arm64.tar.gz
+darwin_amd64=${archive_directory}/farrow_${version}_darwin_amd64.tar.gz
+linux_arm64=${archive_directory}/farrow_${version}_linux_arm64.tar.gz
+linux_amd64=${archive_directory}/farrow_${version}_linux_amd64.tar.gz
 for archive in "${darwin_arm64}" "${darwin_amd64}" "${linux_arm64}" "${linux_amd64}"; do
   [[ -s ${archive} && ! -L ${archive} ]] || { printf 'missing formula archive: %s\n' "${archive}" >&2; exit 1; }
 done

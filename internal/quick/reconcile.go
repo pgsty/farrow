@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/cloudinit"
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/identity"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func ensureChangedPortsAvailable(desired, existing spec.Resolved, sshPort uint16) error {
@@ -75,6 +75,7 @@ func reconcileSeedFiles(projectValue project.Project, desired state.ProjectState
 		ProjectID: projectValue.Marker.ProjectID, Node: node.Node, Hostname: node.Node,
 		Generation: node.Generation, SpecHash: node.SpecHash, SSHUser: desired.Resolved.SSHUser,
 		PublicKey: strings.TrimSpace(string(publicKey)), MgmtMAC: mgmtMAC, Disks: cloudDisks,
+		Shares: cloudShares(desired.Resolved.Nodes[0].Shares),
 	})
 }
 
@@ -326,7 +327,11 @@ func desiredDataState(projectValue project.Project, desired spec.Resolved, curre
 		}
 		path = current[0].Path
 	}
-	return []state.DataDisk{{Name: diskSpec.Name, Path: path, Serial: serial, Size: diskSpec.Size, Mount: diskSpec.Mount, Persistent: diskSpec.Persistent}}, nil
+	dataDisk, _ := quickDiskRecords(diskSpec, path, serial)
+	if len(current) == 1 && current[0].Name == dataDisk.Name && current[0].Serial == dataDisk.Serial && current[0].Path == dataDisk.Path {
+		dataDisk.ActualFilesystem = current[0].ActualFilesystem
+	}
+	return []state.DataDisk{dataDisk}, nil
 }
 
 func (m Manager) stageReconcile(store state.Store, projectState state.ProjectState, node state.NodeState, desired spec.Resolved, action string) (state.Transaction, error) {
@@ -343,12 +348,12 @@ func (m Manager) stageReconcile(store state.Store, projectState state.ProjectSta
 	}
 	now := time.Now().UTC()
 	desiredProject := projectState
-	desiredProject.PigletVersion = m.PigletVersion
+	desiredProject.FarrowVersion = m.FarrowVersion
 	desiredProject.SpecHash = hash
 	desiredProject.Resolved = desired
 	desiredProject.UpdatedAt = now
 	desiredNode := node
-	desiredNode.PigletVersion = m.PigletVersion
+	desiredNode.FarrowVersion = m.FarrowVersion
 	desiredNode.Phase = state.Stopped
 	desiredNode.Generation++
 	desiredNode.SpecHash = hash
@@ -371,7 +376,7 @@ func (m Manager) stageReconcile(store state.Store, projectState state.ProjectSta
 	stagePath := filepath.Join(nodeDir, ".seed.iso.next-"+operationID)
 	intent := &state.ReconcileIntent{Action: action, Project: desiredProject, Node: desiredNode, StagedSeed: stagePath}
 	transaction := state.Transaction{
-		Schema: state.TransactionSchema, PigletVersion: m.PigletVersion, OperationID: operationID,
+		Schema: state.TransactionSchema, FarrowVersion: m.FarrowVersion, OperationID: operationID,
 		ProjectID: store.Project.Marker.ProjectID, Node: node.Node, From: state.Stopped, To: state.Prepared,
 		Reconcile: intent, StartedAt: now, UpdatedAt: now,
 	}

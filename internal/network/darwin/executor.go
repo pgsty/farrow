@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/network/subnet"
 )
 
 type Executor struct {
@@ -241,7 +241,7 @@ func (e Executor) validateSharedInstallRoot(ctx context.Context) error {
 		return err
 	}
 	if len(entries) != 1 || entries[0] != "libexec" {
-		return errors.New("refuse fresh Darwin network install into a non-empty shared /opt/piglet root")
+		return errors.New("refuse fresh Darwin network install into a non-empty shared /opt/farrow root")
 	}
 	libexec := filepath.Join(InstallRoot, "libexec")
 	if err := e.rootStat(ctx, libexec, "root", "wheel", "755", "Directory"); err != nil {
@@ -405,7 +405,7 @@ func (e Executor) InstallModeNetwork(ctx context.Context, archive, interfaceID, 
 	if parent == "" {
 		parent = os.TempDir()
 	}
-	staging, err := os.MkdirTemp(parent, "piglet-darwin-network-")
+	staging, err := os.MkdirTemp(parent, "farrow-darwin-network-")
 	if err != nil {
 		return report, err
 	}
@@ -604,7 +604,7 @@ func (e Executor) PlanUninstall(ctx context.Context) (UninstallReport, error) {
 	}
 	for directory, allowed := range map[string]map[string]struct{}{
 		InstallRoot:                           {"libexec": {}},
-		filepath.Join(InstallRoot, "libexec"): {"socket_vmnet": {}, "socket_vmnet_client": {}, "piglet-hosts-helper": {}},
+		filepath.Join(InstallRoot, "libexec"): {"socket_vmnet": {}, "socket_vmnet_client": {}, "farrow-hosts-helper": {}},
 		StateDir:                              {"network.json": {}, "network-interface.json": {}},
 		InterfaceMarkerDir:                    {"network-interface.json": {}},
 		LogDir:                                {"stdout.log": {}, "stderr.log": {}},

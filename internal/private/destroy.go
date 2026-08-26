@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pgsty/piglet/internal/fsutil"
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/lock"
-	"github.com/pgsty/piglet/internal/persistent"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/persistent"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func ownedRegularWithin(root, path string) error {
@@ -359,6 +359,27 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	destroyManager := m
 	selected, err := selectedNodeNames(projectState.Resolved, m.Nodes)
 	if err != nil {
+		return Status{}, err
+	}
+	requestedSelection, err := selectedNodeNames(requested, m.Nodes)
+	if err != nil {
+		return Status{}, err
+	}
+	if err := selectedShareSources(projectValue, requested, requestedSelection); err != nil {
+		return Status{}, err
+	}
+	shareBinaries, err := selectedShareInvocationBinaries(state.Store{Project: projectValue}, projectState.Resolved, selected)
+	if err != nil {
+		return Status{}, err
+	}
+	if selectedHasShares(requested, requestedSelection) {
+		qemuPath, err := m.lookPath(profile.QEMUBinary)
+		if err != nil {
+			return Status{}, err
+		}
+		shareBinaries = append(shareBinaries, qemuPath)
+	}
+	if err := validatePrivateShareDeviceHelp(ctx, m.runner(), shareBinaries); err != nil {
 		return Status{}, err
 	}
 	if len(selected) != len(projectState.Resolved.Nodes) {

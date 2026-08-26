@@ -15,31 +15,31 @@ require_version() {
 
 check_go() {
   command -v go >/dev/null || { printf 'go is missing\n' >&2; exit 3; }
-  require_version go "$(go env GOVERSION | sed 's/^go//')" "${PIGLET_GO_VERSION}"
+  require_version go "$(go env GOVERSION | sed 's/^go//')" "${FARROW_GO_VERSION}"
 }
 check_goreleaser() {
   command -v goreleaser >/dev/null || { printf 'goreleaser is missing\n' >&2; exit 3; }
-  require_version goreleaser "$(goreleaser --version | awk '/GitVersion:/ {gsub(/^v/, "", $2); print $2; exit}')" "${PIGLET_GORELEASER_VERSION}"
+  require_version goreleaser "$(goreleaser --version | awk '/GitVersion:/ {gsub(/^v/, "", $2); print $2; exit}')" "${FARROW_GORELEASER_VERSION}"
 }
 check_nfpm() {
   command -v nfpm >/dev/null || { printf 'nfpm is missing\n' >&2; exit 3; }
-  require_version nfpm "$(nfpm --version | awk '/GitVersion:/ {gsub(/^v/, "", $2); print $2; exit}')" "${PIGLET_NFPM_VERSION}"
+  require_version nfpm "$(nfpm --version | awk '/GitVersion:/ {gsub(/^v/, "", $2); print $2; exit}')" "${FARROW_NFPM_VERSION}"
 }
 check_syft() {
   command -v syft >/dev/null || { printf 'syft is missing\n' >&2; exit 3; }
-  require_version syft "$(syft version | awk '/^Version:/ {gsub(/^v/, "", $2); print $2; exit}')" "${PIGLET_SYFT_VERSION}"
+  require_version syft "$(syft version | awk '/^Version:/ {gsub(/^v/, "", $2); print $2; exit}')" "${FARROW_SYFT_VERSION}"
 }
 check_cosign() {
   command -v cosign >/dev/null || { printf 'cosign is missing\n' >&2; exit 3; }
-  require_version cosign "$(cosign version | awk '/^GitVersion:/ {gsub(/^v/, "", $2); print $2; exit}')" "${PIGLET_COSIGN_VERSION}"
+  require_version cosign "$(cosign version | awk '/^GitVersion:/ {gsub(/^v/, "", $2); print $2; exit}')" "${FARROW_COSIGN_VERSION}"
 }
 check_staticcheck() {
   command -v staticcheck >/dev/null || { printf 'staticcheck is missing\n' >&2; exit 3; }
-  require_version staticcheck "$(staticcheck -version | awk '{print $2; exit}')" "${PIGLET_STATICCHECK_VERSION}"
+  require_version staticcheck "$(staticcheck -version | awk '{print $2; exit}')" "${FARROW_STATICCHECK_VERSION}"
 }
 check_govulncheck() {
   command -v govulncheck >/dev/null || { printf 'govulncheck is missing\n' >&2; exit 3; }
-  require_version govulncheck "$(govulncheck -version | awk -F'@v' '/^Scanner:/ {print $2; exit}')" "${PIGLET_GOVULNCHECK_VERSION}"
+  require_version govulncheck "$(govulncheck -version | awk -F'@v' '/^Scanner:/ {print $2; exit}')" "${FARROW_GOVULNCHECK_VERSION}"
 }
 
 case ${mode} in

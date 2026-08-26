@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/qmp"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/qmp"
 )
 
 func TestSSHArgsAreIsolated(t *testing.T) {
@@ -32,7 +32,7 @@ func TestSSHArgsAreIsolated(t *testing.T) {
 
 func TestSSHArgsPreserveKnownHostsPathWithSpaces(t *testing.T) {
 	t.Parallel()
-	knownHosts := filepath.Join(t.TempDir(), "Application Support", "piglet", "known_hosts")
+	knownHosts := filepath.Join(t.TempDir(), "Application Support", "farrow", "known_hosts")
 	args := SSHArgs("/key", knownHosts, 2222)
 	wantOption := `UserKnownHostsFile="` + knownHosts + `"`
 	found := false

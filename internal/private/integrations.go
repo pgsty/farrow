@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/hostconfig"
-	"github.com/pgsty/piglet/internal/lock"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/sshconfig"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/hostconfig"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/sshconfig"
+	"github.com/pgsty/farrow/internal/state"
+	"github.com/pgsty/farrow/internal/vm"
 )
 
 func integrationHome(home string) (string, error) {
@@ -35,6 +37,10 @@ func (m Manager) integrationSnapshot(ctx context.Context) (project.Project, stat
 		return project.Project{}, state.ProjectState{}, nil, err
 	}
 	defer projectLock.Release()
+	return m.integrationSnapshotLocked(projectValue)
+}
+
+func (m Manager) integrationSnapshotLocked(projectValue project.Project) (project.Project, state.ProjectState, []state.NodeState, error) {
 	store := state.Store{Project: projectValue}
 	projectState, err := store.ReadProject()
 	if err != nil {
@@ -62,6 +68,9 @@ func (m Manager) integrationSnapshot(ctx context.Context) (project.Project, stat
 		if err != nil {
 			return project.Project{}, state.ProjectState{}, nil, err
 		}
+		if node.SpecHash != projectState.SpecHash {
+			return project.Project{}, state.ProjectState{}, nil, fmt.Errorf("private node %s and project spec hashes differ", definition.Name)
+		}
 		if node.SSHPort == 0 || node.Phase == state.Absent {
 			return project.Project{}, state.ProjectState{}, nil, fmt.Errorf("private node %s has no installable SSH endpoint", definition.Name)
 		}
@@ -71,42 +80,74 @@ func (m Manager) integrationSnapshot(ctx context.Context) (project.Project, stat
 }
 
 func validateSSHArtifacts(projectValue project.Project) (string, string, error) {
-	keysDir := filepath.Join(projectValue.Root, "keys")
-	keysInfo, err := os.Lstat(keysDir)
-	if err != nil || !keysInfo.IsDir() || keysInfo.Mode()&os.ModeSymlink != 0 || keysInfo.Mode().Perm() != 0o700 {
-		return "", "", errors.New("private SSH keys directory is missing or unsafe")
+	return project.ValidateSSHArtifacts(projectValue)
+}
+
+// Connections resolves and verifies a selected batch while holding the
+// project exclusive lock across the complete snapshot and runtime checks.
+func (m Manager) Connections(ctx context.Context) ([]Connection, error) {
+	projectValue, err := m.openProject(false)
+	if err != nil {
+		return nil, err
 	}
-	keysStat, ok := keysInfo.Sys().(*syscall.Stat_t)
-	if !ok || int(keysStat.Uid) != os.Geteuid() {
-		return "", "", errors.New("private SSH keys directory ownership is unsafe")
+	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	if err != nil {
+		return nil, err
 	}
-	canonicalRoot, rootErr := filepath.EvalSymlinks(projectValue.Root)
-	canonicalKeys, keysErr := filepath.EvalSymlinks(keysDir)
-	if rootErr != nil || keysErr != nil || canonicalKeys != filepath.Join(canonicalRoot, "keys") {
-		return "", "", errors.New("private SSH keys directory escapes the project root")
+	defer projectLock.Release()
+	projectValue, err = m.openProject(false)
+	if err != nil {
+		return nil, err
 	}
-	identity := filepath.Join(keysDir, "id_ed25519")
-	knownHosts := filepath.Join(keysDir, "known_hosts")
-	for pathname, mode := range map[string]os.FileMode{identity: 0o600, knownHosts: 0o600} {
-		info, err := os.Lstat(pathname)
-		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != mode {
-			return "", "", fmt.Errorf("private SSH artifact is missing or unsafe: %s", pathname)
-		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || int(stat.Uid) != os.Geteuid() || stat.Nlink != 1 {
-			return "", "", fmt.Errorf("private SSH artifact ownership or link count is unsafe: %s", pathname)
-		}
-		handle, err := os.Open(pathname)
-		if err != nil {
-			return "", "", err
-		}
-		opened, statErr := handle.Stat()
-		closeErr := handle.Close()
-		if statErr != nil || closeErr != nil || !os.SameFile(info, opened) {
-			return "", "", fmt.Errorf("private SSH artifact identity changed while opening: %s", pathname)
-		}
+	return m.ConnectionsLocked(ctx, projectValue, projectLock)
+}
+
+// ConnectionsLocked is the non-locking provisioning entrypoint. The caller
+// must pass the live exclusive project.lock token and keep it held for the
+// complete remote operation, preventing lifecycle changes after validation.
+func (m Manager) ConnectionsLocked(ctx context.Context, projectValue project.Project, projectLock *lock.File) ([]Connection, error) {
+	if err := projectLock.ValidateExclusive(filepath.Join(projectValue.Root, "project.lock")); err != nil {
+		return nil, fmt.Errorf("private connections require the matching exclusive project lock: %w", err)
 	}
-	return identity, knownHosts, nil
+	refreshed, err := project.Open(projectValue.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("re-open private project under its exclusive lock: %w", err)
+	}
+	if err := projectLock.ValidateExclusive(filepath.Join(refreshed.Root, "project.lock")); err != nil {
+		return nil, fmt.Errorf("private project marker changed while locked: %w", err)
+	}
+	projectValue = refreshed
+	_, projectState, nodes, err := m.integrationSnapshotLocked(projectValue)
+	if err != nil {
+		return nil, err
+	}
+	privateKey, knownHosts, err := validateSSHArtifacts(projectValue)
+	if err != nil {
+		return nil, err
+	}
+	lifecycle := vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}
+	connections := make([]Connection, 0, len(nodes))
+	for index, node := range nodes {
+		definition := projectState.Resolved.Nodes[index]
+		if node.Phase != state.Running {
+			return nil, fmt.Errorf("private node %s is not running", node.Node)
+		}
+		identity := process.Identity{PID: node.Process.PID, Executable: node.Process.Executable, Started: node.Process.Started, ArgvHash: node.Process.ArgvHash}
+		if err := lifecycle.ValidateIdentity(ctx, node.Runtime.QMP, node.Node, node.VMUUID); err != nil {
+			return nil, fmt.Errorf("private node %s QMP identity does not match: %w", node.Node, err)
+		}
+		if !process.MatchesLive(ctx, m.runner(), identity, node.Invocation) {
+			return nil, fmt.Errorf("private node %s recorded process identity does not match", node.Node)
+		}
+		connections = append(connections, Connection{
+			Node: definition.Name, User: projectState.Resolved.SSHUser,
+			Host: "127.0.0.1", Port: node.SSHPort,
+			PrivateKey: privateKey, KnownHosts: knownHosts,
+		})
+	}
+	return connections, nil
 }
 
 // InstallSSHConfig writes all persisted private nodes into one marker-owned

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func privateKeyPurgeFixture(t *testing.T) (Manager, project.Project, string) {
@@ -110,7 +110,7 @@ func TestPrivatePurgeKeysReportsLiveProcessAndDataDisksAsState(t *testing.T) {
 			manager, projectValue, _ := privateKeyPurgeFixture(t)
 			now := time.Now().UTC()
 			test.node.Schema = state.NodeSchema
-			test.node.PigletVersion = "test"
+			test.node.FarrowVersion = "test"
 			test.node.ProjectID = projectValue.Marker.ProjectID
 			test.node.Node = "meta"
 			test.node.VMUUID = projectValue.Marker.ProjectID

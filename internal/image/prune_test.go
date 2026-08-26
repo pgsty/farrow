@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/execx"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/execx"
 )
 
 type pruneRunner struct{ virtualSize int64 }

@@ -30,7 +30,7 @@ fi
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)
-binary=${PIGLET_M0_BINARY:-${repo_root}/bin/piglet-m0}
+binary=${FARROW_M0_BINARY:-${repo_root}/bin/farrow-m0}
 if [[ ! -x "${binary}" ]]; then
   printf 'M0 binary is not executable: %s\n' "${binary}" >&2
   exit 3

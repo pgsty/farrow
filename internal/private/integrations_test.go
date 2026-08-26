@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/pgsty/farrow/internal/lock"
 )
 
 func TestPrivateSSHConfigInstallContainsEveryNodeAndAddress(t *testing.T) {
@@ -21,7 +24,7 @@ func TestPrivateSSHConfigInstallContainsEveryNodeAndAddress(t *testing.T) {
 		}
 	}
 	home := t.TempDir()
-	manager := Manager{CWD: startConfig.Project.WorkDir, PigletVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	standalone, err := manager.SSHConfig(context.Background())
 	if err != nil || !strings.Contains(standalone, "Host meta 10.10.10.10 admin.example") {
 		t.Fatalf("standalone SSH config=%q err=%v", standalone, err)
@@ -61,7 +64,7 @@ func TestPrivateSSHConfigInstallContainsEveryNodeAndAddress(t *testing.T) {
 func TestPrivateHostEntriesIncludeDeclaredAliases(t *testing.T) {
 	t.Parallel()
 	startConfig, _ := preparedStartFixture(t)
-	manager := Manager{CWD: startConfig.Project.WorkDir, PigletVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	projectID, entries, err := manager.HostEntries(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -86,8 +89,39 @@ func TestPrivateSSHConfigRejectsSymlinkedKeysDirectory(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(startConfig.Project.Root, "keys")); err != nil {
 		t.Fatal(err)
 	}
-	manager := Manager{CWD: startConfig.Project.WorkDir, PigletVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	if _, err := manager.InstallSSHConfig(context.Background(), "lab", t.TempDir()); err == nil {
 		t.Fatal("symlinked project keys directory was accepted")
+	}
+}
+
+func TestConnectionsLockedRequiresAndReusesExclusiveProjectLock(t *testing.T) {
+	startConfig, _ := preparedStartFixture(t)
+	keysDir := filepath.Join(startConfig.Project.Root, "keys")
+	if err := os.Mkdir(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"id_ed25519", "known_hosts"} {
+		if err := os.WriteFile(filepath.Join(keysDir, name), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := Manager{CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	if _, err := manager.ConnectionsLocked(context.Background(), startConfig.Project, nil); err == nil || !strings.Contains(err.Error(), "exclusive project lock") {
+		t.Fatalf("missing token error = %v", err)
+	}
+	projectLock, err := lock.Acquire(context.Background(), filepath.Join(startConfig.Project.Root, "project.lock"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer projectLock.Release()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = manager.ConnectionsLocked(ctx, startConfig.Project, projectLock)
+	if err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Fatalf("locked snapshot error = %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("locked helper attempted to reacquire its own project lock: %v", ctx.Err())
 	}
 }

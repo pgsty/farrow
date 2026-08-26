@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: %s up|plan|preflight|init|inventory|status|start|stop|restart|recreate|destroy|ssh|exec|logs|repair|ssh-config|hosts|network [args...]\n' "$0" >&2
+  printf 'usage: %s up|plan|preflight|init|inventory|status|start|stop|restart|recreate|destroy|ssh|exec|provision|logs|repair|ssh-config|hosts|network [args...]\n' "$0" >&2
 }
 
 command_name=${1:-}
@@ -13,15 +13,15 @@ fi
 shift
 
 case ${command_name} in
-  up|plan|preflight|init|inventory|status|start|stop|restart|recreate|destroy|ssh|exec|logs|repair|ssh-config|hosts|network) ;;
+  up|plan|preflight|init|inventory|status|start|stop|restart|recreate|destroy|ssh|exec|provision|logs|repair|ssh-config|hosts|network) ;;
   *) usage; exit 2 ;;
 esac
 
-    piglet=${PIGLET_BIN:-piglet}
-    if [[ ${piglet} == */* ]]; then
-      [[ ${piglet} == /* && -x ${piglet} ]] || { printf 'PIGLET_BIN must be an executable absolute path\n' >&2; exit 2; }
+    farrow=${FARROW_BIN:-farrow}
+    if [[ ${farrow} == */* ]]; then
+      [[ ${farrow} == /* && -x ${farrow} ]] || { printf 'FARROW_BIN must be an executable absolute path\n' >&2; exit 2; }
     else
-      piglet=$(command -v "${piglet}") || { printf 'piglet executable not found\n' >&2; exit 3; }
+      farrow=$(command -v "${farrow}") || { printf 'farrow executable not found\n' >&2; exit 3; }
     fi
 
     host_arch=$(uname -m)
@@ -66,7 +66,7 @@ esac
 
     case ${command_name} in
       init)
-        exec "${piglet}" "${init_args[@]}" "$@"
+        exec "${farrow}" "${init_args[@]}" "$@"
         ;;
       inventory)
         pigsty_root=${PIGSTY_ROOT:-$(pwd -P)}
@@ -75,29 +75,29 @@ esac
         if [[ -n ${network_cidr} ]]; then
           inventory_args+=(--network-cidr "${network_cidr}")
         fi
-        exec "${piglet}" "${inventory_args[@]}" "$@"
+        exec "${farrow}" "${inventory_args[@]}" "$@"
         ;;
       up|plan|preflight|recreate)
         temp_root=${TMPDIR:-/tmp}
         [[ ${temp_root} == /* && -d ${temp_root} ]] || { printf 'TMPDIR must be an existing absolute directory\n' >&2; exit 2; }
-        generated=$(mktemp "${temp_root%/}/piglet-pigsty-profile.XXXXXX")
+        generated=$(mktemp "${temp_root%/}/farrow-pigsty-profile.XXXXXX")
         cleanup() {
           case ${generated} in
-            "${temp_root%/}"/piglet-pigsty-profile.*) [[ ! -e ${generated} ]] || unlink "${generated}" ;;
+            "${temp_root%/}"/farrow-pigsty-profile.*) [[ ! -e ${generated} ]] || unlink "${generated}" ;;
             *) printf 'refuse unsafe generated-config cleanup: %s\n' "${generated}" >&2 ;;
           esac
         }
         trap cleanup EXIT INT TERM
         chmod 0600 "${generated}"
-        "${piglet}" "${init_args[@]}" >"${generated}"
-        "${piglet}" validate -f "${generated}" >/dev/null
+        "${farrow}" "${init_args[@]}" >"${generated}"
+        "${farrow}" validate -f "${generated}" >/dev/null
         if [[ ${command_name} == preflight ]]; then
-          "${piglet}" network preflight -f "${generated}" "$@"
+          "${farrow}" network preflight -f "${generated}" "$@"
         else
-          "${piglet}" "${command_name}" -f "${generated}" "$@"
+          "${farrow}" "${command_name}" -f "${generated}" "$@"
         fi
         ;;
       *)
-        exec "${piglet}" "${command_name}" "$@"
+        exec "${farrow}" "${command_name}" "$@"
         ;;
     esac

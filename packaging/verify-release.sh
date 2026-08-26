@@ -18,22 +18,22 @@ source "${repo}/packaging/toolchain.env"
 (cd "${directory}" && shasum -a 256 -c checksums.txt)
 expected_checksum_names=$(
   for target in darwin_arm64 darwin_amd64 linux_arm64 linux_amd64; do
-    printf 'piglet_%s_%s.tar.gz\n' "${version}" "${target}"
+    printf 'farrow_%s_%s.tar.gz\n' "${version}" "${target}"
   done
-  printf 'piglet.rb\nrelease.json\n'
+  printf 'farrow.rb\nrelease.json\n'
 )
 expected_checksum_names=$(printf '%s' "${expected_checksum_names}" | LC_ALL=C sort)
 actual_checksum_names=$(awk '{print $2}' "${directory}/checksums.txt" | LC_ALL=C sort)
 [[ ${actual_checksum_names} == "${expected_checksum_names}" ]] || { printf 'unexpected development checksum inventory\n' >&2; exit 1; }
-ruby -c "${directory}/piglet.rb" >/dev/null
+ruby -c "${directory}/farrow.rb" >/dev/null
 jq -e --arg version "${version}" '.schema == 1 and .version == $version and .signed == false and .attested == false and .channel == "development"' "${directory}/release.json" >/dev/null
 
 temporary_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
-temporary=$(mktemp -d "${temporary_parent}/piglet-verify.XXXXXX")
+temporary=$(mktemp -d "${temporary_parent}/farrow-verify.XXXXXX")
 temporary=$(cd "${temporary}" && pwd -P)
 cleanup() {
   case ${temporary} in
-    "${temporary_parent}"/piglet-verify.*) rm -rf -- "${temporary}" ;;
+    "${temporary_parent}"/farrow-verify.*) rm -rf -- "${temporary}" ;;
     *) printf 'refuse unsafe archive verification cleanup: %s\n' "${temporary}" >&2 ;;
   esac
 }
@@ -48,20 +48,22 @@ expected_paths=(
   LICENSE
   README.md
   THIRD_PARTY_LICENSES.md
-  bin/piglet
-  bin/piglet-hosts-helper
+  bin/farrow
+  bin/farrow-hosts-helper
   bin/pigsty-vm
-  docs/ARCHITECTURE.md
-  docs/IMAGE_CONTRACT.md
-  docs/INSTALL.md
-  docs/MIGRATION.md
-  docs/NETWORKING.md
-  docs/RELEASE.md
-  docs/SECURITY.md
-  docs/TESTING.md
-  docs/TROUBLESHOOTING.md
-  docs/UPGRADE.md
-  schemas/piglet-v1.schema.json
+  docs/architecture.md
+  docs/cli.md
+  docs/config.md
+  docs/development.md
+  docs/images.md
+  docs/networking.md
+  docs/phase-2.md
+  docs/pigsty.md
+  docs/security.md
+  docs/status.md
+  docs/troubleshooting.md
+  schemas/farrow-v1.schema.json
+  tests/e2e/README.md
   third_party/licenses/aead.dev-minisign-LICENSE
   third_party/licenses/github.com-diskfs-go-diskfs-LICENSE
   third_party/licenses/github.com-djherbis-times-LICENSE
@@ -85,7 +87,7 @@ file_mode() {
 for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
   goos=${target%/*}
   goarch=${target#*/}
-  root_name=piglet_${version}_${goos}_${goarch}
+  root_name=farrow_${version}_${goos}_${goarch}
   archive=${directory}/${root_name}.tar.gz
   [[ -s ${archive} ]] || { printf 'missing development archive: %s\n' "${archive}" >&2; exit 1; }
   while IFS= read -r member; do
@@ -103,10 +105,10 @@ for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
   [[ -z $(find "${root}" ! -type f ! -type d -print -quit) ]] || { printf 'archive contains a special entry: %s\n' "${archive}" >&2; exit 1; }
   actual_list=$(cd "${root}" && find . -type f -print | sed 's#^\./##' | LC_ALL=C sort)
   [[ ${actual_list} == "${expected_list}" ]] || { printf 'unexpected development archive payload: %s\n' "${archive}" >&2; diff -u <(printf '%s\n' "${expected_list}") <(printf '%s\n' "${actual_list}") >&2 || true; exit 1; }
-  [[ $(file_mode "${root}/bin/piglet") == 755 && $(file_mode "${root}/bin/piglet-hosts-helper") == 755 && $(file_mode "${root}/bin/pigsty-vm") == 755 ]]
+  [[ $(file_mode "${root}/bin/farrow") == 755 && $(file_mode "${root}/bin/farrow-hosts-helper") == 755 && $(file_mode "${root}/bin/pigsty-vm") == 755 ]]
   cmp "${repo}/packaging/pigsty/vm" "${root}/bin/pigsty-vm"
   for path in "${expected_paths[@]}"; do
-    case ${path} in bin/piglet|bin/piglet-hosts-helper|bin/pigsty-vm) continue ;; esac
+    case ${path} in bin/farrow|bin/farrow-hosts-helper|bin/pigsty-vm) continue ;; esac
     [[ $(file_mode "${root}/${path}") == 644 ]] || { printf 'unexpected mode for %s in %s\n' "${path}" "${archive}" >&2; exit 1; }
   done
   case ${target} in
@@ -115,20 +117,20 @@ for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
     linux/amd64) architecture_pattern='ELF 64-bit LSB executable, x86-64' ;;
     linux/arm64) architecture_pattern='ELF 64-bit LSB executable, ARM aarch64' ;;
   esac
-  file -b "${root}/bin/piglet" | grep -F "${architecture_pattern}" >/dev/null
-  file -b "${root}/bin/piglet-hosts-helper" | grep -F "${architecture_pattern}" >/dev/null
-  go version -m "${root}/bin/piglet" | sed -n '1p' | grep -F "go${PIGLET_GO_VERSION}" >/dev/null
-  go version -m "${root}/bin/piglet-hosts-helper" | sed -n '1p' | grep -F "go${PIGLET_GO_VERSION}" >/dev/null
-  piglet_sha=$(shasum -a 256 "${root}/bin/piglet" | awk '{print $1}')
-  helper_sha=$(shasum -a 256 "${root}/bin/piglet-hosts-helper" | awk '{print $1}')
-  grep -a -F "${helper_sha}" "${root}/bin/piglet" >/dev/null
+  file -b "${root}/bin/farrow" | grep -F "${architecture_pattern}" >/dev/null
+  file -b "${root}/bin/farrow-hosts-helper" | grep -F "${architecture_pattern}" >/dev/null
+  go version -m "${root}/bin/farrow" | sed -n '1p' | grep -F "go${FARROW_GO_VERSION}" >/dev/null
+  go version -m "${root}/bin/farrow-hosts-helper" | sed -n '1p' | grep -F "go${FARROW_GO_VERSION}" >/dev/null
+  farrow_sha=$(shasum -a 256 "${root}/bin/farrow" | awk '{print $1}')
+  helper_sha=$(shasum -a 256 "${root}/bin/farrow-hosts-helper" | awk '{print $1}')
+  grep -a -F "${helper_sha}" "${root}/bin/farrow" >/dev/null
   jq -e --arg version "${version}" --arg goos "${goos}" --arg goarch "${goarch}" \
-    --arg piglet_sha "${piglet_sha}" --arg helper_sha "${helper_sha}" '
+    --arg farrow_sha "${farrow_sha}" --arg helper_sha "${helper_sha}" '
     .schema == 1 and .version == $version and .goos == $goos and .goarch == $goarch and
-    .cgo_enabled == false and .piglet_sha256 == $piglet_sha and .hosts_helper_sha256 == $helper_sha
+    .cgo_enabled == false and .farrow_sha256 == $farrow_sha and .hosts_helper_sha256 == $helper_sha
   ' "${root}/BUILD_INFO.json" >/dev/null
   if [[ ${goos} == "${host_os}" && ${goarch} == "${host_arch}" ]]; then
-    "${root}/bin/piglet" version | grep -F "piglet ${version}" >/dev/null
+    "${root}/bin/farrow" version | grep -F "farrow ${version}" >/dev/null
   fi
 done
 

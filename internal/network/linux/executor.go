@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/identity"
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/network/subnet"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/qmp"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/qmp"
 )
 
 type Executor struct {
@@ -114,7 +114,7 @@ func (e Executor) waitBridge(ctx context.Context, config Config) error {
 		case <-time.After(time.Second):
 		}
 	}
-	return fmt.Errorf("piglet0 did not acquire %s", expected)
+	return fmt.Errorf("farrow0 did not acquire %s", expected)
 }
 
 func (e Executor) runInstallPhases(ctx context.Context, phases []CommandPhase, persistOnly bool, config Config) error {
@@ -175,7 +175,7 @@ func (e Executor) helperAttachSmoke(ctx context.Context, helper string) (returnE
 	if err != nil {
 		return err
 	}
-	runtimeDir, err := os.MkdirTemp("/tmp", "piglet-network-smoke-")
+	runtimeDir, err := os.MkdirTemp("/tmp", "farrow-network-smoke-")
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func (e Executor) helperAttachSmoke(ctx context.Context, helper string) (returnE
 	if err != nil {
 		return err
 	}
-	name := "piglet-network-smoke"
+	name := "farrow-network-smoke"
 	invocation := qemu.Invocation{Binary: qemuPath, Args: []string{
 		"-name", name, "-uuid", uuid, "-machine", profile.Machine,
 		"-accel", profile.Accelerator, "-cpu", profile.CPU, "-m", "128",
@@ -244,7 +244,7 @@ func (e Executor) helperAttachSmoke(ctx context.Context, helper string) (returnE
 	}
 	members, err := e.User.Run(ctx, "/usr/sbin/ip", "-o", "link", "show", "master", BridgeName)
 	if err != nil || !strings.Contains(string(members.Stdout), "tap") {
-		return errors.New("helper attach smoke created no piglet0 tap member")
+		return errors.New("helper attach smoke created no farrow0 tap member")
 	}
 	if err := client.Quit(ctx, qmpPath); err != nil {
 		return err
@@ -286,7 +286,7 @@ func (e Executor) InstallConfig(ctx context.Context, config Config, apply bool) 
 	if parent == "" {
 		parent = os.TempDir()
 	}
-	staging, err := os.MkdirTemp(parent, "piglet-linux-network-")
+	staging, err := os.MkdirTemp(parent, "farrow-linux-network-")
 	if err != nil {
 		return report, err
 	}
@@ -333,7 +333,7 @@ func (e Executor) InstallConfig(ctx context.Context, config Config, apply bool) 
 	// The non-persistence phases are intentionally idempotent and ran twice;
 	// this also exercises repeated reload/reconfigure without recapturing state.
 	report.Applied = true
-	report.Checks["bridge"] = "piglet0 " + config.HostAddress + "/24"
+	report.Checks["bridge"] = "farrow0 " + config.HostAddress + "/24"
 	report.Checks["helper-attach"] = "non-root QEMU QMP smoke passed"
 	return report, nil
 }
@@ -447,7 +447,7 @@ func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, e
 		}
 	}
 	if manifest.OriginalBridgePath.Existed {
-		staging, err := os.MkdirTemp(e.StagingParent, "piglet-bridge-restore-")
+		staging, err := os.MkdirTemp(e.StagingParent, "farrow-bridge-restore-")
 		if err != nil {
 			return report, err
 		}

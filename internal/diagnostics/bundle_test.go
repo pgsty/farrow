@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/doctor"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/spec"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/doctor"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func readBundle(t *testing.T, pathname string) (map[string][]byte, map[string]int64) {
@@ -54,7 +54,7 @@ func readBundle(t *testing.T, pathname string) (map[string][]byte, map[string]in
 
 func TestBundleCollectsAllPrivateNodesWithoutSeedOrKeys(t *testing.T) {
 	t.Parallel()
-	canary := "PIGLET_PRIVATE_BUNDLE_CANARY_91ac"
+	canary := "FARROW_PRIVATE_BUNDLE_CANARY_91ac"
 	root := t.TempDir()
 	work := filepath.Join(root, "work")
 	if err := os.Mkdir(work, 0o700); err != nil {
@@ -75,7 +75,7 @@ func TestBundleCollectsAllPrivateNodesWithoutSeedOrKeys(t *testing.T) {
 	hash, _ := spec.Hash(resolved)
 	now := time.Now().UTC()
 	store := state.Store{Project: projectValue}
-	if err := store.WriteProject(state.ProjectState{Schema: state.ProjectSchema, PigletVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}); err != nil {
+	if err := store.WriteProject(state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	for index, definition := range resolved.Nodes {
@@ -84,7 +84,7 @@ func TestBundleCollectsAllPrivateNodesWithoutSeedOrKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 		node := state.NodeState{
-			Schema: state.NodeSchema, PigletVersion: "test", ProjectID: projectValue.Marker.ProjectID, Node: definition.Name,
+			Schema: state.NodeSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, Node: definition.Name,
 			VMUUID: projectValue.Marker.ProjectID, Phase: state.Stopped, Generation: 1, SpecHash: hash,
 			Image:    state.Image{Alias: "u24", Release: "test", Digest: "digest", VirtualSize: spec.GiB},
 			RootDisk: filepath.Join(nodeDir, "root.qcow2"), Seed: filepath.Join(nodeDir, "seed.iso"), SSHPort: uint16(2222 + index),
@@ -133,7 +133,7 @@ func TestBundleCollectsAllPrivateNodesWithoutSeedOrKeys(t *testing.T) {
 
 func TestBundleStrictAllowlistAndSecretCanary(t *testing.T) {
 	t.Parallel()
-	canary := "PIGLET_SECRET_CANARY_26bc3b17"
+	canary := "FARROW_SECRET_CANARY_26bc3b17"
 	root := t.TempDir()
 	workDir := filepath.Join(root, "work")
 	if err := os.Mkdir(workDir, 0o700); err != nil {
@@ -143,7 +143,7 @@ func TestBundleStrictAllowlistAndSecretCanary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workDir, "piglet.yaml"), []byte("version: 1\n# token: "+canary+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(workDir, "farrow.yaml"), []byte("version: 1\n# token: "+canary+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(projectValue.Root, "resolved.json"), []byte(`{"name":"test","client_secret":"`+canary+`"}`), 0o600); err != nil {
@@ -183,7 +183,7 @@ func TestBundleStrictAllowlistAndSecretCanary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Files) < 6 || plan.SuggestedName != "piglet-debug-"+projectValue.Marker.ProjectID[:8]+"-20260823T120000Z.tar.gz" {
+	if len(plan.Files) < 6 || plan.SuggestedName != "farrow-debug-"+projectValue.Marker.ProjectID[:8]+"-20260823T120000Z.tar.gz" {
 		t.Fatalf("unexpected bundle plan: %#v", plan)
 	}
 	for _, file := range plan.Files {

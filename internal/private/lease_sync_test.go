@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/state"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 func testLeaseRoot(t *testing.T) string {

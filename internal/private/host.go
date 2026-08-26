@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
-	darwinnet "github.com/pgsty/piglet/internal/network/darwin"
-	linuxnet "github.com/pgsty/piglet/internal/network/linux"
-	"github.com/pgsty/piglet/internal/network/subnet"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/execx"
+	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
+	linuxnet "github.com/pgsty/farrow/internal/network/linux"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 type CapabilityError struct{ Reason string }
@@ -81,7 +81,26 @@ func expectedPrivateLayout(expected *spec.PrivateNetwork) (subnet.Layout, error)
 	return layout, nil
 }
 
-func darwinHostPreflight(ctx context.Context, profile platform.Profile, expected *spec.PrivateNetwork, runner execx.Runner) (Backend, error) {
+func qemuVersionPreflight(ctx context.Context, profile platform.Profile, runner execx.Runner) (string, platform.Version, error) {
+	if profile.QEMUBinary == "" {
+		return "", platform.Version{}, errors.New("private host profile has no QEMU binary")
+	}
+	qemuPath, err := exec.LookPath(profile.QEMUBinary)
+	if err != nil {
+		return "", platform.Version{}, fmt.Errorf("locate QEMU binary: %w", err)
+	}
+	result, err := runner.Run(ctx, qemuPath, "--version")
+	if err != nil {
+		return "", platform.Version{}, fmt.Errorf("probe QEMU version: %w", err)
+	}
+	version, err := platform.ValidateQEMUVersion(profile, string(result.Stdout)+string(result.Stderr))
+	if err != nil {
+		return "", platform.Version{}, err
+	}
+	return qemuPath, version, nil
+}
+
+func darwinHostPreflight(ctx context.Context, profile platform.Profile, expected *spec.PrivateNetwork, runner execx.Runner, qemuPath string, qemuVersion platform.Version) (Backend, error) {
 	layout, err := expectedPrivateLayout(expected)
 	if err != nil {
 		return Backend{}, err
@@ -138,23 +157,11 @@ func darwinHostPreflight(ctx context.Context, profile platform.Profile, expected
 	if err != nil || !strings.Contains(string(ifconfig.Stdout), plan.State.HostAddress) {
 		return Backend{}, fmt.Errorf("socket_vmnet host address %s is absent; inspect for a conflicting vmnet sharing service or subnet", plan.State.HostAddress)
 	}
-	qemuPath, err := exec.LookPath(profile.QEMUBinary)
-	if err != nil {
-		return Backend{}, err
-	}
-	versionResult, err := runner.Run(ctx, qemuPath, "--version")
-	if err != nil {
-		return Backend{}, err
-	}
-	version, err := platform.ParseQEMUVersion(string(versionResult.Stdout) + string(versionResult.Stderr))
-	if err != nil {
-		return Backend{}, err
-	}
 	netdevResult, err := runner.Run(ctx, qemuPath, "-machine", "none", "-netdev", "help")
 	if err != nil {
 		return Backend{}, err
 	}
-	backend := selectDarwinBackend(version, string(netdevResult.Stdout)+string(netdevResult.Stderr), darwinnet.SocketPath)
+	backend := selectDarwinBackend(qemuVersion, string(netdevResult.Stdout)+string(netdevResult.Stderr), darwinnet.SocketPath)
 	backend.NetworkCIDR, backend.HostAddress, backend.DHCPEnd = layout.CIDR(), layout.HostAddress(), layout.DHCPEnd()
 	return backend, nil
 }
@@ -277,7 +284,7 @@ func linuxHostPreflight(ctx context.Context, expected *spec.PrivateNetwork, runn
 		}
 		override, overrideErr := runner.Run(ctx, "/usr/bin/dpkg-statoverride", "--list", helper)
 		if overrideErr != nil || strings.TrimSpace(string(override.Stdout)) != "root kvm 4750 "+helper {
-			return Backend{}, errors.New("qemu-bridge-helper dpkg override does not match Piglet policy")
+			return Backend{}, errors.New("qemu-bridge-helper dpkg override does not match Farrow policy")
 		}
 	} else {
 		packageOwner, packageErr := runner.Run(ctx, "/usr/bin/rpm", "-qf", helper)
@@ -285,10 +292,10 @@ func linuxHostPreflight(ctx context.Context, expected *spec.PrivateNetwork, runn
 			return Backend{}, errors.New("qemu-bridge-helper is not owned by an RPM package")
 		}
 	}
-	if err := requireExactRootFile(linuxnet.NetDevPath, "[NetDev]\nName=piglet0\nKind=bridge\n", 0o644); err != nil {
+	if err := requireExactRootFile(linuxnet.NetDevPath, "[NetDev]\nName=farrow0\nKind=bridge\n", 0o644); err != nil {
 		return Backend{}, err
 	}
-	wantNetwork := fmt.Sprintf("[Match]\nName=piglet0\n\n[Network]\nAddress=%s/24\nConfigureWithoutCarrier=yes\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Link]\nRequiredForOnline=no\n", layout.HostAddress())
+	wantNetwork := fmt.Sprintf("[Match]\nName=farrow0\n\n[Network]\nAddress=%s/24\nConfigureWithoutCarrier=yes\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Link]\nRequiredForOnline=no\n", layout.HostAddress())
 	if err := requireExactRootFile(linuxnet.NetworkPath, wantNetwork, 0o644); err != nil {
 		return Backend{}, err
 	}
@@ -296,10 +303,10 @@ func linuxHostPreflight(ctx context.Context, expected *spec.PrivateNetwork, runn
 		return Backend{}, err
 	}
 	bridgeConf, err := os.ReadFile(linuxnet.BridgeConfPath)
-	if err != nil || !strings.Contains(string(bridgeConf), "# BEGIN PIGLET MANAGED: piglet0\nallow piglet0\n# END PIGLET MANAGED: piglet0\n") {
-		return Backend{}, errors.New("qemu bridge.conf lacks the exact Piglet marker block")
+	if err != nil || !strings.Contains(string(bridgeConf), "# BEGIN FARROW MANAGED: farrow0\nallow farrow0\n# END FARROW MANAGED: farrow0\n") {
+		return Backend{}, errors.New("qemu bridge.conf lacks the exact Farrow marker block")
 	}
-	if _, err := rootOwned("/var/lib/piglet", 0o700, "directory"); err != nil {
+	if _, err := rootOwned("/var/lib/farrow", 0o700, "directory"); err != nil {
 		return Backend{}, err
 	}
 	if err := rootSticky(linuxnet.LeaseRoot); err != nil {
@@ -314,11 +321,11 @@ func linuxHostPreflight(ctx context.Context, expected *spec.PrivateNetwork, runn
 	}
 	link, err := runner.Run(ctx, "/usr/sbin/ip", "-d", "link", "show", "dev", linuxnet.BridgeName)
 	if err != nil || !strings.Contains(string(link.Stdout), "bridge") {
-		return Backend{}, errors.New("piglet0 is absent or not a bridge")
+		return Backend{}, errors.New("farrow0 is absent or not a bridge")
 	}
 	address, err := runner.Run(ctx, "/usr/sbin/ip", "-4", "-o", "address", "show", "dev", linuxnet.BridgeName)
 	if err != nil || !strings.Contains(string(address.Stdout), layout.HostAddress()+"/24") {
-		return Backend{}, fmt.Errorf("piglet0 does not own %s/24", layout.HostAddress())
+		return Backend{}, fmt.Errorf("farrow0 does not own %s/24", layout.HostAddress())
 	}
 	return Backend{LinuxBridgeHelper: helper, NetworkCIDR: layout.CIDR(), HostAddress: layout.HostAddress(), DHCPEnd: layout.DHCPEnd()}, nil
 }
@@ -327,15 +334,19 @@ func PreflightHost(ctx context.Context, profile platform.Profile, expected *spec
 	if runner == nil {
 		return Backend{}, &CapabilityError{Reason: "private host preflight requires a command runner"}
 	}
+	if profile.OS != "darwin" && profile.OS != "linux" {
+		return Backend{}, &CapabilityError{Reason: fmt.Sprintf("private host preflight does not support %s", profile.OS)}
+	}
+	qemuPath, qemuVersion, err := qemuVersionPreflight(ctx, profile, runner)
+	if err != nil {
+		return Backend{}, &CapabilityError{Reason: err.Error()}
+	}
 	var backend Backend
-	var err error
 	switch profile.OS {
 	case "darwin":
-		backend, err = darwinHostPreflight(ctx, profile, expected, runner)
+		backend, err = darwinHostPreflight(ctx, profile, expected, runner, qemuPath, qemuVersion)
 	case "linux":
 		backend, err = linuxHostPreflight(ctx, expected, runner)
-	default:
-		err = fmt.Errorf("private host preflight does not support %s", profile.OS)
 	}
 	if err != nil {
 		return Backend{}, &CapabilityError{Reason: err.Error()}

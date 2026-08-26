@@ -3,14 +3,14 @@
 build:
 	install -d -m 0755 bin
 	install -m 0755 packaging/pigsty/vm bin/pigsty-vm
-	go build -o bin/piglet-hosts-helper ./cmd/piglet-hosts-helper
-	helper_sha=$$(shasum -a 256 bin/piglet-hosts-helper | awk '{print $$1}'); \
-	  go build -ldflags "-X github.com/pgsty/piglet/internal/hostconfig.ExpectedHelperSHA256=$$helper_sha" -o bin/piglet ./cmd/piglet
-	go build -o bin/piglet-m0 ./cmd/piglet-m0
-	go build -o bin/piglet-net-stage ./cmd/piglet-net-stage
-	go build -o bin/piglet-linux-net-stage ./cmd/piglet-linux-net-stage
-	go build -o bin/piglet-private-m0 ./cmd/piglet-private-m0
-	go build -o bin/piglet-private-fd-m0 ./cmd/piglet-private-fd-m0
+	go build -o bin/farrow-hosts-helper ./cmd/farrow-hosts-helper
+	helper_sha=$$(shasum -a 256 bin/farrow-hosts-helper | awk '{print $$1}'); \
+	  go build -ldflags "-X github.com/pgsty/farrow/internal/hostconfig.ExpectedHelperSHA256=$$helper_sha" -o bin/farrow ./cmd/farrow
+	go build -o bin/farrow-m0 ./cmd/farrow-m0
+	go build -o bin/farrow-net-stage ./cmd/farrow-net-stage
+	go build -o bin/farrow-linux-net-stage ./cmd/farrow-linux-net-stage
+	go build -o bin/farrow-private-m0 ./cmd/farrow-private-m0
+	go build -o bin/farrow-private-fd-m0 ./cmd/farrow-private-fd-m0
 
 test:
 	go test ./...

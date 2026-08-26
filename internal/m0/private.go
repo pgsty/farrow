@@ -14,19 +14,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pgsty/piglet/internal/cloudinit"
-	"github.com/pgsty/piglet/internal/disk"
-	"github.com/pgsty/piglet/internal/execx"
-	"github.com/pgsty/piglet/internal/identity"
-	darwinnet "github.com/pgsty/piglet/internal/network/darwin"
-	linuxnet "github.com/pgsty/piglet/internal/network/linux"
-	"github.com/pgsty/piglet/internal/network/subnet"
-	usernet "github.com/pgsty/piglet/internal/network/user"
-	"github.com/pgsty/piglet/internal/openssh"
-	"github.com/pgsty/piglet/internal/platform"
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/qmp"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/disk"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/identity"
+	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
+	linuxnet "github.com/pgsty/farrow/internal/network/linux"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	usernet "github.com/pgsty/farrow/internal/network/user"
+	"github.com/pgsty/farrow/internal/openssh"
+	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 type PrivateOptions struct {
@@ -243,8 +243,8 @@ func preflightLinuxPrivate(ctx context.Context, runner execx.Runner, requestedHe
 		return nil, err
 	}
 	bridgeConf, err := os.ReadFile(linuxnet.BridgeConfPath)
-	if err != nil || !strings.Contains(string(bridgeConf), "# BEGIN PIGLET MANAGED: piglet0\nallow piglet0\n# END PIGLET MANAGED: piglet0\n") {
-		return nil, errors.New("linux qemu bridge.conf lacks the exact Piglet marker block")
+	if err != nil || !strings.Contains(string(bridgeConf), "# BEGIN FARROW MANAGED: farrow0\nallow farrow0\n# END FARROW MANAGED: farrow0\n") {
+		return nil, errors.New("linux qemu bridge.conf lacks the exact Farrow marker block")
 	}
 	leaseInfo, err := os.Lstat(linuxnet.LeaseRoot)
 	if err != nil || !leaseInfo.IsDir() || leaseInfo.Mode()&os.ModeSymlink != 0 || leaseInfo.Mode().Perm() != 0o777 || leaseInfo.Mode()&os.ModeSticky == 0 {
@@ -259,11 +259,11 @@ func preflightLinuxPrivate(ctx context.Context, runner execx.Runner, requestedHe
 	}
 	link, err := runner.Run(ctx, ipPath, "-d", "link", "show", "dev", linuxnet.BridgeName)
 	if err != nil || !strings.Contains(string(link.Stdout), "bridge") {
-		return nil, errors.New("linux piglet0 bridge is not present")
+		return nil, errors.New("linux farrow0 bridge is not present")
 	}
 	address, err := runner.Run(ctx, ipPath, "-4", "-o", "address", "show", "dev", linuxnet.BridgeName)
 	if err != nil || !strings.Contains(string(address.Stdout), hostAddress+"/24") {
-		return nil, fmt.Errorf("linux piglet0 does not own %s/24", hostAddress)
+		return nil, fmt.Errorf("linux farrow0 does not own %s/24", hostAddress)
 	}
 	evidence.Backend = "qemu-bridge-helper"
 	evidence.Bridge = linuxnet.BridgeName
@@ -274,7 +274,7 @@ func preflightLinuxPrivate(ctx context.Context, runner execx.Runner, requestedHe
 }
 
 // PrivateSmoke requires an already installed root-owned socket_vmnet daemon
-// on macOS or a root-owned persistent piglet0/helper boundary on Linux.
+// on macOS or a root-owned persistent farrow0/helper boundary on Linux.
 // It never installs or uninstalls privileged resources.
 func PrivateSmoke(ctx context.Context, options PrivateOptions) (evidence PrivateEvidence, returnErr error) {
 	evidence.Schema = 1
@@ -376,7 +376,7 @@ func PrivateSmoke(ctx context.Context, options PrivateOptions) (evidence Private
 		return evidence, err
 	}
 	keyPath := filepath.Join(options.WorkDir, "id_ed25519")
-	if _, err := runner.Run(ctx, sshKeygenPath, "-q", "-t", "ed25519", "-N", "", "-C", "piglet-m0-private", "-f", keyPath); err != nil {
+	if _, err := runner.Run(ctx, sshKeygenPath, "-q", "-t", "ed25519", "-N", "", "-C", "farrow-m0-private", "-f", keyPath); err != nil {
 		return evidence, err
 	}
 	privateKey, err := os.ReadFile(keyPath)
@@ -485,7 +485,7 @@ func PrivateSmoke(ctx context.Context, options PrivateOptions) (evidence Private
 			}
 			qemuFirmware = &qemu.Firmware{Code: firmware.Code, Vars: nvramPath}
 		}
-		runtimeDir := filepath.Join("/tmp", "piglet-m0-"+projectID[:8]+"-"+strconv.Itoa(index))
+		runtimeDir := filepath.Join("/tmp", "farrow-m0-"+projectID[:8]+"-"+strconv.Itoa(index))
 		if err := os.Mkdir(runtimeDir, 0o700); err != nil {
 			return evidence, err
 		}
@@ -577,13 +577,13 @@ func PrivateSmoke(ctx context.Context, options PrivateOptions) (evidence Private
 				return evidence, fmt.Errorf("private default route detected for %s", node.evidence.Name)
 			}
 		}
-		privateContract, err := runSSHCheck(ctx, runner, sshPath, keyPath, knownHosts, node.evidence.SSHPort, "/usr/local/libexec/piglet-private-contract")
+		privateContract, err := runSSHCheck(ctx, runner, sshPath, keyPath, knownHosts, node.evidence.SSHPort, "/usr/local/libexec/farrow-private-contract")
 		if err != nil {
 			return evidence, fmt.Errorf("private route/DNS contract failed for %s: %w", node.evidence.Name, err)
 		}
 		node.evidence.Checks["routes"] = routes
 		node.evidence.Checks["private-route-dns"] = privateContract
-		internet, err := runSSHCheck(ctx, runner, sshPath, keyPath, knownHosts, node.evidence.SSHPort, "/usr/local/libexec/piglet-network-check")
+		internet, err := runSSHCheck(ctx, runner, sshPath, keyPath, knownHosts, node.evidence.SSHPort, "/usr/local/libexec/farrow-network-check")
 		if err != nil {
 			return evidence, err
 		}

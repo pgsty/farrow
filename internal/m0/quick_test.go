@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 func TestRandomUUIDContract(t *testing.T) {

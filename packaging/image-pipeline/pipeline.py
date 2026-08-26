@@ -396,7 +396,7 @@ def normalize_offline(
     timeouts: Mapping[str, int],
     environment: Mapping[str, str],
 ) -> Dict[str, Any]:
-    remote_script = "/usr/local/sbin/piglet-image-normalize"
+    remote_script = "/usr/local/sbin/farrow-image-normalize"
     command = f"{remote_script} {source_user} {epoch}"
     run_tool(
         (
@@ -423,7 +423,7 @@ def normalize_offline(
             "--format=qcow2",
             "-a",
             str(image),
-            "/var/lib/piglet-image/normalization.json",
+            "/var/lib/farrow-image/normalization.json",
         ),
         timeouts["virt_cat"],
         environment,
@@ -433,7 +433,7 @@ def normalize_offline(
         "admin_gid": 88,
         "credential_hygiene": "applied",
         "dba_uid": 88,
-        "recipe": "piglet-official-image-normalization-v1",
+        "recipe": "farrow-official-image-normalization-v1",
         "schema": 1,
         "source_date_epoch": epoch,
         "source_user": source_user,
@@ -497,7 +497,7 @@ def build_manifest(
     if mode == "offline":
         source_user = "dba"
         provenance = (
-            f"Piglet offline normalization recipe v1 from {args.source_uri} sha256:{args.expected_sha256}; "
+            f"Farrow offline normalization recipe v1 from {args.source_uri} sha256:{args.expected_sha256}; "
             "credential hygiene and dba UID/GID 88 applied; candidate requires owner hosting, signing, and native smoke"
         )
     else:
@@ -548,10 +548,10 @@ def build_sbom(
     )
     return {
         "SPDXID": "SPDXRef-DOCUMENT",
-        "creationInfo": {"created": created, "creators": [f"Tool: piglet-image-pipeline-{PIPELINE_VERSION}"]},
+        "creationInfo": {"created": created, "creators": [f"Tool: farrow-image-pipeline-{PIPELINE_VERSION}"]},
         "dataLicense": "CC0-1.0",
         "documentDescribes": ["SPDXRef-Package-NormalizedImage"],
-        "documentNamespace": f"https://github.com/pgsty/piglet/sbom/image/{output_digest}",
+        "documentNamespace": f"https://github.com/pgsty/farrow/sbom/image/{output_digest}",
         "files": [
             {
                 "SPDXID": "SPDXRef-File-QCOW2",
@@ -562,7 +562,7 @@ def build_sbom(
                 "licenseInfoInFiles": ["NOASSERTION"],
             }
         ],
-        "name": f"piglet-image-{args.name}-{args.release}-{args.arch}",
+        "name": f"farrow-image-{args.name}-{args.release}-{args.arch}",
         "packages": [
             {
                 "SPDXID": "SPDXRef-Package-SourceImage",
@@ -585,7 +585,7 @@ def build_sbom(
                 "hasFiles": ["SPDXRef-File-QCOW2"],
                 "licenseConcluded": "NOASSERTION",
                 "licenseDeclared": args.license,
-                "name": f"piglet-{args.name}-{args.release}-{args.arch}",
+                "name": f"farrow-{args.name}-{args.release}-{args.arch}",
                 "packageFileName": artifact_name,
                 "versionInfo": args.release,
             },
@@ -640,7 +640,7 @@ def build_provenance(
         "_type": "https://in-toto.io/Statement/v1",
         "predicate": {
             "buildDefinition": {
-                "buildType": "https://github.com/pgsty/piglet/packaging/image-pipeline/v1",
+                "buildType": "https://github.com/pgsty/farrow/packaging/image-pipeline/v1",
                 "externalParameters": parameters,
                 "internalParameters": {
                     "networkDuringMutation": False,
@@ -651,16 +651,16 @@ def build_provenance(
                     {"digest": {"sha256": args.expected_sha256}, "uri": args.source_uri},
                     {
                         "digest": {"sha256": config_digest},
-                        "uri": "git+https://github.com/pgsty/piglet@packaging/image-pipeline/recipe-v1.json",
+                        "uri": "git+https://github.com/pgsty/farrow@packaging/image-pipeline/recipe-v1.json",
                     },
                     {
                         "digest": {"sha256": guest_script_digest},
-                        "uri": "git+https://github.com/pgsty/piglet@packaging/image-pipeline/normalize-guest.sh",
+                        "uri": "git+https://github.com/pgsty/farrow@packaging/image-pipeline/normalize-guest.sh",
                     },
                 ],
             },
             "runDetails": {
-                "builder": {"id": "https://github.com/pgsty/piglet/packaging/image-pipeline/pipeline.py"},
+                "builder": {"id": "https://github.com/pgsty/farrow/packaging/image-pipeline/pipeline.py"},
                 "metadata": {
                     "finishedOn": timestamp,
                     "invocationId": f"urn:sha256:{invocation_id}",
@@ -765,7 +765,7 @@ def pipeline(args: argparse.Namespace) -> Path:
         environment = tool_environment(temporary, args.source_date_epoch)
         timeouts = config["timeouts_seconds"]
         tools: Dict[str, str] = {
-            "pipeline": f"piglet-image-pipeline {PIPELINE_VERSION}",
+            "pipeline": f"farrow-image-pipeline {PIPELINE_VERSION}",
             "qemu_img": tool_version(qemu_img, timeouts["qemu_img"], environment),
         }
         if args.mode == "offline":

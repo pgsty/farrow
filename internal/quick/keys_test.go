@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgsty/piglet/internal/persistent"
-	"github.com/pgsty/piglet/internal/project"
+	"github.com/pgsty/farrow/internal/persistent"
+	"github.com/pgsty/farrow/internal/project"
 )
 
 func keyPurgeFixture(t *testing.T) (Manager, string, string) {

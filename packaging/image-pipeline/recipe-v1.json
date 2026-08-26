@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "recipe_id": "https://github.com/pgsty/piglet/packaging/image-pipeline/v1",
+  "recipe_id": "https://github.com/pgsty/farrow/packaging/image-pipeline/v1",
   "max_source_bytes": 17179869184,
   "copy_chunk_bytes": 8388608,
   "timeouts_seconds": {
@@ -46,7 +46,7 @@
     "engine": "virt-customize",
     "network": false,
     "guest_script": "normalize-guest.sh",
-    "marker": "/var/lib/piglet-image/normalization.json",
+    "marker": "/var/lib/farrow-image/normalization.json",
     "login_user": "dba",
     "login_uid": 88,
     "primary_group": "admin",

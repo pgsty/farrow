@@ -29,10 +29,10 @@ if command -v netstat >/dev/null 2>&1; then
 fi
 
 for path in \
-  /opt/piglet \
-  /Library/LaunchDaemons/io.pgsty.piglet.vmnet.plist \
-  /private/var/run/piglet-vmnet.sock \
-  /private/var/db/piglet/network.json; do
+  /opt/farrow \
+  /Library/LaunchDaemons/io.pgsty.farrow.vmnet.plist \
+  /private/var/run/farrow-vmnet.sock \
+  /private/var/db/farrow/network.json; do
   if [[ -e "${path}" ]]; then
     stat -f '%Sp %Su:%Sg %N' "${path}" 2>/dev/null || stat "${path}"
   else

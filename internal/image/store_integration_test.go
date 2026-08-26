@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/execx"
+	"github.com/pgsty/farrow/internal/execx"
 )
 
 func makeQCOW2(t *testing.T, path string, backing string) {

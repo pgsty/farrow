@@ -8,25 +8,25 @@ import (
 	"io"
 	"regexp"
 
-	"github.com/pgsty/piglet/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/network/subnet"
 )
 
 const (
-	InstallRoot         = "/opt/piglet"
-	DaemonPath          = "/opt/piglet/libexec/socket_vmnet"
-	ClientPath          = "/opt/piglet/libexec/socket_vmnet_client"
-	HostsHelperPath     = "/opt/piglet/libexec/piglet-hosts-helper"
-	PlistPath           = "/Library/LaunchDaemons/io.pgsty.piglet.vmnet.plist"
-	SocketPath          = "/private/var/run/piglet-vmnet.sock"
-	PIDPath             = "/private/var/run/piglet-vmnet.pid"
-	LeaseRoot           = "/private/var/run/piglet"
-	StateDir            = "/private/var/db/piglet"
-	StatePath           = "/private/var/db/piglet/network.json"
-	InterfaceStatePath  = "/private/var/db/piglet/network-interface.json"
-	InterfaceMarkerDir  = "/Library/Application Support/io.pgsty.piglet"
-	InterfaceMarkerPath = "/Library/Application Support/io.pgsty.piglet/network-interface.json"
-	LogDir              = "/var/log/piglet-vmnet"
-	ServiceID           = "io.pgsty.piglet.vmnet"
+	InstallRoot         = "/opt/farrow"
+	DaemonPath          = "/opt/farrow/libexec/socket_vmnet"
+	ClientPath          = "/opt/farrow/libexec/socket_vmnet_client"
+	HostsHelperPath     = "/opt/farrow/libexec/farrow-hosts-helper"
+	PlistPath           = "/Library/LaunchDaemons/io.pgsty.farrow.vmnet.plist"
+	SocketPath          = "/private/var/run/farrow-vmnet.sock"
+	PIDPath             = "/private/var/run/farrow-vmnet.pid"
+	LeaseRoot           = "/private/var/run/farrow"
+	StateDir            = "/private/var/db/farrow"
+	StatePath           = "/private/var/db/farrow/network.json"
+	InterfaceStatePath  = "/private/var/db/farrow/network-interface.json"
+	InterfaceMarkerDir  = "/Library/Application Support/io.pgsty.farrow"
+	InterfaceMarkerPath = "/Library/Application Support/io.pgsty.farrow/network-interface.json"
+	LogDir              = "/var/log/farrow-vmnet"
+	ServiceID           = "io.pgsty.farrow.vmnet"
 )
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -46,7 +46,7 @@ type NetworkState struct {
 
 // InterfaceMarker is deliberately public and non-secret. Its protected twin
 // at InterfaceStatePath prevents a merely plausible pre-existing BSD
-// interface from being treated as Piglet-owned.
+// interface from being treated as Farrow-owned.
 type InterfaceMarker struct {
 	Schema      int    `json:"schema"`
 	InterfaceID string `json:"interface_id"`

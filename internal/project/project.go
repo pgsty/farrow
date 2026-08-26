@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/fsutil"
+	"github.com/pgsty/farrow/internal/fsutil"
 )
 
 const MarkerSchema = 1
@@ -97,14 +97,14 @@ func canonicalIfExisting(path string) string {
 	return abs
 }
 
-// ResolveDataRoot implements PIGLET_DATA_HOME, XDG_DATA_HOME/piglet, then a
+// ResolveDataRoot implements FARROW_DATA_HOME, XDG_DATA_HOME/farrow, then a
 // stable per-user fallback. It does not create the directory.
 func ResolveDataRoot(cwd string, environment Environment) (string, error) {
 	return ResolveDataRootWithConfig(cwd, "", environment)
 }
 
 // ResolveDataRootWithConfig implements the complete project-creation
-// precedence: PIGLET_DATA_HOME, storage.data_root, XDG_DATA_HOME/piglet, then
+// precedence: FARROW_DATA_HOME, storage.data_root, XDG_DATA_HOME/farrow, then
 // the stable per-user fallback. It does not create the directory.
 func ResolveDataRootWithConfig(cwd, configured string, environment Environment) (string, error) {
 	if environment == nil {
@@ -126,29 +126,29 @@ func ResolveDataRootWithConfig(cwd, configured string, environment Environment) 
 	if xdgRoot != "" && !filepath.IsAbs(xdgRoot) {
 		return "", errors.New("XDG_DATA_HOME must be absolute")
 	}
-	root := environment.Getenv("PIGLET_DATA_HOME")
+	root := environment.Getenv("FARROW_DATA_HOME")
 	if root == "" {
 		root = configured
 	}
 	if root == "" {
 		if xdgRoot != "" {
-			root = filepath.Join(xdgRoot, "piglet")
+			root = filepath.Join(xdgRoot, "farrow")
 		} else if runtime.GOOS == "darwin" {
-			root = filepath.Join(home, "Library", "Application Support", "piglet")
+			root = filepath.Join(home, "Library", "Application Support", "farrow")
 		} else {
-			root = filepath.Join(home, ".local", "share", "piglet")
+			root = filepath.Join(home, ".local", "share", "farrow")
 		}
 	}
 	if !filepath.IsAbs(root) {
-		return "", errors.New("piglet data root must be absolute")
+		return "", errors.New("farrow data root must be absolute")
 	}
 	root = filepath.Clean(root)
 	comparisonRoot := canonicalIfExisting(root)
 	if unsafeRoot(comparisonRoot, home, workDir, canonicalIfExisting(xdgRoot)) {
-		return "", fmt.Errorf("unsafe broad Piglet data root: %s", root)
+		return "", fmt.Errorf("unsafe broad Farrow data root: %s", root)
 	}
 	if info, err := os.Lstat(root); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("piglet data root must not be a symlink: %s", root)
+		return "", fmt.Errorf("farrow data root must not be a symlink: %s", root)
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
@@ -196,7 +196,7 @@ func decodeMarker(path string) (Marker, error) {
 }
 
 func paths(workDir string, marker Marker) Project {
-	markerDir := filepath.Join(workDir, ".piglet")
+	markerDir := filepath.Join(workDir, ".farrow")
 	return Project{
 		WorkDir: workDir, MarkerDir: markerDir, MarkerPath: filepath.Join(markerDir, "project.json"),
 		DataRoot: marker.DataRoot, Root: filepath.Join(marker.DataRoot, "projects", marker.ProjectID), Marker: marker,
@@ -226,7 +226,7 @@ func Create(cwd, dataRoot string) (Project, error) {
 	if !filepath.IsAbs(dataRoot) || unsafeRoot(dataRoot, "", workDir, "") {
 		return Project{}, errors.New("project data root is unsafe or not absolute")
 	}
-	markerDir := filepath.Join(workDir, ".piglet")
+	markerDir := filepath.Join(workDir, ".farrow")
 	markerPath := filepath.Join(markerDir, "project.json")
 	if _, err := os.Lstat(markerPath); err == nil {
 		return Open(workDir)
@@ -266,7 +266,7 @@ func Open(cwd string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
-	markerPath := filepath.Join(workDir, ".piglet", "project.json")
+	markerPath := filepath.Join(workDir, ".farrow", "project.json")
 	marker, err := decodeMarker(markerPath)
 	if err != nil {
 		return Project{}, err

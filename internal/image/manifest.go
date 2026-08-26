@@ -22,7 +22,7 @@ type Entry struct {
 }
 
 // These distribution-owned, release-pinned sources are testing inputs until
-// Piglet has owner-provided image hosting/signing custody and every alias/arch
+// Farrow has owner-provided image hosting/signing custody and every alias/arch
 // has passed the required native smoke matrix.
 var embedded = map[string]Entry{
 	"el9/amd64": {

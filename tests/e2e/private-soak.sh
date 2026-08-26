@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 4 || $# -gt 5 ]]; then
-  printf 'usage: %s <piglet-binary> <project-workdir> <data-root> <new-evidence-root> [cycles]\n' "$0" >&2
+  printf 'usage: %s <farrow-binary> <project-workdir> <data-root> <new-evidence-root> [cycles]\n' "$0" >&2
   exit 2
 fi
 
@@ -15,7 +15,7 @@ cycles=${5:-30}
 for path in "${binary}" "${workdir}" "${data_root}" "${evidence_root}"; do
   [[ ${path} == /* ]] || { printf 'all paths must be absolute: %s\n' "${path}" >&2; exit 2; }
 done
-[[ -x ${binary} ]] || { printf 'piglet binary is not executable: %s\n' "${binary}" >&2; exit 2; }
+[[ -x ${binary} ]] || { printf 'farrow binary is not executable: %s\n' "${binary}" >&2; exit 2; }
 [[ -d ${workdir} && -d ${data_root} ]] || { printf 'workdir/data root must exist\n' >&2; exit 2; }
 if [[ ! ${cycles} =~ ^[0-9]+$ ]] || (( cycles < 1 || cycles > 30 )); then
   printf 'cycles must be 1..30\n' >&2
@@ -24,8 +24,8 @@ fi
 [[ ! -e ${evidence_root} ]] || { printf 'refuse existing evidence root: %s\n' "${evidence_root}" >&2; exit 1; }
 
 install -d -m 0700 "${evidence_root}"
-project_id=$(jq -er '.project_id' "${workdir}/.piglet/project.json")
-project_root=$(jq -er '.data_root' "${workdir}/.piglet/project.json")/projects/${project_id}
+project_id=$(jq -er '.project_id' "${workdir}/.farrow/project.json")
+project_root=$(jq -er '.data_root' "${workdir}/.farrow/project.json")/projects/${project_id}
 [[ -d ${project_root} ]] || { printf 'project root is missing: %s\n' "${project_root}" >&2; exit 1; }
 
 printf 'cycle\tstop_seconds\tstart_seconds\tnodes\tresult\n' >"${evidence_root}/cycles.tsv"
@@ -35,21 +35,21 @@ for ((cycle = 1; cycle <= cycles; cycle++)); do
   install -d -m 0700 "${cycle_root}"
 
   started=$(date +%s)
-  (cd "${workdir}" && PIGLET_DATA_HOME="${data_root}" "${binary}" stop --json) >"${cycle_root}/stop.json" 2>"${cycle_root}/stop.stderr"
+  (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" stop --json) >"${cycle_root}/stop.json" 2>"${cycle_root}/stop.stderr"
   stopped=$(date +%s)
   jq -e '.nodes | length == 4 and all(.state == "stopped" and .runtime == "inactive")' "${cycle_root}/stop.json" >/dev/null
   if ps ax -o comm=,command= | awk -v root="${project_root}" 'index($1, "qemu-system") == 1 && index($0, root) { found=1 } END { exit found ? 0 : 1 }'; then
     printf '%s left a project QEMU process after stop\n' "${cycle_name}" >&2
     exit 1
   fi
-  (cd "${workdir}" && PIGLET_DATA_HOME="${data_root}" "${binary}" network status --json) >"${cycle_root}/network-stopped.json" 2>"${cycle_root}/network-stopped.stderr" || true
+  (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" network status --json) >"${cycle_root}/network-stopped.json" 2>"${cycle_root}/network-stopped.stderr" || true
   jq -e '.lease.active == false' "${cycle_root}/network-stopped.json" >/dev/null
 
-  (cd "${workdir}" && PIGLET_DATA_HOME="${data_root}" "${binary}" start --json) >"${cycle_root}/start.json" 2>"${cycle_root}/start.stderr"
+  (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" start --json) >"${cycle_root}/start.json" 2>"${cycle_root}/start.stderr"
   ready=$(date +%s)
   jq -e '.nodes | length == 4 and all(.state == "running" and .runtime == "running" and .pid > 0)' "${cycle_root}/start.json" >/dev/null
   for node in meta node-1 node-2 node-3; do
-    (cd "${workdir}" && PIGLET_DATA_HOME="${data_root}" "${binary}" exec "${node}" -- test -f /data/piglet-full-canary)
+    (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" exec "${node}" -- test -f /data/farrow-full-canary)
   done
   for address in 10.10.10.10 10.10.10.11 10.10.10.12 10.10.10.13; do
     if [[ $(uname -s) == Darwin ]]; then

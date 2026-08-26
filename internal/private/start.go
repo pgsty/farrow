@@ -9,12 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/project"
-	"github.com/pgsty/piglet/internal/runtimepath"
-	"github.com/pgsty/piglet/internal/state"
-	"github.com/pgsty/piglet/internal/vm"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/runtimepath"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
+	"github.com/pgsty/farrow/internal/vm"
 )
 
 type NodeLifecycle interface {
@@ -24,35 +25,87 @@ type NodeLifecycle interface {
 
 type NativeLifecycle struct {
 	VM           vm.Lifecycle
+	Project      project.Project
+	Shares       map[string][]spec.Share
 	SSHPath      string
 	PrivateKey   string
 	KnownHosts   string
 	DarwinSocket string
 }
 
+func (l NativeLifecycle) PreflightStart(node state.NodeState) error {
+	bundle, err := openPrivateNodeShares(l.Project, l.Shares, node)
+	if err != nil {
+		return err
+	}
+	if err := bundle.Close(); err != nil {
+		return fmt.Errorf("close preflight host shares for private node %s: %w", node.Node, err)
+	}
+	return nil
+}
+
+func (l NativeLifecycle) privateNetworkFile() (*os.File, error) {
+	if l.DarwinSocket == "" {
+		return nil, errors.New("private FD invocation has no Darwin socket")
+	}
+	connection, err := net.DialTimeout("unix", l.DarwinSocket, 5*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("dial socket_vmnet FD fallback: %w", err)
+	}
+	unixConnection, ok := connection.(*net.UnixConn)
+	if !ok {
+		_ = connection.Close()
+		return nil, errors.New("socket_vmnet fallback did not return a Unix connection")
+	}
+	file, err := unixConnection.File()
+	_ = unixConnection.Close()
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
 func (l NativeLifecycle) Start(ctx context.Context, node state.NodeState) (process.Identity, error) {
+	bundle, err := openPrivateNodeShares(l.Project, l.Shares, node)
+	if err != nil {
+		return process.Identity{}, err
+	}
+	defer bundle.Close()
+
+	shareFiles := bundle.Files()
+	extraFiles := make([]*os.File, 0, len(shareFiles)+1)
 	if node.Invocation.UsesPrivateFD3() {
-		if l.DarwinSocket == "" {
-			return process.Identity{}, errors.New("private FD invocation has no Darwin socket")
-		}
-		connection, err := net.DialTimeout("unix", l.DarwinSocket, 5*time.Second)
-		if err != nil {
-			return process.Identity{}, fmt.Errorf("dial socket_vmnet FD fallback: %w", err)
-		}
-		unixConnection, ok := connection.(*net.UnixConn)
-		if !ok {
-			_ = connection.Close()
-			return process.Identity{}, errors.New("socket_vmnet fallback did not return a Unix connection")
-		}
-		file, err := unixConnection.File()
-		_ = unixConnection.Close()
+		file, err := l.privateNetworkFile()
 		if err != nil {
 			return process.Identity{}, err
 		}
 		defer file.Close()
-		return l.VM.StartWithExtraFiles(ctx, node.Invocation, node.Runtime.QMP, node.Runtime.PIDFile, node.Node, node.VMUUID, []*os.File{file})
+		extraFiles = append(extraFiles, file)
 	}
-	return l.VM.Start(ctx, node.Invocation, node.Runtime.QMP, node.Runtime.PIDFile, node.Node, node.VMUUID)
+	extraFiles = append(extraFiles, shareFiles...)
+
+	var identityValue process.Identity
+	if len(extraFiles) == 0 {
+		identityValue, err = l.VM.Start(ctx, node.Invocation, node.Runtime.QMP, node.Runtime.PIDFile, node.Node, node.VMUUID)
+	} else {
+		identityValue, err = l.VM.StartWithExtraFiles(ctx, node.Invocation, node.Runtime.QMP, node.Runtime.PIDFile, node.Node, node.VMUUID, extraFiles)
+	}
+	if err != nil {
+		return process.Identity{}, err
+	}
+	if len(shareFiles) == 0 {
+		return identityValue, nil
+	}
+	if err := bundle.Recheck(); err != nil {
+		cleanupContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		stopErr := l.VM.Stop(cleanupContext, node.Runtime.QMP, node.Node, node.VMUUID, identityValue, node.Invocation, 5*time.Second)
+		if stopErr != nil {
+			return process.Identity{}, errors.Join(fmt.Errorf("recheck host shares after starting private node %s: %w", node.Node, err), fmt.Errorf("stop private node after failed host-share recheck: %w", stopErr))
+		}
+		return process.Identity{}, fmt.Errorf("recheck host shares after starting private node %s: %w", node.Node, err)
+	}
+	return identityValue, nil
 }
 
 func (l NativeLifecycle) WaitReady(ctx context.Context, node state.NodeState, projectID string, timeout time.Duration) error {
@@ -174,6 +227,20 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, lea
 	nodes, err := loadNodes(store, config.Nodes)
 	if err != nil {
 		return nil, lease.Lease{}, err
+	}
+	preflight, hasPreflight := config.Lifecycle.(interface {
+		PreflightStart(state.NodeState) error
+	})
+	for _, node := range nodes {
+		if hasPreflight {
+			if err := preflight.PreflightStart(node); err != nil {
+				return nil, lease.Lease{}, fmt.Errorf("preflight private node %s before start: %w", node.Node, err)
+			}
+			continue
+		}
+		if len(node.Invocation.ShareFiles()) != 0 {
+			return nil, lease.Lease{}, fmt.Errorf("private node %s lifecycle cannot preflight host shares", node.Node)
+		}
 	}
 	for index := range nodes {
 		nodes[index].Phase = state.Starting

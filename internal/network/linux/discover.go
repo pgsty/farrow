@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/pgsty/piglet/internal/execx"
+	"github.com/pgsty/farrow/internal/execx"
 )
 
 func hostStatIdentity(info os.FileInfo) (uint32, uint32, uint32, error) {

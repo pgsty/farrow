@@ -57,6 +57,19 @@ func TestVersionAtLeast(t *testing.T) {
 	}
 }
 
+func TestValidateQEMUVersionUsesProfileMinimum(t *testing.T) {
+	t.Parallel()
+	profile := Profile{MinimumQEMU: Version{Major: 8, Minor: 2, Patch: 1}}
+	version, err := ValidateQEMUVersion(profile, "QEMU emulator version 8.2.1")
+	if err != nil || version != profile.MinimumQEMU {
+		t.Fatalf("minimum version = %s, %v", version, err)
+	}
+	below, err := ValidateQEMUVersion(profile, "QEMU emulator version 8.2.0")
+	if err == nil || below != (Version{Major: 8, Minor: 2}) {
+		t.Fatalf("version below the profile minimum = %s, %v", below, err)
+	}
+}
+
 func TestFirmwareCandidatesCoverNativeUEFIArchitectures(t *testing.T) {
 	t.Parallel()
 	amd64, _ := Resolve("linux", "amd64")

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/piglet/internal/qemu"
-	"github.com/pgsty/piglet/internal/spec"
+	"github.com/pgsty/farrow/internal/qemu"
+	"github.com/pgsty/farrow/internal/spec"
 )
 
 func upgradeFixture(t *testing.T) (Store, []string) {
@@ -21,22 +21,22 @@ func upgradeFixture(t *testing.T) (Store, []string) {
 	resolved := spec.Quick(true, true)
 	hash, _ := spec.Hash(resolved)
 	now := time.Now().UTC()
-	projectState := ProjectState{Schema: 1, PigletVersion: "dev", ProjectID: store.Project.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}
+	projectState := ProjectState{Schema: 1, FarrowVersion: "dev", ProjectID: store.Project.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}
 	if err := store.WriteProject(projectState); err != nil {
 		t.Fatal(err)
 	}
 	node := NodeState{
-		Schema: 1, PigletVersion: "dev", ProjectID: store.Project.Marker.ProjectID,
+		Schema: 1, FarrowVersion: "dev", ProjectID: store.Project.Marker.ProjectID,
 		Node: "meta", VMUUID: "018f4b8e-1234-4abc-9def-0123456789ab", Phase: Prepared,
 		Generation: 1, SpecHash: hash, Image: Image{Alias: "u24", Release: "test", Digest: "abc", VirtualSize: 1},
 		RootDisk: filepath.Join(store.Project.Root, "nodes", "meta", "root.qcow2"), Seed: filepath.Join(store.Project.Root, "nodes", "meta", "seed.iso"), SSHPort: 2222,
-		Forwards: []qemu.Forward{{Bind: "127.0.0.1", Host: 2222, Guest: 22}}, Runtime: RuntimePaths{Directory: "/tmp/piglet", QMP: "/tmp/piglet/qmp.sock", PIDFile: "/tmp/piglet/qemu.pid"},
+		Forwards: []qemu.Forward{{Bind: "127.0.0.1", Host: 2222, Guest: 22}}, Runtime: RuntimePaths{Directory: "/tmp/farrow", QMP: "/tmp/farrow/qmp.sock", PIDFile: "/tmp/farrow/qemu.pid"},
 		Invocation: qemu.Invocation{Binary: "/opt/qemu", Args: []string{"-S"}}, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := store.WriteNode(node); err != nil {
 		t.Fatal(err)
 	}
-	transaction := Transaction{Schema: 1, PigletVersion: "dev", OperationID: "op-1", ProjectID: store.Project.Marker.ProjectID, Node: "meta", From: Absent, To: Preparing, StartedAt: now, UpdatedAt: now}
+	transaction := Transaction{Schema: 1, FarrowVersion: "dev", OperationID: "op-1", ProjectID: store.Project.Marker.ProjectID, Node: "meta", From: Absent, To: Preparing, StartedAt: now, UpdatedAt: now}
 	if err := store.WriteTransaction(transaction); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func downgradeStateFixture(t *testing.T, path string, schema int) []byte {
 		t.Fatal(err)
 	}
 	object["schema"] = schema
-	delete(object, "piglet_version")
+	delete(object, "farrow_version")
 	data, err = json.MarshalIndent(object, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -110,15 +110,15 @@ func TestUpgradeSchemaZeroDryRunBackupApplyAndIdempotence(t *testing.T) {
 		}
 	}
 	projectState, err := store.ReadProject()
-	if err != nil || projectState.PigletVersion != "v1.0.0" {
+	if err != nil || projectState.FarrowVersion != "v1.0.0" {
 		t.Fatalf("upgraded project=%#v err=%v", projectState, err)
 	}
 	node, err := store.ReadNode("meta")
-	if err != nil || node.PigletVersion != "v1.0.0" {
+	if err != nil || node.FarrowVersion != "v1.0.0" {
 		t.Fatalf("upgraded node=%#v err=%v", node, err)
 	}
 	transaction, err := store.ReadTransaction("meta")
-	if err != nil || transaction.PigletVersion != "v1.0.0" {
+	if err != nil || transaction.FarrowVersion != "v1.0.0" {
 		t.Fatalf("upgraded transaction=%#v err=%v", transaction, err)
 	}
 	again, err := UpgradeProject(context.Background(), store.Project, "v1.0.0", true)
@@ -132,7 +132,7 @@ func TestUpgradeRefusesNewerSchemaWithoutMutation(t *testing.T) {
 	store := testStore(t)
 	resolved := spec.Quick(true, true)
 	hash, _ := spec.Hash(resolved)
-	value := ProjectState{Schema: 1, PigletVersion: "future", ProjectID: store.Project.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
+	value := ProjectState{Schema: 1, FarrowVersion: "future", ProjectID: store.Project.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
 	if err := store.WriteProject(value); err != nil {
 		t.Fatal(err)
 	}

@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/piglet/internal/lease"
-	"github.com/pgsty/piglet/internal/lock"
-	"github.com/pgsty/piglet/internal/process"
-	"github.com/pgsty/piglet/internal/qmp"
-	"github.com/pgsty/piglet/internal/state"
-	"github.com/pgsty/piglet/internal/vm"
+	"github.com/pgsty/farrow/internal/lease"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/state"
+	"github.com/pgsty/farrow/internal/vm"
 )
 
 type RepairAction struct {
