@@ -536,7 +536,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "farrow",
 		Short: "Run reproducible local Linux virtual-machine labs",
-		Long:  "Farrow downloads verified base images and manages isolated Quick or Private QEMU labs from the current project directory.",
+		Long:  "Farrow boots a Pigsty-compatible inventory into fixed-IP QEMU virtual machines, managed from the current project directory.",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if structuredOutput(stdout, false) {

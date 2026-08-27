@@ -74,7 +74,6 @@ run is a no-op. When it succeeds, the last line is the next command:
 
 ```text
 host:          darwin/arm64
-mode:          private
 profile:       meta
 dependencies:  ready
 network:       10.10.10.0/24 (installed)

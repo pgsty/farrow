@@ -122,11 +122,6 @@ archives:
         info: *archive_file_info
       - src: THIRD_PARTY_LICENSES.md
         info: *archive_file_info
-        info:
-          owner: root
-          group: root
-          mode: 0755
-          mtime: "{{ .Env.FARROW_BUILD_DATE }}"
       - src: docs/architecture.md
         dst: docs/architecture.md
         info: *archive_file_info
@@ -150,9 +145,9 @@ archives:
         info: *archive_file_info
       - src: docs/phase-2.md
         dst: docs/phase-2.md
+        info: *archive_file_info
       - src: docs/pigsty.md
         dst: docs/pigsty.md
-        info: *archive_file_info
         info: *archive_file_info
       - src: docs/security.md
         dst: docs/security.md
@@ -165,9 +160,6 @@ archives:
         info: *archive_file_info
       - src: tests/e2e/README.md
         dst: tests/e2e/README.md
-        info: *archive_file_info
-      - src: schemas/*
-        dst: schemas
         info: *archive_file_info
       - src: third_party/licenses/*
         dst: third_party/licenses

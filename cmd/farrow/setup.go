@@ -42,7 +42,6 @@ type setupResult struct {
 	Schema            int                      `json:"schema"`
 	OS                string                   `json:"os"`
 	Arch              string                   `json:"arch"`
-	Mode              string                   `json:"mode"`
 	Profile           string                   `json:"profile"`
 	Config            string                   `json:"config,omitempty"`
 	DryRun            bool                     `json:"dry_run"`
@@ -745,7 +744,6 @@ func emitSetupResult(result setupResult, stdout, stderr io.Writer) int {
 		return encodeJSON(stdout, stderr, result)
 	}
 	textField(stdout, 14, "host", result.OS+"/"+result.Arch)
-	textField(stdout, 14, "mode", result.Mode)
 	textField(stdout, 14, "profile", result.Profile)
 	dependencyStatus := "ready"
 	if result.DryRun && len(result.Dependencies.Commands) > 0 {
@@ -872,7 +870,7 @@ func formatSetupCommand(arguments []string) (string, []string) {
 
 func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr io.Writer) int {
 	result := setupResult{
-		Schema: 1, OS: runtime.GOOS, Arch: runtime.GOARCH, Mode: "unknown",
+		Schema: 1, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Profile: "unknown", Steps: make([]setupStep, 0, 6), NextArgv: nil,
 	}
 	if profileName != "" {
@@ -899,7 +897,6 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		}
 		return failSetup(&result, exitConflict, err, stdout, stderr)
 	}
-	result.Mode = selection.Mode
 	result.Profile = selection.Profile
 	result.Config = selection.ConfigPath
 	next, nextArgv := setupNextCommand(selection, cwd)

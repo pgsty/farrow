@@ -1241,6 +1241,9 @@ func reportPrivateLifecycleError(err error, operationID string, jsonOutput bool,
 	if errors.Is(err, privatevm.ErrRecreateRequired) {
 		return reportCommandFailure(stdout, stderr, jsonOutput, "recreate_required", err.Error(), operationID, exitConflict)
 	}
+	if errors.Is(err, privatevm.ErrNodesRemoved) {
+		return reportCommandFailure(stdout, stderr, jsonOutput, "nodes_removed", err.Error(), operationID, exitConflict)
+	}
 	var networkPreflight *privatevm.NetworkPreflightError
 	if errors.As(err, &networkPreflight) {
 		if structuredOutput(stdout, jsonOutput) {

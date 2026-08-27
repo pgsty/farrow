@@ -158,7 +158,7 @@ func TestEmitPrivatePendingNetworkDoesNotClaimUserNAT(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	result := setupResult{
-		Schema: 1, OS: "darwin", Arch: "arm64", Mode: "private", Profile: "full",
+		Schema: 1, OS: "darwin", Arch: "arm64", Profile: "full",
 		DryRun: true, NetworkCIDR: "10.10.10.0/24", NetworkMode: "host", Next: "farrow up",
 	}
 	if code := emitSetupResult(result, &stdout, &stderr); code != exitOK {
