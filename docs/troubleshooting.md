@@ -95,16 +95,15 @@ the NoCloud datasource, or a data disk mount check failed. The ready marker is
 only written after disk, identity and — on private nodes — `private0` checks
 all pass, so a partial boot never counts as ready.
 
-Raise the budget with `ssh.wait_timeout` if a slow host genuinely needs more
-than the 180 s default. Use `--no-wait` to return as soon as QMP confirms the
-process, when you intend to check readiness yourself.
+The readiness budget is fixed at 180 s. Use `--no-wait` to return as soon as
+QMP confirms the process, when you intend to check readiness yourself.
 
 ## A port is already in use
 
-Farrow tries `preferred + n × 10000` for `n = 1..4` and then gives up rather
-than scanning forever. The port it chose is in the resolved spec and in
-`status`. If all candidates are taken, free one or pass an explicit
-`--forward`.
+The management SSH forwards prefer `2222 + node index` and fall back to
+`preferred + n × 10000` for `n = 1..4` before giving up rather than scanning
+forever. The port each node got is in the resolved spec and in `status`. If
+every candidate is taken, free one of them.
 
 ## QMP socket is absent
 
