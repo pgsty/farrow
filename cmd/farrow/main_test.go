@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -16,7 +15,6 @@ import (
 	"github.com/pgsty/farrow/internal/image"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	"github.com/pgsty/farrow/internal/project"
-	"github.com/pgsty/farrow/internal/quick"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/sshconfig"
 	"github.com/pgsty/farrow/internal/state"
@@ -49,43 +47,6 @@ func TestVersion(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "farrow dev") {
 		t.Fatalf("stdout=%q", stdout.String())
-	}
-}
-
-func TestQuickSSHAndStatusUseResolvedUser(t *testing.T) {
-	t.Parallel()
-	connection := quick.Connection{User: "operator", Host: "127.0.0.1", Port: 2222, PrivateKey: "/key", KnownHosts: "/known"}
-	args, err := quickSSHArgs(connection, []string{"id", "-u"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "operator@127.0.0.1") || strings.Contains(joined, "dba@127.0.0.1") {
-		t.Fatalf("quick SSH args do not use resolved user: %s", joined)
-	}
-	connection.User = "-oProxyCommand=bad"
-	if _, err := quickSSHArgs(connection, nil); err == nil {
-		t.Fatal("unsafe quick SSH user produced argv")
-	}
-
-	status := quick.Status{Node: "meta", State: state.Running, SSHUser: "operator", SSHHost: "127.0.0.1", SSHPort: 2222}
-	var human bytes.Buffer
-	printQuickStatus(&human, status)
-	if !strings.Contains(human.String(), "ssh") || !strings.Contains(human.String(), "operator@127.0.0.1:2222") || strings.Contains(human.String(), "dba@") {
-		t.Fatalf("human status does not use resolved user: %q", human.String())
-	}
-	encoded, err := json.Marshal(status)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(encoded), `"ssh_user":"operator"`) {
-		t.Fatalf("JSON status does not expose resolved user: %s", encoded)
-	}
-	human.Reset()
-	status.SSHUser = ""
-	printQuickStatus(&human, status)
-	if !strings.Contains(human.String(), "ssh") || !strings.Contains(human.String(), "dba@127.0.0.1:2222") {
-		t.Fatalf("legacy status did not fall back to dba: %q", human.String())
 	}
 }
 

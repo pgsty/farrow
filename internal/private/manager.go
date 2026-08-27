@@ -28,8 +28,8 @@ import (
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qmp"
-	"github.com/pgsty/farrow/internal/quick"
 	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/sshkeys"
 	"github.com/pgsty/farrow/internal/state"
 	"github.com/pgsty/farrow/internal/vm"
 )
@@ -518,12 +518,29 @@ func ensureSSHAddressesUnusedWithDial(nodes []spec.Node, dial func(string, strin
 	return nil
 }
 
+func (m Manager) imageDataRoot() (string, error) {
+	cwd, err := m.workDir()
+	if err != nil {
+		return "", err
+	}
+	if current, openErr := project.Open(cwd); openErr == nil {
+		return current.DataRoot, nil
+	} else if !missingPath(openErr) {
+		return "", openErr
+	}
+	return project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
+}
+
 func (m Manager) resolveOneImage(ctx context.Context, alias string) (image.Entry, string, image.Metadata, error) {
 	if m.ResolveImage != nil {
 		return m.ResolveImage(ctx, alias)
 	}
-	resolver := quick.Manager{CWD: m.CWD, FarrowVersion: m.FarrowVersion, Runner: m.Runner, ConfiguredDataRoot: m.ConfiguredDataRoot, Repository: m.Repository, Progress: m.Progress}
-	return resolver.ResolveImage(ctx, alias)
+	dataRoot, err := m.imageDataRoot()
+	if err != nil {
+		return image.Entry{}, "", image.Metadata{}, err
+	}
+	resolver := image.Service{DataRoot: dataRoot, Repository: m.Repository, Runner: m.Runner, Progress: m.Progress}
+	return resolver.Resolve(ctx, alias)
 }
 
 func (m Manager) resolveBases(ctx context.Context, profile platform.Profile, value spec.Resolved) (map[string]BaseImage, string, error) {
@@ -558,7 +575,7 @@ func (m Manager) ensureKeys(ctx context.Context, projectValue project.Project) (
 		return "", "", "", err
 	}
 	defer projectLock.Release()
-	return quick.EnsureProjectKeys(ctx, m.runner(), projectValue.Root)
+	return sshkeys.EnsureKeys(ctx, m.runner(), projectValue.Root)
 }
 
 func (m Manager) statusForLocked(ctx context.Context, projectValue project.Project, message string) (Status, error) {

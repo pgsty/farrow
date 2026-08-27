@@ -189,8 +189,7 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 	if name == "stop" {
 		command.Aliases = []string{"halt"}
 	}
-	options := lifecycleOptions{LogLevel: "info"}
-	command.Flags().StringVar(&options.LogLevel, "log-level", options.LogLevel, "QEMU diagnostic level: error, warn, info, or debug")
+	options := lifecycleOptions{}
 	switch name {
 	case "plan":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "declarative configuration file")
@@ -200,9 +199,6 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 		command.Flags().StringVar(&options.Repository, "repo", "", "image repository URL or absolute local directory")
 		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
 		command.Flags().BoolVar(&options.Rollback, "rollback", false, "remove safe artifacts from nodes that fail to prepare")
-		if name == "up" {
-			command.Flags().BoolVar(&options.RestartDrift, "restart", false, "reserved: apply restart-class drift across a stop/start cycle")
-		}
 	case "start", "restart":
 		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
 	case "recreate":
@@ -602,11 +598,9 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		command.GroupID = "lifecycle"
 		root.AddCommand(command)
 	}
-	list := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List projects in the selected data root", Args: cobra.NoArgs, GroupID: "lifecycle"}
-	bindOperation(list, stdout, stderr, runList)
 	repair := newRepairCommand(stdout, stderr)
 	repair.GroupID = "lifecycle"
-	root.AddCommand(list, repair)
+	root.AddCommand(repair)
 
 	ssh := rawOperation("ssh [node] [-- command [args...]]", "Open SSH or run a command in a guest", stdout, stderr, func(arguments []string, stdout, stderr io.Writer) int {
 		return runSSH("ssh", arguments, stdout, stderr)

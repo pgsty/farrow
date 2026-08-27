@@ -13,7 +13,6 @@ import (
 	"github.com/pgsty/farrow/internal/fsutil"
 	privatevm "github.com/pgsty/farrow/internal/private"
 	"github.com/pgsty/farrow/internal/project"
-	"github.com/pgsty/farrow/internal/quick"
 	"github.com/pgsty/farrow/internal/state"
 	"github.com/pgsty/farrow/internal/version"
 )
@@ -158,17 +157,7 @@ func destroyProjectFromWorkspace(ctx context.Context, workDir string, stderr io.
 			return err
 		}
 	case stateErr == nil:
-		operationID, idErr := project.NewUUID()
-		if idErr != nil {
-			return idErr
-		}
-		manager := quick.Manager{CWD: workDir, FarrowVersion: version.Version, OperationID: operationID}
-		if _, err := manager.Destroy(ctx); err != nil {
-			return err
-		}
-		if _, err := manager.DeletePersistent(ctx); err != nil {
-			return err
-		}
+		return fmt.Errorf("project %s predates the fixed-IP redesign (network=%s); remove it manually", projectValue.Marker.ProjectID, projectState.Resolved.Network)
 	case missingPathError(stateErr):
 		debugf(stderr, "project %s has no resolved state; removing registration only", projectValue.Marker.ProjectID)
 	default:
@@ -305,7 +294,7 @@ func runProjectPrune(args []string, stdout, stderr io.Writer) int {
 	}
 	rows := make([]pruneRow, 0)
 	for _, candidate := range discovery.Projects {
-		orphan := quick.OrphanState(candidate.Marker, candidate.Marker.ProjectID == currentID)
+		orphan := project.OrphanState(candidate.Marker, candidate.Marker.ProjectID == currentID)
 		if orphan == "" {
 			continue
 		}

@@ -50,12 +50,6 @@ func TestProjectPruneAndRemoveOrphanRegistration(t *testing.T) {
 	if code := run([]string{"project", "prune"}, &stdout, &stderr); code != exitOK || !strings.Contains(stdout.String(), "workdir-missing") || !strings.Contains(stdout.String(), "would remove") {
 		t.Fatalf("orphan prune code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"list"}, &stdout, &stderr); code != exitOK || !strings.Contains(stdout.String(), "orphan: workdir-missing") {
-		t.Fatalf("list orphan code=%d stdout=%q", code, stdout.String())
-	}
-
 	// Empty post-destroy residue directories (retained-disk store, keys) must
 	// not block removal; the directory names must match the real stores.
 	for _, name := range []string{"persistent-disks", "keys", "nodes"} {

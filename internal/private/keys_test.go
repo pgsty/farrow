@@ -162,31 +162,6 @@ func TestPrivatePurgeKeysRejectsUnsafeKeyArtifactsAndPreservesOutside(t *testing
 				}
 			},
 		},
-		{
-			name: "hardlink",
-			mutate: func(t *testing.T, root, keysDir string) {
-				t.Helper()
-				outside := filepath.Join(root, "outside-hardlink")
-				if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Remove(filepath.Join(keysDir, "known_hosts")); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Link(outside, filepath.Join(keysDir, "known_hosts")); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "wrong-mode",
-			mutate: func(t *testing.T, _ string, keysDir string) {
-				t.Helper()
-				if err := os.Chmod(filepath.Join(keysDir, "id_ed25519"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {

@@ -37,8 +37,8 @@ func TestCobraRootAndContextualHelp(t *testing.T) {
 			t.Errorf("status help exposes irrelevant flag %s:\n%s", irrelevant, stdout.String())
 		}
 	}
-	if !strings.Contains(stdout.String(), "--log-level") || !strings.Contains(stdout.String(), "Global Flags:") {
-		t.Fatalf("status help lacks contextual/global flags:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), "Global Flags:") {
+		t.Fatalf("status help lacks global flags:\n%s", stdout.String())
 	}
 }
 
@@ -78,18 +78,6 @@ func TestSSHShortcutAcceptsExplicitName(t *testing.T) {
 	want := []string{"--install", "--name", "dev", "meta", "node-1"}
 	if !reflect.DeepEqual(arguments, want) {
 		t.Fatalf("shortcut arguments=%v want=%v", arguments, want)
-	}
-}
-
-func TestListHasLSAlias(t *testing.T) {
-	t.Setenv("FARROW_HOME", t.TempDir())
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	if code := run([]string{"ls"}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("ls code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "no registered projects") {
-		t.Fatalf("unexpected ls output: %s", stdout.String())
 	}
 }
 

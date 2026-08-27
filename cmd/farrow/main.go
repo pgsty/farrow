@@ -32,7 +32,6 @@ import (
 	privatevm "github.com/pgsty/farrow/internal/private"
 	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/provision"
-	"github.com/pgsty/farrow/internal/quick"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/sshconfig"
 	"github.com/pgsty/farrow/internal/state"
@@ -58,8 +57,6 @@ type lifecycleOptions struct {
 	Purge            bool
 	NoWait           bool
 	Rollback         bool
-	RestartDrift     bool
-	LogLevel         string
 	ConfigPath       string
 	Repository       string
 }
@@ -774,111 +771,23 @@ func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, st
 	return exitOK
 }
 
-func quickSSHArgs(connection quick.Connection, command []string) ([]string, error) {
-	args := vm.SSHArgsForUser(connection.User, connection.PrivateKey, connection.KnownHosts, connection.Port, command...)
-	if args == nil {
-		return nil, errors.New("resolved quick SSH user is unsafe")
-	}
-	return args, nil
-}
-
 func runSSH(commandName string, args []string, stdout, stderr io.Writer) int {
-	if resolved, err := currentProjectResolved(); err == nil && resolved.Network == "private" {
-		return runPrivateSSH(commandName, args, resolved, stdout, stderr)
-	} else if err != nil {
+	resolved, err := currentProjectResolved()
+	if err != nil {
 		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
 			if _, markerErr := os.Lstat(filepath.Join(cwd, ".farrow", "project.json")); markerErr == nil {
 				fmt.Fprintln(stderr, "refuse SSH dispatch with unreadable project state:", err)
 				return exitIntegrity
 			}
 		}
+		errorf(stderr, "no deployment state found; run `farrow up` first")
+		return exitConflict
 	}
-	command := args
-	if len(command) > 0 && command[0] == "meta" {
-		command = command[1:]
+	if resolved.Network != "private" {
+		errorf(stderr, "this project predates the fixed-IP redesign; recreate it with `farrow destroy --force && farrow up`")
+		return exitConflict
 	}
-	if len(command) > 0 && command[0] == "--" {
-		command = command[1:]
-	}
-	if commandName == "exec" && len(command) == 0 {
-		fmt.Fprintln(stderr, "usage: farrow exec [meta] -- command [args...]")
-		return exitUsage
-	}
-	operationID, err := project.NewUUID()
-	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
-	}
-	manager := quick.Manager{FarrowVersion: version.Version, OperationID: operationID}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	connection, err := manager.Connection(ctx)
-	if err != nil {
-		_ = manager.RecordEvent(ctx, commandName, "error", err.Error())
-		errorf(stderr, "%v", err)
-		return exitRuntime
-	}
-	sshPath, err := exec.LookPath("ssh")
-	if err != nil {
-		_ = manager.RecordEvent(ctx, commandName, "error", err.Error())
-		errorf(stderr, "%v", err)
-		return exitCapability
-	}
-	request := "interactive SSH session requested"
-	if len(command) > 0 {
-		request = fmt.Sprintf("remote command requested with %d arguments", len(command))
-	}
-	if err := manager.RecordEvent(ctx, commandName, "info", request); err != nil {
-		fmt.Fprintln(stderr, "refuse SSH operation without an auditable event append:", err)
-		return exitIntegrity
-	}
-	sshArgs, err := quickSSHArgs(connection, command)
-	if err != nil {
-		_ = manager.RecordEvent(ctx, commandName, "error", err.Error())
-		errorf(stderr, "%v", err)
-		return exitIntegrity
-	}
-	debugf(stderr, "ssh mode=quick node=meta user=%s host=%s port=%d arguments=%d", connection.User, connection.Host, connection.Port, len(command))
-	result, runErr := executeSSHProcess(ctx, commandName, "meta", connection.User, connection.Host, connection.Port, sshPath, sshArgs, command, stdout, stderr)
-	if runErr != nil {
-		var exitError *exec.ExitError
-		if errors.As(runErr, &exitError) {
-			_ = manager.RecordEvent(ctx, commandName, "error", fmt.Sprintf("SSH process exited with code %d", exitError.ExitCode()))
-			if structuredOutput(stdout, false) {
-				if code := encodeJSON(stdout, stderr, result); code != exitOK {
-					return code
-				}
-			}
-			if exitError.ExitCode() == 255 {
-				return exitRuntime
-			}
-			return exitError.ExitCode()
-		}
-		_ = manager.RecordEvent(ctx, commandName, "error", runErr.Error())
-		if structuredOutput(stdout, false) {
-			if code := encodeJSON(stdout, stderr, result); code != exitOK {
-				return code
-			}
-		} else {
-			errorf(stderr, "%v", runErr)
-		}
-		return exitRuntime
-	}
-	if err := manager.RecordEvent(ctx, commandName, "info", "SSH process completed successfully"); err != nil {
-		result.AuditError = "SSH succeeded but its event could not be appended: " + err.Error()
-		if structuredOutput(stdout, false) {
-			if code := encodeJSON(stdout, stderr, result); code != exitOK {
-				return code
-			}
-		} else {
-			errorf(stderr, "%s", result.AuditError)
-		}
-		return exitIntegrity
-	}
-	if structuredOutput(stdout, false) {
-		return encodeJSON(stdout, stderr, result)
-	}
-	return exitOK
+	return runPrivateSSH(commandName, args, resolved, stdout, stderr)
 }
 
 func printProvisionReport(stdout, stderr io.Writer, report provision.Report) {
@@ -1023,24 +932,6 @@ func runProvision(args []string, stdout, stderr io.Writer) int {
 			selectedNames = append(selectedNames, connection.Node)
 		}
 		recordEvent = manager.RecordEvent
-	} else if resolved.Network == "user" {
-		if len(nodes) > 1 || (len(nodes) == 1 && nodes[0] != "meta") {
-			fmt.Fprintf(stderr, "quick provision accepts only node meta, got %v\n", nodes)
-			return exitUsage
-		}
-		manager := quick.Manager{CWD: projectValue.WorkDir, FarrowVersion: version.Version, OperationID: operationID}
-		connection, connectionErr := manager.ConnectionLocked(ctx, projectValue, projectLock)
-		if connectionErr != nil {
-			errorf(stderr, "%v", connectionErr)
-			return provisionConnectionExit(connectionErr)
-		}
-		if connection.Host != "127.0.0.1" {
-			fmt.Fprintln(stderr, "refuse non-loopback quick provision endpoint")
-			return exitIntegrity
-		}
-		targets = append(targets, provision.Target{Node: "meta", User: connection.User, Port: connection.Port, PrivateKey: connection.PrivateKey, KnownHosts: connection.KnownHosts})
-		selectedNames = append(selectedNames, "meta")
-		recordEvent = manager.RecordEvent
 	} else {
 		fmt.Fprintf(stderr, "unsupported project network %q\n", resolved.Network)
 		return exitIntegrity
@@ -1127,24 +1018,6 @@ func encodeJSON(out, errOut io.Writer, value any) int {
 	return exitOK
 }
 
-func printQuickStatus(out io.Writer, status quick.Status) {
-	sshUser := status.SSHUser
-	if sshUser == "" {
-		sshUser = "dba"
-	}
-	fmt.Fprintf(out, "%s  %s\n", styled(out, ansiBold, status.Node), statusValue(out, string(status.State)))
-	textField(out, 10, "ssh", fmt.Sprintf("%s@%s:%d", sshUser, status.SSHHost, status.SSHPort))
-	for _, forward := range status.Forwards {
-		if forward.Guest == 22 {
-			continue
-		}
-		textField(out, 10, "forward", fmt.Sprintf("%s:%d -> :%d", forward.Bind, forward.Host, forward.Guest))
-	}
-	if status.Message != "" {
-		textField(out, 10, "message", status.Message)
-	}
-}
-
 func loadLifecycleConfig(command, configPath string) (spec.Resolved, bool, error) {
 	if command != "up" && command != "plan" && command != "recreate" && command != "reload" {
 		return spec.Resolved{}, false, nil
@@ -1179,24 +1052,6 @@ func currentProjectResolved() (spec.Resolved, error) {
 	return projectState.Resolved, nil
 }
 
-func guardUnsupportedPrivate(command string, stderr io.Writer) (bool, int) {
-	resolved, err := currentProjectResolved()
-	if err == nil {
-		if resolved.Network == "private" {
-			fmt.Fprintf(stderr, "farrow %s is not yet implemented for private projects; no quick/meta fallback was executed\n", command)
-			return true, exitCapability
-		}
-		return false, exitOK
-	}
-	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-		if _, markerErr := os.Lstat(filepath.Join(cwd, ".farrow", "project.json")); markerErr == nil {
-			fmt.Fprintf(stderr, "refuse %s with unreadable project state: %v\n", command, err)
-			return true, exitIntegrity
-		}
-	}
-	return false, exitOK
-}
-
 func printPrivateStatus(out io.Writer, status privatevm.Status) {
 	textField(out, 12, "project", status.ProjectID)
 	textField(out, 12, "spec hash", status.SpecHash)
@@ -1216,15 +1071,6 @@ type persistentDeleteError struct{ err error }
 
 func (e *persistentDeleteError) Error() string { return "delete persistent disks: " + e.err.Error() }
 func (e *persistentDeleteError) Unwrap() error { return e.err }
-
-type lifecycleDriftFailure struct {
-	Error       string      `json:"error"`
-	Message     string      `json:"message"`
-	OperationID string      `json:"operation_id,omitempty"`
-	Action      string      `json:"action"`
-	Before      interface{} `json:"before"`
-	After       interface{} `json:"after"`
-}
 
 type lifecyclePartialFailure struct {
 	Error       string   `json:"error"`
@@ -1278,71 +1124,6 @@ func reportPrivateLifecycleError(err error, operationID string, jsonOutput bool,
 		return reportCommandFailure(stdout, stderr, jsonOutput, "persistent_delete", deleteErr.Error(), operationID, exitIntegrity)
 	}
 	return reportCommandFailure(stdout, stderr, jsonOutput, "runtime", err.Error(), operationID, exitRuntime)
-}
-
-func reportQuickLifecycleError(err error, operationID string, stdout, stderr io.Writer) int {
-	if errors.Is(err, project.ErrDataRootMigrationRequired) {
-		return reportCommandFailure(stdout, stderr, false, "data_root_migration_required", err.Error(), operationID, exitConflict)
-	}
-	var drift *quick.DriftError
-	if errors.As(err, &drift) {
-		if structuredOutput(stdout, false) {
-			payload := lifecycleDriftFailure{Error: "drift", Message: drift.Error(), OperationID: operationID, Action: drift.Action, Before: drift.Before, After: drift.After}
-			if code := encodeJSON(stdout, stderr, payload); code != exitOK {
-				return code
-			}
-		}
-		errorf(stderr, "%v", drift)
-		return exitConflict
-	}
-	var capability *quick.CapabilityError
-	if errors.As(err, &capability) {
-		return reportCommandFailure(stdout, stderr, false, "capability", capability.Error(), operationID, exitCapability)
-	}
-	var leaseConflict *lease.ConflictError
-	if errors.As(err, &leaseConflict) {
-		return reportCommandFailure(stdout, stderr, false, "lease_conflict", leaseConflict.Error(), operationID, exitLease)
-	}
-	var deleteErr *persistentDeleteError
-	if errors.As(err, &deleteErr) {
-		return reportCommandFailure(stdout, stderr, false, "persistent_delete", deleteErr.Error(), operationID, exitIntegrity)
-	}
-	return reportCommandFailure(stdout, stderr, false, "runtime", err.Error(), operationID, exitRuntime)
-}
-
-func selectLegacyQuickOperation(command string, options lifecycleOptions, manager *quick.Manager, timeoutResolved spec.Resolved, stderr io.Writer) (time.Duration, func(context.Context) (quick.Status, error), error) {
-	timeout := 15 * time.Second
-	var operation func(context.Context) (quick.Status, error)
-	switch command {
-	case "start":
-		timeout, operation = withReadinessTimeout(5*time.Minute, timeoutResolved), manager.Start
-	case "stop":
-		// Graceful shutdown itself may consume two minutes; leave bounded
-		// headroom for QMP quit, verified SIGTERM/SIGKILL, and audit writes.
-		timeout, operation = 5*time.Minute, manager.Stop
-	case "status":
-		operation = manager.Status
-	case "destroy":
-		if err := confirmCLIAction(options.Force, "destroy", stderr); err != nil {
-			return 0, nil, err
-		}
-		timeout = 5 * time.Minute
-		operation = func(ctx context.Context) (quick.Status, error) {
-			status, err := manager.Destroy(ctx)
-			if err != nil || !options.DeletePersistent {
-				return status, err
-			}
-			deleted, err := manager.DeletePersistent(ctx)
-			if err != nil {
-				return status, &persistentDeleteError{err: err}
-			}
-			status.Message = fmt.Sprintf("%s; explicitly deleted %d persistent data disk(s)", status.Message, len(deleted))
-			return status, nil
-		}
-	default:
-		return 0, nil, fmt.Errorf("retired user-mode projects support only status, start, stop, and destroy; got %q", command)
-	}
-	return timeout, operation, nil
 }
 
 func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, purge, noWait, rollback, jsonOutput bool, stdout, stderr io.Writer) int {
@@ -1481,8 +1262,10 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 				continue
 			}
 			seen[alias] = struct{}{}
-			if info, infoErr := (quick.Manager{FarrowVersion: version.Version, Repository: repository}).ImageInfo(ctx, alias); infoErr == nil {
-				printImageStatusWarning(stderr, info.Entry)
+			if service, serviceErr := imageService(repository, nil); serviceErr == nil {
+				if info, infoErr := service.Info(ctx, alias); infoErr == nil {
+					printImageStatusWarning(stderr, info.Entry)
+				}
 			}
 		}
 	}
@@ -1502,9 +1285,6 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 		// sense past it.
 		options.DeletePersistent = true
 	}
-	if !quick.ValidLogLevel(options.LogLevel) {
-		return reportCommandFailure(stdout, stderr, false, "usage", fmt.Sprintf("invalid --log-level %q", options.LogLevel), "", exitUsage)
-	}
 	resolvedFile, hasConfig, err := loadLifecycleConfig(command, options.ConfigPath)
 	if err != nil {
 		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), "", exitUsage)
@@ -1517,9 +1297,7 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 			hasConfig = true
 		}
 	case persistedErr == nil && persisted.Network == "user":
-		// Retired zero-config slirp projects keep salvage commands only, so an
-		// existing lab can be inspected, booted, drained, and removed.
-		return runLegacyQuickCommand(command, options, nodes, persisted, stdout, stderr)
+		return reportCommandFailure(stdout, stderr, false, "conflict", "this project predates the fixed-IP redesign; remove it with `rm -rf .farrow` (plus any pre-redesign binary for running VMs) and run `farrow up` again", "", exitConflict)
 	case persistedErr != nil:
 		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
 			marker := filepath.Join(cwd, ".farrow", "project.json")
@@ -1530,9 +1308,6 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 	}
 	if !hasConfig {
 		return reportCommandFailure(stdout, stderr, false, "usage", config.ErrNoConfig.Error(), "", exitConflict)
-	}
-	if options.RestartDrift {
-		return reportCommandFailure(stdout, stderr, false, "usage", "--restart drift application is not available yet; review `farrow plan`, then apply reported changes with `farrow recreate --force <node...>`", "", exitUsage)
 	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
 	if command == "reload" {
@@ -1545,73 +1320,6 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 		command = "up"
 	}
 	return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, false, stdout, stderr)
-}
-
-func runLegacyQuickCommand(command string, options lifecycleOptions, nodes []string, persisted spec.Resolved, stdout, stderr io.Writer) int {
-	if len(nodes) != 0 && (len(nodes) != 1 || nodes[0] != "meta") {
-		return reportCommandFailure(stdout, stderr, false, "usage", fmt.Sprintf("this project has only node meta, got %v", nodes), "", exitUsage)
-	}
-	var progressItem *progress
-	manager := quick.Manager{FarrowVersion: version.Version, Repository: options.Repository, LogLevel: options.LogLevel, NoWait: options.NoWait}
-	manager.Progress = deferredProgressReporter(&progressItem)
-	operationID := ""
-	if command != "status" {
-		generatedID, operationErr := project.NewUUID()
-		if operationErr != nil {
-			return reportCommandFailure(stdout, stderr, false, "runtime", operationErr.Error(), "", exitRuntime)
-		}
-		operationID = generatedID
-		manager.OperationID = operationID
-	}
-	timeout, operation, err := selectLegacyQuickOperation(command, options, &manager, persisted, stderr)
-	if err != nil {
-		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), operationID, exitConflict)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	debugf(stderr, "lifecycle=%s mode=legacy-user timeout=%s operation_id=%s", command, timeout, operationID)
-	if command == "destroy" {
-		if eventErr := manager.RecordEvent(ctx, "destroy", "info", "scoped destroy requested"); eventErr != nil {
-			return reportCommandFailure(stdout, stderr, false, "integrity", fmt.Sprintf("refuse destroy without an auditable event append: %v", eventErr), operationID, exitIntegrity)
-		}
-	}
-	if command != "status" {
-		progressItem = startProgress(ctx, stderr, lifecycleMessage(command))
-	}
-	status, err := operation(ctx)
-	if operationID != "" {
-		status.OperationID = operationID
-	}
-	if command != "status" && command != "destroy" {
-		level := "info"
-		message := status.Message
-		if err != nil {
-			level = "error"
-			message = err.Error()
-		}
-		eventErr := manager.RecordEvent(ctx, command, level, message)
-		if err == nil && eventErr != nil {
-			err = fmt.Errorf("%s completed but its event could not be appended: %w", command, eventErr)
-		}
-	}
-	progressItem.Stop(err)
-	if err != nil {
-		return reportQuickLifecycleError(err, operationID, stdout, stderr)
-	}
-	if command == "destroy" && options.Purge {
-		if purgeErr := purgeCurrentProject(ctx, stdout, stderr); purgeErr != nil {
-			errorf(stderr, "destroy succeeded but purge failed: %v", purgeErr)
-			return exitIntegrity
-		}
-	}
-	if structuredOutput(stdout, false) {
-		if code := encodeJSON(stdout, stderr, status); code != exitOK {
-			return code
-		}
-	} else if status.Node != "" {
-		printQuickStatus(stdout, status)
-	}
-	return exitOK
 }
 
 func runSSHConfig(args []string, stdout, stderr io.Writer) int {
@@ -1636,7 +1344,7 @@ func runSSHConfig(args []string, stdout, stderr io.Writer) int {
 	// exact marker-owned fragment and Include. This keeps rollback available
 	// after resolved state or node artifacts are gone.
 	if *remove {
-		result, err := (quick.Manager{FarrowVersion: version.Version}).RemoveSSHConfig(*name, "")
+		result, err := removeSSHConfigFragment(*name)
 		if err != nil {
 			return reportSSHConfigFailure(result, err, *jsonOutput, stdout, stderr)
 		}
@@ -1671,38 +1379,34 @@ func runSSHConfig(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, text)
 		return exitOK
 	} else if err != nil {
-		if guarded, code := guardUnsupportedPrivate("ssh-config", stderr); guarded {
-			return code
+		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+			if _, markerErr := os.Lstat(filepath.Join(cwd, ".farrow", "project.json")); markerErr == nil {
+				fmt.Fprintf(stderr, "refuse ssh-config with unreadable project state: %v\n", err)
+				return exitIntegrity
+			}
 		}
 	}
-	if len(nodes) != 0 && (len(nodes) != 1 || nodes[0] != "meta") {
-		fmt.Fprintf(stderr, "quick ssh-config accepts only node meta, got %v\n", nodes)
-		return exitUsage
-	}
-	manager := quick.Manager{FarrowVersion: version.Version}
-	if *install {
-		var result sshconfig.Result
-		var err error
-		result, err = manager.InstallSSHConfig(ctx, *name, "")
-		if err != nil {
-			return reportSSHConfigFailure(result, err, *jsonOutput, stdout, stderr)
-		}
-		if structuredOutput(stdout, *jsonOutput) {
-			return encodeJSON(stdout, stderr, result)
-		}
-		fmt.Fprintf(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, *name, result.Changed, result.Fragment, result.Config)
-		return exitOK
-	}
-	text, err := manager.SSHConfig(ctx)
+	errorf(stderr, "no deployment state found; run `farrow up` first")
+	return exitConflict
+}
+
+// removeSSHConfigFragment is deliberately state-independent: destroy preserves
+// the project marker, and sshconfig.Remove itself deletes only the exact
+// marker-owned fragment and Include line.
+func removeSSHConfigFragment(name string) (sshconfig.Result, error) {
+	cwd, err := os.Getwd()
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return sshconfig.Result{}, err
 	}
-	if structuredOutput(stdout, *jsonOutput) {
-		return encodeJSON(stdout, stderr, map[string]string{"config": text})
+	projectValue, err := project.Open(cwd)
+	if err != nil {
+		return sshconfig.Result{}, err
 	}
-	fmt.Fprint(stdout, text)
-	return exitOK
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return sshconfig.Result{}, err
+	}
+	return sshconfig.Remove(home, projectValue.Marker.ProjectID, name)
 }
 
 func reportSSHConfigFailure(result sshconfig.Result, err error, jsonOutput bool, stdout, stderr io.Writer) int {
@@ -1861,39 +1565,24 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	path := ""
-	node := "meta"
-	var err error
-	if resolved, resolveErr := currentProjectResolved(); resolveErr == nil && resolved.Network == "private" {
-		node = requestedNode
-		path, err = (privatevm.Manager{FarrowVersion: version.Version}).LogPath(node, *source)
-		if node == "" {
-			if *source == "events" {
-				node = "project"
-			} else {
-				for _, candidate := range resolved.Nodes {
-					if candidate.Control {
-						node = candidate.Name
-						break
-					}
+	resolved, resolveErr := currentProjectResolved()
+	if resolveErr != nil || resolved.Network != "private" {
+		errorf(stderr, "no deployment state found; run `farrow up` first")
+		return exitConflict
+	}
+	node := requestedNode
+	path, err := (privatevm.Manager{FarrowVersion: version.Version}).LogPath(node, *source)
+	if node == "" {
+		if *source == "events" {
+			node = "project"
+		} else {
+			for _, candidate := range resolved.Nodes {
+				if candidate.Control {
+					node = candidate.Name
+					break
 				}
 			}
 		}
-	} else if resolveErr != nil {
-		if guarded, code := guardUnsupportedPrivate("logs", stderr); guarded {
-			return code
-		}
-		if requestedNode != "" && requestedNode != "meta" {
-			fmt.Fprintln(stderr, "quick logs accepts only node meta")
-			return exitUsage
-		}
-		path, err = (quick.Manager{FarrowVersion: version.Version}).LogPath(ctx, *source)
-	} else {
-		if requestedNode != "" && requestedNode != "meta" {
-			fmt.Fprintln(stderr, "quick logs accepts only node meta")
-			return exitUsage
-		}
-		path, err = (quick.Manager{FarrowVersion: version.Version}).LogPath(ctx, *source)
 	}
 	if err != nil {
 		errorf(stderr, "%v", err)
@@ -2015,59 +1704,9 @@ func runRepair(args []string, stdout, stderr io.Writer) int {
 			return exitIntegrity
 		}
 		return exitOK
-	} else if resolveErr != nil {
-		if guarded, code := guardUnsupportedPrivate("repair", stderr); guarded {
-			return code
-		}
 	}
-	if len(nodes) != 0 && (len(nodes) != 1 || nodes[0] != "meta") {
-		fmt.Fprintf(stderr, "quick repair accepts only node meta, got %v\n", nodes)
-		return exitUsage
-	}
-	operationID, operationErr := project.NewUUID()
-	if operationErr != nil {
-		errorf(stderr, "%v", operationErr)
-		return exitRuntime
-	}
-	manager := quick.Manager{FarrowVersion: version.Version, OperationID: operationID}
-	progressItem := startProgress(ctx, stderr, "Inspecting and repairing the project")
-	report, err := manager.Repair(ctx, *force)
-	progressItem.Stop(err)
-	if err == nil && *force {
-		applied := 0
-		for _, action := range report.Actions {
-			if action.Applied {
-				applied++
-			}
-		}
-		if eventErr := manager.RecordEvent(ctx, "repair", "info", fmt.Sprintf("applied %d ownership-bounded repair actions", applied)); eventErr != nil && !errors.Is(eventErr, os.ErrNotExist) {
-			err = fmt.Errorf("repair completed but its event could not be appended: %w", eventErr)
-		}
-	}
-	if structuredOutput(stdout, *jsonOutput) {
-		if code := encodeJSON(stdout, stderr, report); code != exitOK {
-			return code
-		}
-	} else if len(report.Actions) == 0 {
-		fmt.Fprintln(stdout, "no repair actions")
-	} else {
-		for _, action := range report.Actions {
-			state := "would"
-			if action.Applied {
-				state = "did"
-			}
-			fmt.Fprintf(stdout, "%s %s %s: %s\n", state, action.Kind, action.Path, action.Reason)
-		}
-	}
-	if err != nil {
-		errorf(stderr, "%v", err)
-		var blocked *quick.RepairBlockedError
-		if errors.As(err, &blocked) {
-			return exitIntegrity
-		}
-		return exitRuntime
-	}
-	return exitOK
+	errorf(stderr, "no deployment state found; run `farrow up` first")
+	return exitConflict
 }
 
 func runDebug(args []string, stdout, stderr io.Writer) int {
@@ -2131,71 +1770,6 @@ func runDebug(args []string, stdout, stderr io.Writer) int {
 		return encodeJSON(stdout, stderr, response)
 	}
 	fmt.Fprintf(stdout, "created %s (%d bytes, sha256:%s)\n", result.Path, result.Size, result.SHA256)
-	return exitOK
-}
-
-func runList(args []string, stdout, stderr io.Writer) int {
-	flags := newCommandFlagSet("list", stderr)
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
-		return exitUsage
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	report, err := (quick.Manager{FarrowVersion: version.Version}).List(ctx)
-	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
-	}
-	if structuredOutput(stdout, *jsonOutput) {
-		if code := encodeJSON(stdout, stderr, report); code != exitOK {
-			return code
-		}
-	} else {
-		textField(stdout, 12, "data root", report.DataRoot)
-		if len(report.Projects) == 0 {
-			fmt.Fprintln(stdout, "no registered projects")
-		}
-		for _, projectValue := range report.Projects {
-			marker := " "
-			if projectValue.Current {
-				marker = "*"
-			}
-			name := projectValue.Name
-			if name == "" {
-				name = "uninitialized"
-			}
-			fmt.Fprintf(stdout, "%s %s %s\n", marker, projectValue.ProjectID, name)
-			fmt.Fprintf(stdout, "  root: %s\n", projectValue.Root)
-			if projectValue.WorkDir != "" {
-				fmt.Fprintf(stdout, "  workdir: %s\n", projectValue.WorkDir)
-			}
-			if projectValue.Orphan != "" {
-				fmt.Fprintf(stdout, "  orphan: %s (remove with `farrow project rm %s --force`)\n", projectValue.Orphan, projectValue.ProjectID)
-			}
-			for _, node := range projectValue.Nodes {
-				fmt.Fprintf(stdout, "  %s: %s (persisted %s)", node.Name, node.Actual, node.Persisted)
-				if node.SSHPort != 0 {
-					fmt.Fprintf(stdout, " ssh=127.0.0.1:%d", node.SSHPort)
-				}
-				fmt.Fprintln(stdout)
-				if node.Message != "" {
-					fmt.Fprintf(stdout, "    %s\n", node.Message)
-				}
-			}
-			if projectValue.Integrity != "" {
-				fmt.Fprintf(stdout, "  integrity: %s\n", projectValue.Integrity)
-			}
-		}
-		for _, warning := range report.Warnings {
-			fmt.Fprintf(stdout, "warning: %s\n", warning)
-		}
-	}
-	for _, projectValue := range report.Projects {
-		if projectValue.Integrity != "" {
-			return exitIntegrity
-		}
-	}
 	return exitOK
 }
 
@@ -2342,7 +1916,12 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		entries, manifestState, err := (quick.Manager{FarrowVersion: version.Version, Repository: *repository}).Images(ctx)
+		service, err := imageService(*repository, nil)
+		if err != nil {
+			errorf(stderr, "%v", err)
+			return exitRuntime
+		}
+		entries, manifestState, err := service.List(ctx)
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime
@@ -2370,17 +1949,19 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		manager := quick.Manager{FarrowVersion: version.Version, Repository: *repository}
-		var info quick.ImageInfo
-		var err error
 		var progressItem *progress
-		manager.Progress = deferredProgressReporter(&progressItem)
+		service, err := imageService(*repository, deferredProgressReporter(&progressItem))
+		if err != nil {
+			errorf(stderr, "%v", err)
+			return exitRuntime
+		}
+		var info image.Info
 		if args[0] == "pull" {
 			debugf(stderr, "image pull alias=%s timeout=%s", flags.Arg(0), 30*time.Minute)
 			progressItem = startProgress(ctx, stderr, fmt.Sprintf("Pulling image %s", flags.Arg(0)))
-			info, err = manager.PullImage(ctx, flags.Arg(0))
+			info, err = service.PullAlias(ctx, flags.Arg(0))
 		} else {
-			info, err = manager.ImageInfo(ctx, flags.Arg(0))
+			info, err = service.Info(ctx, flags.Arg(0))
 		}
 		progressItem.Stop(err)
 		if err != nil {
@@ -2407,8 +1988,15 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+		service, err := imageService("", nil)
+		if err != nil {
+			errorf(stderr, "%v", err)
+			return exitRuntime
+		}
 		progressItem := startProgress(ctx, stderr, "Scanning unreferenced image cache entries")
-		report, err := (quick.Manager{FarrowVersion: version.Version}).PruneImages(ctx, *yes)
+		report, err := service.PruneAll(ctx, *yes, func(refCtx context.Context) (map[string]struct{}, error) {
+			return nodeImageReferences(service.DataRoot)
+		})
 		progressItem.Stop(err)
 		if err != nil {
 			errorf(stderr, "%v", err)
@@ -2447,8 +2035,13 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", flags.Arg(0), *allowDowngrade)
+		service, err := imageService("", nil)
+		if err != nil {
+			errorf(stderr, "%v", err)
+			return exitRuntime
+		}
 		progressItem := startProgress(ctx, stderr, "Synchronizing the image manifest")
-		state, err := (quick.Manager{FarrowVersion: version.Version}).ManifestSync(ctx, flags.Arg(0), *allowDowngrade)
+		state, err := service.SyncManifest(ctx, flags.Arg(0), *allowDowngrade)
 		progressItem.Stop(err)
 		if err != nil {
 			_ = emitCommandFailure(stdout, stderr, *jsonOutput, "runtime", err.Error(), "")
@@ -2468,7 +2061,12 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		state, err := (quick.Manager{FarrowVersion: version.Version}).ManifestReset(ctx)
+		service, err := imageService("", nil)
+		if err != nil {
+			errorf(stderr, "%v", err)
+			return exitRuntime
+		}
+		state, err := service.ResetManifest(ctx)
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime
@@ -2497,19 +2095,22 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "--name requires --boot bios|uefi and --source-user; alias metadata is immutable")
 			return exitUsage
 		}
-		manager := quick.Manager{FarrowVersion: version.Version}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+		service, err := imageService("", nil)
+		if err != nil {
+			errorf(stderr, "%v", err)
+			return exitRuntime
+		}
 		var path string
 		var metadata image.Metadata
 		var localEntry *image.Entry
-		var err error
 		debugf(stderr, "image import source=%s expected_sha256=%s alias=%s", flags.Arg(0), *expected, *name)
 		progressItem := startProgress(ctx, stderr, "Importing and verifying the image")
 		if *name == "" {
-			path, metadata, err = manager.ImportImage(ctx, flags.Arg(0), *expected)
+			path, metadata, err = service.ImportFile(ctx, flags.Arg(0), *expected)
 		} else {
-			entry, importedPath, importedMetadata, importErr := manager.ImportNamedImage(ctx, flags.Arg(0), *expected, *name, *boot, *sourceUser)
+			entry, importedPath, importedMetadata, importErr := service.ImportNamed(ctx, flags.Arg(0), *expected, *name, *boot, *sourceUser)
 			path, metadata, err = importedPath, importedMetadata, importErr
 			if importErr == nil {
 				localEntry = &entry
