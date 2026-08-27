@@ -634,7 +634,7 @@ const linuxBridgeMarker = "# BEGIN FARROW MANAGED: farrow0\nallow farrow0\n# END
 func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 	snapshot := Snapshot{Addresses: make(map[string]string), Installation: Installation{Status: "absent"}}
 	stateDir := filepath.Dir(linuxnet.StatePath)
-	anchorPaths := []string{linuxnet.NetDevPath, linuxnet.NetworkPath, linuxnet.NetworkManagerPath, linuxnet.TmpfilesPath, stateDir, linuxnet.LeaseRoot}
+	anchorPaths := []string{linuxnet.NetDevPath, linuxnet.NetworkPath, linuxnet.NetworkManagerPath, linuxnet.TmpfilesPath, linuxnet.PublicStatePath, stateDir, linuxnet.LeaseRoot}
 	anchors := 0
 	for _, path := range anchorPaths {
 		if _, err := p.lstat(path); err == nil {
@@ -645,6 +645,19 @@ func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 	}
 	if bridgeConf, err := p.readFile(linuxnet.BridgeConfPath); err == nil && strings.Contains(string(bridgeConf), linuxBridgeMarker) {
 		anchors++
+	}
+	networkdShape := false
+	for _, path := range []string{linuxnet.NetDevPath, linuxnet.NetworkPath} {
+		if _, err := p.lstat(path); err == nil {
+			networkdShape = true
+		}
+	}
+	nmShape := false
+	if _, err := p.lstat(linuxnet.PublicStatePath); err == nil {
+		nmShape = true
+	}
+	if networkdShape && nmShape {
+		invalidate(&snapshot.Installation, "mixed systemd-networkd and NetworkManager installation shapes")
 	}
 	required := []struct {
 		path   string
@@ -659,6 +672,21 @@ func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 		{stateDir, 0o700, "directory", false},
 		{linuxnet.LeaseRoot, 0o777, "directory", true},
 		{linuxnet.LeaseLockPath, 0o666, "file", false},
+	}
+	if nmShape && !networkdShape {
+		required = []struct {
+			path   string
+			mode   os.FileMode
+			kind   string
+			sticky bool
+		}{
+			{linuxnet.PublicStatePath, 0o644, "file", false},
+			{linuxnet.BridgeConfPath, 0o644, "file", false},
+			{linuxnet.TmpfilesPath, 0o644, "file", false},
+			{stateDir, 0o700, "directory", false},
+			{linuxnet.LeaseRoot, 0o777, "directory", true},
+			{linuxnet.LeaseLockPath, 0o666, "file", false},
+		}
 	}
 	present := 0
 	if anchors > 0 || snapshot.Installation.Status == "invalid" {
@@ -693,124 +721,196 @@ func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 		snapshot.Routes = parseLinuxRoutes(string(routes.Stdout))
 	}
 	if anchors > 0 && present == len(required) && snapshot.Installation.Status != "invalid" {
-		data, err := p.readFile(linuxnet.NetworkPath)
-		layout, layoutErr := linuxNetworkLayout(data)
-		if err != nil || layoutErr != nil {
-			invalidate(&snapshot.Installation, "cannot parse owned Linux Farrow network unit")
+		if nmShape && !networkdShape {
+			p.verifyLinuxNMInstallation(ctx, &snapshot)
 		} else {
-			protectedState := false
-			snapshot.Installation.Mode = "bridge"
-			snapshot.Installation.CIDR = layout.CIDR()
-			snapshot.Installation.HostAddress = layout.HostAddress()
-			snapshot.Installation.Interface = linuxnet.BridgeName
-			for _, exact := range []struct {
-				path    string
-				content string
-			}{
-				{linuxnet.NetDevPath, "[NetDev]\nName=farrow0\nKind=bridge\n"},
-				{linuxnet.NetworkPath, exactLinuxNetwork(layout)},
-				{linuxnet.TmpfilesPath, "d /run/farrow 1777 root root -\n"},
-				{linuxnet.LeaseLockPath, ""},
-			} {
-				if fileErr := p.exactPublicFile(exact.path, []byte(exact.content), 1<<20); fileErr != nil {
-					invalidate(&snapshot.Installation, exact.path+": "+fileErr.Error())
-				}
-			}
-			bridgeConf, bridgeErr := p.readFile(linuxnet.BridgeConfPath)
-			if bridgeErr != nil || len(bridgeConf) > 1<<20 || strings.Count(string(bridgeConf), linuxBridgeMarker) != 1 {
-				invalidate(&snapshot.Installation, linuxnet.BridgeConfPath+": exact Farrow marker block is missing or duplicated")
-			}
-			if managerInfo, managerErr := p.lstat(linuxnet.NetworkManagerPath); managerErr == nil {
-				if metadataErr := rootMetadata(managerInfo, 0o644, "file", 0, false); metadataErr != nil {
-					invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+metadataErr.Error())
-				} else if fileErr := p.exactPublicFile(linuxnet.NetworkManagerPath, []byte("[keyfile]\nunmanaged-devices=interface-name:farrow0\n"), 1<<20); fileErr != nil {
-					invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+fileErr.Error())
-				}
-			} else if !errors.Is(managerErr, os.ErrNotExist) {
-				invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+managerErr.Error())
-			}
-
-			osRelease, familyErr := p.readFile("/etc/os-release")
-			family, parseFamilyErr := linuxFamily(osRelease)
-			if familyErr != nil || parseFamilyErr != nil {
-				invalidate(&snapshot.Installation, "cannot identify the installed Linux network family")
-			} else {
-				snapshot.Installation.Family = string(family)
-				helper := ""
-				var helperInfo os.FileInfo
-				for _, candidate := range []string{"/usr/lib/qemu/qemu-bridge-helper", "/usr/libexec/qemu-bridge-helper"} {
-					if candidateInfo, candidateErr := p.lstat(candidate); candidateErr == nil {
-						helper, helperInfo = candidate, candidateInfo
-						break
-					}
-				}
-				if helper == "" {
-					invalidate(&snapshot.Installation, "installed Linux network lacks qemu-bridge-helper")
-				} else if helperErr := validateLinuxHelper(helperInfo, family); helperErr != nil {
-					invalidate(&snapshot.Installation, helper+": "+helperErr.Error())
-				} else if parentErr := p.safeRootOwnedParents(helper); parentErr != nil {
-					invalidate(&snapshot.Installation, helper+": "+parentErr.Error())
-				} else {
-					ownershipOK := false
-					if family == linuxnet.Debian {
-						packageOwner, packageErr := p.Runner.Run(ctx, "/usr/bin/dpkg-query", "-S", helper)
-						override, overrideErr := p.Runner.Run(ctx, "/usr/bin/dpkg-statoverride", "--list", helper)
-						ownershipOK = packageErr == nil && strings.Contains(string(packageOwner.Stdout), ": "+helper) && overrideErr == nil && strings.TrimSpace(string(override.Stdout)) == "root kvm 4750 "+helper
-					} else {
-						packageOwner, packageErr := p.Runner.Run(ctx, "/usr/bin/rpm", "-qf", helper)
-						ownershipOK = packageErr == nil && strings.TrimSpace(string(packageOwner.Stdout)) != ""
-					}
-					if !ownershipOK {
-						invalidate(&snapshot.Installation, helper+": package ownership or reversible privilege policy is invalid")
-					} else {
-						snapshot.Installation.HelperPath = helper
-					}
-				}
-			}
-
-			if stateInfo, stateErr := p.lstat(linuxnet.StatePath); stateErr == nil {
-				if metadataErr := rootMetadata(stateInfo, 0o600, "file", 0, false); metadataErr != nil {
-					invalidate(&snapshot.Installation, linuxnet.StatePath+": "+metadataErr.Error())
-				} else if stateData, readErr := p.readFile(linuxnet.StatePath); readErr != nil {
-					invalidate(&snapshot.Installation, linuxnet.StatePath+": "+readErr.Error())
-				} else if manifest, manifestErr := linuxnet.StrictManifest(stateData); manifestErr != nil || manifest.CIDR != layout.CIDR() || manifest.HostAddress != layout.HostAddress() || manifest.DHCPEnd != layout.DHCPEnd() || (snapshot.Installation.Family != "" && string(manifest.Family) != snapshot.Installation.Family) || (snapshot.Installation.HelperPath != "" && manifest.HelperPath != snapshot.Installation.HelperPath) {
-					invalidate(&snapshot.Installation, linuxnet.StatePath+": protected ownership manifest differs from the installed network")
-				} else {
-					for path, expectedDigest := range manifest.Files {
-						content, readErr := p.readFile(path)
-						if readErr != nil || len(content) > 1<<20 || digestBytes(content) != expectedDigest {
-							invalidate(&snapshot.Installation, path+": content differs from the protected ownership manifest")
-						}
-					}
-				}
-			} else if errors.Is(stateErr, os.ErrNotExist) {
-				invalidate(&snapshot.Installation, linuxnet.StatePath+": protected ownership manifest is missing")
-			} else if protectedInspectionError(stateErr) {
-				protectedState = true
-			} else {
-				invalidate(&snapshot.Installation, linuxnet.StatePath+": "+stateErr.Error())
-			}
-			if snapshot.Installation.Status != "invalid" {
-				if protectedState {
-					snapshot.Installation.Status = "protected"
-				} else {
-					snapshot.Installation.Status = "exact"
-				}
-			}
-
-			addressReady := false
-			for _, address := range snapshot.Interfaces {
-				if address.Interface == linuxnet.BridgeName && address.Address.String() == layout.HostAddress() && address.Prefix.Bits() == 24 {
-					addressReady = true
-				}
-			}
-			active, activeErr := p.Runner.Run(ctx, "/usr/bin/systemctl", "is-active", "systemd-networkd.service")
-			link, linkErr := p.Runner.Run(ctx, "/usr/sbin/ip", "-d", "link", "show", "dev", linuxnet.BridgeName)
-			snapshot.Installation.Healthy = addressReady && activeErr == nil && strings.TrimSpace(string(active.Stdout)) == "active" && linkErr == nil && strings.Contains(string(link.Stdout), "bridge")
-			if !snapshot.Installation.Healthy && snapshot.Installation.Problem == "" {
-				snapshot.Installation.Problem = "owned Linux network exists but networkd, farrow0 bridge type, or configured host .1/24 is not ready"
-			}
+			p.verifyLinuxNetworkdInstallation(ctx, &snapshot)
 		}
 	}
 	return snapshot
+}
+
+// verifyLinuxOwnedCommon runs the family/helper/manifest checks shared by both
+// Linux backends and reports whether the ownership manifest was readable and
+// matched. layout carries the parsed network; expectBackend gates the manifest.
+func (p Probe) verifyLinuxOwnedCommon(ctx context.Context, snapshot *Snapshot, layout subnet.Layout, expectBackend string) (protectedState bool) {
+	bridgeConf, bridgeErr := p.readFile(linuxnet.BridgeConfPath)
+	if bridgeErr != nil || len(bridgeConf) > 1<<20 || strings.Count(string(bridgeConf), linuxBridgeMarker) != 1 {
+		invalidate(&snapshot.Installation, linuxnet.BridgeConfPath+": exact Farrow marker block is missing or duplicated")
+	}
+	osRelease, familyErr := p.readFile("/etc/os-release")
+	family, parseFamilyErr := linuxFamily(osRelease)
+	if familyErr != nil || parseFamilyErr != nil {
+		invalidate(&snapshot.Installation, "cannot identify the installed Linux network family")
+	} else {
+		snapshot.Installation.Family = string(family)
+		helper := ""
+		var helperInfo os.FileInfo
+		for _, candidate := range []string{"/usr/lib/qemu/qemu-bridge-helper", "/usr/libexec/qemu-bridge-helper"} {
+			if candidateInfo, candidateErr := p.lstat(candidate); candidateErr == nil {
+				helper, helperInfo = candidate, candidateInfo
+				break
+			}
+		}
+		if helper == "" {
+			invalidate(&snapshot.Installation, "installed Linux network lacks qemu-bridge-helper")
+		} else if helperErr := validateLinuxHelper(helperInfo, family); helperErr != nil {
+			invalidate(&snapshot.Installation, helper+": "+helperErr.Error())
+		} else if parentErr := p.safeRootOwnedParents(helper); parentErr != nil {
+			invalidate(&snapshot.Installation, helper+": "+parentErr.Error())
+		} else {
+			ownershipOK := false
+			if family == linuxnet.Debian {
+				packageOwner, packageErr := p.Runner.Run(ctx, "/usr/bin/dpkg-query", "-S", helper)
+				override, overrideErr := p.Runner.Run(ctx, "/usr/bin/dpkg-statoverride", "--list", helper)
+				ownershipOK = packageErr == nil && strings.Contains(string(packageOwner.Stdout), ": "+helper) && overrideErr == nil && strings.TrimSpace(string(override.Stdout)) == "root kvm 4750 "+helper
+			} else {
+				packageOwner, packageErr := p.Runner.Run(ctx, "/usr/bin/rpm", "-qf", helper)
+				ownershipOK = packageErr == nil && strings.TrimSpace(string(packageOwner.Stdout)) != ""
+			}
+			if !ownershipOK {
+				invalidate(&snapshot.Installation, helper+": package ownership or reversible privilege policy is invalid")
+			} else {
+				snapshot.Installation.HelperPath = helper
+			}
+		}
+	}
+	if stateInfo, stateErr := p.lstat(linuxnet.StatePath); stateErr == nil {
+		if metadataErr := rootMetadata(stateInfo, 0o600, "file", 0, false); metadataErr != nil {
+			invalidate(&snapshot.Installation, linuxnet.StatePath+": "+metadataErr.Error())
+		} else if stateData, readErr := p.readFile(linuxnet.StatePath); readErr != nil {
+			invalidate(&snapshot.Installation, linuxnet.StatePath+": "+readErr.Error())
+		} else if manifest, manifestErr := linuxnet.StrictManifest(stateData); manifestErr != nil || linuxnet.ManifestBackend(manifest) != expectBackend || manifest.CIDR != layout.CIDR() || manifest.HostAddress != layout.HostAddress() || manifest.DHCPEnd != layout.DHCPEnd() || (snapshot.Installation.Family != "" && string(manifest.Family) != snapshot.Installation.Family) || (snapshot.Installation.HelperPath != "" && manifest.HelperPath != snapshot.Installation.HelperPath) {
+			invalidate(&snapshot.Installation, linuxnet.StatePath+": protected ownership manifest differs from the installed network")
+		} else {
+			for path, expectedDigest := range manifest.Files {
+				content, readErr := p.readFile(path)
+				if readErr != nil || len(content) > 1<<20 || digestBytes(content) != expectedDigest {
+					invalidate(&snapshot.Installation, path+": content differs from the protected ownership manifest")
+				}
+			}
+		}
+	} else if errors.Is(stateErr, os.ErrNotExist) {
+		invalidate(&snapshot.Installation, linuxnet.StatePath+": protected ownership manifest is missing")
+	} else if protectedInspectionError(stateErr) {
+		protectedState = true
+	} else {
+		invalidate(&snapshot.Installation, linuxnet.StatePath+": "+stateErr.Error())
+	}
+	return protectedState
+}
+
+func (p Probe) verifyLinuxNetworkdInstallation(ctx context.Context, snapshot *Snapshot) {
+	data, err := p.readFile(linuxnet.NetworkPath)
+	layout, layoutErr := linuxNetworkLayout(data)
+	if err != nil || layoutErr != nil {
+		invalidate(&snapshot.Installation, "cannot parse owned Linux Farrow network unit")
+		return
+	}
+	snapshot.Installation.Mode = "bridge"
+	snapshot.Installation.CIDR = layout.CIDR()
+	snapshot.Installation.HostAddress = layout.HostAddress()
+	snapshot.Installation.Interface = linuxnet.BridgeName
+	for _, exact := range []struct {
+		path    string
+		content string
+	}{
+		{linuxnet.NetDevPath, "[NetDev]\nName=farrow0\nKind=bridge\n"},
+		{linuxnet.NetworkPath, exactLinuxNetwork(layout)},
+		{linuxnet.TmpfilesPath, "d /run/farrow 1777 root root -\n"},
+		{linuxnet.LeaseLockPath, ""},
+	} {
+		if fileErr := p.exactPublicFile(exact.path, []byte(exact.content), 1<<20); fileErr != nil {
+			invalidate(&snapshot.Installation, exact.path+": "+fileErr.Error())
+		}
+	}
+	if managerInfo, managerErr := p.lstat(linuxnet.NetworkManagerPath); managerErr == nil {
+		if metadataErr := rootMetadata(managerInfo, 0o644, "file", 0, false); metadataErr != nil {
+			invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+metadataErr.Error())
+		} else if fileErr := p.exactPublicFile(linuxnet.NetworkManagerPath, []byte("[keyfile]\nunmanaged-devices=interface-name:farrow0\n"), 1<<20); fileErr != nil {
+			invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+fileErr.Error())
+		}
+	} else if !errors.Is(managerErr, os.ErrNotExist) {
+		invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+managerErr.Error())
+	}
+	protectedState := p.verifyLinuxOwnedCommon(ctx, snapshot, layout, linuxnet.BackendNetworkd)
+	if snapshot.Installation.Status != "invalid" {
+		if protectedState {
+			snapshot.Installation.Status = "protected"
+		} else {
+			snapshot.Installation.Status = "exact"
+		}
+	}
+	addressReady := false
+	for _, address := range snapshot.Interfaces {
+		if address.Interface == linuxnet.BridgeName && address.Address.String() == layout.HostAddress() && address.Prefix.Bits() == 24 {
+			addressReady = true
+		}
+	}
+	active, activeErr := p.Runner.Run(ctx, "/usr/bin/systemctl", "is-active", "systemd-networkd.service")
+	link, linkErr := p.Runner.Run(ctx, "/usr/sbin/ip", "-d", "link", "show", "dev", linuxnet.BridgeName)
+	snapshot.Installation.Healthy = addressReady && activeErr == nil && strings.TrimSpace(string(active.Stdout)) == "active" && linkErr == nil && strings.Contains(string(link.Stdout), "bridge")
+	if !snapshot.Installation.Healthy && snapshot.Installation.Problem == "" {
+		snapshot.Installation.Problem = "owned Linux network exists but networkd, farrow0 bridge type, or configured host .1/24 is not ready"
+	}
+}
+
+func (p Probe) verifyLinuxNMInstallation(ctx context.Context, snapshot *Snapshot) {
+	data, err := p.readFile(linuxnet.PublicStatePath)
+	if err != nil {
+		invalidate(&snapshot.Installation, linuxnet.PublicStatePath+": "+err.Error())
+		return
+	}
+	state, parseErr := linuxnet.ParsePublicState(data)
+	if parseErr != nil {
+		invalidate(&snapshot.Installation, linuxnet.PublicStatePath+": "+parseErr.Error())
+		return
+	}
+	layout, layoutErr := subnet.Parse(state.CIDR)
+	if layoutErr != nil {
+		invalidate(&snapshot.Installation, linuxnet.PublicStatePath+": "+layoutErr.Error())
+		return
+	}
+	snapshot.Installation.Mode = "bridge"
+	snapshot.Installation.CIDR = layout.CIDR()
+	snapshot.Installation.HostAddress = layout.HostAddress()
+	snapshot.Installation.Interface = linuxnet.BridgeName
+	for _, exact := range []struct {
+		path    string
+		content string
+	}{
+		{linuxnet.TmpfilesPath, "d /run/farrow 1777 root root -\n"},
+		{linuxnet.LeaseLockPath, ""},
+	} {
+		if fileErr := p.exactPublicFile(exact.path, []byte(exact.content), 1<<20); fileErr != nil {
+			invalidate(&snapshot.Installation, exact.path+": "+fileErr.Error())
+		}
+	}
+	// The unmanaged drop-in belongs to the networkd backend; its presence under
+	// the NetworkManager backend is stale foreign state.
+	if _, managerErr := p.lstat(linuxnet.NetworkManagerPath); managerErr == nil {
+		invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": stale networkd-backend drop-in present under the NetworkManager backend")
+	} else if !errors.Is(managerErr, os.ErrNotExist) {
+		invalidate(&snapshot.Installation, linuxnet.NetworkManagerPath+": "+managerErr.Error())
+	}
+	protectedState := p.verifyLinuxOwnedCommon(ctx, snapshot, layout, linuxnet.BackendNetworkManager)
+	if snapshot.Installation.Status != "invalid" {
+		if protectedState {
+			snapshot.Installation.Status = "protected"
+		} else {
+			snapshot.Installation.Status = "exact"
+		}
+	}
+	addressReady := false
+	for _, address := range snapshot.Interfaces {
+		if address.Interface == linuxnet.BridgeName && address.Address.String() == layout.HostAddress() && address.Prefix.Bits() == 24 {
+			addressReady = true
+		}
+	}
+	active, activeErr := p.Runner.Run(ctx, "/usr/bin/systemctl", "is-active", "NetworkManager.service")
+	link, linkErr := p.Runner.Run(ctx, "/usr/sbin/ip", "-d", "link", "show", "dev", linuxnet.BridgeName)
+	snapshot.Installation.Healthy = addressReady && activeErr == nil && strings.TrimSpace(string(active.Stdout)) == "active" && linkErr == nil && strings.Contains(string(link.Stdout), "bridge")
+	if !snapshot.Installation.Healthy && snapshot.Installation.Problem == "" {
+		snapshot.Installation.Problem = "owned Linux network exists but NetworkManager, farrow0 bridge type, or configured host .1/24 is not ready"
+	}
 }

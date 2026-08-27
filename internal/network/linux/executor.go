@@ -415,6 +415,9 @@ func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, e
 	if _, err := NewUninstallPlan(manifest, uninstallFacts); err != nil {
 		return report, err
 	}
+	if ManifestBackend(manifest) == BackendNetworkManager {
+		return e.applyNetworkManagerUninstall(ctx, report, plan)
+	}
 	if _, err := e.Root.Run(ctx, "/usr/bin/networkctl", "delete", BridgeName); err != nil {
 		return report, err
 	}
@@ -488,5 +491,52 @@ func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, e
 	}
 	report.Applied = true
 	report.Checks["restored"] = "helper, networkd units, paths, bridge and lease boundary"
+	return report, nil
+}
+
+// applyNetworkManagerUninstall executes the NM-backend uninstall plan exactly:
+// delete the owned bridge connection, restore helper prestate, then remove or
+// restore the owned files and prune Farrow-created directories.
+func (e Executor) applyNetworkManagerUninstall(ctx context.Context, report UninstallReport, plan UninstallPlan) (UninstallReport, error) {
+	for _, phase := range plan.Phases {
+		for _, command := range phase.Commands {
+			if _, err := e.Root.Run(ctx, command.Binary, command.Args...); err != nil {
+				return report, fmt.Errorf("uninstall phase %s: %w", phase.Name, err)
+			}
+		}
+	}
+	for _, file := range plan.RestoreFiles {
+		staging, err := os.MkdirTemp(e.StagingParent, "farrow-bridge-restore-")
+		if err != nil {
+			return report, err
+		}
+		source := filepath.Join(staging, filepath.Base(file.Path))
+		if err := os.WriteFile(source, []byte(file.Content), 0o600); err != nil {
+			_ = os.RemoveAll(staging)
+			return report, err
+		}
+		ownerParts := strings.Split(file.Owner, ":")
+		if len(ownerParts) != 2 {
+			_ = os.RemoveAll(staging)
+			return report, errors.New("restore file ownership is invalid")
+		}
+		if _, err := e.Root.Run(ctx, "/usr/bin/install", "-o", ownerParts[0], "-g", ownerParts[1], "-m", file.Mode, source, file.Path); err != nil {
+			_ = os.RemoveAll(staging)
+			return report, err
+		}
+		_ = os.RemoveAll(staging)
+	}
+	for _, path := range plan.RemoveFiles {
+		if err := e.rootUnlink(ctx, path); err != nil {
+			return report, err
+		}
+	}
+	for _, directory := range plan.RemoveDirectories {
+		if _, err := e.Root.Run(ctx, "/usr/bin/rmdir", directory); err != nil {
+			return report, err
+		}
+	}
+	report.Applied = true
+	report.Checks["restored"] = "helper, bridge connection, paths, and lease boundary"
 	return report, nil
 }

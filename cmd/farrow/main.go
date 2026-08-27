@@ -471,7 +471,7 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 	checks := make([]doctor.Check, 0, 4)
 	hasError := !preflightReport.Ready
 	for _, check := range doctorReport.Checks {
-		if check.Name == "kvm" || check.Name == "linux-family" || check.Name == "linux-networkd" || check.Name == "bridge-helper" {
+		if check.Name == "kvm" || check.Name == "linux-family" || check.Name == "linux-network-owner" || check.Name == "bridge-helper" {
 			checks = append(checks, check)
 			if check.Status == doctor.Error {
 				hasError = true

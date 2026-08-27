@@ -670,7 +670,7 @@ func setupCheckIgnored(name string, private bool) bool {
 	if private {
 		return false
 	}
-	return name == "linux-networkd" || name == "bridge-helper" || name == "private-bridge"
+	return name == "linux-network-owner" || name == "bridge-helper" || name == "private-bridge"
 }
 
 func verifySetup(ctx context.Context, private bool) ([]doctor.Check, error) {

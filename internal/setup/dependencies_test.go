@@ -84,15 +84,20 @@ func TestPlanDependenciesUsesControlledRHELQEMUForQuick(t *testing.T) {
 	}
 }
 
-func TestPlanDependenciesRefusesToConvertRHELNetworking(t *testing.T) {
+func TestPlanDependenciesSupportsRHELPrivateViaNetworkManager(t *testing.T) {
 	t.Parallel()
 	probe := fakeProbe("linux", "amd64", "ID=rocky\nID_LIKE=rhel\n", []string{"dnf"}, nil)
 	plan, err := PlanDependencies(probe, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !plan.Unsupported || !contains(plan.Resolution, "NetworkManager") || len(plan.Commands) != 0 {
+	if plan.Unsupported || plan.Manager != "dnf" || len(plan.Commands) != 1 {
 		t.Fatalf("RHEL private plan = %#v", plan)
+	}
+	for _, argument := range plan.Commands[0].Args {
+		if argument == "systemd-networkd" {
+			t.Fatalf("RHEL private plan must not install systemd-networkd: %#v", plan.Commands)
+		}
 	}
 }
 

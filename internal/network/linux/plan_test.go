@@ -9,7 +9,7 @@ import (
 
 func debianFacts() Facts {
 	return Facts{
-		Family: Debian, Systemd: true, NetworkdActive: true, NetworkManagerActive: true,
+		Family: Debian, Systemd: true, NetworkdActive: true,
 		Helper:               HelperFacts{Path: "/usr/lib/qemu/qemu-bridge-helper", OwnerUID: 0, Group: "root", Mode: 0o755, Regular: true, ParentSafe: true, PackageOwned: true},
 		BridgeConf:           "allow virbr0\n",
 		BridgeConfState:      PathState{Existed: true, Owner: "root", Group: "root", Mode: "0644"},
@@ -48,7 +48,7 @@ func TestDebianInstallPlanIsTypedAndMarkerPreserving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Manifest.AppliedOverride == nil || plan.Manifest.AppliedOverride.Mode != "4750" || len(plan.Files) != 7 || len(plan.Directories) != 2 || plan.Manifest.LeaseRoot != "/run/farrow" {
+	if plan.Manifest.AppliedOverride == nil || plan.Manifest.AppliedOverride.Mode != "4750" || len(plan.Files) != 6 || len(plan.Directories) != 2 || plan.Manifest.LeaseRoot != "/run/farrow" {
 		t.Fatalf("plan = %#v", plan)
 	}
 	foundOverride := false
@@ -141,7 +141,7 @@ func TestHelperAndBridgeSafetyBoundaries(t *testing.T) {
 	}
 }
 
-func TestInactiveNetworkdPlanRecordsPrestateAndOrdersNMFirst(t *testing.T) {
+func TestInactiveNetworkdPlanRecordsPrestate(t *testing.T) {
 	t.Parallel()
 	facts := debianFacts()
 	facts.NetworkdActive = false
@@ -151,7 +151,7 @@ func TestInactiveNetworkdPlanRecordsPrestateAndOrdersNMFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Phases) < 4 || plan.Phases[0].Name != "network-manager-unmanaged-before-bridge" || plan.Phases[1].Name != "activate-bridge" || plan.Phases[len(plan.Phases)-1].Name != "persist-after-attach-verification" {
+	if len(plan.Phases) < 3 || plan.Phases[0].Name != "activate-bridge" || plan.Phases[len(plan.Phases)-1].Name != "persist-after-attach-verification" {
 		t.Fatalf("ordered phases = %#v", plan.Phases)
 	}
 	if plan.Manifest.NetworkdUnits["systemd-networkd.service"].ActiveState != "inactive" {
@@ -161,7 +161,7 @@ func TestInactiveNetworkdPlanRecordsPrestateAndOrdersNMFirst(t *testing.T) {
 	for _, command := range plan.Commands {
 		commands += command.Binary + " " + strings.Join(command.Args, " ") + "\n"
 	}
-	for _, want := range []string{"nmcli general reload", "systemctl start systemd-networkd.service", "networkctl reconfigure farrow0", "systemctl enable systemd-networkd.service"} {
+	for _, want := range []string{"systemctl start systemd-networkd.service", "networkctl reconfigure farrow0", "systemctl enable systemd-networkd.service"} {
 		if !strings.Contains(commands, want) {
 			t.Errorf("inactive plan missing %q:\n%s", want, commands)
 		}

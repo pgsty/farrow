@@ -203,7 +203,10 @@ func (p DependencyProbe) missing(profile platform.Profile, private bool) []strin
 		if !p.commandExists("ip") {
 			missing = append(missing, "ip")
 		}
-		if !p.commandExists("systemctl") || (!p.regularFile("/usr/lib/systemd/systemd-networkd") && !p.regularFile("/lib/systemd/systemd-networkd")) {
+		// The bridge follows the active host-network owner. nmcli present means
+		// NetworkManager can own it; only otherwise is systemd-networkd needed.
+		networkOwner := p.commandExists("nmcli") || p.regularFile("/usr/lib/systemd/systemd-networkd") || p.regularFile("/lib/systemd/systemd-networkd")
+		if !p.commandExists("systemctl") || !networkOwner {
 			missing = append(missing, "systemd-networkd")
 		}
 		bridgeHelper := p.regularFile("/usr/lib/qemu/qemu-bridge-helper") || p.regularFile("/usr/libexec/qemu-bridge-helper")
@@ -303,18 +306,21 @@ func PlanDependencies(probe DependencyProbe, private bool) (DependencyPlan, erro
 			if lookErr != nil {
 				return plan, fmt.Errorf("validate Fedora dnf: %w", lookErr)
 			}
-			packages, packageErr := rpmPackages(goarch, private)
+			needsNetworkd := false
+			for _, name := range plan.Missing {
+				if name == "systemd-networkd" {
+					needsNetworkd = true
+				}
+			}
+			packages, packageErr := rpmPackages(goarch, needsNetworkd)
 			if packageErr != nil {
 				return plan, packageErr
 			}
 			plan.Manager = "dnf"
 			plan.Commands = []Command{{Name: "Install host dependencies", Binary: dnf, Args: append([]string{"install", "-y"}, packages...), Root: true}}
 		case "rhel":
-			if private {
-				plan.Unsupported = true
-				plan.Resolution = "this host uses NetworkManager and Farrow private networking currently requires systemd-networkd; use quick mode or a supported Debian/Fedora host"
-				return plan, nil
-			}
+			// The RHEL family is NetworkManager-owned; the nmcli backend serves
+			// private networking, so no networkd package is pulled in.
 			dnf, lookErr := probe.rootCommand("dnf")
 			if lookErr != nil {
 				return plan, fmt.Errorf("validate RPM-family dnf: %w", lookErr)

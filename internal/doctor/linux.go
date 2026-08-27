@@ -90,11 +90,20 @@ func (p Probe) linuxPrivateChecks(ctx context.Context) []Check {
 
 	systemctl, systemctlErr := p.lookPath("systemctl")
 	if systemctlErr != nil {
-		checks = append(checks, Check{Name: "linux-networkd", Status: Error, Evidence: "systemctl not found", Fix: "Linux private v1 requires systemd"})
-	} else if result, runErr := p.runner().Run(ctx, systemctl, "is-active", "systemd-networkd.service"); runErr != nil || strings.TrimSpace(string(result.Stdout)) != "active" {
-		checks = append(checks, Check{Name: "linux-networkd", Status: Error, Evidence: "systemd-networkd is not active", Fix: "current v1 plan does not silently mutate NetworkManager-only or non-systemd hosts"})
+		checks = append(checks, Check{Name: "linux-network-owner", Status: Error, Evidence: "systemctl not found", Fix: "Linux private networking requires systemd"})
 	} else {
-		checks = append(checks, Check{Name: "linux-networkd", Status: OK, Evidence: "systemd-networkd.service is active"})
+		serviceActive := func(name string) bool {
+			result, runErr := p.runner().Run(ctx, systemctl, "is-active", name)
+			return runErr == nil && strings.TrimSpace(string(result.Stdout)) == "active"
+		}
+		switch {
+		case serviceActive("NetworkManager.service"):
+			checks = append(checks, Check{Name: "linux-network-owner", Status: OK, Evidence: "NetworkManager owns the host network (nmcli backend)"})
+		case serviceActive("systemd-networkd.service"):
+			checks = append(checks, Check{Name: "linux-network-owner", Status: OK, Evidence: "systemd-networkd owns the host network"})
+		default:
+			checks = append(checks, Check{Name: "linux-network-owner", Status: Error, Evidence: "neither NetworkManager nor systemd-networkd is active", Fix: "activate the distribution network manager; farrow follows the active owner"})
+		}
 	}
 
 	helperPath := ""

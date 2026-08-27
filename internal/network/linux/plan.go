@@ -30,6 +30,21 @@ const (
 	LeaseLockPath      = "/run/farrow/private-lease.lock"
 	markerBegin        = "# BEGIN FARROW MANAGED: farrow0"
 	markerEnd          = "# END FARROW MANAGED: farrow0"
+
+	// The backend is selected by the active host-network owner: NetworkManager
+	// when it is running, otherwise systemd-networkd. Legacy manifests carry no
+	// backend field and mean networkd.
+	BackendNetworkd       = "networkd"
+	BackendNetworkManager = "networkmanager"
+
+	// PublicStatePath is the world-readable identity of a NetworkManager-backend
+	// installation. The networkd backend exposes its layout through the public
+	// unit files; NM connection profiles are root-only, so this file plays the
+	// same role for read-only preflight.
+	PublicStateDir  = "/etc/farrow"
+	PublicStatePath = "/etc/farrow/network.json"
+
+	NMCLIPath = "/usr/bin/nmcli"
 )
 
 var NetworkdUnitNames = []string{
@@ -124,6 +139,9 @@ type Facts struct {
 	NetworkdUnits        map[string]UnitState
 	NetworkdActivation   *NetworkdActivationSafety
 	NetworkManagerActive bool
+	NMConnectionExists   bool
+	FirewalldActive      bool
+	PublicDirExisted     bool
 	BridgeExists         bool
 	BridgeOwned          bool
 	BridgeConf           string
@@ -168,6 +186,7 @@ type Command struct {
 type Manifest struct {
 	Schema             int                  `json:"schema"`
 	Family             Family               `json:"family"`
+	Backend            string               `json:"backend,omitempty"`
 	Bridge             string               `json:"bridge"`
 	CIDR               string               `json:"cidr"`
 	HostAddress        string               `json:"host_address"`
@@ -177,6 +196,7 @@ type Manifest struct {
 	OriginalBridgeConf string               `json:"original_bridge_conf"`
 	OriginalBridgePath PathState            `json:"original_bridge_path"`
 	QEMUConfigCreated  bool                 `json:"qemu_config_created"`
+	PublicDirCreated   bool                 `json:"public_dir_created,omitempty"`
 	NetworkdUnits      map[string]UnitState `json:"networkd_units"`
 	AppliedOverride    *Override            `json:"applied_override,omitempty"`
 	Files              map[string]string    `json:"files"`
@@ -380,12 +400,174 @@ func validateHelper(facts Facts) (*Override, []Command, []string, error) {
 	}
 }
 
+// ManifestBackend normalizes the backend of a manifest; legacy manifests
+// without the field are systemd-networkd installations.
+func ManifestBackend(manifest Manifest) string {
+	if manifest.Backend == "" {
+		return BackendNetworkd
+	}
+	return manifest.Backend
+}
+
+// PublicNetworkState is the world-readable identity file of a
+// NetworkManager-backend installation.
+type PublicNetworkState struct {
+	Schema      int    `json:"schema"`
+	Backend     string `json:"backend"`
+	Bridge      string `json:"bridge"`
+	CIDR        string `json:"cidr"`
+	HostAddress string `json:"host_address"`
+	DHCPEnd     string `json:"dhcp_end"`
+}
+
+func RenderPublicState(config Config) (string, error) {
+	state := PublicNetworkState{Schema: 1, Backend: BackendNetworkManager, Bridge: BridgeName, CIDR: config.CIDR, HostAddress: config.HostAddress, DHCPEnd: config.DHCPEnd}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(append(data, '\n')), nil
+}
+
+func ParsePublicState(data []byte) (PublicNetworkState, error) {
+	if len(data) == 0 || len(data) > 1<<20 {
+		return PublicNetworkState{}, errors.New("linux public network state size is invalid")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var state PublicNetworkState
+	if err := decoder.Decode(&state); err != nil {
+		return PublicNetworkState{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return PublicNetworkState{}, errors.New("linux public network state has trailing JSON data")
+	}
+	if state.Schema != 1 || state.Backend != BackendNetworkManager || state.Bridge != BridgeName {
+		return PublicNetworkState{}, errors.New("linux public network state identity is invalid")
+	}
+	if err := validateConfig(Config{CIDR: state.CIDR, HostAddress: state.HostAddress, DHCPEnd: state.DHCPEnd}); err != nil {
+		return PublicNetworkState{}, err
+	}
+	return state, nil
+}
+
+// NMConnectionAddArgs is the exact bridge-connection creation argv. The
+// firewalld zone is assigned at creation time so guest traffic to the host
+// .1 is not filtered by the default zone on firewalld hosts.
+func NMConnectionAddArgs(config Config, firewalld bool) []string {
+	args := []string{
+		"connection", "add", "type", "bridge",
+		"con-name", BridgeName, "ifname", BridgeName,
+		"ipv4.method", "manual", "ipv4.addresses", config.HostAddress + "/24",
+		"ipv6.method", "disabled", "bridge.stp", "no",
+		"connection.autoconnect", "yes",
+	}
+	if firewalld {
+		args = append(args, "connection.zone", "trusted")
+	}
+	return args
+}
+
+func newNetworkManagerInstallPlan(facts Facts, config Config) (Plan, error) {
+	if err := validateBridgePathState(facts.BridgeConfState); err != nil {
+		return Plan{}, err
+	}
+	if facts.BridgeExists && !facts.BridgeOwned {
+		return Plan{}, errors.New("refuse adoption of existing unowned farrow0 bridge")
+	}
+	if facts.NMConnectionExists && facts.ExistingManifest == nil {
+		return Plan{}, errors.New("refuse adoption of an existing unowned farrow0 NetworkManager connection")
+	}
+	bridgeConf, err := ReconcileBridgeConf(facts.BridgeConf, true)
+	if err != nil {
+		return Plan{}, err
+	}
+	appliedOverride, helperCommands, warnings, err := validateHelper(facts)
+	if err != nil {
+		return Plan{}, err
+	}
+	publicState, err := RenderPublicState(config)
+	if err != nil {
+		return Plan{}, err
+	}
+	files := []File{
+		{Path: BridgeConfPath, Owner: "root:root", Mode: "0644", Content: bridgeConf},
+		{Path: TmpfilesPath, Owner: "root:root", Mode: "0644", Content: "d /run/farrow 1777 root root -\n"},
+		{Path: LeaseLockPath, Owner: "root:root", Mode: "0666", Content: ""},
+		{Path: PublicStatePath, Owner: "root:root", Mode: "0644", Content: publicState},
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	originalHelper := Override{Owner: "root", Group: facts.Helper.Group, Mode: fmt.Sprintf("%04o", facts.Helper.Mode)}
+	originalBridgeConf := facts.BridgeConf
+	originalBridgePath := facts.BridgeConfState
+	qemuConfigCreated := !facts.QEMUConfigDirExisted
+	publicDirCreated := !facts.PublicDirExisted
+	if facts.ExistingManifest != nil {
+		if err := validateManifest(*facts.ExistingManifest); err != nil {
+			return Plan{}, fmt.Errorf("existing Linux network manifest: %w", err)
+		}
+		existing := facts.ExistingManifest
+		if ManifestBackend(*existing) != BackendNetworkManager {
+			return Plan{}, errors.New("existing Linux network was installed with the systemd-networkd backend; run `farrow network uninstall --yes` before switching backends")
+		}
+		if existing.Family != facts.Family || existing.CIDR != config.CIDR || existing.HostAddress != config.HostAddress || existing.DHCPEnd != config.DHCPEnd || existing.HelperPath != facts.Helper.Path {
+			return Plan{}, errors.New("existing Linux network manifest does not match requested install")
+		}
+		originalHelper = existing.OriginalHelper
+		originalBridgeConf = existing.OriginalBridgeConf
+		originalBridgePath = existing.OriginalBridgePath
+		qemuConfigCreated = existing.QEMUConfigCreated
+		publicDirCreated = existing.PublicDirCreated
+		appliedOverride = existing.AppliedOverride
+	}
+	manifest := Manifest{
+		Schema: 1, Family: facts.Family, Backend: BackendNetworkManager, Bridge: BridgeName, CIDR: config.CIDR,
+		HostAddress: config.HostAddress, DHCPEnd: config.DHCPEnd, HelperPath: facts.Helper.Path,
+		OriginalHelper: originalHelper, OriginalBridgeConf: originalBridgeConf, OriginalBridgePath: originalBridgePath,
+		QEMUConfigCreated: qemuConfigCreated, PublicDirCreated: publicDirCreated, NetworkdUnits: map[string]UnitState{},
+		AppliedOverride: appliedOverride, Files: make(map[string]string), NetworkManager: true, LeaseRoot: LeaseRoot,
+	}
+	for _, file := range files {
+		manifest.Files[file.Path] = fileDigest(file.Content)
+	}
+	stateBytes, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return Plan{}, err
+	}
+	files = append(files, File{Path: StatePath, Owner: "root:root", Mode: "0600", Content: string(append(stateBytes, '\n'))})
+	create := make([]Command, 0, 2)
+	if !facts.NMConnectionExists {
+		create = append(create, Command{Binary: NMCLIPath, Args: NMConnectionAddArgs(config, facts.FirewalldActive)})
+	}
+	create = append(create, Command{Binary: NMCLIPath, Args: []string{"connection", "up", BridgeName}})
+	phases := []CommandPhase{{Name: "create-bridge-connection", Commands: create}}
+	privilege := append([]Command(nil), helperCommands...)
+	privilege = append(privilege, Command{Binary: "/usr/bin/systemd-tmpfiles", Args: []string{"--create", TmpfilesPath}})
+	phases = append(phases, CommandPhase{Name: "helper-and-runtime-boundary", Commands: privilege})
+	commands := make([]Command, 0)
+	for _, phase := range phases {
+		commands = append(commands, phase.Commands...)
+	}
+	directories := []Directory{{Path: "/var/lib/farrow", Owner: "root:root", Mode: "0700"}, {Path: LeaseRoot, Owner: "root:root", Mode: "1777"}}
+	if !facts.PublicDirExisted {
+		directories = append([]Directory{{Path: PublicStateDir, Owner: "root:root", Mode: "0755"}}, directories...)
+	}
+	if !facts.QEMUConfigDirExisted {
+		directories = append([]Directory{{Path: QEMUConfigDir, Owner: "root:root", Mode: "0755"}}, directories...)
+	}
+	return Plan{Manifest: manifest, Directories: directories, Files: files, Commands: commands, Phases: phases, Warnings: warnings}, nil
+}
+
 func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 	if err := validateConfig(config); err != nil {
 		return Plan{}, err
 	}
 	if !facts.Systemd {
 		return Plan{}, errors.New("linux private v1 requires systemd")
+	}
+	if facts.NetworkManagerActive {
+		return newNetworkManagerInstallPlan(facts, config)
 	}
 	if err := validateNetworkdUnits(facts.NetworkdUnits); err != nil {
 		return Plan{}, err
@@ -419,9 +601,6 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 		{Path: TmpfilesPath, Owner: "root:root", Mode: "0644", Content: "d /run/farrow 1777 root root -\n"},
 		{Path: LeaseLockPath, Owner: "root:root", Mode: "0666", Content: ""},
 	}
-	if facts.NetworkManagerActive {
-		files = append(files, File{Path: NetworkManagerPath, Owner: "root:root", Mode: "0644", Content: "[keyfile]\nunmanaged-devices=interface-name:farrow0\n"})
-	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	originalHelper := Override{Owner: "root", Group: facts.Helper.Group, Mode: fmt.Sprintf("%04o", facts.Helper.Mode)}
 	originalBridgeConf := facts.BridgeConf
@@ -433,7 +612,10 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 			return Plan{}, fmt.Errorf("existing Linux network manifest: %w", err)
 		}
 		existing := facts.ExistingManifest
-		if existing.Family != facts.Family || existing.CIDR != config.CIDR || existing.HostAddress != config.HostAddress || existing.DHCPEnd != config.DHCPEnd || existing.HelperPath != facts.Helper.Path || existing.NetworkManager != facts.NetworkManagerActive {
+		if ManifestBackend(*existing) != BackendNetworkd {
+			return Plan{}, errors.New("existing Linux network was installed with the NetworkManager backend; run `farrow network uninstall --yes` before switching backends")
+		}
+		if existing.Family != facts.Family || existing.CIDR != config.CIDR || existing.HostAddress != config.HostAddress || existing.DHCPEnd != config.DHCPEnd || existing.HelperPath != facts.Helper.Path || existing.NetworkManager {
 			return Plan{}, errors.New("existing Linux network manifest does not match requested install")
 		}
 		originalHelper = existing.OriginalHelper
@@ -448,7 +630,7 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 		HostAddress: config.HostAddress, DHCPEnd: config.DHCPEnd, HelperPath: facts.Helper.Path,
 		OriginalHelper: originalHelper, OriginalBridgeConf: originalBridgeConf, OriginalBridgePath: originalBridgePath,
 		QEMUConfigCreated: qemuConfigCreated, NetworkdUnits: originalUnits,
-		AppliedOverride: appliedOverride, Files: make(map[string]string), NetworkManager: facts.NetworkManagerActive, LeaseRoot: LeaseRoot,
+		AppliedOverride: appliedOverride, Files: make(map[string]string), NetworkManager: false, LeaseRoot: LeaseRoot,
 	}
 	for _, file := range files {
 		manifest.Files[file.Path] = fileDigest(file.Content)
@@ -460,9 +642,6 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 	stateContent := string(append(stateBytes, '\n'))
 	files = append(files, File{Path: StatePath, Owner: "root:root", Mode: "0600", Content: stateContent})
 	phases := make([]CommandPhase, 0, 4)
-	if facts.NetworkManagerActive {
-		phases = append(phases, CommandPhase{Name: "network-manager-unmanaged-before-bridge", Commands: []Command{{Binary: "/usr/bin/nmcli", Args: []string{"general", "reload"}}}})
-	}
 	activate := make([]Command, 0, 3)
 	if serviceState.ActiveState != "active" {
 		activate = append(activate, Command{Binary: "/usr/bin/systemctl", Args: []string{"start", "systemd-networkd.service"}})
@@ -487,8 +666,12 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 }
 
 func validateManifest(manifest Manifest) error {
+	backend := ManifestBackend(manifest)
 	if manifest.Schema != 1 || manifest.Bridge != BridgeName || manifest.LeaseRoot != LeaseRoot || (manifest.Family != Debian && manifest.Family != RPM) || (manifest.HelperPath != "/usr/lib/qemu/qemu-bridge-helper" && manifest.HelperPath != "/usr/libexec/qemu-bridge-helper") {
 		return errors.New("linux network ownership manifest identity is invalid")
+	}
+	if backend != BackendNetworkd && backend != BackendNetworkManager {
+		return errors.New("linux network manifest backend is invalid")
 	}
 	if err := validateConfig(Config{CIDR: manifest.CIDR, HostAddress: manifest.HostAddress, DHCPEnd: manifest.DHCPEnd}); err != nil {
 		return err
@@ -499,12 +682,23 @@ func validateManifest(manifest Manifest) error {
 	if err := validateBridgePathState(manifest.OriginalBridgePath); err != nil {
 		return err
 	}
-	if err := validateNetworkdUnits(manifest.NetworkdUnits); err != nil {
-		return err
-	}
-	allowed := map[string]struct{}{BridgeConfPath: {}, NetDevPath: {}, NetworkPath: {}, TmpfilesPath: {}, LeaseLockPath: {}}
-	if manifest.NetworkManager {
-		allowed[NetworkManagerPath] = struct{}{}
+	var allowed map[string]struct{}
+	if backend == BackendNetworkManager {
+		if !manifest.NetworkManager {
+			return errors.New("NetworkManager-backend manifest must record NetworkManager ownership")
+		}
+		if len(manifest.NetworkdUnits) != 0 {
+			return errors.New("NetworkManager-backend manifest must not carry networkd prestate")
+		}
+		allowed = map[string]struct{}{BridgeConfPath: {}, TmpfilesPath: {}, LeaseLockPath: {}, PublicStatePath: {}}
+	} else {
+		if err := validateNetworkdUnits(manifest.NetworkdUnits); err != nil {
+			return err
+		}
+		allowed = map[string]struct{}{BridgeConfPath: {}, NetDevPath: {}, NetworkPath: {}, TmpfilesPath: {}, LeaseLockPath: {}}
+		if manifest.NetworkManager {
+			allowed[NetworkManagerPath] = struct{}{}
+		}
 	}
 	if len(manifest.Files) != len(allowed) {
 		return errors.New("linux network manifest file allowlist size is invalid")
@@ -594,6 +788,9 @@ func NewUninstallPlan(manifest Manifest, facts UninstallFacts) (UninstallPlan, e
 			return UninstallPlan{}, fmt.Errorf("owned Linux network file changed or missing: %s", pathname)
 		}
 	}
+	if ManifestBackend(manifest) == BackendNetworkManager {
+		return newNetworkManagerUninstallPlan(manifest, facts)
+	}
 	phases := []CommandPhase{{Name: "delete-bridge-before-owned-files", Commands: []Command{{Binary: "/usr/bin/networkctl", Args: []string{"delete", BridgeName}}}}}
 	helperCommands := make([]Command, 0, 3)
 	if manifest.AppliedOverride != nil {
@@ -638,4 +835,54 @@ func NewUninstallPlan(manifest Manifest, facts UninstallFacts) (UninstallPlan, e
 	return UninstallPlan{
 		RestoreFiles: restoreFiles, RemoveFiles: removeFiles, RemoveDirectories: removeDirectories, Commands: commands, Phases: phases,
 	}, nil
+}
+
+func helperRestoreCommands(manifest Manifest, facts UninstallFacts) ([]Command, error) {
+	if manifest.AppliedOverride == nil {
+		return nil, nil
+	}
+	if facts.CurrentOverride == nil || *facts.CurrentOverride != *manifest.AppliedOverride || facts.CurrentHelper != *manifest.AppliedOverride {
+		return nil, errors.New("qemu-bridge-helper override/current state no longer matches Farrow manifest")
+	}
+	return []Command{
+		{Binary: "/usr/bin/dpkg-statoverride", Args: []string{"--remove", manifest.HelperPath}},
+		{Binary: "/bin/chown", Args: []string{manifest.OriginalHelper.Owner + ":" + manifest.OriginalHelper.Group, manifest.HelperPath}},
+		{Binary: "/bin/chmod", Args: []string{manifest.OriginalHelper.Mode, manifest.HelperPath}},
+	}, nil
+}
+
+func newNetworkManagerUninstallPlan(manifest Manifest, facts UninstallFacts) (UninstallPlan, error) {
+	phases := []CommandPhase{{Name: "delete-bridge-connection", Commands: []Command{{Binary: NMCLIPath, Args: []string{"connection", "delete", BridgeName}}}}}
+	helperCommands, err := helperRestoreCommands(manifest, facts)
+	if err != nil {
+		return UninstallPlan{}, err
+	}
+	if len(helperCommands) > 0 {
+		phases = append(phases, CommandPhase{Name: "restore-helper-after-vm-detach", Commands: helperCommands})
+	}
+	removeFiles := make([]string, 0, len(manifest.Files)+1)
+	for _, pathname := range []string{TmpfilesPath, LeaseLockPath, PublicStatePath} {
+		if _, owned := manifest.Files[pathname]; owned {
+			removeFiles = append(removeFiles, pathname)
+		}
+	}
+	restoreFiles := make([]File, 0, 1)
+	if manifest.OriginalBridgePath.Existed {
+		restoreFiles = append(restoreFiles, File{Path: BridgeConfPath, Owner: manifest.OriginalBridgePath.Owner + ":" + manifest.OriginalBridgePath.Group, Mode: manifest.OriginalBridgePath.Mode, Content: manifest.OriginalBridgeConf})
+	} else {
+		removeFiles = append(removeFiles, BridgeConfPath)
+	}
+	removeFiles = append(removeFiles, StatePath)
+	removeDirectories := []string{LeaseRoot, "/var/lib/farrow"}
+	if manifest.PublicDirCreated {
+		removeDirectories = append(removeDirectories, PublicStateDir)
+	}
+	if manifest.QEMUConfigCreated {
+		removeDirectories = append(removeDirectories, QEMUConfigDir)
+	}
+	commands := make([]Command, 0)
+	for _, phase := range phases {
+		commands = append(commands, phase.Commands...)
+	}
+	return UninstallPlan{RestoreFiles: restoreFiles, RemoveFiles: removeFiles, RemoveDirectories: removeDirectories, Commands: commands, Phases: phases}, nil
 }

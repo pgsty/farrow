@@ -93,7 +93,7 @@ func discoverFamily() (Family, error) {
 	if strings.Contains(lower, "ubuntu") || strings.Contains(lower, "debian") {
 		return Debian, nil
 	}
-	if strings.Contains(lower, "rhel") || strings.Contains(lower, "fedora") || strings.Contains(lower, "rocky") || strings.Contains(lower, "almalinux") || strings.Contains(lower, "centos") {
+	if strings.Contains(lower, "rhel") || strings.Contains(lower, "fedora") || strings.Contains(lower, "rocky") || strings.Contains(lower, "almalinux") || strings.Contains(lower, "centos") || strings.Contains(lower, "oracle") {
 		return RPM, nil
 	}
 	return "", errors.New("unsupported Linux distribution family")
@@ -193,9 +193,12 @@ func DiscoverFacts(ctx context.Context, runner, privileged execx.Runner) (Facts,
 	if err != nil {
 		return Facts{}, err
 	}
+	// The networkd units are optional facts: a NetworkManager-owned host (the
+	// whole EL family) does not ship them, and only the networkd backend
+	// validates their prestate.
 	units := make(map[string]UnitState, len(NetworkdUnitNames))
 	for _, name := range NetworkdUnitNames {
-		state, err := discoverUnitState(ctx, runner, name)
+		state, err := discoverOptionalUnitState(ctx, runner, name)
 		if err != nil {
 			return Facts{}, err
 		}
@@ -214,7 +217,7 @@ func DiscoverFacts(ctx context.Context, runner, privileged execx.Runner) (Facts,
 		return Facts{}, err
 	}
 	if manifest == nil {
-		for _, path := range []string{NetDevPath, NetworkPath, NetworkManagerPath, TmpfilesPath, filepath.Dir(StatePath), StatePath, LeaseRoot, LeaseLockPath} {
+		for _, path := range []string{NetDevPath, NetworkPath, NetworkManagerPath, TmpfilesPath, PublicStatePath, filepath.Dir(StatePath), StatePath, LeaseRoot, LeaseLockPath} {
 			if _, err := os.Lstat(path); err == nil {
 				return Facts{}, fmt.Errorf("refuse adoption of existing unowned Linux network target: %s", path)
 			} else if !errors.Is(err, os.ErrNotExist) {
@@ -237,8 +240,16 @@ func DiscoverFacts(ctx context.Context, runner, privileged execx.Runner) (Facts,
 		bridgeExists = true
 	}
 	networkdActive := units["systemd-networkd.service"].ActiveState == "active"
+	nmState, err := discoverOptionalUnitState(ctx, runner, "NetworkManager.service")
+	if err != nil {
+		return Facts{}, err
+	}
+	nmActive := nmState.ActiveState == "active"
+	// The NetworkManager backend never starts networkd, so the dormant-networkd
+	// activation-safety sweep (and its wireless false positives) only applies
+	// when networkd is the selected owner.
 	var networkdActivation *NetworkdActivationSafety
-	if !networkdActive {
+	if !networkdActive && !nmActive {
 		links, err := discoverNetworkdLinks(ctx, runner, "/sys/class/net")
 		if err != nil {
 			return Facts{}, err
@@ -246,13 +257,36 @@ func DiscoverFacts(ctx context.Context, runner, privileged execx.Runner) (Facts,
 		safety := inspectNetworkdActivation(networkdConfigurationDirectories, links, ownedNetworkdDigests(manifest), true)
 		networkdActivation = &safety
 	}
-	nmState, err := discoverOptionalUnitState(ctx, runner, "NetworkManager.service")
-	if err != nil {
-		return Facts{}, err
+	nmConnectionExists := false
+	firewalldActive := false
+	if nmActive {
+		if result, listErr := runner.Run(ctx, NMCLIPath, "-t", "-f", "NAME", "connection", "show"); listErr == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(result.Stdout)), "\n") {
+				if line == BridgeName {
+					nmConnectionExists = true
+				}
+			}
+		}
+		firewalldState, firewalldErr := discoverOptionalUnitState(ctx, runner, "firewalld.service")
+		if firewalldErr != nil {
+			return Facts{}, firewalldErr
+		}
+		firewalldActive = firewalldState.ActiveState == "active"
+	}
+	publicDirExists := false
+	if info, statErr := os.Lstat(PublicStateDir); statErr == nil {
+		uid, _, _, identityErr := hostStatIdentity(info)
+		if identityErr != nil || uid != 0 || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 {
+			return Facts{}, errors.New("existing /etc/farrow is unsafe")
+		}
+		publicDirExists = true
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return Facts{}, statErr
 	}
 	return Facts{
 		Family: family, Systemd: true, NetworkdActive: networkdActive, NetworkdUnits: units, NetworkdActivation: networkdActivation,
-		NetworkManagerActive: nmState.ActiveState == "active", BridgeExists: bridgeExists, BridgeOwned: bridgeExists && manifest != nil,
+		NetworkManagerActive: nmActive, NMConnectionExists: nmConnectionExists, FirewalldActive: firewalldActive,
+		PublicDirExisted: publicDirExists, BridgeExists: bridgeExists, BridgeOwned: bridgeExists && manifest != nil,
 		BridgeConf: bridgeConf, BridgeConfState: bridgeState, QEMUConfigDirExisted: qemuDirExists, Helper: helper, ExistingManifest: manifest,
 	}, nil
 }
