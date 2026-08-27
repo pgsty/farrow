@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck disable=SC1091
+source "${script_directory}/semver.sh"
+
 if [[ $# -ne 2 ]]; then
   printf 'usage: %s <version> <absolute-goreleaser-dist>\n' "$0" >&2
   exit 2
 fi
 version=$1
 directory=$2
-[[ ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { printf 'invalid version: %s\n' "${version}" >&2; exit 2; }
+farrow_is_semver "${version}" || { printf 'invalid version: %s\n' "${version}" >&2; exit 2; }
 [[ ${directory} == /* && -d ${directory} ]] || { printf 'GoReleaser dist must be an absolute directory\n' >&2; exit 2; }
 if [[ ! ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]+$ ]] || (( SOURCE_DATE_EPOCH <= 0 )); then
   printf 'SOURCE_DATE_EPOCH must be positive\n' >&2
@@ -17,6 +21,8 @@ for tool in awk cmp date diff file find go grep jq sed shasum stat tar tr; do
   command -v "${tool}" >/dev/null || { printf 'required GoReleaser verification tool is missing: %s\n' "${tool}" >&2; exit 3; }
 done
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
+# shellcheck disable=SC1091
+source "${repo}/packaging/payload-inventory.sh"
 # shellcheck disable=SC1091
 source "${repo}/packaging/toolchain.env"
 if date -u -r "${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ >/dev/null 2>&1; then
@@ -36,36 +42,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-expected_paths=(
-  LICENSE
-  README.md
-  THIRD_PARTY_LICENSES.md
-  docs/architecture.md
-  docs/cli.md
-  docs/config.md
-  docs/development.md
-  docs/images.md
-  docs/networking.md
-  docs/phase-2.md
-  docs/pigsty.md
-  docs/security.md
-  docs/status.md
-  docs/troubleshooting.md
-  schemas/farrow-v1.schema.json
-  tests/e2e/README.md
-  third_party/licenses/aead.dev-minisign-LICENSE
-  third_party/licenses/github.com-diskfs-go-diskfs-LICENSE
-  third_party/licenses/github.com-djherbis-times-LICENSE
-  third_party/licenses/go.yaml.in-yaml-v3-LICENSE
-  third_party/licenses/go.yaml.in-yaml-v3-NOTICE
-  third_party/licenses/golang.org-go-stdlib-LICENSE
-  third_party/licenses/golang.org-x-crypto-LICENSE
-  third_party/licenses/golang.org-x-sys-LICENSE
-  third_party/licenses/golang.org-x-term-LICENSE
-  bin/farrow
-  bin/farrow-hosts-helper
-  bin/pigsty-vm
-)
+expected_paths=()
+inventory=$(farrow_archive_payload_paths "${repo}")
+[[ -n ${inventory} ]] || { printf 'release archive payload inventory is empty\n' >&2; exit 1; }
+while IFS= read -r path; do
+  expected_paths+=("${path}")
+done <<<"${inventory}"
 expected_list=$(printf '%s\n' "${expected_paths[@]}" | LC_ALL=C sort)
 
 file_mode() {
@@ -87,12 +69,20 @@ file_mtime() {
 (cd "${directory}" && shasum -a 256 -c checksums.txt)
 checksum_names=$(awk '{print $2}' "${directory}/checksums.txt" | LC_ALL=C sort)
 expected_checksum_names=$(
-  for os_name in darwin linux; do
-    for arch in amd64 arm64; do
-      printf 'farrow_%s_%s_%s.tar.gz\n' "${version}" "${os_name}" "${arch}"
-      printf 'farrow_%s_%s_%s.tar.gz.spdx.json\n' "${version}" "${os_name}" "${arch}"
+  {
+    for os_name in darwin linux; do
+      for arch in amd64 arm64; do
+        printf 'farrow_%s_%s_%s.tar.gz\n' "${version}" "${os_name}" "${arch}"
+        printf 'farrow_%s_%s_%s.tar.gz.spdx.json\n' "${version}" "${os_name}" "${arch}"
+      done
     done
-  done | LC_ALL=C sort
+    for arch in amd64 arm64; do
+      for format in deb rpm; do
+        printf 'farrow_%s_linux_%s.%s\n' "${version}" "${arch}" "${format}"
+        printf 'farrow_%s_linux_%s.%s.spdx.json\n' "${version}" "${arch}" "${format}"
+      done
+    done
+  } | LC_ALL=C sort
 )
 [[ ${checksum_names} == "${expected_checksum_names}" ]] || { printf 'unexpected GoReleaser checksum inventory\n' >&2; exit 1; }
 
@@ -167,4 +157,4 @@ for os_name in darwin linux; do
     printf '%s verified; helper=%s\n' "${archive_name}" "${helper_sha}"
   done
 done
-printf 'verified GoReleaser archives, paired helpers, SPDX documents, and checksums in %s\n' "${directory}"
+printf 'verified GoReleaser archive/package inventory, paired helpers, SPDX documents, and checksums in %s\n' "${directory}"

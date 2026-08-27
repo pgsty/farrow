@@ -11,9 +11,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/execx"
 )
 
@@ -66,7 +69,12 @@ func TestIntegrationImportAndValidateCache(t *testing.T) {
 	if info.Mode().Perm() != 0o444 {
 		t.Fatalf("cached mode = %v", info.Mode())
 	}
-	if _, _, err := store.ValidateCached(context.Background(), digest); err != nil {
+	relative, err := filepath.Rel(store.DataRoot, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := Entry{File: filepath.ToSlash(relative), SHA256: digest, Format: "qcow2", ArtifactSize: metadata.ArtifactSize, VirtualSize: metadata.VirtualSize}
+	if _, _, err := store.ValidateCached(context.Background(), entry); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -101,13 +109,104 @@ func TestIntegrationHTTPSPull(t *testing.T) {
 	}))
 	defer server.Close()
 	store.HTTPClient = server.Client()
-	entry := Entry{Alias: "test", Release: "1", Arch: "arm64", URL: server.URL + "/image.qcow2", SHA256: digest, Format: "qcow2", ArtifactSize: int64(len(data))}
+	var eventsMu sync.Mutex
+	var events []activity.Event
+	store.Progress = func(event activity.Event) {
+		eventsMu.Lock()
+		events = append(events, event)
+		eventsMu.Unlock()
+	}
+	entry := Entry{Alias: "test", Release: "1", Arch: "arm64", File: "test/test-1-arm64.qcow2", Upstream: server.URL + "/image.qcow2", SHA256: digest, Format: "qcow2", ArtifactSize: int64(len(data)), VirtualSize: 64 << 20}
 	path, _, err := store.Pull(context.Background(), entry)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal(err)
+	}
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	var downloaded, verified, ready bool
+	for _, event := range events {
+		switch event.Phase {
+		case "image-download":
+			if event.Done && event.Source == server.URL+"/image.qcow2" && event.CurrentBytes == int64(len(data)) && event.TotalBytes == int64(len(data)) {
+				downloaded = true
+			}
+		case "image-verify":
+			verified = verified || event.Done
+		case "image-ready":
+			ready = ready || event.Done
+		}
+	}
+	if !downloaded || !verified || !ready {
+		t.Fatalf("progress stages download=%t verify=%t ready=%t events=%+v", downloaded, verified, ready, events)
+	}
+}
+
+func TestHTTPRepositoryPrecedesUpstreamAndKeepsReadableName(t *testing.T) {
+	t.Parallel()
+	store := testImageStore(t)
+	source := filepath.Join(t.TempDir(), "source.qcow2")
+	makeQCOW2(t, source, "")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digestBytes := sha256.Sum256(data)
+	repository := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/u24/u24-1-arm64.qcow2" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = writer.Write(data)
+	}))
+	defer repository.Close()
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		upstreamHits.Add(1)
+		http.Error(writer, "unexpected upstream request", http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+	store.Repository = repository.URL
+	store.HTTPClient = repository.Client()
+	entry := Entry{Alias: "u24", Release: "1", Arch: "arm64", File: "u24/u24-1-arm64.qcow2", Upstream: upstream.URL + "/image.qcow2", SHA256: hex.EncodeToString(digestBytes[:]), Format: "qcow2", ArtifactSize: int64(len(data)), VirtualSize: 64 << 20}
+	pathname, metadata, err := store.Pull(context.Background(), entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathname != filepath.Join(store.DataRoot, "u24", "u24-1-arm64.qcow2") || !strings.HasPrefix(metadata.Source, "repository:") || upstreamHits.Load() != 0 {
+		t.Fatalf("repository pull = path %q metadata %#v upstream hits %d", pathname, metadata, upstreamHits.Load())
+	}
+}
+
+func TestMissingRepositoryArtifactFallsBackToUpstream(t *testing.T) {
+	t.Parallel()
+	store := testImageStore(t)
+	source := filepath.Join(t.TempDir(), "source.qcow2")
+	makeQCOW2(t, source, "")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digestBytes := sha256.Sum256(data)
+	repository := httptest.NewServer(http.NotFoundHandler())
+	defer repository.Close()
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = writer.Write(data)
+	}))
+	defer upstream.Close()
+	store.Repository = repository.URL
+	store.HTTPClient = upstream.Client()
+	entry := Entry{Alias: "u24", Release: "1", Arch: "arm64", File: "u24/u24-1-arm64.qcow2", Upstream: upstream.URL + "/image.qcow2", SHA256: hex.EncodeToString(digestBytes[:]), Format: "qcow2", ArtifactSize: int64(len(data)), VirtualSize: 64 << 20}
+	_, metadata, err := store.Pull(context.Background(), entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(metadata.Source, "upstream:") {
+		t.Fatalf("fallback metadata = %#v", metadata)
 	}
 }
 
@@ -127,7 +226,7 @@ func TestHTTPSPullRejectsManifestArtifactSizeMismatch(t *testing.T) {
 	}))
 	defer server.Close()
 	store.HTTPClient = server.Client()
-	entry := Entry{URL: server.URL + "/image.qcow2", SHA256: hex.EncodeToString(digestBytes[:]), Format: "qcow2", ArtifactSize: int64(len(data) + 1)}
+	entry := Entry{File: "test/test-1-arm64.qcow2", Upstream: server.URL + "/image.qcow2", SHA256: hex.EncodeToString(digestBytes[:]), Format: "qcow2", ArtifactSize: int64(len(data) + 1)}
 	if _, _, err := store.Pull(context.Background(), entry); err == nil {
 		t.Fatal("manifest artifact-size mismatch unexpectedly accepted")
 	}
@@ -149,11 +248,12 @@ func TestHTTPSPullRejectsChecksumAndDowngrade(t *testing.T) {
 	defer server.Close()
 	store.HTTPClient = server.Client()
 	badDigest := strings.Repeat("0", 64)
-	entry := Entry{URL: server.URL + "/image.qcow2", SHA256: badDigest, Format: "qcow2"}
+	entry := Entry{File: "test/test-1-arm64.qcow2", Upstream: server.URL + "/image.qcow2", SHA256: badDigest, Format: "qcow2"}
 	if _, _, err := store.Pull(context.Background(), entry); err == nil {
 		t.Fatal("checksum mismatch unexpectedly accepted")
 	}
-	if _, err := os.Stat(filepath.Join(store.cacheDir(), badDigest+".qcow2")); !os.IsNotExist(err) {
+	badPath, _ := store.Path(entry)
+	if _, err := os.Stat(badPath); !os.IsNotExist(err) {
 		t.Fatalf("checksum failure left valid cache path: %v", err)
 	}
 
@@ -165,7 +265,7 @@ func TestHTTPSPullRejectsChecksumAndDowngrade(t *testing.T) {
 	defer redirect.Close()
 	store.HTTPClient = redirect.Client()
 	digestBytes := sha256.Sum256(data)
-	entry = Entry{URL: redirect.URL, SHA256: hex.EncodeToString(digestBytes[:]), Format: "qcow2"}
+	entry = Entry{File: "test/test-2-arm64.qcow2", Upstream: redirect.URL, SHA256: hex.EncodeToString(digestBytes[:]), Format: "qcow2"}
 	if _, _, err := store.Pull(context.Background(), entry); err == nil {
 		t.Fatal("HTTPS-to-HTTP redirect unexpectedly accepted")
 	}

@@ -1,8 +1,45 @@
 # Guest images
 
-Farrow ships an embedded manifest of guest images, each pinned to an exact
-SHA-256. Images are downloaded on demand into a content-addressed cache shared
-by every project on the host.
+Farrow uses a small, static-file image repository. The signed `catalog.json`
+is the update channel; a new catalog or image does not require a new Farrow
+binary. The binary retains one bootstrap catalog so that upstream fallback and
+offline inspection still work before the public repository address is chosen.
+
+## First pull
+
+For `farrow image pull u24` or the first `farrow up`, Farrow:
+
+1. resolves the Farrow home (`FARROW_HOME`, `storage.data_root`, then
+   `~/.farrow` on both Linux and macOS);
+2. fetches `catalog.json` and `catalog.json.minisig` from `--repo`,
+   `FARROW_REPO`, or the release-build default repository, in that order;
+3. verifies the catalog signature and selects the family's explicit `default`
+   release for the native architecture;
+4. reuses the readable local file only when its size, SHA-256, and qcow2
+   structure match the catalog;
+5. otherwise downloads `<repo>/<file>`, then tries the immutable upstream URL
+   if that repository artifact is absent or invalid.
+
+Progress is written to stderr. During a transfer it includes the selected URL,
+catalog or HTTP content size, downloaded bytes, percentage, current average
+rate, and ETA. The following checksum pass reports its own byte progress, so a
+large local verification is distinguishable from a stalled download. URL
+credentials, query strings, and fragments are not printed.
+
+The public repository variable `image.DefaultRepositoryURL` is intentionally
+empty for now and can be injected by the release build with Go `-ldflags -X`
+once the final domain is chosen. The disposable development repository is:
+
+```bash
+farrow image pull --repo http://m0/repos/farrow u24
+# The same override is accepted by the lifecycle path:
+farrow up --repo http://m0/repos/farrow
+# Or keep the development override for the current shell:
+export FARROW_REPO=http://m0/repos/farrow
+```
+
+HTTP is useful for a signed catalog and digest-verified image on the local M0
+network. A public repository must use HTTPS.
 
 ## Available aliases
 
@@ -29,14 +66,39 @@ until self-hosted artifacts and their key custody are in place, so every start
 prints a warning naming the image and its status:
 
 ```text
-WARNING: image u24/amd64 (20260801.0.0) has status testing, not supported;
+warning: image u24/amd64 (20260801.0.0) has status testing, not supported;
 use only with the corresponding test/risk acceptance
 ```
 
 The source user is bootstrap metadata only. Your login account is whatever
 `ssh.user` resolves to, `dba` by default.
 
-## Cache and verification
+## Repository layout
+
+The repository has only one image-family layer:
+
+```text
+catalog.json
+catalog.json.minisig
+SHA256SUMS                 # optional operator/human attachment
+SHA256SUMS.minisig         # optional
+u24/
+  u24-20260801.0.0-amd64.qcow2
+  u24-20260801.0.0-arm64.qcow2
+d12/
+  d12-20260806.2562.0-amd64.qcow2
+  d12-20260806.2562.0-arm64.qcow2
+```
+
+`catalog.json` contains the aliases, explicit default release, architecture,
+relative file, SHA-256, byte size, virtual size, boot mode, source user, status,
+and immutable upstream URL. Aliases live inline with their image family; there
+is no second short-name mapping file. The client needs only the catalog, its
+signature, and the selected qcow2. `SHA256SUMS` is deliberately not part of the
+client protocol—it exists so operators can run standard checksum tools over a
+repository copy.
+
+## Local layout and verification
 
 ```bash
 farrow image pull u24
@@ -44,20 +106,32 @@ farrow image prune --dry-run
 farrow image prune --yes
 ```
 
+Downloaded filenames are not replaced by a digest. The native U24 image above
+is stored as:
+
+```text
+~/.farrow/u24/u24-20260801.0.0-arm64.qcow2
+```
+
+There is no `cache/images/sha256` hierarchy and no per-image metadata sidecar.
+Farrow's unrelated internal state remains in named directories such as
+`projects/`, `manifests/`, and `locks/` under the same home.
+
 A download is accepted only when all of this holds:
 
-- the URL is HTTPS and points at a versioned path — moving segments like
+- the upstream URL is HTTPS and points at a versioned path — moving segments like
   `latest`, `current` and `release` are rejected in the catalog;
-- the byte count matches the manifest, checked against both the advertised
+- the byte count matches the catalog, checked against both the advertised
   `Content-Length` and the completed stream;
-- the SHA-256 matches the manifest;
+- the SHA-256 matches the signed catalog;
 - `qemu-img info` reports plain qcow2 with no backing file, no external data
   file, no encryption and no unknown incompatible features.
 
 Verified artifacts become read-only. Runtime root disks are qcow2 overlays
 created with an explicit `-F qcow2` backing format; the base is never modified.
 
-`prune` lists unreferenced cache pairs and deletes nothing without `--yes`.
+`prune` lists unreferenced image files and crash-orphaned staging files, prints
+their exact paths, and deletes nothing without `--yes`.
 Images referenced by any project on the host are never candidates.
 
 ## Importing your own image
@@ -65,34 +139,59 @@ Images referenced by any project on the host are never candidates.
 ```bash
 farrow image import --sha256 <digest> /path/to/image.qcow2
 
-farrow image import --name mybase --boot uefi --source-user ubuntu \
+farrow image import --name local-mybase --boot uefi --source-user ubuntu \
   --sha256 <digest> /path/to/image.qcow2
 ```
 
-Without `--name` the file enters the cache addressed by digest. With `--name`
-you also register a local alias, and `--boot` plus `--source-user` become
-required — Farrow will not guess firmware mode or bootstrap account.
+The source basename is retained under `~/.farrow/local/`. With `--name` you
+also register a local alias in the single `local-images.json` registry. Local
+aliases must begin with `local-`; that namespace is forbidden in signed
+catalogs, so a catalog update can never shadow an imported image. `--boot` plus
+`--source-user` become required—Farrow will not guess firmware mode or bootstrap
+account.
 
 Imports go through the same qcow2 safety checks as downloads.
 
-## Manifest updates
+## Catalog updates and new images
 
-The manifest is versioned and signed with two minisign keys. Updates are
-explicit:
+The catalog is versioned and signed with minisign. A routine update is:
+
+1. place the new qcow2 in its existing family directory using
+   `<family>-<release>-<arch>.qcow2`;
+2. calculate SHA-256, byte size, and qcow2 virtual size;
+3. add the release under that family in `catalog.json`, changing `default` only
+   after validation;
+4. increment the monotonic catalog `version`, update `generated_at`, and sign
+   the exact JSON bytes;
+5. optionally regenerate and sign the combined `SHA256SUMS` attachment;
+6. upload image bytes first, then atomically publish the signature and catalog.
+
+Old versioned files remain addressable until no published catalog/project needs
+them. A new family is the same process plus one new top-level directory and one
+catalog object; aliases remain local to that object.
+
+Manual catalog activation is also available:
 
 ```bash
-farrow image sync https://example.com/farrow-manifest.json
-farrow image sync ./manifest.json
+farrow image sync https://repo.example/farrow/catalog.json
+farrow image sync /absolute/repo/catalog.json
 farrow image reset-manifest
 ```
 
-`sync` verifies the detached signature against both keys, records a version
-high-water mark, and refuses anything below it unless you pass
-`--allow-downgrade`. `reset-manifest` restores the manifest compiled into the
-binary.
+`sync` reads the adjacent `.minisig`, verifies it against trusted keys, records
+a version high-water mark, and refuses anything below it unless you pass
+`--allow-downgrade`. Remote catalog URLs must not contain credentials, query
+strings, or fragments; use an authenticated repository transport outside the
+URL when private distribution is required. `reset-manifest` restores the
+bootstrap catalog compiled into the binary.
 
-Application release signatures and image manifest keys are separate trust
-domains. Signing a release never authorizes a manifest, and vice versa.
+Until active and standby production key custody is assigned, ordinary builds
+contain no external catalog roots: the embedded catalog and `reset-manifest`
+remain available, while `sync` fails closed. Tests inject development roots
+explicitly; those roots are not compiled into release binaries.
+
+Application release signatures and image catalog keys are separate trust
+domains. Signing a release never authorizes a catalog, and vice versa.
 
 ## What an image must provide
 
@@ -127,7 +226,7 @@ IDs.
 ## Preparing a normalized image
 
 `packaging/image-pipeline/` validates and optionally normalizes a candidate
-qcow2 before it becomes a manifest entry. It never downloads an artifact,
+qcow2 before it becomes a catalog entry. It never downloads an artifact,
 uploads anything, touches a runtime file, or marks an image `supported`.
 
 ```bash
@@ -140,7 +239,7 @@ packaging/image-pipeline/build.sh \
   --source-user ubuntu --boot uefi \
   --artifact-url https://example.com/u24/{sha256}.qcow2 \
   --license "Ubuntu cloud image" \
-  --source-date-epoch 1787486400 --manifest-version 2026082402
+  --source-date-epoch 1787486400 --manifest-version 2026082601
 ```
 
 `--mode validate` needs only Python 3 and `qemu-img`: it copies and re-hashes

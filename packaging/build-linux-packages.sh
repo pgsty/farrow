@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck disable=SC1091
+source "${script_directory}/semver.sh"
+
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   printf 'usage: %s <version> [new-output-directory]\n' "$0" >&2
   exit 2
 fi
 version=$1
 output=${2:-dist/linux-packages-${version}}
-[[ ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { printf 'invalid version: %s\n' "${version}" >&2; exit 2; }
+farrow_is_semver "${version}" || { printf 'invalid version: %s\n' "${version}" >&2; exit 2; }
 if [[ ! ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]+$ ]] || (( SOURCE_DATE_EPOCH <= 0 )); then
   printf 'SOURCE_DATE_EPOCH must be positive\n' >&2
   exit 2
@@ -48,8 +52,16 @@ fi
 
 for arch in amd64 arm64; do
   case ${arch} in
-    amd64) deb_qemu=qemu-system-x86 ;;
-    arm64) deb_qemu=qemu-system-arm ;;
+    amd64)
+      deb_qemu=qemu-system-x86
+      deb_firmware=ovmf
+      rpm_firmware=edk2-ovmf
+      ;;
+    arm64)
+      deb_qemu=qemu-system-arm
+      deb_firmware=qemu-efi-aarch64
+      rpm_firmware=edk2-aarch64
+      ;;
   esac
   stage=${temporary}/${arch}
   install -d -m 0700 "${stage}"
@@ -92,6 +104,7 @@ for arch in amd64 arm64; do
     "${repo}/docs/cli.md" \
     "${repo}/docs/config.md" \
     "${repo}/docs/development.md" \
+    "${repo}/docs/getting-started.md" \
     "${repo}/docs/images.md" \
     "${repo}/docs/networking.md" \
     "${repo}/docs/phase-2.md" \
@@ -108,7 +121,8 @@ for arch in amd64 arm64; do
     package=${output}/farrow_${version}_linux_${arch}.${format}
     (
       cd "${repo}"
-      NFPM_ARCH=${arch} FARROW_VERSION=${version} FARROW_PAYLOAD=${payload} FARROW_DEB_QEMU=${deb_qemu} \
+      NFPM_ARCH=${arch} FARROW_VERSION=${version} FARROW_PAYLOAD=${payload} \
+        FARROW_DEB_QEMU=${deb_qemu} FARROW_DEB_FIRMWARE=${deb_firmware} FARROW_RPM_FIRMWARE=${rpm_firmware} \
         nfpm package --config packaging/nfpm.yaml --packager "${format}" --target "${package}"
     )
     package_sha=$(shasum -a 256 "${package}" | awk '{print $1}')

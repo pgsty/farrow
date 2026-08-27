@@ -53,12 +53,23 @@ const (
 	exitIntegrity  = 7
 )
 
-type repeatedForward []string
-
-func (f *repeatedForward) String() string { return strings.Join(*f, ",") }
-func (f *repeatedForward) Set(value string) error {
-	*f = append(*f, value)
-	return nil
+type lifecycleOptions struct {
+	Force             bool
+	DeletePersistent  bool
+	NoWait            bool
+	Rollback          bool
+	RestartDrift      bool
+	LogLevel          string
+	ConfigPath        string
+	Repository        string
+	ImageAlias        string
+	CPUs              int
+	Memory            string
+	RootDisk          string
+	DataDisk          string
+	NoDataDisk        bool
+	NoDefaultForwards bool
+	Forwards          []string
 }
 
 func configurationWarnings(resolved spec.Resolved) []string {
@@ -145,11 +156,6 @@ func loadPrivatePreflightConfig(path string) (spec.Resolved, error) {
 	return resolved, nil
 }
 
-func usage(out io.Writer) {
-	fmt.Fprintln(out, "usage: farrow [--json|--yaml] [--verbose] <command> [options]")
-	fmt.Fprintln(out, "commands: init, validate, plan, doctor, up, start, stop, restart, recreate, status, list, ssh, exec, provision, ssh-config, hosts, logs, repair, destroy, image, project, network, pigsty, debug, completion, version")
-}
-
 type commandFlagSet struct {
 	*flag.FlagSet
 	stderr io.Writer
@@ -182,13 +188,7 @@ func newCommandFlagSet(name string, stderr io.Writer) *commandFlagSet {
 }
 
 func (set *commandFlagSet) Parse(arguments []string) error {
-	err := set.FlagSet.Parse(arguments)
-	if errors.Is(err, flag.ErrHelp) {
-		if state := outputContextFrom(set.stderr); state != nil {
-			state.help = true
-		}
-	}
-	return err
+	return set.FlagSet.Parse(arguments)
 }
 
 type sudoRunner struct{ base execx.Runner }
@@ -1147,7 +1147,7 @@ func printQuickStatus(out io.Writer, status quick.Status) {
 	}
 }
 
-func buildQuickOptions(imageAlias string, cpus int, memoryText, rootDiskText, dataDiskText string, noDataDisk, noDefaultForwards bool, forwardTexts repeatedForward, stderr io.Writer) (quick.Options, int) {
+func buildQuickOptions(imageAlias string, cpus int, memoryText, rootDiskText, dataDiskText string, noDataDisk, noDefaultForwards bool, forwardTexts []string, stderr io.Writer) (quick.Options, error) {
 	options := quick.Options{Image: imageAlias, CPUs: cpus, NoDataDisk: noDataDisk, NoDefaultForwards: noDefaultForwards}
 	for _, sizeFlag := range []struct {
 		text   string
@@ -1158,16 +1158,14 @@ func buildQuickOptions(imageAlias string, cpus int, memoryText, rootDiskText, da
 		}
 		value, err := config.ParseSize(sizeFlag.text)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return quick.Options{}, exitUsage
+			return quick.Options{}, err
 		}
 		*sizeFlag.target = value
 	}
 	for _, text := range forwardTexts {
 		forward, err := config.ParseForward(text)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return quick.Options{}, exitUsage
+			return quick.Options{}, err
 		}
 		if forward.Bind != "127.0.0.1" && forward.Bind != "::1" {
 			warningf(stderr, "forward %s binds beyond loopback", text)
@@ -1175,10 +1173,45 @@ func buildQuickOptions(imageAlias string, cpus int, memoryText, rootDiskText, da
 		options.Forwards = append(options.Forwards, forward)
 	}
 	if _, err := options.Resolve(); err != nil {
-		errorf(stderr, "%v", err)
-		return quick.Options{}, exitUsage
+		return quick.Options{}, err
 	}
-	return options, exitOK
+	return options, nil
+}
+
+func loadLifecycleConfig(command, configPath string, options quick.Options) (spec.Resolved, bool, error) {
+	if command != "up" && command != "plan" && command != "recreate" {
+		return spec.Resolved{}, false, nil
+	}
+	if configPath == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			candidate := filepath.Join(cwd, "farrow.yaml")
+			if _, err := os.Stat(candidate); err == nil {
+				configPath = candidate
+			}
+		}
+	}
+	if configPath == "" {
+		return spec.Resolved{}, false, nil
+	}
+	absolute, err := filepath.Abs(configPath)
+	if err != nil {
+		return spec.Resolved{}, false, err
+	}
+	file, err := config.Load(absolute)
+	if err != nil {
+		return spec.Resolved{}, false, err
+	}
+	resolved, err := file.Resolve()
+	if err != nil {
+		return spec.Resolved{}, false, err
+	}
+	if options.HasOverrides() {
+		resolved, err = quick.ApplyOptions(resolved, options)
+		if err != nil {
+			return spec.Resolved{}, false, err
+		}
+	}
+	return resolved, true, nil
 }
 
 func currentProjectResolved() (spec.Resolved, error) {
@@ -1235,7 +1268,155 @@ type persistentDeleteError struct{ err error }
 func (e *persistentDeleteError) Error() string { return "delete persistent disks: " + e.err.Error() }
 func (e *persistentDeleteError) Unwrap() error { return e.err }
 
-func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, force, deletePersistent, noWait, rollback, jsonOutput bool, stdout, stderr io.Writer) int {
+type lifecycleDriftFailure struct {
+	Error       string      `json:"error"`
+	Message     string      `json:"message"`
+	OperationID string      `json:"operation_id,omitempty"`
+	Action      string      `json:"action"`
+	Before      interface{} `json:"before"`
+	After       interface{} `json:"after"`
+}
+
+type lifecyclePartialFailure struct {
+	Error       string   `json:"error"`
+	Message     string   `json:"message"`
+	OperationID string   `json:"operation_id,omitempty"`
+	Nodes       []string `json:"nodes"`
+	RolledBack  []string `json:"rolled_back"`
+}
+
+func reportPrivateLifecycleError(err error, operationID string, jsonOutput bool, stdout, stderr io.Writer) int {
+	if errors.Is(err, project.ErrDataRootMigrationRequired) {
+		return reportCommandFailure(stdout, stderr, jsonOutput, "data_root_migration_required", err.Error(), operationID, exitConflict)
+	}
+	if errors.Is(err, privatevm.ErrRecreateRequired) {
+		return reportCommandFailure(stdout, stderr, jsonOutput, "recreate_required", err.Error(), operationID, exitConflict)
+	}
+	var networkPreflight *privatevm.NetworkPreflightError
+	if errors.As(err, &networkPreflight) {
+		if structuredOutput(stdout, jsonOutput) {
+			if code := encodeJSON(stdout, stderr, networkPreflight.Report); code != exitOK {
+				return code
+			}
+		}
+		errorf(stderr, "%v", networkPreflight)
+		return networkPreflight.Report.ExitCode
+	}
+	var capability *privatevm.CapabilityError
+	if errors.As(err, &capability) {
+		return reportCommandFailure(stdout, stderr, jsonOutput, "capability", capability.Error(), operationID, exitCapability)
+	}
+	var partial *privatevm.PartialError
+	if errors.As(err, &partial) {
+		if structuredOutput(stdout, jsonOutput) {
+			payload := lifecyclePartialFailure{Error: "partial", Message: partial.Error(), OperationID: operationID, Nodes: partial.Nodes, RolledBack: partial.RolledBack}
+			if code := encodeJSON(stdout, stderr, payload); code != exitOK {
+				return code
+			}
+		}
+		errorf(stderr, "%v", partial)
+		return exitPartial
+	}
+	var leaseConflict *lease.ConflictError
+	if errors.As(err, &leaseConflict) {
+		return reportCommandFailure(stdout, stderr, jsonOutput, "lease_conflict", leaseConflict.Error(), operationID, exitLease)
+	}
+	var deleteErr *persistentDeleteError
+	if errors.As(err, &deleteErr) {
+		return reportCommandFailure(stdout, stderr, jsonOutput, "persistent_delete", deleteErr.Error(), operationID, exitIntegrity)
+	}
+	return reportCommandFailure(stdout, stderr, jsonOutput, "runtime", err.Error(), operationID, exitRuntime)
+}
+
+func reportQuickLifecycleError(err error, operationID string, stdout, stderr io.Writer) int {
+	if errors.Is(err, project.ErrDataRootMigrationRequired) {
+		return reportCommandFailure(stdout, stderr, false, "data_root_migration_required", err.Error(), operationID, exitConflict)
+	}
+	var drift *quick.DriftError
+	if errors.As(err, &drift) {
+		if structuredOutput(stdout, false) {
+			payload := lifecycleDriftFailure{Error: "drift", Message: drift.Error(), OperationID: operationID, Action: drift.Action, Before: drift.Before, After: drift.After}
+			if code := encodeJSON(stdout, stderr, payload); code != exitOK {
+				return code
+			}
+		}
+		errorf(stderr, "%v", drift)
+		return exitConflict
+	}
+	var capability *quick.CapabilityError
+	if errors.As(err, &capability) {
+		return reportCommandFailure(stdout, stderr, false, "capability", capability.Error(), operationID, exitCapability)
+	}
+	var leaseConflict *lease.ConflictError
+	if errors.As(err, &leaseConflict) {
+		return reportCommandFailure(stdout, stderr, false, "lease_conflict", leaseConflict.Error(), operationID, exitLease)
+	}
+	var deleteErr *persistentDeleteError
+	if errors.As(err, &deleteErr) {
+		return reportCommandFailure(stdout, stderr, false, "persistent_delete", deleteErr.Error(), operationID, exitIntegrity)
+	}
+	return reportCommandFailure(stdout, stderr, false, "runtime", err.Error(), operationID, exitRuntime)
+}
+
+func selectQuickLifecycleOperation(command string, options lifecycleOptions, manager *quick.Manager, desired spec.Resolved, hasConfig bool, quickOptions quick.Options, timeoutResolved spec.Resolved, stderr io.Writer) (time.Duration, func(context.Context) (quick.Status, error), error) {
+	timeout := 15 * time.Second
+	var operation func(context.Context) (quick.Status, error)
+	switch command {
+	case "up":
+		timeout = withReadinessTimeout(10*time.Minute, timeoutResolved)
+		if hasConfig {
+			operation = func(ctx context.Context) (quick.Status, error) {
+				return manager.UpResolvedWithPolicy(ctx, desired, quick.UpPolicy{Restart: options.RestartDrift})
+			}
+		} else {
+			operation = func(ctx context.Context) (quick.Status, error) {
+				return manager.UpWithOptionsPolicy(ctx, quickOptions, quick.UpPolicy{Restart: options.RestartDrift})
+			}
+		}
+	case "start":
+		timeout, operation = withReadinessTimeout(5*time.Minute, timeoutResolved), manager.Start
+	case "restart":
+		timeout, operation = withReadinessTimeout(7*time.Minute, timeoutResolved), manager.Restart
+	case "recreate":
+		if err := confirmCLIAction(options.Force, "recreate", stderr); err != nil {
+			return 0, nil, err
+		}
+		timeout = withReadinessTimeout(12*time.Minute, timeoutResolved)
+		if hasConfig {
+			operation = func(ctx context.Context) (quick.Status, error) { return manager.RecreateResolved(ctx, desired) }
+		} else {
+			operation = manager.Recreate
+		}
+	case "stop":
+		// Graceful shutdown itself may consume two minutes; leave bounded
+		// headroom for QMP quit, verified SIGTERM/SIGKILL, and audit writes.
+		timeout, operation = 5*time.Minute, manager.Stop
+	case "status":
+		operation = manager.Status
+	case "destroy":
+		if err := confirmCLIAction(options.Force, "destroy", stderr); err != nil {
+			return 0, nil, err
+		}
+		timeout = 5 * time.Minute
+		operation = func(ctx context.Context) (quick.Status, error) {
+			status, err := manager.Destroy(ctx)
+			if err != nil || !options.DeletePersistent {
+				return status, err
+			}
+			deleted, err := manager.DeletePersistent(ctx)
+			if err != nil {
+				return status, &persistentDeleteError{err: err}
+			}
+			status.Message = fmt.Sprintf("%s; explicitly deleted %d persistent data disk(s)", status.Message, len(deleted))
+			return status, nil
+		}
+	default:
+		return 0, nil, fmt.Errorf("unsupported quick command %q", command)
+	}
+	return timeout, operation, nil
+}
+
+func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, noWait, rollback, jsonOutput bool, stdout, stderr io.Writer) int {
 	operationID := ""
 	if command != "status" && command != "plan" {
 		var err error
@@ -1245,31 +1426,15 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, f
 			return exitRuntime
 		}
 	}
-	manager := privatevm.Manager{FarrowVersion: version.Version, OperationID: operationID, NoWait: noWait, RollbackFailed: rollback, Nodes: append([]string(nil), nodes...)}
+	var progressItem *progress
+	manager := privatevm.Manager{FarrowVersion: version.Version, OperationID: operationID, Repository: repository, NoWait: noWait, RollbackFailed: rollback, Nodes: append([]string(nil), nodes...)}
+	manager.Progress = deferredProgressReporter(&progressItem)
 	if command == "plan" {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		plan, err := manager.Plan(ctx, resolved)
 		if err != nil {
-			if errors.Is(err, project.ErrDataRootMigrationRequired) {
-				errorf(stderr, "%v", err)
-				return exitConflict
-			}
-			var networkPreflight *privatevm.NetworkPreflightError
-			if errors.As(err, &networkPreflight) {
-				if structuredOutput(stdout, jsonOutput) {
-					_ = encodeJSON(stdout, stderr, networkPreflight.Report)
-				}
-				errorf(stderr, "%v", networkPreflight)
-				return networkPreflight.Report.ExitCode
-			}
-			var capability *privatevm.CapabilityError
-			if errors.As(err, &capability) {
-				errorf(stderr, "%v", capability)
-				return exitCapability
-			}
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return reportPrivateLifecycleError(err, operationID, jsonOutput, stdout, stderr)
 		}
 		if structuredOutput(stdout, jsonOutput) {
 			return encodeJSON(stdout, stderr, plan)
@@ -1326,7 +1491,6 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, f
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	debugf(stderr, "lifecycle=%s mode=private timeout=%s operation_id=%s nodes=%d", command, timeout, operationID, len(resolved.Nodes))
-	var progressItem *progress
 	if command != "status" {
 		progressItem = startProgress(ctx, stderr, lifecycleMessage(command))
 	}
@@ -1345,65 +1509,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, f
 	}
 	progressItem.Stop(err)
 	if err != nil {
-		if errors.Is(err, project.ErrDataRootMigrationRequired) {
-			if structuredOutput(stdout, jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": "data_root_migration_required", "operation_id": operationID, "message": err.Error()})
-			}
-			errorf(stderr, "%v", err)
-			return exitConflict
-		}
-		if errors.Is(err, privatevm.ErrRecreateRequired) {
-			if structuredOutput(stdout, jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": "recreate_required", "operation_id": operationID, "message": err.Error()})
-			}
-			errorf(stderr, "%v", err)
-			return exitConflict
-		}
-		var networkPreflight *privatevm.NetworkPreflightError
-		if errors.As(err, &networkPreflight) {
-			if structuredOutput(stdout, jsonOutput) {
-				_ = encodeJSON(stdout, stderr, networkPreflight.Report)
-			}
-			errorf(stderr, "%v", networkPreflight)
-			return networkPreflight.Report.ExitCode
-		}
-		var capability *privatevm.CapabilityError
-		if errors.As(err, &capability) {
-			if structuredOutput(stdout, jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": "capability", "operation_id": operationID, "message": capability.Error()})
-			}
-			errorf(stderr, "%v", capability)
-			return exitCapability
-		}
-		var partial *privatevm.PartialError
-		if errors.As(err, &partial) {
-			if structuredOutput(stdout, jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]any{"error": "partial", "operation_id": operationID, "nodes": partial.Nodes, "rolled_back": partial.RolledBack, "message": partial.Error()})
-			}
-			errorf(stderr, "%v", partial)
-			return exitPartial
-		}
-		var leaseConflict *lease.ConflictError
-		if errors.As(err, &leaseConflict) {
-			if structuredOutput(stdout, jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": "lease_conflict", "operation_id": operationID, "message": leaseConflict.Error()})
-			}
-			errorf(stderr, "%v", leaseConflict)
-			return exitLease
-		}
-		var deleteErr *persistentDeleteError
-		if errors.As(err, &deleteErr) {
-			if structuredOutput(stdout, jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": "persistent_delete", "operation_id": operationID, "message": deleteErr.Error()})
-			}
-			errorf(stderr, "%v", deleteErr)
-			return exitIntegrity
-		}
-		if structuredOutput(stdout, jsonOutput) {
-			_ = encodeJSON(stdout, stderr, map[string]string{"error": err.Error(), "operation_id": operationID})
-		}
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return reportPrivateLifecycleError(err, operationID, jsonOutput, stdout, stderr)
 	}
 	status.OperationID = operationID
 	if command == "up" || command == "start" || command == "restart" || command == "recreate" {
@@ -1417,7 +1523,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, f
 				continue
 			}
 			seen[alias] = struct{}{}
-			if info, infoErr := (quick.Manager{FarrowVersion: version.Version}).ImageInfo(ctx, alias); infoErr == nil {
+			if info, infoErr := (quick.Manager{FarrowVersion: version.Version, Repository: repository}).ImageInfo(ctx, alias); infoErr == nil {
 				printImageStatusWarning(stderr, info.Entry)
 			}
 		}
@@ -1429,121 +1535,29 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, f
 	return exitOK
 }
 
-func runQuickCommand(command string, args []string, stdout, stderr io.Writer) int {
-	flags := newCommandFlagSet(command, stderr)
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	force := flags.Bool("force", false, "confirm destructive operation")
-	deletePersistent := flags.Bool("delete-persistent", false, "destroy, then explicitly delete owned persistent data disks (requires --force)")
-	noWait := flags.Bool("no-wait", false, "return after QMP/process identity instead of guest SSH/ready marker")
-	rollback := flags.Bool("rollback", false, "private up: remove only safe artifacts from nodes that fail during this prepare")
-	restartDrift := flags.Bool("restart", false, "stop a running VM to apply restart/stop-class drift")
-	logLevel := flags.String("log-level", "info", "QEMU diagnostic level: error, warn, info, or debug")
-	configPath := flags.String("f", "", "declarative configuration file")
-	imageAlias := flags.String("image", "", "quick image alias")
-	cpus := flags.Int("cpus", 0, "quick CPU count")
-	memoryText := flags.String("memory", "", "quick memory size")
-	rootDiskText := flags.String("root-disk", "", "quick root disk size")
-	dataDiskText := flags.String("data-disk", "", "quick data disk size")
-	noDataDisk := flags.Bool("no-data-disk", false, "disable default /data disk")
-	noDefaultForwards := flags.Bool("no-default-forwards", false, "disable four quick business forwards")
-	var forwardTexts repeatedForward
-	flags.Var(&forwardTexts, "forward", "append [IPv4-bind:]host:guest TCP forward")
-	if err := flags.Parse(args); err != nil {
-		return exitUsage
+func runLifecycleCommand(command string, options lifecycleOptions, nodes []string, stdout, stderr io.Writer) int {
+	if options.DeletePersistent && !options.Force {
+		return reportCommandFailure(stdout, stderr, false, "usage", "--delete-persistent requires the separate --force destroy confirmation", "", exitUsage)
 	}
-	nodes := flags.Args()
-	if len(nodes) != 0 && command != "up" && command != "plan" && command != "start" && command != "stop" && command != "restart" && command != "recreate" && command != "status" {
-		fmt.Fprintf(stderr, "%s does not accept node selectors\n", command)
-		return exitUsage
+	if !quick.ValidLogLevel(options.LogLevel) {
+		return reportCommandFailure(stdout, stderr, false, "usage", fmt.Sprintf("invalid --log-level %q", options.LogLevel), "", exitUsage)
 	}
-	if *deletePersistent && command != "destroy" {
-		fmt.Fprintln(stderr, "--delete-persistent is only valid with farrow destroy")
-		return exitUsage
+	var progressItem *progress
+	manager := quick.Manager{FarrowVersion: version.Version, Repository: options.Repository, LogLevel: options.LogLevel, NoWait: options.NoWait}
+	manager.Progress = deferredProgressReporter(&progressItem)
+	quickOptions, err := buildQuickOptions(options.ImageAlias, options.CPUs, options.Memory, options.RootDisk, options.DataDisk, options.NoDataDisk, options.NoDefaultForwards, options.Forwards, stderr)
+	if err != nil {
+		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), "", exitUsage)
 	}
-	if *deletePersistent && !*force {
-		fmt.Fprintln(stderr, "--delete-persistent requires the separate --force destroy confirmation")
-		return exitUsage
-	}
-	if *noWait && command != "up" && command != "start" && command != "restart" && command != "recreate" {
-		fmt.Fprintf(stderr, "--no-wait is not valid with farrow %s\n", command)
-		return exitUsage
-	}
-	if *rollback && command != "up" {
-		fmt.Fprintln(stderr, "--rollback is only valid with farrow up")
-		return exitUsage
-	}
-	if command != "up" && command != "plan" {
-		invalid := ""
-		flags.Visit(func(value *flag.Flag) {
-			if value.Name != "json" && value.Name != "log-level" && !((command == "destroy" || command == "recreate") && value.Name == "force") && !(command == "destroy" && value.Name == "delete-persistent") && !((command == "start" || command == "restart" || command == "recreate") && value.Name == "no-wait") && !(command == "recreate" && value.Name == "f") {
-				invalid = value.Name
-			}
-		})
-		if invalid != "" {
-			fmt.Fprintf(stderr, "--%s is only valid with farrow up\n", invalid)
-			return exitUsage
-		}
-	} else if *force {
-		fmt.Fprintf(stderr, "--force is not valid with farrow %s\n", command)
-		return exitUsage
-	}
-	if command == "plan" && *restartDrift {
-		fmt.Fprintln(stderr, "--restart is only valid with farrow up")
-		return exitUsage
-	}
-	if !quick.ValidLogLevel(*logLevel) {
-		fmt.Fprintf(stderr, "invalid --log-level %q\n", *logLevel)
-		return exitUsage
-	}
-	manager := quick.Manager{FarrowVersion: version.Version, LogLevel: *logLevel, NoWait: *noWait}
-	options, optionCode := buildQuickOptions(*imageAlias, *cpus, *memoryText, *rootDiskText, *dataDiskText, *noDataDisk, *noDefaultForwards, forwardTexts, stderr)
-	if optionCode != exitOK {
-		return optionCode
-	}
-	resolvedFile := spec.Resolved{}
-	hasConfig := false
-	if command == "up" || command == "plan" || command == "recreate" {
-		path := *configPath
-		if path == "" {
-			if cwd, err := os.Getwd(); err == nil {
-				candidate := filepath.Join(cwd, "farrow.yaml")
-				if _, err := os.Stat(candidate); err == nil {
-					path = candidate
-				}
-			}
-		}
-		if path != "" {
-			absolute, err := filepath.Abs(path)
-			if err != nil {
-				errorf(stderr, "%v", err)
-				return exitUsage
-			}
-			file, err := config.Load(absolute)
-			if err != nil {
-				errorf(stderr, "%v", err)
-				return exitUsage
-			}
-			resolvedFile, err = file.Resolve()
-			if err != nil {
-				errorf(stderr, "%v", err)
-				return exitUsage
-			}
-			if options.HasOverrides() {
-				resolvedFile, err = quick.ApplyOptions(resolvedFile, options)
-				if err != nil {
-					errorf(stderr, "%v", err)
-					return exitUsage
-				}
-			}
-			hasConfig = true
-		}
+	resolvedFile, hasConfig, err := loadLifecycleConfig(command, options.ConfigPath, quickOptions)
+	if err != nil {
+		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), "", exitUsage)
 	}
 	privateRequest := hasConfig && resolvedFile.Network == "private"
 	persisted, persistedErr := currentProjectResolved()
 	if persistedErr == nil && persisted.Network == "private" {
 		if hasConfig && resolvedFile.Network != "private" {
-			fmt.Fprintln(stderr, "current project is private; refuse dispatch to the quick/meta runtime")
-			return exitConflict
+			return reportCommandFailure(stdout, stderr, false, "mode_conflict", "current project is private; refuse dispatch to the quick/meta runtime", "", exitConflict)
 		}
 		if !hasConfig {
 			resolvedFile = persisted
@@ -1554,33 +1568,29 @@ func runQuickCommand(command string, args []string, stdout, stderr io.Writer) in
 		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
 			marker := filepath.Join(cwd, ".farrow", "project.json")
 			if _, markerErr := os.Lstat(marker); markerErr == nil {
-				fmt.Fprintln(stderr, "refuse lifecycle dispatch with an unreadable persisted project:", persistedErr)
-				return exitIntegrity
+				return reportCommandFailure(stdout, stderr, false, "integrity", fmt.Sprintf("refuse lifecycle dispatch with an unreadable persisted project: %v", persistedErr), "", exitIntegrity)
 			}
 		}
 	}
 	if privateRequest {
 		printWarnings(stderr, configurationWarnings(resolvedFile))
-		if *restartDrift {
-			fmt.Fprintln(stderr, "--restart drift policy is not yet available for private projects")
-			return exitUsage
+		if options.RestartDrift {
+			return reportCommandFailure(stdout, stderr, false, "usage", "--restart drift policy is not yet available for private projects", "", exitUsage)
 		}
-		return runPrivateCommand(command, resolvedFile, nodes, *force, *deletePersistent, *noWait, *rollback, *jsonOutput, stdout, stderr)
+		return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.NoWait, options.Rollback, false, stdout, stderr)
 	}
-	if *rollback {
-		fmt.Fprintln(stderr, "--rollback is only valid for declarative private up")
-		return exitUsage
+	if options.Rollback {
+		return reportCommandFailure(stdout, stderr, false, "usage", "--rollback is only valid for declarative private up", "", exitUsage)
 	}
 	if len(nodes) != 0 && (len(nodes) != 1 || nodes[0] != "meta") {
-		fmt.Fprintf(stderr, "quick project has only node meta, got %v\n", nodes)
-		return exitUsage
+		return reportCommandFailure(stdout, stderr, false, "usage", fmt.Sprintf("quick project has only node meta, got %v", nodes), "", exitUsage)
 	}
 	if command == "up" || command == "plan" || command == "recreate" {
 		warningResolved := resolvedFile
 		if !hasConfig {
-			if persistedErr == nil && !options.HasOverrides() {
+			if persistedErr == nil && !quickOptions.HasOverrides() {
 				warningResolved = persisted
-			} else if candidate, err := options.Resolve(); err == nil {
+			} else if candidate, err := quickOptions.Resolve(); err == nil {
 				warningResolved = candidate
 			}
 		}
@@ -1592,20 +1602,15 @@ func runQuickCommand(command string, args []string, stdout, stderr io.Writer) in
 		if hasConfig {
 			plan, err = manager.PlanResolved(context.Background(), resolvedFile)
 		} else {
-			plan, err = manager.Plan(context.Background(), options)
+			plan, err = manager.Plan(context.Background(), quickOptions)
 		}
 		if err != nil {
 			if errors.Is(err, project.ErrDataRootMigrationRequired) {
-				errorf(stderr, "%v", err)
-				return exitConflict
+				return reportCommandFailure(stdout, stderr, false, "data_root_migration_required", err.Error(), "", exitConflict)
 			}
-			if structuredOutput(stdout, *jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": err.Error()})
-			}
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return reportCommandFailure(stdout, stderr, false, "runtime", err.Error(), "", exitRuntime)
 		}
-		if structuredOutput(stdout, *jsonOutput) {
+		if structuredOutput(stdout, false) {
 			return encodeJSON(stdout, stderr, plan)
 		}
 		textField(stdout, 14, "action", statusValue(stdout, plan.Action))
@@ -1617,87 +1622,31 @@ func runQuickCommand(command string, args []string, stdout, stderr io.Writer) in
 	if command != "status" {
 		generatedID, operationErr := project.NewUUID()
 		if operationErr != nil {
-			errorf(stderr, "%v", operationErr)
-			return exitRuntime
+			return reportCommandFailure(stdout, stderr, false, "runtime", operationErr.Error(), "", exitRuntime)
 		}
 		operationID = generatedID
 		manager.OperationID = operationID
 	}
-	timeout := 15 * time.Second
 	timeoutResolved := resolvedFile
 	if !hasConfig {
 		if persistedErr == nil {
 			timeoutResolved = persisted
-		} else if candidate, resolveErr := options.Resolve(); resolveErr == nil {
+		} else if candidate, resolveErr := quickOptions.Resolve(); resolveErr == nil {
 			timeoutResolved = candidate
 		}
 	}
-	var operation func(context.Context) (quick.Status, error)
-	switch command {
-	case "up":
-		timeout = withReadinessTimeout(10*time.Minute, timeoutResolved)
-		if hasConfig {
-			operation = func(ctx context.Context) (quick.Status, error) {
-				return manager.UpResolvedWithPolicy(ctx, resolvedFile, quick.UpPolicy{Restart: *restartDrift})
-			}
-		} else {
-			operation = func(ctx context.Context) (quick.Status, error) {
-				return manager.UpWithOptionsPolicy(ctx, options, quick.UpPolicy{Restart: *restartDrift})
-			}
-		}
-	case "start":
-		timeout, operation = withReadinessTimeout(5*time.Minute, timeoutResolved), manager.Start
-	case "restart":
-		timeout, operation = withReadinessTimeout(7*time.Minute, timeoutResolved), manager.Restart
-	case "recreate":
-		if err := confirmCLIAction(*force, "recreate", stderr); err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
-		}
-		timeout = withReadinessTimeout(12*time.Minute, timeoutResolved)
-		if hasConfig {
-			operation = func(ctx context.Context) (quick.Status, error) { return manager.RecreateResolved(ctx, resolvedFile) }
-		} else {
-			operation = manager.Recreate
-		}
-	case "stop":
-		// Graceful shutdown itself may consume two minutes; leave bounded
-		// headroom for QMP quit, verified SIGTERM/SIGKILL, and audit writes.
-		timeout, operation = 5*time.Minute, manager.Stop
-	case "status":
-		operation = manager.Status
-	case "destroy":
-		if err := confirmCLIAction(*force, "destroy", stderr); err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
-		}
-		timeout = 5 * time.Minute
-		operation = func(ctx context.Context) (quick.Status, error) {
-			status, err := manager.Destroy(ctx)
-			if err != nil || !*deletePersistent {
-				return status, err
-			}
-			deleted, err := manager.DeletePersistent(ctx)
-			if err != nil {
-				return status, &persistentDeleteError{err: err}
-			}
-			status.Message = fmt.Sprintf("%s; explicitly deleted %d persistent data disk(s)", status.Message, len(deleted))
-			return status, nil
-		}
-	default:
-		fmt.Fprintf(stderr, "unsupported quick command %q\n", command)
-		return exitUsage
+	timeout, operation, err := selectQuickLifecycleOperation(command, options, &manager, resolvedFile, hasConfig, quickOptions, timeoutResolved, stderr)
+	if err != nil {
+		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), operationID, exitUsage)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	debugf(stderr, "lifecycle=%s mode=quick timeout=%s operation_id=%s", command, timeout, operationID)
 	if command == "destroy" || command == "recreate" {
 		if eventErr := manager.RecordEvent(ctx, "destroy", "info", "scoped destroy requested"); eventErr != nil {
-			fmt.Fprintln(stderr, "refuse destroy without an auditable event append:", eventErr)
-			return exitIntegrity
+			return reportCommandFailure(stdout, stderr, false, "integrity", fmt.Sprintf("refuse destroy without an auditable event append: %v", eventErr), operationID, exitIntegrity)
 		}
 	}
-	var progressItem *progress
 	if command != "status" {
 		progressItem = startProgress(ctx, stderr, lifecycleMessage(command))
 	}
@@ -1719,61 +1668,7 @@ func runQuickCommand(command string, args []string, stdout, stderr io.Writer) in
 	}
 	progressItem.Stop(err)
 	if err != nil {
-		if errors.Is(err, project.ErrDataRootMigrationRequired) {
-			if structuredOutput(stdout, *jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": "data_root_migration_required", "operation_id": operationID, "message": err.Error()})
-			}
-			errorf(stderr, "%v", err)
-			return exitConflict
-		}
-		var drift *quick.DriftError
-		if errors.As(err, &drift) {
-			if structuredOutput(stdout, *jsonOutput) {
-				result := struct {
-					Error       string      `json:"error"`
-					OperationID string      `json:"operation_id,omitempty"`
-					Action      string      `json:"action"`
-					Before      interface{} `json:"before"`
-					After       interface{} `json:"after"`
-				}{Error: "drift", OperationID: operationID, Action: drift.Action, Before: drift.Before, After: drift.After}
-				if code := encodeJSON(stdout, stderr, result); code != exitOK {
-					return code
-				}
-			}
-			errorf(stderr, "%v", err)
-			return exitConflict
-		}
-		var capability *quick.CapabilityError
-		if errors.As(err, &capability) {
-			if structuredOutput(stdout, *jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": "capability", "operation_id": operationID, "message": capability.Error()})
-			}
-			errorf(stderr, "%v", capability)
-			return exitCapability
-		}
-		var leaseConflict *lease.ConflictError
-		if errors.As(err, &leaseConflict) {
-			if structuredOutput(stdout, *jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": "lease_conflict", "operation_id": operationID, "message": leaseConflict.Error()})
-			}
-			errorf(stderr, "%v", leaseConflict)
-			return exitLease
-		}
-		var deleteErr *persistentDeleteError
-		if errors.As(err, &deleteErr) {
-			if structuredOutput(stdout, *jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": "persistent_delete", "operation_id": operationID, "message": deleteErr.Error()})
-			}
-			errorf(stderr, "%v", deleteErr)
-			return exitIntegrity
-		}
-		if structuredOutput(stdout, *jsonOutput) {
-			if code := encodeJSON(stdout, stderr, map[string]string{"error": err.Error()}); code != exitOK {
-				return code
-			}
-		}
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return reportQuickLifecycleError(err, operationID, stdout, stderr)
 	}
 	if command == "up" || command == "start" || command == "restart" || command == "recreate" {
 		if status.Image.Alias != "" {
@@ -1782,7 +1677,7 @@ func runQuickCommand(command string, args []string, stdout, stderr io.Writer) in
 			}
 		}
 	}
-	if structuredOutput(stdout, *jsonOutput) {
+	if structuredOutput(stdout, false) {
 		if code := encodeJSON(stdout, stderr, status); code != exitOK {
 			return code
 		}
@@ -1888,15 +1783,16 @@ func reportSSHConfigFailure(result sshconfig.Result, err error, jsonOutput bool,
 	if structuredOutput(stdout, jsonOutput) {
 		payload := struct {
 			Error   string           `json:"error"`
+			Message string           `json:"message"`
 			Partial bool             `json:"partial"`
 			Result  sshconfig.Result `json:"result"`
-		}{Error: err.Error(), Partial: partial, Result: result}
+		}{Error: "ssh_config", Message: err.Error(), Partial: partial, Result: result}
 		if code := encodeJSON(stdout, stderr, payload); code != exitOK {
 			return code
 		}
 	}
 	if partial {
-		fmt.Fprintf(stderr, "SSH config operation partially changed owned state; retry is safe (action=%s fragment=%s config=%s): %v\n", result.Action, result.Fragment, result.Config, err)
+		errorf(stderr, "SSH config operation partially changed owned state; retry is safe (action=%s fragment=%s config=%s): %v", result.Action, result.Fragment, result.Config, err)
 	} else {
 		errorf(stderr, "%v", err)
 	}
@@ -2566,10 +2462,13 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 	case "list":
 		flags := newCommandFlagSet("image list", stderr)
 		jsonOutput := flags.Bool("json", false, "emit stable JSON")
+		repository := flags.String("repo", "", "image repository URL or absolute local directory")
 		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
 			return exitUsage
 		}
-		entries, manifestState, err := (quick.Manager{FarrowVersion: version.Version}).Images()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		entries, manifestState, err := (quick.Manager{FarrowVersion: version.Version, Repository: *repository}).Images(ctx)
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime
@@ -2590,16 +2489,18 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 	case "info", "pull":
 		flags := newCommandFlagSet("image "+args[0], stderr)
 		jsonOutput := flags.Bool("json", false, "emit stable JSON")
+		repository := flags.String("repo", "", "image repository URL or absolute local directory")
 		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 1 {
-			fmt.Fprintf(stderr, "usage: farrow image %s [--json|--yaml] [--verbose] <alias>\n", args[0])
+			fmt.Fprintf(stderr, "usage: farrow image %s [--repo URL|DIR] [--json|--yaml] [--verbose] <alias>\n", args[0])
 			return exitUsage
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		manager := quick.Manager{FarrowVersion: version.Version}
+		manager := quick.Manager{FarrowVersion: version.Version, Repository: *repository}
 		var info quick.ImageInfo
 		var err error
 		var progressItem *progress
+		manager.Progress = deferredProgressReporter(&progressItem)
 		if args[0] == "pull" {
 			debugf(stderr, "image pull alias=%s timeout=%s", flags.Arg(0), 30*time.Minute)
 			progressItem = startProgress(ctx, stderr, fmt.Sprintf("Pulling image %s", flags.Arg(0)))
@@ -2623,8 +2524,8 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	case "prune":
 		flags := newCommandFlagSet("image prune", stderr)
-		dryRun := flags.Bool("dry-run", false, "show unreferenced exact cache pairs without deleting")
-		yes := flags.Bool("yes", false, "delete the displayed unreferenced exact cache pairs")
+		dryRun := flags.Bool("dry-run", false, "show unreferenced images and stale staging files without deleting")
+		yes := flags.Bool("yes", false, "delete the displayed unreferenced images and stale staging files")
 		jsonOutput := flags.Bool("json", false, "emit stable JSON")
 		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || (*dryRun && *yes) {
 			fmt.Fprintln(stderr, "usage: farrow image prune [--dry-run|--yes] [--json|--yaml] [--verbose]")
@@ -2651,7 +2552,11 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 			if item.Applied {
 				action = "deleted"
 			}
-			fmt.Fprintf(stdout, "%s sha256:%s (%d bytes)\n", action, item.Digest, item.Bytes)
+			if item.Digest == "" {
+				fmt.Fprintf(stdout, "%s %s (%d bytes, %s)\n", action, item.ImagePath, item.Bytes, item.Kind)
+			} else {
+				fmt.Fprintf(stdout, "%s %s sha256:%s (%d bytes)\n", action, item.ImagePath, item.Digest, item.Bytes)
+			}
 		}
 		return exitOK
 	case "sync":
@@ -2672,9 +2577,7 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		state, err := (quick.Manager{FarrowVersion: version.Version}).ManifestSync(ctx, flags.Arg(0), *allowDowngrade)
 		progressItem.Stop(err)
 		if err != nil {
-			if structuredOutput(stdout, *jsonOutput) {
-				_ = encodeJSON(stdout, stderr, map[string]string{"error": err.Error()})
-			}
+			_ = emitCommandFailure(stdout, stderr, *jsonOutput, "runtime", err.Error(), "")
 			errorf(stderr, "%v", err)
 			return exitRuntime
 		}
@@ -2704,7 +2607,7 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 	case "import":
 		flags := newCommandFlagSet("image import", stderr)
 		expected := flags.String("sha256", "", "optional expected SHA-256")
-		name := flags.String("name", "", "optional immutable local alias")
+		name := flags.String("name", "", "optional immutable local- prefixed alias")
 		boot := flags.String("boot", "", "required with --name: bios or uefi")
 		sourceUser := flags.String("source-user", "", "required with --name: source image login user")
 		jsonOutput := flags.Bool("json", false, "emit stable JSON")
@@ -2925,90 +2828,16 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func run(args []string, stdout, stderr io.Writer) (code int) {
+func run(args []string, stdout, stderr io.Writer) int {
 	prepared, preparedStdout, preparedStderr, err := prepareOutput(args, stdout, stderr)
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitUsage
 	}
-	args, stdout, stderr = prepared, preparedStdout, preparedStderr
-	defer func() {
-		if state := outputContextFrom(stdout); state != nil && state.help && code == exitUsage {
-			code = exitOK
-		}
-	}()
-	if len(args) == 0 {
-		usage(stderr)
-		return exitUsage
+	if len(prepared) > 0 {
+		debugf(preparedStderr, "command=%s format=%s stdout_tty=%t stderr_tty=%t", prepared[0], outputFormatFor(preparedStdout), writerTTY(preparedStdout), writerTTY(preparedStderr))
 	}
-	debugf(stderr, "command=%s format=%s stdout_tty=%t stderr_tty=%t", args[0], outputFormatFor(stdout), writerTTY(stdout), writerTTY(stderr))
-	switch args[0] {
-	case "doctor":
-		return runDoctor(args[1:], stdout, stderr)
-	case "up", "start", "stop", "restart", "recreate", "status", "destroy", "plan":
-		return runQuickCommand(args[0], args[1:], stdout, stderr)
-	case "list":
-		return runList(args[1:], stdout, stderr)
-	case "validate":
-		return runValidate(args[1:], stdout, stderr)
-	case "init":
-		return runInit(args[1:], stdout, stderr)
-	case "ssh", "exec":
-		return runSSH(args[0], args[1:], stdout, stderr)
-	case "provision":
-		return runProvision(args[1:], stdout, stderr)
-	case "ssh-config":
-		return runSSHConfig(args[1:], stdout, stderr)
-	case "hosts":
-		return runHosts(args[1:], stdout, stderr)
-	case "logs":
-		return runLogs(args[1:], stdout, stderr)
-	case "repair":
-		return runRepair(args[1:], stdout, stderr)
-	case "image":
-		return runImage(args[1:], stdout, stderr)
-	case "project":
-		return runProject(args[1:], stdout, stderr)
-	case "network":
-		return runNetwork(args[1:], stdout, stderr)
-	case "pigsty":
-		return runPigsty(args[1:], stdout, stderr)
-	case "debug":
-		return runDebug(args[1:], stdout, stderr)
-	case "completion":
-		return runCompletion(args[1:], stdout, stderr)
-	case "version":
-		if len(args) != 1 {
-			fmt.Fprintln(stderr, "version does not accept arguments")
-			return exitUsage
-		}
-		if structuredOutput(stdout, false) {
-			return encodeJSON(stdout, stderr, struct {
-				Name    string `json:"name"`
-				Version string `json:"version"`
-				Commit  string `json:"commit"`
-				Built   string `json:"built"`
-				OS      string `json:"os"`
-				Arch    string `json:"arch"`
-			}{Name: "farrow", Version: version.Version, Commit: version.Commit, Built: version.Date, OS: runtime.GOOS, Arch: runtime.GOARCH})
-		}
-		fmt.Fprintf(stdout, "farrow %s (commit %s, built %s, %s/%s)\n", version.Version, version.Commit, version.Date, runtime.GOOS, runtime.GOARCH)
-		return exitOK
-	case "help", "-h", "--help":
-		if structuredOutput(stdout, false) {
-			return encodeJSON(stdout, stderr, struct {
-				Usage    string   `json:"usage"`
-				Commands []string `json:"commands"`
-				Formats  []string `json:"formats"`
-			}{Usage: "farrow [--json|--yaml] [--verbose] <command> [options]", Commands: strings.Fields(commandWords), Formats: []string{"text", "json", "yaml"}})
-		}
-		usage(stdout)
-		return exitOK
-	default:
-		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
-		usage(stderr)
-		return exitUsage
-	}
+	return executeCLI(prepared, preparedStdout, preparedStderr)
 }
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

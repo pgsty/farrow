@@ -5,7 +5,6 @@ package private
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -169,8 +168,6 @@ func Build(resolved spec.Resolved, projectID string, ownerUID int, existing *lea
 	plan.Lease = leaseValue
 	return plan, nil
 }
-
-func NativeOwnerUID() int { return os.Getuid() }
 
 func (plan Plan) Node(name string) (NodePlan, bool) {
 	for _, node := range plan.Nodes {

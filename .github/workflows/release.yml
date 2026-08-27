@@ -28,12 +28,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ ${GITHUB_REF_TYPE} == tag && ${GITHUB_REF_NAME} =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          source packaging/semver.sh
+          [[ ${GITHUB_REF_TYPE} == tag && ${GITHUB_REF_NAME} == v* ]]
+          farrow_is_semver "${GITHUB_REF_NAME#v}"
           git diff --quiet
           git diff --cached --quiet
-          test "$(git rev-list -n1 "${GITHUB_REF_NAME}")" = "${GITHUB_SHA}"
+          test "$(git rev-parse --verify "refs/tags/${GITHUB_REF_NAME}^{commit}")" = "${GITHUB_SHA}"
           printf 'FARROW_VERSION=%s\n' "${GITHUB_REF_NAME#v}" >>"${GITHUB_ENV}"
-          printf 'SOURCE_DATE_EPOCH=%s\n' "$(git show -s --format=%ct "${GITHUB_SHA}")" >>"${GITHUB_ENV}"
+          printf 'FARROW_COMMIT=%s\n' "${GITHUB_SHA}" >>"${GITHUB_ENV}"
+          source_epoch=$(git show -s --format=%ct "${GITHUB_SHA}")
+          printf 'SOURCE_DATE_EPOCH=%s\n' "${source_epoch}" >>"${GITHUB_ENV}"
+          printf 'FARROW_BUILD_DATE=%s\n' "$(date -u -d "@${source_epoch}" +%Y-%m-%dT%H:%M:%SZ)" >>"${GITHUB_ENV}"
 
       - name: Set up pinned Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -54,10 +59,12 @@ jobs:
           version: v2.16.0
           install-only: true
 
-      - name: Install pinned nFPM and Syft
+      - name: Install pinned standalone nFPM and Syft
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y rpm jq libarchive-tools ruby
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.0
           go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
@@ -78,22 +85,15 @@ jobs:
           make check
           goreleaser check
 
-      - name: Build and verify GoReleaser archives
+      - name: Build and verify GoReleaser release assets
         shell: bash
         run: |
           set -euo pipefail
           goreleaser release --clean --skip=publish --parallelism 1
-          ./packaging/verify-goreleaser.sh "${FARROW_VERSION}" "${GITHUB_WORKSPACE}/dist"
-
-      - name: Build and verify RPM and DEB packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          FARROW_COMMIT="${GITHUB_SHA}" ./packaging/build-linux-packages.sh \
-            "${FARROW_VERSION}" "${GITHUB_WORKSPACE}/dist/linux-packages"
+          ./packaging/verify-goreleaser.sh "${FARROW_VERSION}" "${GITHUB_WORKSPACE}/.goreleaser-dist"
           ./packaging/verify-linux-packages.sh \
             "${FARROW_VERSION}" "${GITHUB_SHA}" "${SOURCE_DATE_EPOCH}" \
-            "${GITHUB_WORKSPACE}/dist/linux-packages"
+            "${GITHUB_WORKSPACE}/.goreleaser-dist"
 
       - name: Assemble final checksum manifest and provenance predicate
         shell: bash
@@ -105,8 +105,8 @@ jobs:
         run: |
           set -euo pipefail
           ./packaging/assemble-release.sh "${FARROW_VERSION}" "${GITHUB_SHA}" \
-            "${SOURCE_DATE_EPOCH}" "${GITHUB_WORKSPACE}/dist" \
-            "${GITHUB_WORKSPACE}/dist/linux-packages" "${GITHUB_WORKSPACE}/release-assets"
+            "${SOURCE_DATE_EPOCH}" "${GITHUB_WORKSPACE}/.goreleaser-dist" \
+            "${GITHUB_WORKSPACE}/.goreleaser-dist" "${GITHUB_WORKSPACE}/release-assets"
 
       - name: Keyless-sign checksums and attest provenance
         shell: bash

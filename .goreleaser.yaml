@@ -2,6 +2,11 @@ version: 2
 
 project_name: farrow
 
+# Keep formal artifacts isolated from the historical dist/ tree. GoReleaser
+# does not template this field; wrappers move the complete directory only after
+# a successful snapshot when a different review name is requested.
+dist: .goreleaser-dist
+
 builds:
   - id: farrow
     main: ./cmd/farrow
@@ -25,9 +30,9 @@ builds:
       - >-
         -buildid= -s -w
         -X github.com/pgsty/farrow/internal/version.Version={{.Version}}
-        -X github.com/pgsty/farrow/internal/version.Commit={{.FullCommit}}
-        -X github.com/pgsty/farrow/internal/version.Date={{.CommitDate}}
-    mod_timestamp: "{{ .CommitTimestamp }}"
+        -X github.com/pgsty/farrow/internal/version.Commit={{ .Env.FARROW_COMMIT }}
+        -X github.com/pgsty/farrow/internal/version.Date={{ .Env.FARROW_BUILD_DATE }}
+    mod_timestamp: "{{ .Env.SOURCE_DATE_EPOCH }}"
   - id: farrow-hosts-helper
     main: ./cmd/farrow-hosts-helper
     binary: bin/farrow-hosts-helper
@@ -41,7 +46,59 @@ builds:
       - -buildvcs=false
     ldflags:
       - -buildid= -s -w
-    mod_timestamp: "{{ .CommitTimestamp }}"
+    mod_timestamp: "{{ .Env.SOURCE_DATE_EPOCH }}"
+  - id: farrow-package-linux-amd64
+    main: ./cmd/farrow
+    binary: bin/farrow
+    env:
+      - CGO_ENABLED=0
+      - GOFLAGS=-mod=readonly
+    goos: [linux]
+    goarch: [amd64]
+    flags:
+      - -trimpath
+      - -buildvcs=false
+      - -overlay=.goreleaser-companion/linux_amd64/overlay.json
+    hooks:
+      pre:
+        - cmd: './packaging/goreleaser-companion.sh prepare linux amd64 .goreleaser-companion'
+          output: true
+      post:
+        - cmd: './packaging/goreleaser-package-stage.sh linux amd64 "{{ .Path }}" "{{ .Version }}" "{{ .Env.FARROW_COMMIT }}" "{{ .Env.FARROW_BUILD_DATE }}" "{{ .Env.SOURCE_DATE_EPOCH }}" .goreleaser-companion'
+          output: true
+    ldflags:
+      - >-
+        -buildid= -s -w
+        -X github.com/pgsty/farrow/internal/version.Version={{.Version}}
+        -X github.com/pgsty/farrow/internal/version.Commit={{ .Env.FARROW_COMMIT }}
+        -X github.com/pgsty/farrow/internal/version.Date={{ .Env.FARROW_BUILD_DATE }}
+    mod_timestamp: "{{ .Env.SOURCE_DATE_EPOCH }}"
+  - id: farrow-package-linux-arm64
+    main: ./cmd/farrow
+    binary: bin/farrow
+    env:
+      - CGO_ENABLED=0
+      - GOFLAGS=-mod=readonly
+    goos: [linux]
+    goarch: [arm64]
+    flags:
+      - -trimpath
+      - -buildvcs=false
+      - -overlay=.goreleaser-companion/linux_arm64/overlay.json
+    hooks:
+      pre:
+        - cmd: './packaging/goreleaser-companion.sh prepare linux arm64 .goreleaser-companion'
+          output: true
+      post:
+        - cmd: './packaging/goreleaser-package-stage.sh linux arm64 "{{ .Path }}" "{{ .Version }}" "{{ .Env.FARROW_COMMIT }}" "{{ .Env.FARROW_BUILD_DATE }}" "{{ .Env.SOURCE_DATE_EPOCH }}" .goreleaser-companion'
+          output: true
+    ldflags:
+      - >-
+        -buildid= -s -w
+        -X github.com/pgsty/farrow/internal/version.Version={{.Version}}
+        -X github.com/pgsty/farrow/internal/version.Commit={{ .Env.FARROW_COMMIT }}
+        -X github.com/pgsty/farrow/internal/version.Date={{ .Env.FARROW_BUILD_DATE }}
+    mod_timestamp: "{{ .Env.SOURCE_DATE_EPOCH }}"
 
 archives:
   - id: farrow
@@ -53,14 +110,14 @@ archives:
     builds_info:
       owner: root
       group: root
-      mtime: "{{ .CommitDate }}"
+      mtime: "{{ .Env.FARROW_BUILD_DATE }}"
     files:
       - src: LICENSE
         info: &archive_file_info
           owner: root
           group: root
           mode: 0644
-          mtime: "{{ .CommitDate }}"
+          mtime: "{{ .Env.FARROW_BUILD_DATE }}"
       - src: README.md
         info: *archive_file_info
       - src: THIRD_PARTY_LICENSES.md
@@ -71,7 +128,7 @@ archives:
           owner: root
           group: root
           mode: 0755
-          mtime: "{{ .CommitDate }}"
+          mtime: "{{ .Env.FARROW_BUILD_DATE }}"
       - src: docs/architecture.md
         dst: docs/architecture.md
         info: *archive_file_info
@@ -83,6 +140,9 @@ archives:
         info: *archive_file_info
       - src: docs/development.md
         dst: docs/development.md
+        info: *archive_file_info
+      - src: docs/getting-started.md
+        dst: docs/getting-started.md
         info: *archive_file_info
       - src: docs/images.md
         dst: docs/images.md
@@ -115,6 +175,73 @@ archives:
         dst: third_party/licenses
         info: *archive_file_info
 
+nfpms:
+  - id: farrow-packages-amd64
+    ids: [farrow-package-linux-amd64]
+    package_name: farrow
+    file_name_template: "farrow_{{ .Version }}_linux_{{ .Arch }}"
+    formats: [deb, rpm]
+    bindir: /usr
+    vendor: Pigsty
+    homepage: https://github.com/pgsty/farrow
+    maintainer: Pigsty <repo@pigsty.cc>
+    description: |-
+      Native Go/QEMU runtime for Pigsty development virtual machines.
+      Farrow provides unprivileged quick VMs and an explicitly installed
+      private network for fixed-IP multi-node labs.
+    license: Apache-2.0
+    release: "1"
+    section: utils
+    priority: optional
+    mtime: "{{ .Env.FARROW_BUILD_DATE }}"
+    contents: &linux_package_contents
+      - src: .goreleaser-companion/linux_{{ .Arch }}/package-content/
+        dst: /
+        type: tree
+        file_info:
+          owner: root
+          group: root
+          mtime: "{{ .Env.FARROW_BUILD_DATE }}"
+    overrides:
+      deb:
+        dependencies: [qemu-system-x86, qemu-utils, ovmf, openssh-client, iproute2]
+      rpm:
+        dependencies: [qemu-kvm, qemu-img, edk2-ovmf, openssh-clients, iproute]
+    rpm:
+      summary: Native Go/QEMU runtime for Pigsty development VMs
+    deb:
+      fields:
+        Bugs: https://github.com/pgsty/farrow/issues
+  - id: farrow-packages-arm64
+    ids: [farrow-package-linux-arm64]
+    package_name: farrow
+    file_name_template: "farrow_{{ .Version }}_linux_{{ .Arch }}"
+    formats: [deb, rpm]
+    bindir: /usr
+    vendor: Pigsty
+    homepage: https://github.com/pgsty/farrow
+    maintainer: Pigsty <repo@pigsty.cc>
+    description: |-
+      Native Go/QEMU runtime for Pigsty development virtual machines.
+      Farrow provides unprivileged quick VMs and an explicitly installed
+      private network for fixed-IP multi-node labs.
+    license: Apache-2.0
+    release: "1"
+    section: utils
+    priority: optional
+    mtime: "{{ .Env.FARROW_BUILD_DATE }}"
+    contents: *linux_package_contents
+    overrides:
+      deb:
+        dependencies: [qemu-system-arm, qemu-utils, qemu-efi-aarch64, openssh-client, iproute2]
+      rpm:
+        dependencies: [qemu-kvm, qemu-img, edk2-aarch64, openssh-clients, iproute]
+    rpm:
+      summary: Native Go/QEMU runtime for Pigsty development VMs
+    deb:
+      fields:
+        Bugs: https://github.com/pgsty/farrow/issues
+
 checksum:
   name_template: checksums.txt
   algorithm: sha256
@@ -123,6 +250,17 @@ sboms:
   - id: archive-spdx
     artifacts: archive
     cmd: ../packaging/goreleaser-sbom.sh
+    documents:
+      - "{{ .ArtifactName }}.spdx.json"
+    args:
+      - "${artifact}"
+      - "${document}"
+    env:
+      - SOURCE_DATE_EPOCH={{ .Env.SOURCE_DATE_EPOCH }}
+  - id: package-spdx
+    artifacts: package
+    ids: [farrow-packages-amd64, farrow-packages-arm64]
+    cmd: ../packaging/goreleaser-package-sbom.sh
     documents:
       - "{{ .ArtifactName }}.spdx.json"
     args:

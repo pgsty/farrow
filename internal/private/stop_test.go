@@ -63,7 +63,7 @@ func TestStopRunningParallelAndReleaseLease(t *testing.T) {
 		Nodes: startConfig.Nodes, Concurrency: 2, CleanupRuntime: func(state.NodeState) error { return nil },
 		ReleaseLease: true, Auditor: deadAuditor,
 	})
-	if err != nil || len(StoppedNames(outcomes)) != 2 || active != nil {
+	if err != nil || len(stoppedNames(outcomes)) != 2 || active != nil {
 		t.Fatalf("stop outcomes=%#v active=%#v err=%v", outcomes, active, err)
 	}
 	if fake.maxActive < 2 {
@@ -89,7 +89,7 @@ func TestStopRunningParallelAndReleaseLease(t *testing.T) {
 		Nodes: startConfig.Nodes, Concurrency: 2, CleanupRuntime: func(state.NodeState) error { return nil },
 		ReleaseLease: true, Auditor: deadAuditor,
 	})
-	if err != nil || active != nil || len(StoppedNames(second)) != 2 {
+	if err != nil || active != nil || len(stoppedNames(second)) != 2 {
 		t.Fatalf("idempotent stop outcomes=%#v active=%#v err=%v", second, active, err)
 	}
 }
@@ -102,7 +102,7 @@ func TestStopRunningPreservesPartialFailureAndLease(t *testing.T) {
 		Nodes: startConfig.Nodes, Concurrency: 2, CleanupRuntime: func(state.NodeState) error { return nil },
 		ReleaseLease: true, Auditor: deadAuditor,
 	})
-	if err != nil || len(StoppedNames(outcomes)) != 1 || outcomes[1].Error == "" || active == nil {
+	if err != nil || len(stoppedNames(outcomes)) != 1 || outcomes[1].Error == "" || active == nil {
 		t.Fatalf("partial stop outcomes=%#v active=%#v err=%v", outcomes, active, err)
 	}
 	for _, node := range active.Nodes {
@@ -174,7 +174,7 @@ func TestStopRunningAcceptsAlreadyStoppedPeerAndReleasesLease(t *testing.T) {
 		Nodes: startConfig.Nodes, Concurrency: 2, CleanupRuntime: func(state.NodeState) error { return nil },
 		ReleaseLease: true, Auditor: deadAuditor,
 	})
-	if err != nil || remaining != nil || len(StoppedNames(outcomes)) != 2 || outcomes[1].Error != "" {
+	if err != nil || remaining != nil || len(stoppedNames(outcomes)) != 2 || outcomes[1].Error != "" {
 		t.Fatalf("mixed stop outcomes=%#v remaining=%#v err=%v", outcomes, remaining, err)
 	}
 	if _, err := startConfig.LeaseStore.Read(); !errors.Is(err, os.ErrNotExist) {

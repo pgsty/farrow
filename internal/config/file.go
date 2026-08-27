@@ -10,7 +10,6 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -590,13 +589,4 @@ func Marshal(file File) ([]byte, error) {
 		return nil, err
 	}
 	return output.Bytes(), nil
-}
-
-func SortedNodeNames(file File) []string {
-	names := make([]string, 0, len(file.Nodes))
-	for _, node := range file.Nodes {
-		names = append(names, node.Name)
-	}
-	sort.Strings(names)
-	return names
 }

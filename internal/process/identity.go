@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -25,15 +24,6 @@ type Identity struct {
 	Executable string `json:"executable"`
 	Started    string `json:"started"`
 	ArgvHash   string `json:"argv_hash"`
-}
-
-func HashInvocation(invocation qemu.Invocation) (string, error) {
-	data, err := json.Marshal(invocation)
-	if err != nil {
-		return "", err
-	}
-	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:]), nil
 }
 
 func Capture(ctx context.Context, runner execx.Runner, invocation qemu.Invocation, pid int) (Identity, error) {

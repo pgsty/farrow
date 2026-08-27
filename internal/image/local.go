@@ -17,15 +17,18 @@ import (
 	"github.com/pgsty/farrow/internal/lock"
 )
 
-const LocalAliasesSchema = 1
+const LocalAliasesSchema = 2
 
 type LocalAlias struct {
-	Name       string    `json:"name"`
-	Digest     string    `json:"digest"`
-	Arch       string    `json:"arch"`
-	Boot       string    `json:"boot"`
-	SourceUser string    `json:"source_user"`
-	CreatedAt  time.Time `json:"created_at"`
+	Name         string    `json:"name"`
+	File         string    `json:"file"`
+	Digest       string    `json:"digest"`
+	ArtifactSize int64     `json:"artifact_size"`
+	VirtualSize  int64     `json:"virtual_size"`
+	Arch         string    `json:"arch"`
+	Boot         string    `json:"boot"`
+	SourceUser   string    `json:"source_user"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type LocalAliases struct {
@@ -34,11 +37,14 @@ type LocalAliases struct {
 }
 
 func (s Store) localAliasesPath() string {
-	return filepath.Join(s.cacheDir(), "local-aliases.json")
+	return filepath.Join(s.DataRoot, "local-images.json")
 }
 
 func validateLocalAlias(value LocalAlias) error {
-	if !catalogName.MatchString(value.Name) || !digestPattern.MatchString(value.Digest) || (value.Arch != "arm64" && value.Arch != "amd64") || (value.Boot != "bios" && value.Boot != "uefi") || strings.TrimSpace(value.SourceUser) == "" || value.CreatedAt.IsZero() {
+	if !catalogName.MatchString(value.Name) || !strings.HasPrefix(value.Name, localAliasPrefix) {
+		return fmt.Errorf("local image alias must start with %q and match %s", localAliasPrefix, catalogName.String())
+	}
+	if !validStoreFile(value.File) || !digestPattern.MatchString(value.Digest) || value.ArtifactSize <= 0 || value.VirtualSize <= 0 || (value.Arch != "arm64" && value.Arch != "amd64") || (value.Boot != "bios" && value.Boot != "uefi") || strings.TrimSpace(value.SourceUser) == "" || value.CreatedAt.IsZero() {
 		return errors.New("local image alias identity/digest/arch/boot/user/time is invalid")
 	}
 	return nil
@@ -88,21 +94,25 @@ func (s Store) readLocalAliases() (LocalAliases, error) {
 	return value, nil
 }
 
-func localEntry(alias LocalAlias, metadata Metadata) Entry {
+func localEntry(alias LocalAlias) Entry {
 	return Entry{
 		Alias: alias.Name, Release: "local-" + alias.Digest[:12], Arch: alias.Arch,
-		SHA256: alias.Digest, Format: "qcow2", ArtifactSize: metadata.ArtifactSize, VirtualSize: metadata.VirtualSize,
+		File: alias.File, SHA256: alias.Digest, Format: "qcow2", ArtifactSize: alias.ArtifactSize, VirtualSize: alias.VirtualSize,
 		SourceUser: alias.SourceUser, Boot: alias.Boot, Status: "testing",
-		Provenance: "explicit local import into the managed digest cache",
+		Provenance: "explicit local import into the Farrow image directory",
 	}
 }
 
-func (s Store) RegisterLocalAlias(ctx context.Context, name, digest, arch, boot, sourceUser string) (Entry, string, Metadata, error) {
+func (s Store) RegisterLocalAlias(ctx context.Context, name, pathname string, metadata Metadata, arch, boot, sourceUser string) (Entry, string, Metadata, error) {
 	if err := s.validate(); err != nil {
 		return Entry{}, "", Metadata{}, err
 	}
 	name = strings.ToLower(strings.TrimSpace(name))
-	value := LocalAlias{Name: name, Digest: digest, Arch: arch, Boot: boot, SourceUser: strings.TrimSpace(sourceUser), CreatedAt: time.Now().UTC()}
+	relative, err := filepath.Rel(s.DataRoot, pathname)
+	if err != nil || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+		return Entry{}, "", Metadata{}, errors.New("imported image is outside the Farrow home")
+	}
+	value := LocalAlias{Name: name, File: filepath.ToSlash(relative), Digest: metadata.Digest, ArtifactSize: metadata.ArtifactSize, VirtualSize: metadata.VirtualSize, Arch: arch, Boot: boot, SourceUser: strings.TrimSpace(sourceUser), CreatedAt: time.Now().UTC()}
 	if err := validateLocalAlias(value); err != nil {
 		return Entry{}, "", Metadata{}, err
 	}
@@ -113,7 +123,8 @@ func (s Store) RegisterLocalAlias(ctx context.Context, name, digest, arch, boot,
 		return Entry{}, "", Metadata{}, err
 	}
 	defer cacheLock.Release()
-	path, metadata, err := s.ValidateCached(ctx, digest)
+	entry := localEntry(value)
+	path, metadata, err := s.ValidateCached(ctx, entry)
 	if err != nil {
 		return Entry{}, "", Metadata{}, err
 	}
@@ -122,10 +133,10 @@ func (s Store) RegisterLocalAlias(ctx context.Context, name, digest, arch, boot,
 		return Entry{}, "", Metadata{}, err
 	}
 	if existing, ok := registry.Aliases[name]; ok {
-		if existing.Digest != digest || existing.Arch != arch || existing.Boot != boot || existing.SourceUser != value.SourceUser {
+		if existing.File != value.File || existing.Digest != value.Digest || existing.Arch != arch || existing.Boot != boot || existing.SourceUser != value.SourceUser {
 			return Entry{}, "", Metadata{}, fmt.Errorf("local image alias %q already names a different immutable image", name)
 		}
-		return localEntry(existing, metadata), path, metadata, nil
+		return localEntry(existing), path, metadata, nil
 	}
 	registry.Aliases[name] = value
 	data, err := json.MarshalIndent(registry, "", "  ")
@@ -135,7 +146,7 @@ func (s Store) RegisterLocalAlias(ctx context.Context, name, digest, arch, boot,
 	if err := fsutil.AtomicWrite(s.localAliasesPath(), append(data, '\n'), 0o600); err != nil {
 		return Entry{}, "", Metadata{}, err
 	}
-	return localEntry(value, metadata), path, metadata, nil
+	return localEntry(value), path, metadata, nil
 }
 
 func (s Store) ResolveLocalAlias(ctx context.Context, name, arch string) (Entry, string, Metadata, error) {
@@ -150,11 +161,12 @@ func (s Store) ResolveLocalAlias(ctx context.Context, name, arch string) (Entry,
 	if !ok || alias.Arch != arch {
 		return Entry{}, "", Metadata{}, os.ErrNotExist
 	}
-	path, metadata, err := s.ValidateCached(ctx, alias.Digest)
+	entry := localEntry(alias)
+	path, metadata, err := s.ValidateCached(ctx, entry)
 	if err != nil {
 		return Entry{}, "", Metadata{}, err
 	}
-	return localEntry(alias, metadata), path, metadata, nil
+	return entry, path, metadata, nil
 }
 
 func (s Store) LocalEntries() ([]LocalAlias, error) {

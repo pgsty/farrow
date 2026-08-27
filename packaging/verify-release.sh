@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck disable=SC1091
+source "${script_directory}/semver.sh"
+
 version=${1:-}
 directory=${2:-}
-if [[ ! ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ || ${directory} != /* || ! -d ${directory} ]]; then
+if ! farrow_is_prerelease_semver "${version}" || [[ ${directory} != /* || ! -d ${directory} ]]; then
   printf 'usage: %s <prerelease-version> <absolute-release-directory>\n' "$0" >&2
   exit 2
 fi
@@ -12,6 +16,8 @@ for tool in awk cmp diff file find go grep jq ruby sed shasum stat tar tr; do
 done
 directory=$(cd "${directory}" && pwd -P)
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
+# shellcheck disable=SC1091
+source "${repo}/packaging/payload-inventory.sh"
 # shellcheck disable=SC1091
 source "${repo}/packaging/toolchain.env"
 
@@ -43,37 +49,12 @@ host_os=$(uname -s | tr '[:upper:]' '[:lower:]')
 host_arch=$(uname -m)
 [[ ${host_arch} == x86_64 ]] && host_arch=amd64
 [[ ${host_arch} == aarch64 ]] && host_arch=arm64
-expected_paths=(
-  BUILD_INFO.json
-  LICENSE
-  README.md
-  THIRD_PARTY_LICENSES.md
-  bin/farrow
-  bin/farrow-hosts-helper
-  bin/pigsty-vm
-  docs/architecture.md
-  docs/cli.md
-  docs/config.md
-  docs/development.md
-  docs/images.md
-  docs/networking.md
-  docs/phase-2.md
-  docs/pigsty.md
-  docs/security.md
-  docs/status.md
-  docs/troubleshooting.md
-  schemas/farrow-v1.schema.json
-  tests/e2e/README.md
-  third_party/licenses/aead.dev-minisign-LICENSE
-  third_party/licenses/github.com-diskfs-go-diskfs-LICENSE
-  third_party/licenses/github.com-djherbis-times-LICENSE
-  third_party/licenses/go.yaml.in-yaml-v3-LICENSE
-  third_party/licenses/go.yaml.in-yaml-v3-NOTICE
-  third_party/licenses/golang.org-go-stdlib-LICENSE
-  third_party/licenses/golang.org-x-crypto-LICENSE
-  third_party/licenses/golang.org-x-sys-LICENSE
-  third_party/licenses/golang.org-x-term-LICENSE
-)
+expected_paths=()
+inventory=$(farrow_development_archive_payload_paths "${repo}")
+[[ -n ${inventory} ]] || { printf 'development archive payload inventory is empty\n' >&2; exit 1; }
+while IFS= read -r path; do
+  expected_paths+=("${path}")
+done <<<"${inventory}"
 expected_list=$(printf '%s\n' "${expected_paths[@]}" | LC_ALL=C sort)
 
 file_mode() {

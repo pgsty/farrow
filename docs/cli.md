@@ -6,9 +6,9 @@ farrow [--json|--yaml] [--verbose] <command> [flags] [node...]
 
 ## Conventions
 
-**Config discovery.** Commands that act on a project look for `-f <file>`
-first, then `farrow.yaml` in the working directory. With neither, they operate
-in quick mode on a single VM named `meta`.
+**Config discovery.** Commands that act on a project look for `-f <file>` /
+`--file <file>` first, then `farrow.yaml` in the working directory. With
+neither, they operate in quick mode on a single VM named `meta`.
 
 **Node selectors.** `plan`, `up`, `start`, `stop`, `restart`, `recreate`,
 `status` and `provision` accept trailing node names to limit the operation.
@@ -23,13 +23,24 @@ exclusive.
 Final results and command payloads go to stdout. Progress, warnings, errors and
 verbose diagnostics go to stderr, so structured stdout remains directly
 parseable. ANSI styling is used only for a real terminal; redirected streams,
-files, `NO_COLOR`, and `TERM=dumb` are plain. Long bounded operations report an
-initial state, a restrained heartbeat after prolonged silence, and completion.
+files, `NO_COLOR`, and `TERM=dumb` are plain. Long bounded operations report
+the current concrete stage, a restrained heartbeat after prolonged silence,
+and completion. Image transfers additionally report the selected source,
+downloaded and total bytes, percentage, rate, and ETA when the total size is
+known. Repository and catalog URLs containing credentials, query strings, or
+fragments are rejected; other URL-like activity sources are sanitized before
+they reach progress output.
 
 `--verbose` adds redacted implementation detail on stderr: selected mode,
 resolved targets, paths, operation IDs, timeouts and phases. It never changes
 the stdout schema, exit code, command behaviour, or QEMU's separate
 `--log-level` setting.
+
+Viper owns process-level presentation settings. `FARROW_OUTPUT` may be
+`text`, `json`, or `yaml`, and `FARROW_VERBOSE=true` enables the same bounded
+diagnostics as `--verbose`. Explicit command-line presentation flags take
+precedence. Project YAML remains on the strict schema-aware decoder so unknown
+fields continue to fail instead of being silently ignored.
 
 Some commands produce native payloads or streams:
 
@@ -49,7 +60,9 @@ Some commands produce native payloads or streams:
   means the same source line continues in the next record.
 
 **Confirmation.** Destructive operations print their plan and change nothing
-until you pass `--force` (project data) or `--yes` (host state).
+until you pass `--force` (project data) or `--yes` (host state). `setup` is an
+apply-by-default bootstrap: it prints one compact transaction and asks once
+with a terminal; `--yes` is required when that transaction runs without one.
 
 ## Exit codes
 
@@ -64,9 +77,74 @@ until you pass `--force` (project data) or `--yes` (host state).
 | 6 | resource held | another project owns the private lease |
 | 7 | integrity failure | checksum, signature, or ownership mismatch |
 
-`ssh`, `exec`, and a single-node `provision` pass the remote exit code through
-unchanged; 255 means SSH itself failed. A mixed multi-node provision result
-returns 5.
+`ssh` and `exec` pass the remote exit code through. A single-node `provision`
+does the same except that SSH exit code 255 maps to runtime error 1. A mixed
+multi-node provision result returns 5.
+
+## First-time setup
+
+```bash
+farrow setup [quick|<profile>] [-f <file>] [--network-cidr <RFC1918/24>] \
+             [--mode host|shared] [--dry-run|--yes] \
+             [--json|--yaml] [--verbose]
+```
+
+This is the normal host bootstrap; it replaces the beginner-facing sequence of
+separate dependency, doctor, validation, preflight, archive, UUID, and network
+install steps.
+
+The three common paths are:
+
+```bash
+farrow setup        # Quick single VM; next: farrow up
+farrow setup meta   # private single node; creates farrow.yaml; next: farrow up
+farrow setup full   # private four-node lab; creates farrow.yaml; next: farrow up
+```
+
+With no profile and no discovered `farrow.yaml`, setup selects Quick. With a
+`farrow.yaml` in the current directory, it prepares that exact configuration.
+`-f` selects another existing configuration. A named private profile generates
+`farrow.yaml` atomically; if an existing file resolves to the same profile it
+is reused, otherwise it is preserved and setup returns a conflict. Profile and
+`-f` are mutually exclusive.
+
+Setup detects and, when needed, installs QEMU, image tools, UEFI firmware,
+OpenSSH, and platform network packages through Homebrew, APT, or DNF. It then
+verifies native acceleration. Quick uses QEMU user NAT and makes no host-network
+change.
+
+For a private profile, setup installs or reuses the host-global network. On
+macOS it securely downloads the release pinned in the binary, verifies its
+SHA-256 and archive structure, generates the persistent interface UUID, and
+installs socket_vmnet. On Linux it installs and verifies the owned `farrow0`
+systemd-networkd bridge. Private setup also digest-verifies the companion hosts
+helper from the package/formula and installs it at the fixed root-owned path.
+`--mode shared` is macOS-only; `host` is the default.
+
+`--network-cidr` applies only to a generated private profile. Without it, setup
+can reuse the subnet from an existing healthy Farrow installation or select a
+free built-in RFC1918 `/24` when the default collides. It never silently
+rebases an explicit file.
+
+The command is idempotent. A matching healthy host becomes a no-op. Foreign or
+partial network state, unsafe ownership, an explicit subnet mismatch, and an
+active conflicting lease are preserved and reported with a next action; setup
+does not delete or adopt them. `--dry-run` prints the resolved transaction and
+makes no changes. Its structured result sets `applicable` when the plan can be
+applied, keeps `ready` false because no setup was performed, and returns the
+same `farrow setup ...` command without `--dry-run` in `next`/`next_argv`.
+`--yes` accepts one transaction and is required for a mutating non-interactive
+run.
+
+The structured result includes the host, selected mode/profile, dependency
+plan, optional network report, applied steps, final readiness, and a `next`
+summary plus shell-free `next_argv`. After an applied successful setup, that is
+`farrow up` for the normal discovered/current directory path and
+`farrow up -f <absolute-file>` for an external `-f` config. A blocked setup may
+instead return `farrow list --json`, or a prose resolution with `next_argv`
+set to `null` when no safe command can be prescribed.
+See [Getting Started](getting-started.md) for copyable installation and launch
+recipes.
 
 ## Lifecycle
 
@@ -81,20 +159,22 @@ farrow status    [flags] [node...]
 farrow destroy   [flags]             # requires --force
 ```
 
-Flags are accepted only where they can act. A flag passed to a command that
-cannot use it is a usage error, not a silent no-op:
+Flags are accepted only where documented below. One current limitation is
+explicit: Private lifecycle commands parse `--log-level` but keep their default
+QEMU diagnostics; the option controls Quick only.
 
 | Flag | Accepted by | Description |
 |---|---|---|
 | `--json` | global | stable JSON result |
 | `--yaml` | global | YAML result with the JSON field contract |
 | `--verbose` | global | bounded, redacted diagnostics on stderr |
-| `--log-level <level>` | all | QEMU diagnostic level: `error`, `warn`, `info` (default), `debug` |
+| `--log-level <level>` | lifecycle; effective in Quick | QEMU diagnostic level: `error`, `warn`, `info` (default), `debug` |
 | `-f <file>` | `plan`, `up`, `recreate` | declarative configuration file |
+| `--repo <URL-or-dir>` | `plan`, `up` | sync the signed image catalog and prefer artifacts from this repository |
 | `--force` | `destroy`, `recreate` | confirm a destructive operation |
 | `--delete-persistent` | `destroy` | also delete `persistent: true` data disks; requires `--force` |
 | `--no-wait` | `up`, `start`, `restart`, `recreate` | return once QMP and process identity are confirmed, without waiting for guest SSH and the ready marker |
-| `--restart` | `plan`, `up` | stop a running VM to apply restart-class drift |
+| `--restart` | `up` | stop a running VM to apply restart-class drift |
 | `--rollback` | `up` | private projects only: remove artifacts from nodes that failed during this prepare, leaving successful peers running |
 
 Once a project exists, `start`, `stop`, `restart`, `status` and `destroy` read
@@ -102,8 +182,11 @@ the resolved spec from project state — they take no `-f`. Supplying a
 configuration is how you *change* a project, which is why only `plan`, `up` and
 `recreate` accept it.
 
-Quick-mode overrides, accepted by `plan` and `up` only, and ignored when a
-config file is in use:
+Single-node overrides are accepted by `plan` and `up`. Without a configuration,
+the defaults below define Quick. With a one-node YAML file, explicitly supplied
+flags replace or append to that node; omitted flags preserve the file. Any
+override with a multi-node file is rejected. `--no-default-forwards` is valid
+only without declarative YAML.
 
 | Flag | Default | Description |
 |---|---|---|
@@ -129,7 +212,7 @@ Private projects treat any change to the desired spec hash as destructive.
 
 ### Deletion
 
-`destroy --force` removes node artifacts and preserves the image cache, the
+`destroy --force` removes node artifacts and preserves the local image files, the
 project marker, project SSH keys, and every `persistent: true` data disk. A
 later compatible `up` reattaches those disks.
 
@@ -155,7 +238,8 @@ readiness on a host that has never installed it. That verdict does not affect
 quick mode, which needs none of those components.
 
 ```bash
-farrow list [--json|--yaml] [--verbose]                    # every project on this host
+farrow list [--json|--yaml] [--verbose]                    # projects in the selected data root
+farrow ls                                                   # alias for farrow list
 farrow logs [node] [--source serial|qemu|events] [--follow]
 farrow debug bundle [--output <path>] [--json|--yaml] [--verbose]
 farrow repair [--dry-run|--force] [--json|--yaml] [--verbose]
@@ -203,6 +287,7 @@ farrow provision --script <path> [--sudo] [--parallel 1..4] \
                  [--timeout <duration>] [--json|--yaml] [--verbose] [node...]
 farrow ssh-config [--install|--remove] [--name <prefix>] \
                   [--json|--yaml] [--verbose] [node...]
+farrow ss [--name <prefix>] [node...]
 farrow hosts install|uninstall [--json|--yaml] [--verbose] [--yes]
 ```
 
@@ -219,19 +304,27 @@ exit status and duration; the audit trail records only digest, byte count,
 selection and result metadata.
 
 `ssh-config` with no flag prints a fragment. `--install` writes a marker-owned
-fragment plus an `Include` line in `~/.ssh/config`, so `ssh meta` works
-directly. `--remove` removes only this project's fragment and `Include`.
+fragment plus an `Include` line in `~/.ssh/config`; the collision-free host
+name is `<prefix>-<node>`, such as `dev-meta`. `--remove` removes only this
+project's fragment and `Include`.
+
+`farrow ss` is the install shortcut. Its default prefix is the current project
+directory basename, so running it inside `~/farrow-labs/dev` is equivalent to
+`farrow ssh-config --install --name dev`. Use `farrow ss --name <prefix>` when
+the directory name is unsuitable or you want an explicit stable name.
 
 `hosts` publishes the project's node aliases to `/etc/hosts` through a
 root-owned helper whose digest is pinned into the CLI at build time. It prints
-the exact plan and changes nothing without `--yes`.
+the exact plan and changes nothing without `--yes`. It currently accepts only
+the default private subnet `10.10.10.0/24`; custom-subnet projects should use
+SSH config or DNS instead.
 
 ## Images
 
 ```bash
-farrow image list [--json|--yaml] [--verbose]
-farrow image info [--json|--yaml] [--verbose] <alias>
-farrow image pull [--json|--yaml] [--verbose] <alias>
+farrow image list [--repo URL|DIR] [--json|--yaml] [--verbose]
+farrow image info [--repo URL|DIR] [--json|--yaml] [--verbose] <alias>
+farrow image pull [--repo URL|DIR] [--json|--yaml] [--verbose] <alias>
 farrow image prune [--dry-run|--yes] [--json|--yaml] [--verbose]
 farrow image import [--sha256 <digest>] \
                     [--name <alias> --boot bios|uefi --source-user <user>] <path>
@@ -239,10 +332,15 @@ farrow image sync [--allow-downgrade] [--json|--yaml] [--verbose] <url|path>
 farrow image reset-manifest [--json|--yaml] [--verbose]
 ```
 
-`prune` defaults to listing unreferenced cache entries; `--yes` deletes them.
-`sync` installs a signed manifest and refuses versions below the recorded
+`--repo` reads `<repo>/catalog.json` and its adjacent `.minisig`, then prefers
+the repository artifact before the catalog's upstream fallback. `prune`
+defaults to listing unreferenced local image files and crash-orphaned staging
+files; `--yes` deletes the displayed paths.
+`sync` installs a signed catalog and refuses versions below the recorded
 high-water mark unless `--allow-downgrade` is explicit. `reset-manifest`
-restores the manifest embedded in the binary.
+restores the bootstrap catalog embedded in the binary. Ordinary builds contain
+no external catalog roots until production custody is assigned, so `sync`
+fails closed rather than trusting the development roots used only by tests.
 
 See [images.md](images.md).
 
@@ -257,9 +355,7 @@ farrow network status    [--cidr <RFC1918/24>] [--json|--yaml] [--verbose]
 farrow network install   [--cidr <RFC1918/24>] [--mode host|shared] \
                          [--archive <path>] [--interface-id <uuid>] \
                          [--json|--yaml] [--verbose] [--yes]
-farrow network uninstall [--cidr <RFC1918/24>] [--mode host|shared] \
-                         [--archive <path>] [--interface-id <uuid>] \
-                         [--json|--yaml] [--verbose] [--yes]
+farrow network uninstall [--json|--yaml] [--verbose] [--yes]
 ```
 
 `preflight` is read-only and runs automatically before install and before every
@@ -271,8 +367,9 @@ tarball and the persistent vmnet interface UUID. `--mode` is macOS-only and
 defaults to `host`.
 
 `install` and `uninstall` print the full privileged plan — paths, ownership,
-modes, and rollback — and change nothing until `--yes`. `uninstall` refuses
-while a private lease is active.
+modes, and rollback — and change nothing until `--yes`. `uninstall` reads the
+installed ownership manifest rather than accepting a new network definition;
+it refuses while a private lease is active.
 
 See [networking.md](networking.md).
 
@@ -330,5 +427,8 @@ VM topology. See [pigsty.md](pigsty.md) — normally you drive this through the
 
 ```bash
 farrow version
-farrow completion bash|zsh|fish
+farrow completion bash|zsh|fish|powershell
 ```
+
+Completion is generated from the Cobra command tree, so command aliases,
+subcommands, and command-specific flags stay in sync with `--help`.

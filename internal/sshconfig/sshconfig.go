@@ -23,6 +23,10 @@ var namePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$`)
 var identityPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{7,63}$`)
 var aliasPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,252}$`)
 
+// ValidName reports whether value is safe as both an SSH Host prefix and the
+// basename of a Farrow-owned SSH configuration fragment.
+func ValidName(value string) bool { return namePattern.MatchString(value) }
+
 func safeOpenSSHPath(value string) bool {
 	return filepath.IsAbs(value) && !strings.ContainsAny(value, "\r\n\x00$%*?[]")
 }

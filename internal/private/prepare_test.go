@@ -120,7 +120,7 @@ func TestPrepareAllBuildsJournaledOfflineArtifacts(t *testing.T) {
 	root := t.TempDir()
 	fake := &fakePrivateDisks{barrier: make(chan struct{})}
 	config := privatePrepareConfig(t, root, fake)
-	outcomes := PrepareAll(context.Background(), config, 2)
+	outcomes := prepareAll(context.Background(), config, 2)
 	if names := PreparedNames(outcomes); len(names) != 2 || names[0] != "meta" || names[1] != "node-1" {
 		t.Fatalf("prepared outcomes = %#v names=%v", outcomes, names)
 	}
@@ -157,7 +157,7 @@ func TestPrepareAllPreservesSuccessOnPartialFailure(t *testing.T) {
 	root := t.TempDir()
 	fake := &fakePrivateDisks{failSubstring: "node-1/root.qcow2"}
 	config := privatePrepareConfig(t, root, fake)
-	outcomes := PrepareAll(context.Background(), config, 2)
+	outcomes := prepareAll(context.Background(), config, 2)
 	if names := PreparedNames(outcomes); len(names) != 1 || names[0] != "meta" {
 		t.Fatalf("partial prepared names = %v outcomes=%#v", names, outcomes)
 	}

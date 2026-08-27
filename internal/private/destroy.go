@@ -12,6 +12,7 @@ import (
 	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/persistent"
+	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/spec"
@@ -373,7 +374,7 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 		return Status{}, err
 	}
 	if selectedHasShares(requested, requestedSelection) {
-		qemuPath, err := m.lookPath(profile.QEMUBinary)
+		qemuPath, err := platform.FindQEMUBinary(profile, m.lookPath)
 		if err != nil {
 			return Status{}, err
 		}

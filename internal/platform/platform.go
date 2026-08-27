@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -55,6 +56,51 @@ type Firmware struct {
 	Vars string
 }
 
+// RHELQEMUBinary is the fixed system path used by RHEL-family qemu-kvm
+// packages when they do not expose qemu-system-* on PATH. It is deliberately
+// the only fallback outside PATH; callers must not search arbitrary libexec
+// directories or accept a different architecture's emulator.
+const RHELQEMUBinary = "/usr/libexec/qemu-kvm"
+
+// FindQEMUBinary resolves the profile's native emulator. Linux additionally
+// accepts the single, distribution-defined qemu-kvm path used by RHEL-family
+// packages. The injected lookup keeps resolution testable while retaining the
+// same executable checks as exec.LookPath in production.
+func FindQEMUBinary(profile Profile, lookup func(string) (string, error)) (string, error) {
+	if profile.QEMUBinary == "" {
+		return "", errors.New("QEMU binary name is empty")
+	}
+	if lookup == nil {
+		lookup = exec.LookPath
+	}
+	path, primaryErr := lookup(profile.QEMUBinary)
+	if primaryErr == nil {
+		return path, nil
+	}
+	if !allowsRHELQEMUFallback(profile) {
+		return "", primaryErr
+	}
+	path, fallbackErr := lookup(RHELQEMUBinary)
+	if fallbackErr == nil {
+		return path, nil
+	}
+	return "", fmt.Errorf("locate %s or %s: %w", profile.QEMUBinary, RHELQEMUBinary, errors.Join(primaryErr, fallbackErr))
+}
+
+func allowsRHELQEMUFallback(profile Profile) bool {
+	if profile.OS != "linux" {
+		return false
+	}
+	switch profile.Arch {
+	case "amd64":
+		return profile.QEMUBinary == "qemu-system-x86_64"
+	case "arm64":
+		return profile.QEMUBinary == "qemu-system-aarch64"
+	default:
+		return false
+	}
+}
+
 // FirmwareCandidates are distribution/package locations to probe. The chosen
 // path is evidence and must be persisted by the caller.
 func FirmwareCandidates(profile Profile) []Firmware {
@@ -64,6 +110,7 @@ func FirmwareCandidates(profile Profile) []Firmware {
 			{Code: "/usr/local/share/qemu/edk2-x86_64-code.fd", Vars: "/usr/local/share/qemu/edk2-i386-vars.fd"},
 			{Code: "/usr/share/OVMF/OVMF_CODE_4M.fd", Vars: "/usr/share/OVMF/OVMF_VARS_4M.fd"},
 			{Code: "/usr/share/OVMF/OVMF_CODE.fd", Vars: "/usr/share/OVMF/OVMF_VARS.fd"},
+			{Code: "/usr/share/edk2/ovmf/OVMF_CODE.fd", Vars: "/usr/share/edk2/ovmf/OVMF_VARS.fd"},
 		}
 	}
 	if profile.Arch == "arm64" {

@@ -83,7 +83,7 @@ jobs:
         run: ./tests/image-pipeline-test.sh
 
       - name: Cross-build supported targets
-        run: make cross
+        run: make cross-check
 
       - name: Validate GoReleaser configuration
         run: goreleaser check

@@ -1,9 +1,17 @@
 # Troubleshooting
 
-Start here:
+Start by re-running the idempotent bootstrap. It fixes missing supported
+dependencies and reports the first host boundary it cannot safely cross:
 
 ```bash
-farrow doctor                      # host capability
+farrow setup                       # Quick project
+farrow setup meta                  # private single-node project
+farrow setup full                  # private four-node project
+```
+
+Then narrow a runtime problem with:
+
+```bash
 farrow status --json               # what Farrow thinks is running
 farrow logs --source events        # structured operation timeline
 farrow logs --source serial        # guest console
@@ -13,16 +21,72 @@ farrow plan                        # what the next action would do
 `--source events` records operation UUID, action, phase, level and a redacted
 message for every step. It is usually faster than reading the QEMU log.
 
-## `farrow doctor` reports a missing tool
+## `setup` says Homebrew is missing
+
+Farrow uses Homebrew as the supported dependency installer on macOS, but does
+not execute Homebrew's remote installation script on your behalf. Install it
+from its official site, load its environment, and rerun the same command:
 
 ```bash
-brew install qemu                                       # macOS
-sudo apt install qemu-system-x86 qemu-utils openssh-client iproute2
-sudo dnf install qemu-kvm qemu-img openssh-clients iproute
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+if [[ -x /opt/homebrew/bin/brew ]]; then
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+else
+  eval "$(/usr/local/bin/brew shellenv)"
+fi
+farrow setup
 ```
 
-Doctor is the authority on whether a host can run Farrow. A successful build
-proves nothing about the machine you are on.
+Farrow does not silently pipe a third-party installer into a shell. That trust
+decision belongs to the host owner; after Homebrew exists, setup handles QEMU.
+
+## `setup` cannot install a Linux dependency
+
+Setup supports APT on Debian/Ubuntu and DNF on Fedora/RHEL-family hosts. Native
+Farrow packages normally install the Quick dependencies before setup runs:
+
+| Format/arch | Architecture-specific | Common |
+|---|---|---|
+| DEB amd64 | `qemu-system-x86`, `ovmf` | `qemu-utils`, `openssh-client`, `iproute2` |
+| DEB arm64 | `qemu-system-arm`, `qemu-efi-aarch64` | `qemu-utils`, `openssh-client`, `iproute2` |
+| RPM amd64 | `qemu-kvm`, `edk2-ovmf` | `qemu-img`, `openssh-clients`, `iproute` |
+| RPM arm64 | `qemu-kvm`, `edk2-aarch64` | `qemu-img`, `openssh-clients`, `iproute` |
+
+For Private, Debian/Ubuntu also needs `systemd`; Fedora needs
+`systemd-networkd`. Do not substitute an unrelated QEMU binary: setup verifies
+the native system emulator, image tool, UEFI firmware, and accelerator after
+the package manager returns.
+
+RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux are currently Quick-only.
+Their supported networking stack is NetworkManager and Farrow does not yet
+implement a safe private NetworkManager backend. Use `farrow setup` without a
+private profile, or run the private lab on Debian/Ubuntu, Fedora, or macOS.
+
+## `setup` preserves an existing `farrow.yaml`
+
+`farrow setup meta` and `farrow setup full` create `farrow.yaml` only when the
+target is absent or resolves to the exact same generated profile. An invalid or
+different file is never overwritten.
+
+Choose one explicit path:
+
+```bash
+farrow setup -f farrow.yaml       # prepare the existing file exactly as written
+
+# or preserve it and generate the named profile in an empty directory
+mkdir -p ../fresh-lab
+cd ../fresh-lab
+farrow setup full
+```
+
+If the current directory should be Quick, move the private `farrow.yaml` out
+of it first. Plain `farrow up` intentionally discovers that file.
+
+## `farrow doctor` reports a missing capability
+
+`doctor` remains the detailed read-only probe. Normally rerun `farrow setup`
+first; it installs supported dependencies and performs the same final host
+verification. A successful source build alone proves nothing about the host.
 
 ## No native accelerator
 
@@ -134,27 +198,55 @@ If the lease is stale — the owning process is gone — `repair --dry-run` show
 what can be reclaimed. A lease owned by a different UID is not reclaimable
 without that user's cooperation; this is deliberate.
 
+`setup` reuses a healthy matching network without disturbing its lease, but it
+will not replace or uninstall a network while that lease is active. Stop or
+destroy the project named by `farrow list --json`, then rerun setup.
+
 ## Private subnet conflicts
 
+For a newly generated `meta` or `full` profile, setup automatically tries a
+bounded set of free RFC1918 `/24` alternatives. If it still stops, the conflict
+is explicit or unsafe to change: a user-supplied config/CIDR, a foreign owner,
+a partial installation, or an active lease. Inspect the evidence:
+
 ```bash
+farrow setup -f farrow.yaml --dry-run --json
+farrow network status --json
 farrow network preflight -f farrow.yaml --json
 ```
 
-Preflight fails when a route, interface or address overlaps. If something in
-`.9`–`.254` already answers SSH while no Farrow lease is active, `plan` and
-`up` stop before creating state and name the address. Stop the other VM
-runtime, or move the whole lab:
+If a foreign route, interface, service, or address owns the subnet, stop that
+named owner or choose a free subnet. Farrow never deletes or adopts it. For a
+generated lab that has not retained data, replace the whole decision:
 
 ```bash
 farrow destroy --force
 farrow network uninstall --yes
-farrow init full --network-cidr 172.31.251.0/24 >farrow.yaml
-farrow network preflight -f farrow.yaml
-farrow network install --cidr 172.31.251.0/24 --yes
+mv farrow.yaml farrow.yaml.previous
+farrow setup full --network-cidr 172.31.251.0/24
+farrow up
 ```
 
-Changing only the daemon subnet, only the node IPs, or only the lease file
-produces an inconsistent host. Move all of them together.
+Review `farrow.yaml.previous` before deleting it. For a hand-maintained config,
+edit every node address and the private `/24` together, then run
+`farrow setup -f farrow.yaml`. Changing only the daemon subnet, node IPs, or
+lease file produces an inconsistent host.
+
+## `setup` finds a partial or unsafe private installation
+
+Setup does not turn an ownership or integrity error into an automatic cleanup.
+Start with the read-only record:
+
+```bash
+farrow network status --json
+farrow network preflight -f farrow.yaml --json
+```
+
+The finding identifies the exact marker, owner, mode, path, service, or
+interface that failed. If it is a provably owned old Farrow installation,
+release any lease and use the explicit `network uninstall` plan. If ownership
+is ambiguous, preserve it and repair the named host component as an
+administrator; do not remove paths by glob.
 
 ## macOS: the socket exists but `10.10.10.1` does not
 
@@ -170,7 +262,7 @@ Farrow will not adopt a foreign interface that happens to hold `.1/24`. Install
 records the exact BSD interface it created, and preflight accepts only that
 one.
 
-## Linux: `doctor` exits 3 but quick mode works
+## Linux: `doctor` exits 3 but Quick works
 
 On a host that has never installed the private network, `doctor` and
 `network status` report:
@@ -182,21 +274,20 @@ On a host that has never installed the private network, `doctor` and
 ```
 
 and exit **3**. This is the private-network readiness verdict, not a verdict on
-your host overall. Quick mode needs none of it and works normally.
-`network preflight` exits 0 in the same situation, because the subnet itself is
-eligible.
+Quick. `farrow setup` verifies the capabilities Quick actually needs and makes
+no private host-network change. Use `farrow setup meta` or `farrow setup full`
+only when fixed-IP networking is wanted.
 
-Most desktop and server Ubuntu installs use NetworkManager with
-systemd-networkd dormant, so this is the expected state until you deliberately
-install the private network.
+Many desktop Ubuntu installations use NetworkManager with systemd-networkd
+dormant, so this is expected before Private setup.
 
-## Linux: `network install` refuses with "could affect link"
+## Linux: `setup` refuses with "could affect link"
 
 ```text
 refuse to start inactive systemd-networkd: /usr/lib/systemd/network/80-wifi-adhoc.network could affect link wlp193s0
 ```
 
-Exit **7**. Farrow will not start a dormant `systemd-networkd` when any existing
+Exit **7**. Setup will not start a dormant `systemd-networkd` when any existing
 `.network` file could claim one of your real interfaces — activating it could
 reconfigure the link you are connected through.
 
@@ -209,9 +300,9 @@ Your options, in order of preference:
 
 1. **Use quick mode.** It needs no bridge, no networkd and no privilege.
 2. **Adopt systemd-networkd deliberately**, as the host administrator, before
-   installing. Once networkd is already active, Farrow does not need the
-   activation safety proof and install proceeds. Understand what this does to a
-   NetworkManager-managed desktop before you run it.
+   rerunning setup. Once networkd is already active, Farrow does not need the
+   activation safety proof. Understand what this does to a
+   NetworkManager-managed desktop before changing it.
 3. **Run the private lab on a host without the conflicting configuration** — a
    headless server with no wireless interface typically has none.
 

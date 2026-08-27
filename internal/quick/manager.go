@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/cloudinit"
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/execx"
@@ -28,6 +29,7 @@ import (
 	"github.com/pgsty/farrow/internal/openssh"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/portregistry"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
@@ -51,6 +53,8 @@ type Manager struct {
 	Runner             execx.Runner
 	ReadyTimeout       time.Duration
 	ConfiguredDataRoot string
+	Repository         string
+	Progress           activity.Reporter
 	NoWait             bool
 	NativeProfile      func() (platform.Profile, error)
 	LookPath           func(string) (string, error)
@@ -130,13 +134,65 @@ func (m Manager) dataRoot() (string, error) {
 	return project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
 }
 
-func (m Manager) imageStore(profile platform.Profile, dataRoot string) (image.Store, error) {
+func (m Manager) imageStore(profile platform.Profile, dataRoot, repository string) (image.Store, error) {
 	qemuImg, err := exec.LookPath("qemu-img")
 	if err != nil {
 		return image.Store{}, err
 	}
 	_ = profile
-	return image.Store{DataRoot: dataRoot, QEMUImg: qemuImg, Runner: m.runner()}, nil
+	return image.Store{DataRoot: dataRoot, Repository: repository, QEMUImg: qemuImg, Runner: m.runner(), Progress: m.Progress}, nil
+}
+
+func (m Manager) report(phase, message string) {
+	m.Progress.Report(activity.Event{Phase: phase, Message: message})
+}
+
+func (m Manager) configuredRepository() (string, bool, error) {
+	repository := strings.TrimSpace(m.Repository)
+	explicit := repository != ""
+	if repository == "" {
+		repository = strings.TrimSpace(os.Getenv("FARROW_REPO"))
+		explicit = repository != ""
+	}
+	if repository == "" {
+		repository = image.DefaultRepositoryURL
+	}
+	normalized, err := image.NormalizeRepository(repository)
+	return normalized, explicit, err
+}
+
+func (m Manager) imageCatalog(ctx context.Context, dataRoot string, syncRepository bool) (image.Catalog, image.ManifestState, string, error) {
+	repository, explicit, err := m.configuredRepository()
+	if err != nil {
+		return image.Catalog{}, image.ManifestState{}, "", err
+	}
+	manager := image.ManifestManager{DataRoot: dataRoot}
+	defaultSyncFailed := false
+	if syncRepository && repository != "" {
+		source, sourceErr := image.RepositoryCatalogSource(repository)
+		if sourceErr != nil {
+			return image.Catalog{}, image.ManifestState{}, "", sourceErr
+		}
+		m.Progress.Report(activity.Event{Phase: "image-catalog", Message: "Refreshing the image catalog", Source: source})
+		if _, syncErr := manager.Sync(ctx, source, false); syncErr != nil {
+			if explicit {
+				return image.Catalog{}, image.ManifestState{}, "", fmt.Errorf("sync explicit image repository: %w", syncErr)
+			}
+			m.report("image-catalog", "Default image repository unavailable; using the embedded catalog")
+			repository = ""
+			defaultSyncFailed = true
+		} else {
+			m.Progress.Report(activity.Event{Phase: "image-catalog", Message: "Image catalog is current", Source: source, Done: true})
+		}
+	}
+	catalog, state, err := manager.Current()
+	if err != nil {
+		return image.Catalog{}, image.ManifestState{}, "", err
+	}
+	if repository == "" && !defaultSyncFailed {
+		repository = image.RepositoryFromCatalogSource(state.Source)
+	}
+	return catalog, state, repository, nil
 }
 
 func (m Manager) ImportImage(ctx context.Context, source, expectedDigest string) (string, image.Metadata, error) {
@@ -148,7 +204,7 @@ func (m Manager) ImportImage(ctx context.Context, source, expectedDigest string)
 	if err != nil {
 		return "", image.Metadata{}, err
 	}
-	store, err := m.imageStore(profile, dataRoot)
+	store, err := m.imageStore(profile, dataRoot, "")
 	if err != nil {
 		return "", image.Metadata{}, err
 	}
@@ -164,15 +220,15 @@ func (m Manager) ImportNamedImage(ctx context.Context, source, expectedDigest, n
 	if err != nil {
 		return image.Entry{}, "", image.Metadata{}, err
 	}
-	store, err := m.imageStore(profile, dataRoot)
+	store, err := m.imageStore(profile, dataRoot, "")
 	if err != nil {
 		return image.Entry{}, "", image.Metadata{}, err
 	}
-	_, metadata, err := store.Import(ctx, source, expectedDigest)
+	path, metadata, err := store.Import(ctx, source, expectedDigest)
 	if err != nil {
 		return image.Entry{}, "", image.Metadata{}, err
 	}
-	entry, path, metadata, err := store.RegisterLocalAlias(ctx, name, metadata.Digest, profile.Arch, boot, sourceUser)
+	entry, path, metadata, err := store.RegisterLocalAlias(ctx, name, path, metadata, profile.Arch, boot, sourceUser)
 	return entry, path, metadata, err
 }
 
@@ -192,12 +248,12 @@ func (m Manager) ManifestReset(ctx context.Context) (image.ManifestState, error)
 	return (image.ManifestManager{DataRoot: dataRoot}).Reset(ctx)
 }
 
-func (m Manager) Images() ([]image.Entry, image.ManifestState, error) {
+func (m Manager) Images(ctx context.Context) ([]image.Entry, image.ManifestState, error) {
 	dataRoot, err := m.dataRoot()
 	if err != nil {
 		return nil, image.ManifestState{}, err
 	}
-	catalog, manifestState, err := (image.ManifestManager{DataRoot: dataRoot}).Current()
+	catalog, manifestState, repository, err := m.imageCatalog(ctx, dataRoot, true)
 	if err != nil {
 		return nil, image.ManifestState{}, err
 	}
@@ -206,7 +262,7 @@ func (m Manager) Images() ([]image.Entry, image.ManifestState, error) {
 	if err != nil {
 		return nil, image.ManifestState{}, err
 	}
-	store, err := m.imageStore(profile, dataRoot)
+	store, err := m.imageStore(profile, dataRoot, repository)
 	if err != nil {
 		return nil, image.ManifestState{}, err
 	}
@@ -215,7 +271,7 @@ func (m Manager) Images() ([]image.Entry, image.ManifestState, error) {
 		return nil, image.ManifestState{}, err
 	}
 	for _, local := range locals {
-		entry, _, _, resolveErr := store.ResolveLocalAlias(context.Background(), local.Name, profile.Arch)
+		entry, _, _, resolveErr := store.ResolveLocalAlias(ctx, local.Name, profile.Arch)
 		if resolveErr != nil {
 			return nil, image.ManifestState{}, resolveErr
 		}
@@ -233,11 +289,11 @@ func (m Manager) ImageInfo(ctx context.Context, alias string) (ImageInfo, error)
 	if err != nil {
 		return ImageInfo{}, err
 	}
-	catalog, manifestState, err := (image.ManifestManager{DataRoot: dataRoot}).Current()
+	catalog, manifestState, repository, err := m.imageCatalog(ctx, dataRoot, true)
 	if err != nil {
 		return ImageInfo{}, err
 	}
-	store, err := m.imageStore(profile, dataRoot)
+	store, err := m.imageStore(profile, dataRoot, repository)
 	if err != nil {
 		return ImageInfo{}, err
 	}
@@ -249,7 +305,7 @@ func (m Manager) ImageInfo(ctx context.Context, alias string) (ImageInfo, error)
 		}
 		return ImageInfo{Entry: localEntry, Manifest: manifestState, Cached: true, Path: path, Metadata: &metadata}, nil
 	}
-	path, metadata, cacheErr := store.ValidateCached(ctx, entry.SHA256)
+	path, metadata, cacheErr := store.ValidateCached(ctx, entry)
 	if errors.Is(cacheErr, os.ErrNotExist) {
 		return ImageInfo{Entry: entry, Manifest: manifestState}, nil
 	}
@@ -268,11 +324,11 @@ func (m Manager) PullImage(ctx context.Context, alias string) (ImageInfo, error)
 	if err != nil {
 		return ImageInfo{}, err
 	}
-	catalog, manifestState, err := (image.ManifestManager{DataRoot: dataRoot}).Current()
+	catalog, manifestState, repository, err := m.imageCatalog(ctx, dataRoot, true)
 	if err != nil {
 		return ImageInfo{}, err
 	}
-	store, err := m.imageStore(profile, dataRoot)
+	store, err := m.imageStore(profile, dataRoot, repository)
 	if err != nil {
 		return ImageInfo{}, err
 	}
@@ -296,33 +352,7 @@ func (m Manager) openProject(create bool) (project.Project, error) {
 	if err != nil {
 		return project.Project{}, err
 	}
-	opened, err := project.Open(cwd)
-	if err == nil {
-		if m.ConfiguredDataRoot != "" || os.Getenv("FARROW_DATA_HOME") != "" {
-			selected, selectErr := project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
-			if selectErr != nil {
-				return project.Project{}, selectErr
-			}
-			if filepath.Clean(selected) != filepath.Clean(opened.DataRoot) {
-				return project.Project{}, fmt.Errorf("%w: project is already rooted at %s, requested %s", project.ErrDataRootMigrationRequired, opened.DataRoot, selected)
-			}
-		}
-		return opened, nil
-	}
-	if !create {
-		return opened, err
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		var pathError *os.PathError
-		if !errors.As(err, &pathError) || !errors.Is(pathError.Err, os.ErrNotExist) {
-			return project.Project{}, err
-		}
-	}
-	dataRoot, err := project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
-	if err != nil {
-		return project.Project{}, err
-	}
-	return project.Create(cwd, dataRoot)
+	return project.OpenConfigured(cwd, m.ConfiguredDataRoot, create)
 }
 
 func processToState(identity process.Identity) state.ProcessIdentity {
@@ -438,47 +468,6 @@ func copyExclusive(source, target string, mode os.FileMode) error {
 	return fsutil.SyncDir(filepath.Dir(target))
 }
 
-func reservedPorts(dataRoot string) (map[uint16]struct{}, error) {
-	reserved := make(map[uint16]struct{})
-	discovery, err := project.Discover(dataRoot)
-	if err != nil {
-		return nil, err
-	}
-	if len(discovery.Warnings) > 0 {
-		return nil, fmt.Errorf("refuse port allocation with unsafe project registry entries: %v", discovery.Warnings)
-	}
-	for _, projectValue := range discovery.Projects {
-		nodesDir := filepath.Join(projectValue.Root, "nodes")
-		entries, err := os.ReadDir(nodesDir)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		store := state.Store{Project: projectValue}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				return nil, fmt.Errorf("unexpected non-directory node registry entry %s", entry.Name())
-			}
-			node, err := store.ReadNode(entry.Name())
-			if err != nil {
-				return nil, err
-			}
-			if node.Phase == state.Absent {
-				continue
-			}
-			if node.SSHPort != 0 {
-				reserved[node.SSHPort] = struct{}{}
-			}
-			for _, forward := range node.Forwards {
-				reserved[forward.Host] = struct{}{}
-			}
-		}
-	}
-	return reserved, nil
-}
-
 func loopbackPortAvailable(port uint16) bool {
 	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
 	if err != nil {
@@ -552,28 +541,31 @@ func cloudShares(shares []spec.Share) []cloudinit.Share {
 }
 
 func (m Manager) ensureImage(ctx context.Context, profile platform.Profile, dataRoot, alias string) (image.Entry, string, image.Metadata, error) {
-	catalog, _, err := (image.ManifestManager{DataRoot: dataRoot}).Current()
+	m.report("image-resolve", fmt.Sprintf("Resolving image %s for %s", alias, profile.Arch))
+	catalog, _, repository, err := m.imageCatalog(ctx, dataRoot, true)
 	if err != nil {
 		return image.Entry{}, "", image.Metadata{}, err
 	}
-	store, err := m.imageStore(profile, dataRoot)
+	store, err := m.imageStore(profile, dataRoot, repository)
 	if err != nil {
 		return image.Entry{}, "", image.Metadata{}, err
 	}
 	entry, entryErr := catalog.Entry(alias, profile.Arch)
 	if entryErr != nil {
+		m.report("image-resolve", fmt.Sprintf("Looking for local image alias %s", alias))
 		localEntry, path, metadata, localErr := store.ResolveLocalAlias(ctx, alias, profile.Arch)
 		if localErr != nil {
 			return image.Entry{}, "", image.Metadata{}, entryErr
 		}
+		m.Progress.Report(activity.Event{Phase: "image-ready", Message: fmt.Sprintf("Using local image %s (%s)", localEntry.Alias, profile.Arch), Done: true})
 		return localEntry, path, metadata, nil
 	}
 	path, metadata, err := store.Pull(ctx, entry)
 	return entry, path, metadata, err
 }
 
-// ResolveImage resolves and validates one native-architecture manifest entry
-// into the immutable digest cache without creating a project marker.
+// ResolveImage resolves and validates one native-architecture catalog entry
+// into the readable local image directory without creating a project marker.
 func (m Manager) ResolveImage(ctx context.Context, alias string) (image.Entry, string, image.Metadata, error) {
 	profile, err := platform.Native()
 	if err != nil {
@@ -595,6 +587,7 @@ func transaction(store state.Store, version, projectID, operationID string, from
 }
 
 func (m Manager) prepare(ctx context.Context, projectValue project.Project, resolved spec.Resolved, specHash string, sshPort uint16, entry image.Entry, basePath string, metadata image.Metadata, profile platform.Profile, qemuPath string) (state.NodeState, error) {
+	m.report("prepare", "Preparing VM state for meta")
 	runner := m.runner()
 	store := state.Store{Project: projectValue}
 	persistentIdentities, err := quickPersistentIdentities(projectValue, resolved)
@@ -617,6 +610,7 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 	if err := transaction(store, m.FarrowVersion, projectValue.Marker.ProjectID, operationID, state.Absent, state.Preparing, completed, started); err != nil {
 		return state.NodeState{}, err
 	}
+	m.report("prepare-keys", "Creating or validating the project SSH key")
 	privateKey, knownHosts, publicKey, err := ensureKeys(ctx, runner, projectValue.Root)
 	if err != nil {
 		return state.NodeState{}, err
@@ -631,6 +625,7 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 		return state.NodeState{}, err
 	}
 	diskManager.QEMUImg = qemuImg
+	m.report("prepare-root-disk", "Creating the meta root-disk overlay")
 	if _, err := diskManager.CreateOverlay(ctx, basePath, rootPath, resolved.Nodes[0].RootDisk); err != nil {
 		return state.NodeState{}, err
 	}
@@ -645,6 +640,7 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 	var cloudDisks []cloudinit.Disk
 	if len(resolved.Nodes[0].Disks) == 1 {
 		dataSpec := resolved.Nodes[0].Disks[0]
+		m.report("prepare-data-disk", fmt.Sprintf("Preparing the meta data disk %s", dataSpec.Name))
 		dataPath, dataSerial, err := resolveQuickDataDisk(ctx, projectValue, resolved, diskManager, nodeDir, dataSpec)
 		if err != nil {
 			return state.NodeState{}, err
@@ -657,6 +653,7 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 		stateData = []state.DataDisk{stateDisk}
 		cloudDisks = []cloudinit.Disk{cloudDisk}
 	}
+	m.report("prepare-seed", "Building the meta cloud-init seed")
 	seedFiles, err := cloudinit.Render(cloudinit.Input{
 		ProjectID: projectValue.Marker.ProjectID, Node: nodeName, Hostname: nodeName,
 		Generation: 1, SpecHash: specHash, SSHUser: resolved.SSHUser, PublicKey: publicKey,
@@ -732,6 +729,7 @@ func (m Manager) prepare(ctx context.Context, projectValue project.Project, reso
 	if err := removeOwnedRegular(nodeDir, filepath.Join(nodeDir, "transaction.json")); err != nil {
 		return state.NodeState{}, fmt.Errorf("finalize prepare transaction after stable node state: %w", err)
 	}
+	m.Progress.Report(activity.Event{Phase: "prepare", Message: "VM state for meta is prepared", Done: true})
 	return node, nil
 }
 
@@ -834,7 +832,7 @@ func buildInvocation(projectValue project.Project, projectState state.ProjectSta
 	if err != nil {
 		return qemu.Invocation{}, err
 	}
-	qemuPath, err := exec.LookPath(profile.QEMUBinary)
+	qemuPath, err := platform.FindQEMUBinary(profile, exec.LookPath)
 	if err != nil {
 		return qemu.Invocation{}, err
 	}
@@ -882,6 +880,7 @@ func validateInvocation(projectValue project.Project, projectState state.Project
 }
 
 func (m Manager) start(ctx context.Context, projectValue project.Project, node state.NodeState) (state.NodeState, error) {
+	m.report("qemu-launch", fmt.Sprintf("Launching QEMU for %s", node.Node))
 	// Callers must establish QEMU version and any required device evidence
 	// before entering this mutating launch path.
 	if err := validateNodePaths(projectValue, node); err != nil {
@@ -960,6 +959,7 @@ func (m Manager) start(ctx context.Context, projectValue project.Project, node s
 		return node, fmt.Errorf("QEMU started but readiness log append failed: %w", err)
 	}
 	if m.NoWait {
+		m.Progress.Report(activity.Event{Phase: "qemu-ready", Message: fmt.Sprintf("QEMU for %s is running with PID %d; guest readiness was skipped", node.Node, identityValue.PID), Done: true})
 		if err := m.recordQEMULog(ctx, projectValue, node, operationID, "guest-ready-skipped", "info", "--no-wait requested; returning after QMP/process identity verification"); err != nil {
 			return node, fmt.Errorf("QEMU started but no-wait log append failed: %w", err)
 		}
@@ -969,6 +969,7 @@ func (m Manager) start(ctx context.Context, projectValue project.Project, node s
 	if err != nil {
 		return state.NodeState{}, err
 	}
+	m.report("guest-ready", fmt.Sprintf("QEMU is running with PID %d; waiting up to %s for %s SSH and ready marker on 127.0.0.1:%d", identityValue.PID, readyTimeout, node.Node, node.SSHPort))
 	if err := life.WaitReady(ctx, sshPath, filepath.Join(projectValue.Root, "keys", "id_ed25519"), filepath.Join(projectValue.Root, "keys", "known_hosts"), node.SSHPort, vm.ReadyMarker{Project: projectValue.Marker.ProjectID, Node: node.Node, Generation: node.Generation, SpecHash: node.SpecHash}, readyTimeout); err != nil {
 		_ = m.recordQEMULog(ctx, projectValue, node, operationID, "guest-ready", "error", err.Error())
 		return node, err
@@ -976,6 +977,7 @@ func (m Manager) start(ctx context.Context, projectValue project.Project, node s
 	if err := m.recordQEMULog(ctx, projectValue, node, operationID, "guest-ready", "info", fmt.Sprintf("generation %d ready marker matched spec %s", node.Generation, node.SpecHash)); err != nil {
 		return node, fmt.Errorf("guest became ready but QEMU log append failed: %w", err)
 	}
+	m.Progress.Report(activity.Event{Phase: "guest-ready", Message: fmt.Sprintf("Guest %s is ready on SSH port %d", node.Node, node.SSHPort), Done: true})
 	return node, nil
 }
 
@@ -1068,6 +1070,7 @@ func (m Manager) upDesired(ctx context.Context, requested spec.Resolved, hasOver
 }
 
 func (m Manager) upDesiredWithPreflight(ctx context.Context, requested spec.Resolved, hasOverrides bool, policy UpPolicy, preflight qemuPreflightEvidence) (Status, error) {
+	m.report("preflight", "Checking native virtualization and QEMU capabilities")
 	profile, err := m.nativeProfile()
 	if err != nil {
 		return Status{}, err
@@ -1085,6 +1088,8 @@ func (m Manager) upDesiredWithPreflight(ctx context.Context, requested spec.Reso
 		return Status{}, err
 	}
 	qemuPath := preflight.Binary
+	m.Progress.Report(activity.Event{Phase: "preflight", Message: fmt.Sprintf("Native QEMU preflight passed with %s", qemuPath), Done: true})
+	m.report("project-state", "Inspecting the Quick project state")
 	projectValue, err := m.openProject(true)
 	if err != nil {
 		return Status{}, err
@@ -1121,6 +1126,7 @@ func (m Manager) upDesiredWithPreflight(ctx context.Context, requested spec.Reso
 	defer projectLock.Release()
 	projectState, node, readErr := readConsistent(store, nodeName)
 	if readErr == nil {
+		m.report("project-state", "Reconciling the existing meta VM")
 		if err := ensureNoPendingTransaction(store, nodeName); err != nil {
 			return Status{}, err
 		}
@@ -1167,6 +1173,7 @@ func (m Manager) upDesiredWithPreflight(ctx context.Context, requested spec.Reso
 			return statusFrom(projectValue, node, desired.SSHUser, "applied "+drift.Action+" drift and started quick VM"), err
 		}
 		if qmpRunning {
+			m.Progress.Report(activity.Event{Phase: "project-state", Message: "The meta VM is already running", Done: true})
 			node.Phase = state.Running
 			node.UpdatedAt = time.Now().UTC()
 			_ = store.WriteNode(node)
@@ -1193,8 +1200,9 @@ func (m Manager) upDesiredWithPreflight(ctx context.Context, requested spec.Reso
 			return Status{}, readErr
 		}
 	}
+	m.report("project-state", "Allocating ports and creating the meta VM")
 	var resolved spec.Resolved
-	reserved, err := reservedPorts(projectValue.DataRoot)
+	reserved, err := portregistry.Reserved(projectValue.DataRoot)
 	if err != nil {
 		return Status{}, err
 	}

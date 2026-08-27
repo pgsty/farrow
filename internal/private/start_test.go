@@ -61,7 +61,7 @@ func TestStartPreparedNoWaitStopsAtVerifiedProcessStart(t *testing.T) {
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{"meta": true, "node-1": true}}
 	config.Lifecycle = fake
 	outcomes, active, err := StartPrepared(context.Background(), config)
-	if err != nil || len(ReadyNames(outcomes)) != 2 || len(RunningNames(outcomes)) != 2 {
+	if err != nil || len(readyNames(outcomes)) != 2 || len(runningNames(outcomes)) != 2 {
 		t.Fatalf("no-wait outcomes=%#v lease=%#v err=%v", outcomes, active, err)
 	}
 	fake.mu.Lock()
@@ -108,7 +108,7 @@ func TestStartPreparedParallelSuccessAndLeasePhases(t *testing.T) {
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
 	config.Lifecycle = fake
 	outcomes, active, err := StartPrepared(context.Background(), config)
-	if err != nil || len(ReadyNames(outcomes)) != 2 || len(RunningNames(outcomes)) != 2 || active.Generation != 4 {
+	if err != nil || len(readyNames(outcomes)) != 2 || len(runningNames(outcomes)) != 2 || active.Generation != 4 {
 		t.Fatalf("start outcomes=%#v lease=%#v err=%v", outcomes, active, err)
 	}
 	if fake.maxActive < 2 {
@@ -133,7 +133,7 @@ func TestStartPreparedPreservesRunningPeerOnReadinessFailure(t *testing.T) {
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{"node-1": true}}
 	config.Lifecycle = fake
 	outcomes, active, err := StartPrepared(context.Background(), config)
-	if err != nil || len(RunningNames(outcomes)) != 2 || len(ReadyNames(outcomes)) != 1 || outcomes[1].Error == "" {
+	if err != nil || len(runningNames(outcomes)) != 2 || len(readyNames(outcomes)) != 1 || outcomes[1].Error == "" {
 		t.Fatalf("partial readiness outcomes=%#v lease=%#v err=%v", outcomes, active, err)
 	}
 	for _, node := range active.Nodes {
@@ -148,7 +148,7 @@ func TestStartPreparedLeavesFailedStartForRepair(t *testing.T) {
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{"node-1": true}, failReady: map[string]bool{}}
 	config.Lifecycle = fake
 	outcomes, active, err := StartPrepared(context.Background(), config)
-	if err != nil || len(RunningNames(outcomes)) != 1 || outcomes[1].Error == "" {
+	if err != nil || len(runningNames(outcomes)) != 1 || outcomes[1].Error == "" {
 		t.Fatalf("partial start outcomes=%#v lease=%#v err=%v", outcomes, active, err)
 	}
 	for _, node := range active.Nodes {

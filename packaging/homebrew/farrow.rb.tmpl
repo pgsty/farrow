@@ -45,13 +45,17 @@ class Farrow < Formula
 
   def caveats
     <<~EOS
-      This development formula installs only the unprivileged Farrow CLI.
-      It does not install or run socket_vmnet or any root-owned network helper.
+      Prepare the host once, then start the lab:
+        farrow setup
+        farrow up
 
-      Private-project `farrow hosts ... --yes` requires an explicit root-owned
-      copy of the narrow helper. After reviewing that boundary, install it with:
-        sudo install -d -o root -g 0 -m 0755 /opt/farrow/libexec
-        sudo install -o root -g 0 -m 0755 #{libexec}/farrow-hosts-helper /opt/farrow/libexec/farrow-hosts-helper
+      For a fixed-IP private lab, run these two commands in an empty directory:
+        farrow setup meta    # one node; or: farrow setup full
+        farrow up
+
+      Setup is idempotent. It installs or reuses the private host network,
+      downloads and verifies Farrow's pinned socket_vmnet asset on macOS, and
+      asks for administrator access only when the host transaction needs it.
     EOS
   end
 

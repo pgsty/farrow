@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -61,6 +63,23 @@ func TestPrepareOutputYAML(t *testing.T) {
 	}
 }
 
+func TestPresentationFlagsOverrideViperEnvironment(t *testing.T) {
+	t.Setenv("FARROW_OUTPUT", "json")
+	t.Setenv("FARROW_VERBOSE", "true")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args, out, errOut, err := prepareOutput([]string{"version", "--yaml", "--verbose=false"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(args, " "); got != "version" {
+		t.Fatalf("args=%q", got)
+	}
+	if outputFormatFor(out) != outputYAML || verboseOutput(errOut) {
+		t.Fatalf("format=%s verbose=%t, want yaml/false", outputFormatFor(out), verboseOutput(errOut))
+	}
+}
+
 func TestRunRejectsUndocumentedPresentationAliases(t *testing.T) {
 	for _, alias := range []string{"--yml", "--yml=true", "-yml", "-yaml", "-json", "-json=false", "-verbose"} {
 		t.Run(alias, func(t *testing.T) {
@@ -84,10 +103,10 @@ func TestCommandHelpShowsOnlyDocumentedPresentationFlags(t *testing.T) {
 			if code := run(arguments, &stdout, &stderr); code != exitOK {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
-			if stdout.Len() != 0 {
-				t.Fatalf("help leaked to stdout: %q", stdout.String())
+			if stderr.Len() != 0 {
+				t.Fatalf("help wrote diagnostics to stderr: %q", stderr.String())
 			}
-			help := stderr.String()
+			help := stdout.String()
 			for _, option := range []string{"--json", "--yaml", "--verbose"} {
 				if !strings.Contains(help, option) {
 					t.Fatalf("help missing %s:\n%s", option, help)
@@ -232,7 +251,7 @@ func TestDiagnosticsAndProgressDoNotPolluteStructuredStdout(t *testing.T) {
 	if strings.Contains(stdout.String(), "WARNING") || strings.Contains(stdout.String(), "debug") || strings.Contains(stdout.String(), "Checking readiness") || strings.Contains(stdout.String(), "\x1b[") {
 		t.Fatalf("diagnostics leaked to stdout: %q", stdout.String())
 	}
-	for _, marker := range []string{"WARNING:", "debug", "Checking readiness"} {
+	for _, marker := range []string{"warning:", "debug:", "Checking readiness"} {
 		if !strings.Contains(stderr.String(), marker) {
 			t.Fatalf("stderr missing %q: %q", marker, stderr.String())
 		}
@@ -250,6 +269,64 @@ func TestProgressUsesNoANSIWhenTerminalStylingIsDisabled(t *testing.T) {
 	item.Stop(nil)
 	if strings.Contains(stderr.String(), "\x1b[") {
 		t.Fatalf("plain terminal progress contains ANSI: %q", stderr.String())
+	}
+}
+
+func TestFormatActivityShowsSafeDownloadDetails(t *testing.T) {
+	now := time.Date(2026, time.August, 26, 12, 0, 0, 0, time.UTC)
+	message := formatActivity(activity.Event{
+		Phase:        "image-download",
+		Message:      "Downloading image u24 24.04 (arm64)",
+		Source:       "https://user:secret@example.test/u24/u24-arm64.qcow2?token=private#fragment",
+		CurrentBytes: 256 << 20,
+		TotalBytes:   512 << 20,
+		StartedAt:    now.Add(-16 * time.Second),
+	}, now)
+	for _, want := range []string{
+		"Downloading image u24 24.04 (arm64)",
+		"from https://example.test/u24/u24-arm64.qcow2",
+		"256.0 MiB / 512.0 MiB (50.0%)",
+		"16.0 MiB/s",
+		"ETA 16s",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("activity message missing %q: %q", want, message)
+		}
+	}
+	for _, secret := range []string{"user", "secret", "token", "private", "fragment"} {
+		if strings.Contains(message, secret) {
+			t.Fatalf("activity message exposed %q: %q", secret, message)
+		}
+	}
+}
+
+func TestProgressReportsDetailedStagesOnlyOnStderr(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	_, out, errOut, err := prepareOutput([]string{"up", "--json", "--verbose"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := startProgress(context.Background(), errOut, "Preparing and starting the project")
+	item.Report(activity.Event{
+		Phase:        "image-download",
+		Message:      "Downloading image u24",
+		Source:       "https://repo.example/u24.qcow2",
+		CurrentBytes: 32 << 20,
+		TotalBytes:   64 << 20,
+		StartedAt:    time.Now().Add(-2 * time.Second),
+	})
+	item.Stop(nil)
+	if err := encodeOutput(out, map[string]any{"ready": true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout.String(), "Downloading") || strings.Contains(stdout.String(), "repo.example") {
+		t.Fatalf("progress leaked to structured stdout: %q", stdout.String())
+	}
+	for _, want := range []string{"Downloading image u24", "repo.example/u24.qcow2", "32.0 MiB / 64.0 MiB (50.0%)"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr missing %q: %q", want, stderr.String())
+		}
 	}
 }
 
@@ -431,7 +508,7 @@ func TestCompletionStructuredEnvelope(t *testing.T) {
 		Shell  string `json:"shell"`
 		Script string `json:"script"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Shell != "bash" || !strings.Contains(result.Script, "complete -F _farrow_complete farrow") {
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Shell != "bash" || !strings.Contains(result.Script, "__start_farrow") || !strings.Contains(result.Script, "complete -o default") {
 		t.Fatalf("result=%+v err=%v output=%s", result, err, stdout.String())
 	}
 }

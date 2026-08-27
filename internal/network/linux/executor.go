@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -171,7 +170,7 @@ func (e Executor) helperAttachSmoke(ctx context.Context, helper string) (returnE
 	if err != nil || profile.OS != "linux" {
 		return errors.New("helper attach smoke requires native Linux")
 	}
-	qemuPath, err := e.lookPath(profile.QEMUBinary)
+	qemuPath, err := platform.FindQEMUBinary(profile, e.lookPath)
 	if err != nil {
 		return err
 	}
@@ -490,13 +489,4 @@ func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, e
 	report.Applied = true
 	report.Checks["restored"] = "helper, networkd units, paths, bridge and lease boundary"
 	return report, nil
-}
-
-func CheckPortAvailable(address string, port uint16) bool {
-	listener, err := net.Listen("tcp", net.JoinHostPort(address, strconv.Itoa(int(port))))
-	if err != nil {
-		return false
-	}
-	_ = listener.Close()
-	return true
 }

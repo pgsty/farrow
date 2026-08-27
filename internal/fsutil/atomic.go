@@ -60,6 +60,52 @@ func AtomicWrite(path string, data []byte, mode os.FileMode) error {
 	return SyncDir(parent)
 }
 
+// AtomicCreate publishes a complete file only if path is still absent. The
+// same-directory hard-link step is atomic and fails with os.ErrExist instead
+// of replacing a file created by another process while the caller was doing
+// preparatory work.
+func AtomicCreate(path string, data []byte, mode os.FileMode) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return errors.New("atomic create target must be absolute")
+	}
+	if mode.Perm() != mode {
+		return fmt.Errorf("atomic create mode contains non-permission bits: %v", mode)
+	}
+	parent := filepath.Dir(path)
+	parentInfo, err := os.Lstat(parent)
+	if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("atomic create parent is not a real directory: %s", parent)
+	}
+	temp, err := os.CreateTemp(parent, "."+filepath.Base(path)+".create-")
+	if err != nil {
+		return fmt.Errorf("create atomic temporary file: %w", err)
+	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+	}()
+	if err := temp.Chmod(mode); err != nil {
+		return fmt.Errorf("chmod atomic temporary file: %w", err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		return fmt.Errorf("write atomic temporary file: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		return fmt.Errorf("sync atomic temporary file: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close atomic temporary file: %w", err)
+	}
+	if err := os.Link(tempPath, path); err != nil {
+		return fmt.Errorf("publish new atomic file without replacement: %w", err)
+	}
+	if err := os.Remove(tempPath); err != nil {
+		return fmt.Errorf("remove atomic create staging link: %w", err)
+	}
+	return SyncDir(parent)
+}
+
 // CopyToTemp copies source into a new target-directory temporary file. The
 // caller owns publishing or removing the returned path.
 func CopyToTemp(source, targetDir, pattern string, mode os.FileMode, maxBytes int64) (string, int64, error) {

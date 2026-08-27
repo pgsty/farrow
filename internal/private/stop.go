@@ -233,13 +233,3 @@ func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, *lease.
 	}
 	return outcomes, &finalLease, nil
 }
-
-func StoppedNames(outcomes []StopOutcome) []string {
-	result := make([]string, 0, len(outcomes))
-	for _, outcome := range outcomes {
-		if outcome.Stopped {
-			result = append(result, outcome.Node)
-		}
-	}
-	return result
-}

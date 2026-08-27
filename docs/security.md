@@ -7,7 +7,8 @@ Read the limitations at the end before using it anywhere that matters.
 ## Privilege boundary
 
 - QEMU always runs as the invoking user. Never as root.
-- Quick mode needs no privilege at all — no sudo, no helper, no daemon.
+- The Quick runtime needs no privileged network component. On Linux, `setup`
+  may use sudo once to install missing system packages through APT or DNF.
 - On macOS, exactly one privileged component exists: a pinned `socket_vmnet`
   daemon, running as root from a root-only path.
 - On Linux, exactly two: root-owned bridge persistence, and the distribution's
@@ -52,8 +53,7 @@ Before `destroy`, `prune`, a `repair` deletion, or `network uninstall`, Farrow:
 
 1. resolves and canonicalizes the exact target;
 2. rejects symlinks, unexpected file types, empty or unresolved paths, and
-   broad roots such as your home directory, the working directory or the XDG
-   root;
+   broad roots such as your home directory or the working directory;
 3. verifies containment beneath the owned data root and matching ownership;
 4. preserves persistent disks and project keys unless the specific destructive
    flag is present.
@@ -64,16 +64,16 @@ is missing.
 
 `project purge-keys` is a separate, dry-run-first command. It refuses while any
 node directory or retained disk exists, and accepts only the fixed allowlist
-`id_ed25519`, `id_ed25519.pub`, `known_hosts`, `known_hosts.old`. `--force`
-never widens that list.
+`id_ed25519`, `id_ed25519.pub`, `known_hosts`, `known_hosts.old`. Applying with
+`--yes` never widens that list.
 
 ## Keys and the guest
 
 Each project has its own Ed25519 key pair and its own `known_hosts`. Host key
 checking is never globally disabled. OpenSSH option values and generated config
-paths are internally double-quoted, so a data root containing spaces — the
-macOS default `Library/Application Support` — cannot split a per-project
-`known_hosts` path into a home-directory file.
+paths are internally double-quoted, so an explicitly configured data root
+containing spaces cannot split a per-project `known_hosts` path into a
+home-directory file.
 
 Only a multi-node **control** guest receives the project private key, for
 lateral SSH to its peers. Quick VMs never receive a lateral key.
@@ -137,10 +137,16 @@ or multiply-linked files are never adopted.
 
 ## Supply chain
 
-Remote images require a pinned digest and exact byte count. Local images enter
-a digest-addressed cache and are rejected if they carry backing files, external
-data files, encryption or unknown incompatible features. Manifest updates are
-explicit and detached-signature verified against two keys.
+Remote images require a pinned digest and exact byte count from the signed
+catalog. Local filenames remain readable under one image-family directory and
+are rejected if they carry backing files, external data files, encryption or
+unknown incompatible features. Catalog updates are detached-signature verified
+against trusted keys; repository HTTP is accepted only because both catalog
+and selected bytes are independently authenticated, while upstream fallback
+must be HTTPS.
+Ordinary builds ship no external catalog roots until active and standby
+production custody is assigned; external activation therefore fails closed,
+while the embedded bootstrap catalog remains available.
 
 Archive and package verifiers recompute the companion helper's SHA-256 and
 require those exact bytes inside the paired CLI, then validate payload paths,
@@ -148,7 +154,7 @@ file types, modes and architecture before publication. SBOMs, formula, release
 metadata and provenance predicate are all covered by one final checksum
 manifest.
 
-Production signing keys are not in this repository, and image manifest keys are
+Production signing keys are not in this repository, and image catalog keys are
 a separate trust domain from release signing keys.
 
 ## Known limitations

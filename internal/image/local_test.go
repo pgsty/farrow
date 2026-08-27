@@ -16,7 +16,7 @@ func TestIntegrationNamedLocalImportIsImmutableAndResolvable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, resolvedPath, resolvedMetadata, err := store.RegisterLocalAlias(context.Background(), "local-u24", metadata.Digest, "arm64", "uefi", "ubuntu")
+	entry, resolvedPath, resolvedMetadata, err := store.RegisterLocalAlias(context.Background(), "local-u24", path, metadata, "arm64", "uefi", "ubuntu")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,10 @@ func TestIntegrationNamedLocalImportIsImmutableAndResolvable(t *testing.T) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		t.Fatalf("local alias registry mode = %v, %v", info, err)
 	}
-	if _, _, _, err := store.RegisterLocalAlias(context.Background(), "local-u24", metadata.Digest, "arm64", "bios", "ubuntu"); err == nil {
+	if _, _, _, err := store.RegisterLocalAlias(context.Background(), "local-u24", path, metadata, "arm64", "bios", "ubuntu"); err == nil {
 		t.Fatal("local alias metadata was mutated")
+	}
+	if _, _, _, err := store.RegisterLocalAlias(context.Background(), "u24", path, metadata, "arm64", "uefi", "ubuntu"); err == nil {
+		t.Fatal("catalog-shaped local alias was accepted")
 	}
 }

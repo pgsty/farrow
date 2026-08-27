@@ -351,10 +351,6 @@ func (Lifecycle) duration(configured, fallback time.Duration) time.Duration {
 	return fallback
 }
 
-func SSHArgs(key, knownHosts string, port uint16, command ...string) []string {
-	return SSHArgsForUser("dba", key, knownHosts, port, command...)
-}
-
 func SSHArgsForUser(user, key, knownHosts string, port uint16, command ...string) []string {
 	if !sshUserPattern.MatchString(user) {
 		return nil

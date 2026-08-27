@@ -83,7 +83,7 @@ func (m Manager) PruneImages(ctx context.Context, apply bool) (image.PruneReport
 	if err != nil {
 		return image.PruneReport{}, err
 	}
-	store, err := m.imageStore(profile, dataRoot)
+	store, err := m.imageStore(profile, dataRoot, "")
 	if err != nil {
 		return image.PruneReport{}, err
 	}
@@ -95,7 +95,18 @@ func (m Manager) PruneImages(ctx context.Context, apply bool) (image.PruneReport
 			return nil, err
 		}
 		defer allocator.Release()
-		return imageReferences(dataRoot)
+		references, referenceErr := imageReferences(dataRoot)
+		if referenceErr != nil {
+			return nil, referenceErr
+		}
+		locals, localErr := store.LocalEntries()
+		if localErr != nil {
+			return nil, localErr
+		}
+		for _, local := range locals {
+			references[local.Digest] = struct{}{}
+		}
+		return references, nil
 	}
 	return store.Prune(ctx, apply, resolve)
 }

@@ -115,7 +115,7 @@ func (p Probe) Run(ctx context.Context) Report {
 	report.Tier = profile.Tier.String()
 	report.Checks = append(report.Checks, Check{Name: "host", Status: OK, Evidence: fmt.Sprintf("%s/%s %s", profile.OS, profile.Arch, profile.Tier)})
 
-	qemuPath, err := p.lookPath(profile.QEMUBinary)
+	qemuPath, err := platform.FindQEMUBinary(profile, p.lookPath)
 	if err != nil {
 		report.Checks = append(report.Checks, Check{Name: "qemu", Status: Error, Evidence: profile.QEMUBinary + " not found", Fix: qemuInstallFix(profile.OS)})
 	} else {
@@ -183,13 +183,14 @@ func (p Probe) Run(ctx context.Context) Report {
 		}
 	}
 
-	if profile.RequiresUEFI {
-		firmware, firmwareErr := platform.FindFirmware(profile)
-		if firmwareErr != nil {
-			report.Checks = append(report.Checks, Check{Name: "firmware", Status: Error, Evidence: "no matching arm64 UEFI code/vars pair found", Fix: qemuInstallFix(profile.OS)})
-		} else {
-			report.Checks = append(report.Checks, Check{Name: "firmware", Status: OK, Evidence: firmware.Code + " + " + firmware.Vars})
-		}
+	// All embedded Farrow images boot with UEFI. Checking only profiles whose
+	// machine mandates UEFI would let amd64 doctor pass and the default image
+	// fail later during up.
+	firmware, firmwareErr := platform.FindFirmwareForBoot(profile, "uefi")
+	if firmwareErr != nil {
+		report.Checks = append(report.Checks, Check{Name: "firmware", Status: Error, Evidence: "no matching UEFI code/vars pair found", Fix: qemuInstallFix(profile.OS)})
+	} else {
+		report.Checks = append(report.Checks, Check{Name: "firmware", Status: OK, Evidence: firmware.Code + " + " + firmware.Vars})
 	}
 
 	if profile.OS == "linux" {

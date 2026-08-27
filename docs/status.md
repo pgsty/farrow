@@ -53,12 +53,15 @@ macOS arm64 with HVF, and Linux amd64 with KVM.
 
 These are ownership and infrastructure decisions, not code:
 
-1. **Image hosting.** The manifest currently points at upstream distribution
-   URLs. Self-hosted object storage, a domain and bandwidth are not assigned,
-   so no image can move from `testing` to `supported`.
-2. **Image signing custody.** The manifest verification roots in the binary are
-   development keys whose private halves exist only in tests. Active and
-   standby custody is not assigned.
+1. **Production image hosting.** The signed static-repository path is
+   implemented and exercised against the disposable M0 Nginx repository, but
+   the public domain, storage owner and bandwidth are not assigned. No image
+   can move from `testing` to `supported` on the M0 development mirror.
+2. **Image signing custody.** Ordinary binaries intentionally ship without
+   external catalog verification roots, so `image sync` fails closed while the
+   embedded bootstrap catalog remains usable. Development roots and their
+   private halves exist only in tests. Active and standby production custody is
+   not assigned.
 3. **Release custody.** The tag workflow exists and is fail-closed, but has
    never run. No remote, production tag, publisher identity or two-person
    review is configured.

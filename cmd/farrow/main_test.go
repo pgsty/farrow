@@ -93,7 +93,7 @@ func TestQuickSSHAndStatusUseResolvedUser(t *testing.T) {
 func TestInitProfileCustomNetworkWarningAndSuffixes(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"init", "full", "--network-cidr", "172.31.251.0/24", "--json"}, &stdout, &stderr)
-	if code != exitOK || !strings.Contains(stderr.String(), "WARNING: non-default host-global private subnet") {
+	if code != exitOK || !strings.Contains(stderr.String(), "warning: non-default host-global private subnet") {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
 	for _, want := range []string{`"cidr": "172.31.251.0/24"`, `"host_address": "172.31.251.1"`, `"address": "172.31.251.10"`, `"address": "172.31.251.13"`} {
@@ -128,7 +128,7 @@ func TestTestingImageWarningIsProminent(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
 	printImageStatusWarning(&output, image.Entry{Alias: "u24", Arch: "arm64", Release: "test", Status: "testing"})
-	if !strings.Contains(output.String(), "WARNING: image u24/arm64") || !strings.Contains(output.String(), "status testing, not supported") {
+	if !strings.Contains(output.String(), "warning: image u24/arm64") || !strings.Contains(output.String(), "status testing, not supported") {
 		t.Fatalf("warning = %q", output.String())
 	}
 	output.Reset()
@@ -160,12 +160,12 @@ func TestDestructiveConfirmationTTYAndNonTTY(t *testing.T) {
 
 func TestRollbackFlagIsPrivateUpOnly(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := runQuickCommand("plan", []string{"--rollback"}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "only valid with farrow up") {
+	if code := run([]string{"plan", "--rollback"}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "unknown flag") {
 		t.Fatalf("plan code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := runQuickCommand("up", []string{"--rollback"}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "only valid for declarative private up") {
+	if code := run([]string{"up", "--rollback"}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "only valid for declarative private up") {
 		t.Fatalf("quick up code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
@@ -259,7 +259,7 @@ func TestPlanMapsDataRootMigrationToConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
-	t.Setenv("FARROW_DATA_HOME", "")
+	t.Setenv("FARROW_HOME", "")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"plan", "-f", configPath}, &stdout, &stderr); code != exitConflict || !strings.Contains(stderr.String(), "data-root migration required") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -281,7 +281,7 @@ func TestValidateRejectsWorkspaceAsConfiguredDataRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
-	t.Setenv("FARROW_DATA_HOME", "")
+	t.Setenv("FARROW_HOME", "")
 	var stdout, stderr bytes.Buffer
 	if code := runValidate([]string{"-f", configPath}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "unsafe broad Farrow data root") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -299,7 +299,7 @@ func TestLoadPrivatePreflightConfigAcceptsRelativePath(t *testing.T) {
 }
 
 func TestImageListJSON(t *testing.T) {
-	t.Setenv("FARROW_DATA_HOME", t.TempDir())
+	t.Setenv("FARROW_HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"image", "list", "--json"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
@@ -427,7 +427,7 @@ func TestPigstyInventoryRenderAndAtomicOutput(t *testing.T) {
 	if code := run(args, &stdout, &stderr); code != exitOK {
 		t.Fatalf("render code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "172.31.251.10") || strings.Contains(stdout.String(), "10.10.10.10") || !strings.Contains(stderr.String(), "WARNING") {
+	if !strings.Contains(stdout.String(), "172.31.251.10") || strings.Contains(stdout.String(), "10.10.10.10") || !strings.Contains(stderr.String(), "warning:") {
 		t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
 	}
 	stdout.Reset()
@@ -508,9 +508,27 @@ func TestCompletions(t *testing.T) {
 		if code := run([]string{"completion", shell}, &stdout, &stderr); code != exitOK {
 			t.Fatalf("%s completion code=%d stderr=%s", shell, code, stderr.String())
 		}
-		for _, want := range []string{"farrow", "image", "debug", "hosts", "project", "upgrade-state", "full", "simu"} {
+		for _, want := range []string{"farrow", "__farrow"} {
 			if !strings.Contains(stdout.String(), want) {
 				t.Errorf("%s completion missing %q: %s", shell, want, stdout.String())
+			}
+		}
+	}
+	for _, test := range []struct {
+		args []string
+		want []string
+	}{
+		{args: []string{"__complete", "setup", ""}, want: []string{"quick", "full", "simu"}},
+		{args: []string{"__complete", "image", ""}, want: []string{"list", "pull", "sync"}},
+		{args: []string{"__complete", "project", ""}, want: []string{"purge-keys", "upgrade-state"}},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(test.args, &stdout, &stderr); code != exitOK {
+			t.Fatalf("dynamic completion %v code=%d stderr=%s", test.args, code, stderr.String())
+		}
+		for _, want := range test.want {
+			if !strings.Contains(stdout.String(), want) {
+				t.Errorf("dynamic completion %v missing %q: %s", test.args, want, stdout.String())
 			}
 		}
 	}

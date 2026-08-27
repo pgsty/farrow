@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/diagnostics"
+	"github.com/spf13/viper"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/term"
 )
@@ -28,11 +31,32 @@ const (
 type outputContext struct {
 	format     outputFormat
 	verbose    bool
+	settings   *viper.Viper
 	stdoutTTY  bool
 	stderrTTY  bool
 	stderrFile bool
 	color      bool
-	help       bool
+}
+
+type commandFailure struct {
+	Error       string `json:"error"`
+	Message     string `json:"message"`
+	OperationID string `json:"operation_id,omitempty"`
+}
+
+func emitCommandFailure(stdout, stderr io.Writer, legacyJSON bool, category, message, operationID string) int {
+	if !structuredOutput(stdout, legacyJSON) {
+		return exitOK
+	}
+	return encodeJSON(stdout, stderr, commandFailure{Error: category, Message: message, OperationID: operationID})
+}
+
+func reportCommandFailure(stdout, stderr io.Writer, legacyJSON bool, category, message, operationID string, code int) int {
+	if encodeCode := emitCommandFailure(stdout, stderr, legacyJSON, category, message, operationID); encodeCode != exitOK {
+		return encodeCode
+	}
+	errorf(stderr, "%s", message)
+	return code
 }
 
 type outputWriter struct {
@@ -127,8 +151,19 @@ func rejectedPresentationAlias(argument string) bool {
 // parsing so remote command arguments remain byte-for-byte untouched.
 func prepareOutput(args []string, stdout, stderr io.Writer) ([]string, io.Writer, io.Writer, error) {
 	clean := make([]string, 0, len(args))
-	format := outputText
-	verbose := false
+	settings := viper.New()
+	settings.SetDefault("output.format", string(outputText))
+	settings.SetDefault("output.verbose", false)
+	_ = settings.BindEnv("output.format", "FARROW_OUTPUT")
+	_ = settings.BindEnv("output.verbose", "FARROW_VERBOSE")
+	format := outputFormat(strings.ToLower(strings.TrimSpace(settings.GetString("output.format"))))
+	switch format {
+	case outputText, outputJSON, outputYAML:
+	default:
+		return nil, stdout, stderr, fmt.Errorf("FARROW_OUTPUT must be text, json, or yaml, got %q", format)
+	}
+	verbose := settings.GetBool("output.verbose")
+	formatFromCLI := false
 	passthrough := false
 	for _, argument := range args {
 		if argument == "--" {
@@ -148,12 +183,14 @@ func prepareOutput(args []string, stdout, stderr io.Writer) ([]string, io.Writer
 				return nil, stdout, stderr, err
 			}
 			if enabled {
-				if format == outputYAML {
+				if formatFromCLI && format == outputYAML {
 					return nil, stdout, stderr, errors.New("--json conflicts with --yaml")
 				}
 				format = outputJSON
+				formatFromCLI = true
 			} else if format == outputJSON {
 				format = outputText
+				formatFromCLI = true
 			}
 			continue
 		}
@@ -162,12 +199,14 @@ func prepareOutput(args []string, stdout, stderr io.Writer) ([]string, io.Writer
 				return nil, stdout, stderr, err
 			}
 			if enabled {
-				if format == outputJSON {
+				if formatFromCLI && format == outputJSON {
 					return nil, stdout, stderr, errors.New("--yaml conflicts with --json")
 				}
 				format = outputYAML
+				formatFromCLI = true
 			} else if format == outputYAML {
 				format = outputText
+				formatFromCLI = true
 			}
 			continue
 		}
@@ -180,10 +219,13 @@ func prepareOutput(args []string, stdout, stderr io.Writer) ([]string, io.Writer
 		}
 		clean = append(clean, argument)
 	}
+	settings.Set("output.format", string(format))
+	settings.Set("output.verbose", verbose)
 	_, stderrFile := writerFile(stderr)
 	state := &outputContext{
 		format:     format,
 		verbose:    verbose,
+		settings:   settings,
 		stdoutTTY:  writerTTY(stdout),
 		stderrTTY:  writerTTY(stderr),
 		stderrFile: stderrFile,
@@ -304,21 +346,21 @@ func debugf(stderr io.Writer, format string, arguments ...any) {
 		return
 	}
 	message := string(diagnostics.RedactText([]byte(fmt.Sprintf(format, arguments...))))
-	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiDim, "debug"), message)
+	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiDim, "debug:"), message)
 }
 
 func warningf(stderr io.Writer, format string, arguments ...any) {
 	message := strings.TrimSpace(fmt.Sprintf(format, arguments...))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "WARNING:"))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "warning:"))
-	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiYellow, "WARNING:"), message)
+	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiYellow, "warning:"), message)
 }
 
 func errorf(stderr io.Writer, format string, arguments ...any) {
 	message := strings.TrimSpace(fmt.Sprintf(format, arguments...))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "ERROR:"))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "error:"))
-	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiRed, "error"), message)
+	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiRed, "error:"), message)
 }
 
 func textField(writer io.Writer, width int, label string, value any) {
@@ -351,6 +393,7 @@ func statusCell(writer io.Writer, width int, value string) string {
 
 type progress struct {
 	stderr  io.Writer
+	summary string
 	message string
 	started time.Time
 	cancel  context.CancelFunc
@@ -359,13 +402,117 @@ type progress struct {
 	enabled bool
 	verbose bool
 	tty     bool
+	mu      sync.Mutex
+	phase   string
+	last    time.Time
+}
+
+func progressBytes(value int64) string {
+	if value < 0 {
+		value = 0
+	}
+	const unit = int64(1024)
+	if value < unit {
+		return fmt.Sprintf("%d B", value)
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	amount := float64(value)
+	index := -1
+	for amount >= 1024 && index < len(units)-1 {
+		amount /= 1024
+		index++
+	}
+	return fmt.Sprintf("%.1f %s", amount, units[index])
+}
+
+func progressSource(source string) string {
+	parsed, err := url.Parse(source)
+	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		parsed.User = nil
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		source = parsed.String()
+	}
+	return strings.TrimSpace(string(diagnostics.RedactText([]byte(source))))
+}
+
+func formatActivity(event activity.Event, now time.Time) string {
+	message := strings.TrimSpace(event.Message)
+	if source := progressSource(event.Source); source != "" {
+		message += " from " + source
+	}
+	if event.TotalBytes > 0 || event.CurrentBytes > 0 {
+		parts := make([]string, 0, 4)
+		if event.TotalBytes > 0 {
+			parts = append(parts, fmt.Sprintf("%s / %s (%.1f%%)", progressBytes(event.CurrentBytes), progressBytes(event.TotalBytes), 100*float64(event.CurrentBytes)/float64(event.TotalBytes)))
+		} else {
+			parts = append(parts, progressBytes(event.CurrentBytes))
+		}
+		if !event.StartedAt.IsZero() {
+			elapsed := now.Sub(event.StartedAt)
+			if elapsed >= 500*time.Millisecond && event.CurrentBytes > 0 {
+				rate := float64(event.CurrentBytes) / elapsed.Seconds()
+				parts = append(parts, progressBytes(int64(rate))+"/s")
+				if !event.Done && event.TotalBytes > event.CurrentBytes && rate > 0 {
+					eta := time.Duration(float64(event.TotalBytes-event.CurrentBytes) / rate * float64(time.Second))
+					parts = append(parts, "ETA "+eta.Round(time.Second).String())
+				}
+			}
+		}
+		message += " — " + strings.Join(parts, " · ")
+	}
+	return strings.TrimSpace(string(diagnostics.RedactText([]byte(message))))
+}
+
+// Report updates the visible lifecycle stage. Fast byte updates are throttled
+// while retaining the newest value for the regular elapsed-time repaint.
+func (item *progress) Report(event activity.Event) {
+	if item == nil || !item.enabled {
+		return
+	}
+	now := time.Now()
+	message := formatActivity(event, now)
+	if message == "" {
+		return
+	}
+	item.mu.Lock()
+	defer item.mu.Unlock()
+	byteUpdate := event.TotalBytes > 0 || event.CurrentBytes > 0
+	interval := 5 * time.Second
+	if item.tty {
+		interval = 250 * time.Millisecond
+	}
+	if byteUpdate && !event.Done && item.phase == event.Phase && !item.last.IsZero() && now.Sub(item.last) < interval {
+		item.message = message
+		return
+	}
+	item.message = message
+	item.phase = event.Phase
+	item.last = now
+	marker := styled(item.stderr, ansiCyan, "→")
+	if event.Done {
+		marker = styled(item.stderr, ansiGreen, "✓")
+	}
+	if item.tty {
+		fmt.Fprintf(item.stderr, "\r\x1b[2K%s %s", marker, message)
+	} else {
+		fmt.Fprintf(item.stderr, "%s %s\n", marker, message)
+	}
+}
+
+func deferredProgressReporter(item **progress) activity.Reporter {
+	return func(event activity.Event) {
+		if item != nil && *item != nil {
+			(*item).Report(event)
+		}
+	}
 }
 
 func startProgress(parent context.Context, stderr io.Writer, message string) *progress {
 	state := outputContextFrom(stderr)
 	enabled := state != nil && (state.stderrFile || state.verbose)
 	item := &progress{
-		stderr: stderr, message: message, started: time.Now(), done: make(chan struct{}),
+		stderr: stderr, summary: message, message: message, started: time.Now(), done: make(chan struct{}),
 		enabled: enabled, verbose: state != nil && state.verbose, tty: state != nil && state.stderrTTY && state.color,
 	}
 	if !enabled {
@@ -395,11 +542,14 @@ func startProgress(parent context.Context, stderr io.Writer, message string) *pr
 				return
 			case <-ticker.C:
 				elapsed := time.Since(item.started).Round(time.Second)
+				item.mu.Lock()
+				current := item.message
 				if item.tty {
-					fmt.Fprintf(stderr, "\r\x1b[2K%s %s %s", styled(stderr, ansiCyan, "→"), message, styled(stderr, ansiDim, elapsed.String()))
+					fmt.Fprintf(stderr, "\r\x1b[2K%s %s %s", styled(stderr, ansiCyan, "→"), current, styled(stderr, ansiDim, elapsed.String()))
 				} else {
-					fmt.Fprintf(stderr, "%s %s (%s elapsed)\n", styled(stderr, ansiDim, "·"), message, elapsed)
+					fmt.Fprintf(stderr, "%s %s (%s elapsed)\n", styled(stderr, ansiDim, "·"), current, elapsed)
 				}
+				item.mu.Unlock()
 			}
 		}
 	}()
@@ -413,6 +563,8 @@ func (item *progress) Stop(err error) {
 	item.once.Do(func() {
 		item.cancel()
 		<-item.done
+		item.mu.Lock()
+		defer item.mu.Unlock()
 		status := styled(item.stderr, ansiGreen, "✓")
 		if err != nil {
 			status = styled(item.stderr, ansiRed, "!")
@@ -420,7 +572,7 @@ func (item *progress) Stop(err error) {
 		if item.tty {
 			fmt.Fprint(item.stderr, "\r\x1b[2K")
 		}
-		fmt.Fprintf(item.stderr, "%s %s (%s)\n", status, item.message, time.Since(item.started).Round(time.Millisecond))
+		fmt.Fprintf(item.stderr, "%s %s (%s)\n", status, item.summary, time.Since(item.started).Round(time.Millisecond))
 	})
 }
 

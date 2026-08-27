@@ -42,7 +42,7 @@ func TestDataRootPrefersPersistedProjectMarker(t *testing.T) {
 	if _, err := project.Create(workDir, persisted); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("FARROW_DATA_HOME", filepath.Join(root, "different-environment-root"))
+	t.Setenv("FARROW_HOME", filepath.Join(root, "different-environment-root"))
 	actual, err := (Manager{CWD: workDir}).dataRoot()
 	if err != nil || actual != persisted {
 		t.Fatalf("data root = %q, %v; want persisted %q", actual, err, persisted)
@@ -56,7 +56,7 @@ func TestPlanMaterializesConfiguredDataRootWithEnvironmentPrecedence(t *testing.
 		t.Fatal(err)
 	}
 	environmentRoot := filepath.Join(root, "environment-data")
-	t.Setenv("FARROW_DATA_HOME", environmentRoot)
+	t.Setenv("FARROW_HOME", environmentRoot)
 	desired := spec.Quick(true, true)
 	desired.DataRoot = filepath.Join(root, "configured-data")
 	plan, err := (Manager{CWD: workDir}).PlanResolved(context.Background(), desired)
@@ -77,7 +77,7 @@ func TestConfiguredDataRootChangeRequiresMigration(t *testing.T) {
 	if _, err := project.Create(workDir, filepath.Join(root, "persisted-data")); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("FARROW_DATA_HOME", "")
+	t.Setenv("FARROW_HOME", "")
 	desired := spec.Quick(true, true)
 	desired.DataRoot = filepath.Join(root, "different-data")
 	_, err := (Manager{CWD: workDir}).PlanResolved(context.Background(), desired)
@@ -101,29 +101,6 @@ func TestQuickManagerUsesResolvedReadinessTimeout(t *testing.T) {
 	resolved.SSHWaitTimeoutNS = -1
 	if _, err := (Manager{}).readyTimeout(resolved); err == nil {
 		t.Fatal("negative resolved timeout accepted")
-	}
-}
-
-func TestReservedPortsFailsClosedOnCorruptRegisteredState(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	nodeDir, err := projectValue.EnsureNodeDir("meta")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(nodeDir, "state.json"), []byte("{not-json\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reservedPorts(projectValue.DataRoot); err == nil {
-		t.Fatal("corrupt registered state was ignored during port allocation")
 	}
 }
 

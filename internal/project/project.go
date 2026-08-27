@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -73,9 +72,9 @@ func canonicalWorkDir(cwd string) (string, error) {
 	return canonical, nil
 }
 
-func unsafeRoot(root, home, cwd, xdgRoot string) bool {
+func unsafeRoot(root, home, cwd string) bool {
 	clean := filepath.Clean(root)
-	for _, unsafe := range []string{"/", filepath.Clean(home), filepath.Clean(cwd), filepath.Clean(xdgRoot)} {
+	for _, unsafe := range []string{"/", filepath.Clean(home), filepath.Clean(cwd)} {
 		if unsafe != "." && unsafe != "" && clean == unsafe {
 			return true
 		}
@@ -97,15 +96,45 @@ func canonicalIfExisting(path string) string {
 	return abs
 }
 
-// ResolveDataRoot implements FARROW_DATA_HOME, XDG_DATA_HOME/farrow, then a
-// stable per-user fallback. It does not create the directory.
+// canonicalWithMissing resolves every existing ancestor and then restores the
+// not-yet-created suffix. EvalSymlinks alone cannot inspect a symlinked parent
+// when the final data-root directory does not exist yet.
+func canonicalWithMissing(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	probe := abs
+	missing := make([]string, 0)
+	for {
+		canonical, evalErr := filepath.EvalSymlinks(probe)
+		if evalErr == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				canonical = filepath.Join(canonical, missing[index])
+			}
+			return canonical, nil
+		}
+		if !errors.Is(evalErr, os.ErrNotExist) {
+			return "", evalErr
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return "", evalErr
+		}
+		missing = append(missing, filepath.Base(probe))
+		probe = parent
+	}
+}
+
+// ResolveDataRoot implements FARROW_HOME, then ~/.farrow. It does not create
+// the directory.
 func ResolveDataRoot(cwd string, environment Environment) (string, error) {
 	return ResolveDataRootWithConfig(cwd, "", environment)
 }
 
 // ResolveDataRootWithConfig implements the complete project-creation
-// precedence: FARROW_DATA_HOME, storage.data_root, XDG_DATA_HOME/farrow, then
-// the stable per-user fallback. It does not create the directory.
+// precedence: FARROW_HOME, storage.data_root, then ~/.farrow on both Linux and
+// macOS. It does not create the directory.
 func ResolveDataRootWithConfig(cwd, configured string, environment Environment) (string, error) {
 	if environment == nil {
 		environment = osEnvironment{}
@@ -122,29 +151,22 @@ func ResolveDataRootWithConfig(cwd, configured string, environment Environment) 
 		return "", err
 	}
 	home = canonicalIfExisting(home)
-	xdgRoot := environment.Getenv("XDG_DATA_HOME")
-	if xdgRoot != "" && !filepath.IsAbs(xdgRoot) {
-		return "", errors.New("XDG_DATA_HOME must be absolute")
-	}
-	root := environment.Getenv("FARROW_DATA_HOME")
+	root := environment.Getenv("FARROW_HOME")
 	if root == "" {
 		root = configured
 	}
 	if root == "" {
-		if xdgRoot != "" {
-			root = filepath.Join(xdgRoot, "farrow")
-		} else if runtime.GOOS == "darwin" {
-			root = filepath.Join(home, "Library", "Application Support", "farrow")
-		} else {
-			root = filepath.Join(home, ".local", "share", "farrow")
-		}
+		root = filepath.Join(home, ".farrow")
 	}
 	if !filepath.IsAbs(root) {
 		return "", errors.New("farrow data root must be absolute")
 	}
 	root = filepath.Clean(root)
-	comparisonRoot := canonicalIfExisting(root)
-	if unsafeRoot(comparisonRoot, home, workDir, canonicalIfExisting(xdgRoot)) {
+	comparisonRoot, err := canonicalWithMissing(root)
+	if err != nil {
+		return "", err
+	}
+	if unsafeRoot(comparisonRoot, home, workDir) {
 		return "", fmt.Errorf("unsafe broad Farrow data root: %s", root)
 	}
 	if info, err := os.Lstat(root); err == nil && info.Mode()&os.ModeSymlink != 0 {
@@ -222,8 +244,17 @@ func Create(cwd, dataRoot string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
-	dataRoot = canonicalIfExisting(dataRoot)
-	if !filepath.IsAbs(dataRoot) || unsafeRoot(dataRoot, "", workDir, "") {
+	if !filepath.IsAbs(dataRoot) {
+		return Project{}, errors.New("project data root is unsafe or not absolute")
+	}
+	dataRoot = filepath.Clean(dataRoot)
+	if info, statErr := os.Lstat(dataRoot); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return Project{}, fmt.Errorf("project data root must not be a symlink: %s", dataRoot)
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return Project{}, statErr
+	}
+	comparisonRoot, err := canonicalWithMissing(dataRoot)
+	if err != nil || unsafeRoot(comparisonRoot, "", workDir) {
 		return Project{}, errors.New("project data root is unsafe or not absolute")
 	}
 	markerDir := filepath.Join(workDir, ".farrow")
@@ -233,7 +264,7 @@ func Create(cwd, dataRoot string) (Project, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Project{}, err
 	}
-	for _, directory := range []string{dataRoot, filepath.Join(dataRoot, "projects"), filepath.Join(dataRoot, "cache"), filepath.Join(dataRoot, "locks"), markerDir} {
+	for _, directory := range []string{dataRoot, filepath.Join(dataRoot, "projects"), filepath.Join(dataRoot, "locks"), markerDir} {
 		if err := ensureDir(directory, 0o700); err != nil {
 			return Project{}, err
 		}
@@ -259,6 +290,37 @@ func Create(cwd, dataRoot string) (Project, error) {
 		return Project{}, err
 	}
 	return project, nil
+}
+
+// OpenConfigured opens the current project and enforces any explicitly
+// selected data root. When create is true, a missing project is created using
+// the normal FARROW_HOME/config/default precedence.
+func OpenConfigured(cwd, configuredDataRoot string, create bool) (Project, error) {
+	opened, err := Open(cwd)
+	if err == nil {
+		if configuredDataRoot != "" || os.Getenv("FARROW_HOME") != "" {
+			selected, selectErr := ResolveDataRootWithConfig(cwd, configuredDataRoot, nil)
+			if selectErr != nil {
+				return Project{}, selectErr
+			}
+			if filepath.Clean(selected) != filepath.Clean(opened.DataRoot) {
+				return Project{}, fmt.Errorf("%w: project is already rooted at %s, requested %s", ErrDataRootMigrationRequired, opened.DataRoot, selected)
+			}
+		}
+		return opened, nil
+	}
+	if !create {
+		return opened, err
+	}
+	var pathError *os.PathError
+	if !errors.Is(err, os.ErrNotExist) && (!errors.As(err, &pathError) || !errors.Is(pathError.Err, os.ErrNotExist)) {
+		return Project{}, err
+	}
+	dataRoot, err := ResolveDataRootWithConfig(cwd, configuredDataRoot, nil)
+	if err != nil {
+		return Project{}, err
+	}
+	return Create(cwd, dataRoot)
 }
 
 func Open(cwd string) (Project, error) {

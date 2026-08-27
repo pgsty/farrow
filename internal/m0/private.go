@@ -323,7 +323,7 @@ func PrivateSmoke(ctx context.Context, options PrivateOptions) (evidence Private
 		return evidence, errors.New("private M0 harness requires native macOS or Linux")
 	}
 	evidence.HostOS, evidence.HostArch = profile.OS, profile.Arch
-	qemuPath, err := exec.LookPath(profile.QEMUBinary)
+	qemuPath, err := platform.FindQEMUBinary(profile, exec.LookPath)
 	if err != nil {
 		return evidence, err
 	}

@@ -101,15 +101,15 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 			t.Errorf("unexpected embedded entry %s", key)
 			continue
 		}
-		if entry.Release != want.release || entry.URL != want.url || entry.SHA256 != want.sha256 || entry.ArtifactSize != want.artifactSize || entry.VirtualSize != want.virtualSize || entry.SourceUser != want.sourceUser {
+		if entry.Release != want.release || entry.Upstream != want.url || entry.SHA256 != want.sha256 || entry.ArtifactSize != want.artifactSize || entry.VirtualSize != want.virtualSize || entry.SourceUser != want.sourceUser {
 			t.Errorf("%s metadata mismatch:\n got %#v\nwant %#v", key, entry, want)
 		}
 		if entry.Format != "qcow2" || entry.Boot != "uefi" || entry.Status != "testing" || strings.TrimSpace(entry.Provenance) == "" {
 			t.Errorf("%s incomplete policy fields: %#v", key, entry)
 		}
-		parsed, err := url.Parse(entry.URL)
-		if err != nil || hasMovingReleasePath(parsed.Path) || strings.Contains(strings.ToLower(entry.URL), "latest") {
-			t.Errorf("%s has a moving or invalid URL: %q", key, entry.URL)
+		parsed, err := url.Parse(entry.Upstream)
+		if err != nil || hasMovingReleasePath(parsed.Path) || strings.Contains(strings.ToLower(entry.Upstream), "latest") {
+			t.Errorf("%s has a moving or invalid URL: %q", key, entry.Upstream)
 		}
 		if parsed.Host != "dl.rockylinux.org" && parsed.Host != "cloud.debian.org" && parsed.Host != "cloud-images.ubuntu.com" {
 			t.Errorf("%s is not on an expected distribution-owned host: %q", key, parsed.Host)
@@ -121,7 +121,7 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 			perAlias[entry.Alias] = make(map[string]bool)
 		}
 		perAlias[entry.Alias][entry.Arch] = true
-		resolved, err := Embedded(entry.Alias, entry.Arch)
+		resolved, err := embeddedEntry(entry.Alias, entry.Arch)
 		if err != nil || !reflect.DeepEqual(resolved, entry) {
 			t.Errorf("Embedded(%s, %s) = %#v, %v", entry.Alias, entry.Arch, resolved, err)
 		}
@@ -150,20 +150,20 @@ func TestEmbeddedFriendlyAliases(t *testing.T) {
 		if got := CanonicalAlias("  " + strings.ToUpper(alias) + "  "); got != canonical {
 			t.Errorf("CanonicalAlias(%q) = %q, want %q", alias, got, canonical)
 		}
-		entry, err := Embedded(alias, "amd64")
+		entry, err := embeddedEntry(alias, "amd64")
 		if err != nil || entry.Alias != canonical || entry.Arch != "amd64" {
 			t.Errorf("Embedded(%q, amd64) = %#v, %v", alias, entry, err)
 		}
 	}
-	if _, err := Embedded("unknown", "amd64"); err == nil {
+	if _, err := embeddedEntry("unknown", "amd64"); err == nil {
 		t.Fatal("unknown alias unexpectedly resolved")
 	}
 	for _, alias := range []string{"el8", "rocky8"} {
-		if _, err := Embedded(alias, "amd64"); err == nil {
+		if _, err := embeddedEntry(alias, "amd64"); err == nil {
 			t.Fatalf("retired alias %q unexpectedly resolved", alias)
 		}
 	}
-	if _, err := Embedded("u24", "s390x"); err == nil {
+	if _, err := embeddedEntry("u24", "s390x"); err == nil {
 		t.Fatal("unsupported architecture unexpectedly resolved")
 	}
 }

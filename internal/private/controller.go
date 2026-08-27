@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/project"
@@ -38,6 +39,7 @@ type Controller struct {
 	StartNodes   []string
 	SetupRuntime func(string) error
 	Version      string
+	Progress     activity.Reporter
 }
 
 type CreateResult struct {
@@ -131,7 +133,10 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 	if err != nil {
 		return result, cleanupLease(err)
 	}
+	controller.Progress.Report(activity.Event{Phase: "prepare", Message: fmt.Sprintf("Preparing disks and cloud-init for %d private node(s)", len(createNames))})
 	result.Prepare = PrepareSelected(ctx, controller.Prepare, createNames, controller.Concurrency)
+	controller.Progress.Report(activity.Event{Phase: "prepare", Message: fmt.Sprintf("Prepared %d of %d private node(s)", len(PreparedNames(result.Prepare)), len(createNames)), Done: true})
+	controller.Progress.Report(activity.Event{Phase: "commit", Message: "Committing prepared private-node state"})
 	result.Commit, err = CommitPrepared(ctx, controller.Project, controller.Prepare, result.Prepare, controller.Version)
 	if err != nil {
 		return result, cleanupLease(err)
@@ -178,6 +183,11 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 		return result, fmt.Errorf("private controller start selection contains nodes outside committed project")
 	}
 	if len(startNames) != 0 {
+		startMessage := fmt.Sprintf("Starting %d private node(s) and waiting up to %s for guest readiness", len(startNames), controller.ReadyTimeout)
+		if controller.NoWait {
+			startMessage = fmt.Sprintf("Starting %d private node(s) without waiting for guest readiness", len(startNames))
+		}
+		controller.Progress.Report(activity.Event{Phase: "guest-ready", Message: startMessage})
 		result.Start, result.Lease, err = StartPrepared(ctx, StartConfig{
 			Project: controller.Project, LeaseStore: controller.LeaseStore, Lifecycle: controller.Lifecycle,
 			Nodes: startNames, Concurrency: controller.Concurrency, ReadyTimeout: controller.ReadyTimeout, NoWait: controller.NoWait,
@@ -186,6 +196,11 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 		if err != nil {
 			return result, err
 		}
+		readyMessage := fmt.Sprintf("All %d private node(s) are ready", len(startNames))
+		if controller.NoWait {
+			readyMessage = fmt.Sprintf("QEMU is running for %d private node(s); guest readiness was skipped", len(startNames))
+		}
+		controller.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
 	}
 	failed := failedCreateNodes(result)
 	if len(failed) > 0 {

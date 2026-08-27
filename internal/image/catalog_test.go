@@ -2,6 +2,7 @@ package image
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -27,7 +28,7 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 	}
 	for _, alias := range formalAliases {
 		record, ok := catalog.Images[alias]
-		if !ok || len(record.Releases) != 1 {
+		if !ok || len(record.Releases) != 1 || record.Default == "" {
 			t.Errorf("catalog image %s = %#v", alias, record)
 			continue
 		}
@@ -42,7 +43,7 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 func TestCatalogRejectsUnknownAndTrailing(t *testing.T) {
 	t.Parallel()
 	data, _ := EmbeddedCatalogBytes()
-	data = bytes.Replace(data, []byte(`"schema": 1`), []byte(`"schema": 1, "unknown": true`), 1)
+	data = bytes.Replace(data, []byte(`"schema": 2`), []byte(`"schema": 2, "unknown": true`), 1)
 	if _, err := strictCatalog(data); err == nil {
 		t.Fatal("unknown manifest field accepted")
 	}
@@ -62,12 +63,18 @@ func TestCatalogRejectsIncompleteArtifactAndMovingURL(t *testing.T) {
 		{name: "virtual size", mutate: func(artifact *Artifact) { artifact.VirtualSize = 0 }},
 		{name: "source user", mutate: func(artifact *Artifact) { artifact.SourceUser = " " }},
 		{name: "provenance", mutate: func(artifact *Artifact) { artifact.Provenance = "" }},
+		{name: "unsafe file", mutate: func(artifact *Artifact) { artifact.File = "../image.qcow2" }},
+		{name: "credential URL", mutate: func(artifact *Artifact) { artifact.Upstream = "https://user:secret@example.test/image.qcow2" }},
+		{name: "query URL", mutate: func(artifact *Artifact) { artifact.Upstream = "https://example.test/image.qcow2?token=secret" }},
+		{name: "fragment URL", mutate: func(artifact *Artifact) { artifact.Upstream = "https://example.test/image.qcow2#release" }},
 		{name: "latest URL", mutate: func(artifact *Artifact) {
-			artifact.URL = "https://cloud.debian.org/images/cloud/trixie/latest/image.qcow2"
+			artifact.Upstream = "https://cloud.debian.org/images/cloud/trixie/latest/image.qcow2"
 		}},
-		{name: "current URL", mutate: func(artifact *Artifact) { artifact.URL = "https://cloud-images.ubuntu.com/noble/current/image.img" }},
+		{name: "current URL", mutate: func(artifact *Artifact) {
+			artifact.Upstream = "https://cloud-images.ubuntu.com/noble/current/image.img"
+		}},
 		{name: "release symlink URL", mutate: func(artifact *Artifact) {
-			artifact.URL = "https://cloud-images.ubuntu.com/minimal/releases/noble/release/image.img"
+			artifact.Upstream = "https://cloud-images.ubuntu.com/minimal/releases/noble/release/image.img"
 		}},
 	}
 	for _, test := range tests {
@@ -84,5 +91,35 @@ func TestCatalogRejectsIncompleteArtifactAndMovingURL(t *testing.T) {
 				t.Fatal("invalid catalog artifact unexpectedly accepted")
 			}
 		})
+	}
+}
+
+func TestCatalogRejectsReservedLocalAliasNamespace(t *testing.T) {
+	t.Parallel()
+	for _, mutate := range []func(*Catalog){
+		func(catalog *Catalog) {
+			catalog.Images["local"] = catalog.Images["u24"]
+			delete(catalog.Images, "u24")
+		},
+		func(catalog *Catalog) {
+			catalog.Images["local-custom"] = catalog.Images["u24"]
+			delete(catalog.Images, "u24")
+		},
+		func(catalog *Catalog) {
+			record := catalog.Images["u24"]
+			record.Aliases = append(record.Aliases, "local")
+			catalog.Images["u24"] = record
+		},
+		func(catalog *Catalog) {
+			record := catalog.Images["u24"]
+			record.Aliases = append(record.Aliases, "local-custom")
+			catalog.Images["u24"] = record
+		},
+	} {
+		catalog := EmbeddedCatalog()
+		mutate(&catalog)
+		if err := catalog.Validate(); err == nil || !strings.Contains(err.Error(), "reserved local image namespace") {
+			t.Fatalf("catalog reserved namespace error = %v", err)
+		}
 	}
 }

@@ -73,11 +73,11 @@ func TestIntegrationEmbeddedMatchesLocalCorpus(t *testing.T) {
 		}
 		seen[key] = true
 		t.Run(key, func(t *testing.T) {
-			entry, err := Embedded(alias, arch)
+			entry, err := embeddedEntry(alias, arch)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if entry.Release != row[header["version"]] || entry.URL != row[header["source_url"]] {
+			if entry.Release != row[header["version"]] || entry.Upstream != row[header["source_url"]] {
 				t.Fatalf("embedded source identity differs from manifest.tsv: %#v", entry)
 			}
 			artifactSize, err := strconv.ParseInt(row[header["bytes"]], 10, 64)

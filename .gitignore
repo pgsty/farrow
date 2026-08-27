@@ -9,6 +9,11 @@
 /bin/
 /dist/
 /.goreleaser-companion/
+/.goreleaser-dist/
+/.goreleaser-snapshot/
+/.goreleaser-*/
+/.farrow-goreleaser.*/
+/.farrow-linux-packages.*/
 /.farrow/
 *.test
 *.out

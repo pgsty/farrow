@@ -19,7 +19,7 @@ import (
 
 func TestSSHArgsAreIsolated(t *testing.T) {
 	t.Parallel()
-	joined := strings.Join(SSHArgs("/key", "/known", 2222, "true"), " ")
+	joined := strings.Join(SSHArgsForUser("dba", "/key", "/known", 2222, "true"), " ")
 	for _, expected := range []string{"-F /dev/null", "IdentitiesOnly=yes", "StrictHostKeyChecking=accept-new", `UserKnownHostsFile="/known"`, "dba@127.0.0.1 'true'"} {
 		if !strings.Contains(joined, expected) {
 			t.Errorf("SSH args missing %q: %s", expected, joined)
@@ -33,7 +33,7 @@ func TestSSHArgsAreIsolated(t *testing.T) {
 func TestSSHArgsPreserveKnownHostsPathWithSpaces(t *testing.T) {
 	t.Parallel()
 	knownHosts := filepath.Join(t.TempDir(), "Application Support", "farrow", "known_hosts")
-	args := SSHArgs("/key", knownHosts, 2222)
+	args := SSHArgsForUser("dba", "/key", knownHosts, 2222)
 	wantOption := `UserKnownHostsFile="` + knownHosts + `"`
 	found := false
 	for _, argument := range args {

@@ -312,23 +312,3 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, lea
 	}
 	return outcomes, finalLease, nil
 }
-
-func ReadyNames(outcomes []StartOutcome) []string {
-	result := make([]string, 0, len(outcomes))
-	for _, outcome := range outcomes {
-		if outcome.Ready {
-			result = append(result, outcome.Node)
-		}
-	}
-	return result
-}
-
-func RunningNames(outcomes []StartOutcome) []string {
-	result := make([]string, 0, len(outcomes))
-	for _, outcome := range outcomes {
-		if outcome.Running {
-			result = append(result, outcome.Node)
-		}
-	}
-	return result
-}

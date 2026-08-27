@@ -19,7 +19,7 @@ Each layer has one data format, and they do not mix:
 | Format | Role |
 |---|---|
 | strict YAML | user configuration and built-in profiles |
-| versioned JSON | resolved spec, project and node state, transaction journals, lease, manifest metadata |
+| versioned JSON | resolved spec, project and node state, transaction journals, lease, catalog metadata |
 | qcow2 | managed base images, root overlays, data disks |
 | ISO9660 | NoCloud CIDATA seed |
 
@@ -137,7 +137,7 @@ The entire runtime dependency surface:
 |---|---|
 | `github.com/diskfs/go-diskfs` | ISO9660 seed generation |
 | `go.yaml.in/yaml/v3` | strict YAML parsing |
-| `aead.dev/minisign` | image manifest signature verification |
+| `aead.dev/minisign` | image catalog signature verification |
 | `golang.org/x/crypto` | OpenSSH public key parsing |
 | `golang.org/x/sys` | bounded Unix file locks and metadata |
 | `golang.org/x/term` | real-TTY confirmation for destructive operations |

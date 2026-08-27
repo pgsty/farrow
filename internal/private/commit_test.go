@@ -38,7 +38,7 @@ func commitFixture(t *testing.T, disks DiskOps) (project.Project, PrepareConfig,
 	if err != nil {
 		t.Fatal(err)
 	}
-	outcomes := PrepareAll(context.Background(), config, 2)
+	outcomes := prepareAll(context.Background(), config, 2)
 	return projectValue, config, outcomes
 }
 

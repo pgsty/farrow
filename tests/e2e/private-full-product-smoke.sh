@@ -104,7 +104,7 @@ cleanup_needed=1
 
 record_command() {
   local argument
-  printf '(cd %q && FARROW_DATA_HOME=%q %q' "${workdir}" "${data_root}" "${binary}" >>"${commands_log}"
+  printf '(cd %q && FARROW_HOME=%q %q' "${workdir}" "${data_root}" "${binary}" >>"${commands_log}"
   for argument in "$@"; do
     printf ' %q' "${argument}" >>"${commands_log}"
   done
@@ -115,7 +115,7 @@ run_farrow() {
   local evidence_name=$1
   shift
   record_command "$@"
-  (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" "$@") \
+  (cd "${workdir}" && FARROW_HOME="${data_root}" "${binary}" "$@") \
     >"${evidence_root}/${evidence_name}.stdout" \
     2>"${evidence_root}/${evidence_name}.stderr"
 }
@@ -173,10 +173,10 @@ cleanup() {
     if prove_owned_project; then
       printf 'cleanup: marker ownership proved for project %s\n' "${expected_project_id}" >&2
       record_command stop --json
-      (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" stop --json) \
+      (cd "${workdir}" && FARROW_HOME="${data_root}" "${binary}" stop --json) \
         >"${evidence_root}/trap-stop.stdout" 2>"${evidence_root}/trap-stop.stderr" || stop_status=$?
       record_command destroy --force --json
-      (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" destroy --force --json) \
+      (cd "${workdir}" && FARROW_HOME="${data_root}" "${binary}" destroy --force --json) \
         >"${evidence_root}/trap-destroy.stdout" 2>"${evidence_root}/trap-destroy.stderr" || destroy_status=$?
       printf 'stop_exit=%d\ndestroy_exit=%d\n' "${stop_status}" "${destroy_status}" >"${evidence_root}/trap-cleanup-status.txt"
       if (( stop_status != 0 || destroy_status != 0 )); then
@@ -221,11 +221,11 @@ address_node3=${network_prefix}.13
 
 if [[ ${network_cidr} == 10.10.10.0/24 ]]; then
   record_command init full
-  (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" init full) \
+  (cd "${workdir}" && FARROW_HOME="${data_root}" "${binary}" init full) \
     >"${base_config_path}" 2>"${evidence_root}/init-full.stderr"
 else
   record_command init full --network-cidr "${network_cidr}"
-  (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" init full --network-cidr "${network_cidr}") \
+  (cd "${workdir}" && FARROW_HOME="${data_root}" "${binary}" init full --network-cidr "${network_cidr}") \
     >"${base_config_path}" 2>"${evidence_root}/init-full.stderr"
 fi
 

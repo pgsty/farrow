@@ -1,11 +1,14 @@
 # Pigsty integration
 
-Pigsty drives Farrow through one stable command on `PATH`: `pigsty-vm`. Every
-archive and package installs it. The point of the wrapper is that the VM
-topology and the Ansible inventory are derived from the *same* profile, scale
-and subnet, so the two can never drift apart.
+Farrow ships `pigsty-vm`, a narrow wrapper that derives the VM topology and
+Pigsty inventory from the same profile, scale, and subnet. Archives and packages
+install it on `PATH`; `VM_IMAGE` affects only the VM configuration.
 
-## Bringing up a lab
+## Prepare and start a fresh lab
+
+`pigsty-vm preflight` is read-only; it does not install host dependencies or
+private networking. On a fresh host, first generate the exact wrapper
+configuration and pass it to `farrow setup`:
 
 ```bash
 install -d -m 0700 .farrow
@@ -14,92 +17,90 @@ export PIGSTY_ROOT="$PWD"
 export VM_SPEC=full
 export VM_NETWORK_CIDR=172.31.251.0/24
 
+pigsty-vm init >"$PWD/.farrow/farrow.yaml"
+farrow setup -f "$PWD/.farrow/farrow.yaml"
+
 pigsty-vm inventory --output "$PWD/.farrow/pigsty.yml"
-pigsty-vm preflight
 pigsty-vm up
 pigsty-vm provision --script /absolute/path/to/bootstrap.sh --sudo --parallel 4
 
-pigsty-vm ssh-config >.farrow/ssh_config
-chmod 0600 .farrow/ssh_config
+pigsty-vm ssh-config >"$PWD/.farrow/ssh_config"
+chmod 0600 "$PWD/.farrow/ssh_config"
 ```
 
-Then run Pigsty as usual against the rendered inventory.
+`setup` installs or verifies the required host capabilities and prepares the
+exact generated profile. Subsequent wrapper lifecycle commands regenerate the
+same strict configuration from the exported variables and act on the project in
+the current directory.
+
+With a custom `VM_NETWORK_CIDR`, use the generated SSH config or DNS for host
+aliases. The optional `hosts install` publisher currently accepts only the
+default `10.10.10.0/24`.
+
+Run Pigsty against `.farrow/pigsty.yml` after the VMs are ready.
 
 ## Wrapper interface
 
-```
+```text
 pigsty-vm up|plan|preflight|init|inventory|status|start|stop|restart|recreate
           |destroy|ssh|exec|provision|logs|repair|ssh-config|hosts|network [args...]
 ```
 
-Everything except `inventory` forwards to the matching `farrow` command with
-the profile, scale, image and subnet already resolved. Unknown subcommands are
-rejected rather than passed through.
+The wrapper deliberately has no `setup` subcommand. Its mappings are:
 
-For `up`, `plan`, `preflight` and `recreate`, the wrapper renders a mode-0600
-temporary strict YAML through `farrow init`, validates it, passes it with `-f`,
-and removes it on every exit path. It never adds an arbitrary QEMU argument
-path and never silently upgrades a command to a destructive one.
+| Wrapper command | Farrow operation |
+|---|---|
+| `init` | `farrow init` with the selected profile overrides |
+| `inventory` | `farrow pigsty inventory` |
+| `preflight` | `farrow network preflight` with a generated temporary config |
+| `up`, `plan`, `recreate` | matching lifecycle command with a generated temporary config |
+| all other accepted commands | matching Farrow command against current project state |
 
-Pigsty references the wrapper through a single Makefile variable:
+Generated configs are mode 0600, strictly validated, and removed on every exit
+path. Unknown wrapper commands are rejected; no command is silently upgraded to
+a destructive action.
+
+## Variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VM_SPEC` | `meta` | built-in profile |
+| `VM_SCALE` | `1` | CPU/memory scale, 1–64 |
+| `VM_IMAGE` | — | global image override |
+| `VM_FORCE_UNIFORM_IMAGE` | `0` | allow the image override on a mixed-distribution profile |
+| `VM_NETWORK_CIDR` | profile default | host-global RFC1918 `/24` |
+| `VM_ARCH` | `native` | native architecture only |
+| `PIGSTY_ROOT` | working directory | Pigsty source root used by `inventory` |
+| `FARROW_BIN` | `farrow` | CLI path; a value containing `/` must be absolute |
+
+Every value is validated before use. `VM_FORCE_UNIFORM_IMAGE=1` requires
+`VM_IMAGE`; unsafe names, out-of-range scale, malformed image aliases, and
+invalid CIDRs fail before invoking Farrow.
+
+Pigsty may reference the wrapper through one Makefile variable:
 
 ```makefile
 PIGSTY_VM ?= pigsty-vm
 ```
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `VM_SPEC` | `meta` | profile name |
-| `VM_SCALE` | `1` | 1–64; multiplies CPU and memory only |
-| `VM_IMAGE` | — | global image override |
-| `VM_FORCE_UNIFORM_IMAGE` | `0` | allow `VM_IMAGE` on a mixed-distribution profile; requires `VM_IMAGE` |
-| `VM_NETWORK_CIDR` | `10.10.10.0/24` | host-global `/24` |
-| `VM_ARCH` | `native` | native architecture only; a foreign value is an error |
-| `PIGSTY_ROOT` | working directory | Pigsty source root, used by `inventory` |
-| `FARROW_BIN` | `farrow` | explicit CLI path; must be absolute if it contains a slash |
-
-Every value is validated before use — an unsafe profile name, out-of-range
-scale, malformed image alias or non-`/24` CIDR fails with exit 2.
-
 ## Inventory rendering
 
-`pigsty-vm inventory` (equivalently `farrow pigsty inventory`) is a narrow
-YAML-AST transformer over a catalog-bound Pigsty template. It is not a generic
-Pigsty installer.
+`pigsty-vm inventory` is equivalent to `farrow pigsty inventory`. It transforms
+the catalog-bound Pigsty template for the selected profile, rebases recognised
+addresses to the selected subnet, applies resource-aware `tiny` tuning, and
+never rewrites the source `conf/` tree.
 
-It classifies every address-bearing value in the template, rebases inventory
-host keys, admin addresses, L2 VIPs, service references, DNS/hosts/NTP entries
-and endpoints onto the selected subnet while preserving each final octet, adds
-a custom subnet to `proxy_env.no_proxy`, and applies resource-aware `tiny`
-tuning. Source `conf/` is read-only and never rewritten.
+Unknown address semantics, residual default-subnet references, or a mismatch
+between the VM and inventory node sets fail closed. Output is mode 0600 with a
+digest sidecar; replacing managed output requires `--force`, while unmanaged or
+hand-edited files are never adopted.
 
-Anything it cannot classify is a hard error. Residual references to the default
-subnet, unknown address semantics, or a mismatch between the VM topology and
-the inventory host set all fail closed rather than emitting a half-rebased file.
-
-Output is secret-bearing configuration, so it is published mode 0600 next to a
-strict JSON sidecar recording source and output digests, profile, scale, subnet
-and inventory mode. Replacing an existing output requires `--force` *and* a
-current file whose digest still matches its sidecar — unmanaged, hand-edited,
-symlinked, cross-user or multiply-linked files are never adopted.
-
-## Profile bindings
-
-Each of the 13 profiles binds to exactly one inventory template with an
-explicit node policy:
-
-- 11 profiles bind directly to their template;
-- `rpm` and `deb` apply a typed 2-node and 5-node subset overlay to the shared
-  build template, including the control node's `admin_ip`, etcd placement and
-  contiguous `infra_seq`;
-- `deci` declares `node-8` and `node-9` as intentionally idle VMs.
-
-See [config.md](config.md) for the profile list and node counts.
+The 13 profile bindings and node counts are documented in
+[Configuration](config.md#built-in-profiles).
 
 ## Guest identity
 
-Farrow resolves the Pigsty node-admin identity before Ansible ever connects:
-cloud-init creates `dba` as UID 88 with primary group `admin` GID 88 and gates
-readiness on the numeric identity. Account creation therefore happens outside
-the live provisioning session, and Pigsty's node-admin task is idempotent
-instead of trying to renumber the account it is currently logged in through.
+Built-in profiles create the Pigsty node administrator before Ansible connects:
+`dba` is UID 88 with primary group `admin` GID 88, and readiness checks that
+numeric identity. Pigsty therefore does not have to renumber its active SSH
+account.

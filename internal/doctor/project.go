@@ -112,7 +112,7 @@ func (p Probe) projectChecks() []Check {
 		fix := ""
 		if available < 20<<30 {
 			status = Warn
-			fix = "free space or choose a safe absolute FARROW_DATA_HOME before creating a project"
+			fix = "free space or choose a safe absolute FARROW_HOME before creating a project"
 		}
 		checks = append(checks, Check{Name: "data-root", Status: status, Evidence: fmt.Sprintf("%s (filesystem %s, %.1f GiB available)", dataRoot, filesystemPath, float64(available)/(1<<30)), Fix: fix})
 	}

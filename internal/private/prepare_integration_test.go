@@ -75,7 +75,7 @@ func TestIntegrationRealPrivateOfflinePrepare(t *testing.T) {
 		Backend: Backend{DarwinSocket: "/private/var/run/farrow-vmnet.sock", ReconnectMS: 1000},
 		Disks:   disk.Manager{QEMUImg: qemuImg, Runner: runner},
 	}
-	outcomes := PrepareAll(context.Background(), config, 2)
+	outcomes := prepareAll(context.Background(), config, 2)
 	if len(PreparedNames(outcomes)) != 2 {
 		t.Fatalf("real prepare outcomes = %#v", outcomes)
 	}

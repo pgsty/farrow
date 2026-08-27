@@ -28,14 +28,6 @@ const (
 	MaxSignatureSize    = 64 << 10
 )
 
-// Development-only roots. Matching private keys exist only in _test.go.
-// Release readiness remains blocked until production active/standby custody is
-// supplied and these roots are replaced.
-const (
-	developmentPublicRoot1 = "untrusted comment: minisign public key: E87A2D0D9F49B03B\nRWQ7sEmfDS166ELVheon0eL5PZYT1QNdSvZN+cDhd1F204TzYGJR3ml7"
-	developmentPublicRoot2 = "untrusted comment: minisign public key: 10EDAA24D2B13348\nRWRIM7HSJKrtEBNN6GnxF5GuBvl24Haql+TDHXVH3jqmS+i6XtW5UVS/"
-)
-
 type ManifestState struct {
 	Schema         int       `json:"schema"`
 	HighestVersion uint64    `json:"highest_version"`
@@ -56,23 +48,11 @@ type ManifestManager struct {
 
 var manifestFilename = regexp.MustCompile(`^v[0-9]+-[0-9a-f]{64}\.json$`)
 
-func developmentRoots() ([]minisign.PublicKey, error) {
-	result := make([]minisign.PublicKey, 0, 2)
-	for _, text := range []string{developmentPublicRoot1, developmentPublicRoot2} {
-		var key minisign.PublicKey
-		if err := key.UnmarshalText([]byte(text)); err != nil {
-			return nil, err
-		}
-		result = append(result, key)
-	}
-	return result, nil
-}
-
 func (m ManifestManager) keys() ([]minisign.PublicKey, error) {
-	if len(m.Keys) > 0 {
-		return m.Keys, nil
+	if len(m.Keys) < 2 {
+		return nil, errors.New("manifest verifier has no active and standby production public keys")
 	}
-	return developmentRoots()
+	return append([]minisign.PublicKey(nil), m.Keys...), nil
 }
 
 func (m ManifestManager) root() string      { return filepath.Join(m.DataRoot, "manifests") }
@@ -90,10 +70,6 @@ func (m ManifestManager) validate() error {
 		if err := ensurePrivateDir(directory); err != nil {
 			return err
 		}
-	}
-	keys, err := m.keys()
-	if err != nil || len(keys) < 2 {
-		return errors.New("manifest verifier requires at least two valid public keys")
 	}
 	return nil
 }
@@ -193,13 +169,6 @@ func (m ManifestManager) Current() (Catalog, ManifestState, error) {
 	if m.DataRoot == "" || !filepath.IsAbs(m.DataRoot) {
 		return Catalog{}, ManifestState{}, errors.New("manifest data root must be absolute")
 	}
-	keys, err := m.keys()
-	if err != nil {
-		return Catalog{}, ManifestState{}, err
-	}
-	if len(keys) < 2 {
-		return Catalog{}, ManifestState{}, errors.New("manifest verifier requires at least two public keys")
-	}
 	state, err := m.readState()
 	if errors.Is(err, os.ErrNotExist) {
 		state, err = embeddedState()
@@ -217,6 +186,10 @@ func (m ManifestManager) Current() (Catalog, ManifestState, error) {
 	}
 	if state.Active == "embedded" {
 		return EmbeddedCatalog(), state, nil
+	}
+	keys, err := m.keys()
+	if err != nil {
+		return Catalog{}, ManifestState{}, err
 	}
 	manifestPath := filepath.Join(m.versions(), state.Active)
 	signaturePath := manifestPath + ".minisig"
@@ -260,8 +233,11 @@ func (m ManifestManager) httpClient() *http.Client {
 	}
 	previous := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if len(via) > 5 || request.URL.Scheme != "https" {
-			return errors.New("manifest redirect is non-HTTPS or exceeds five hops")
+		if len(via) > 5 || (request.URL.Scheme != "http" && request.URL.Scheme != "https") {
+			return errors.New("catalog redirect scheme is invalid or exceeds five hops")
+		}
+		if len(via) > 0 && via[0].URL.Scheme == "https" && request.URL.Scheme != "https" {
+			return errors.New("catalog redirect attempts an HTTPS downgrade")
 		}
 		if previous != nil {
 			return previous(request, via)
@@ -294,15 +270,20 @@ func (m ManifestManager) download(ctx context.Context, source string, limit int6
 func (m ManifestManager) readSource(ctx context.Context, source string) ([]byte, []byte, string, error) {
 	parsed, err := url.Parse(source)
 	if err == nil && parsed.Scheme != "" {
-		if parsed.Scheme != "https" || parsed.Host == "" {
-			return nil, nil, "", errors.New("remote manifest source must be absolute HTTPS")
+		if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return nil, nil, "", errors.New("remote catalog source must be absolute HTTP(S) without credentials, query, or fragment")
 		}
-		data, err := m.download(ctx, source, MaxManifestSize)
+		manifestSource := parsed.String()
+		signatureURL := *parsed
+		signatureURL.Path += ".minisig"
+		signatureURL.RawPath = ""
+		signatureSource := signatureURL.String()
+		data, err := m.download(ctx, manifestSource, MaxManifestSize)
 		if err != nil {
 			return nil, nil, "", err
 		}
-		signatureText, err := m.download(ctx, source+".minisig", MaxSignatureSize)
-		return data, signatureText, source, err
+		signatureText, err := m.download(ctx, signatureSource, MaxSignatureSize)
+		return data, signatureText, manifestSource, err
 	}
 	absolute, err := filepath.Abs(source)
 	if err != nil {
@@ -320,11 +301,14 @@ func (m ManifestManager) Sync(ctx context.Context, source string, allowDowngrade
 	if err := m.validate(); err != nil {
 		return ManifestState{}, err
 	}
+	keys, err := m.keys()
+	if err != nil {
+		return ManifestState{}, err
+	}
 	data, signatureText, provenance, err := m.readSource(ctx, source)
 	if err != nil {
 		return ManifestState{}, err
 	}
-	keys, _ := m.keys()
 	keyID, err := verifyManifest(keys, data, signatureText)
 	if err != nil {
 		return ManifestState{}, err

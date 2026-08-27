@@ -459,14 +459,10 @@ func validateInstalledHelper(path string) error {
 }
 
 func installedHelperDigest(path string) (string, error) {
-	if err := validateInstalledHelper(path); err != nil {
-		return "", err
-	}
-	data, _, err := secureRead(path, 64<<20)
+	actual, err := RootOwnedHelperDigest(path)
 	if err != nil {
 		return "", err
 	}
-	actual := digest(data)
 	if ExpectedHelperSHA256 != "" {
 		if !hashPattern.MatchString(ExpectedHelperSHA256) {
 			return "", errors.New("packaged hosts helper digest is invalid")
@@ -476,6 +472,54 @@ func installedHelperDigest(path string) (string, error) {
 		}
 	}
 	return actual, nil
+}
+
+// RootOwnedHelperDigest verifies that path is a bounded, immutable-by-users
+// executable beneath root-owned non-writable parents, then returns its digest.
+// Setup uses this only for a newly staged helper before atomically publishing
+// it; runtime callers must use InstalledHelperDigest so CLI pairing is also
+// enforced.
+func RootOwnedHelperDigest(path string) (string, error) {
+	if err := validateInstalledHelper(path); err != nil {
+		return "", err
+	}
+	data, _, err := secureRead(path, 64<<20)
+	if err != nil {
+		return "", err
+	}
+	return digest(data), nil
+}
+
+// CompanionHelperDigest verifies an unprivileged archive/formula companion
+// before setup copies it into the fixed root-owned location. Release and Make
+// builds always inject the expected digest; an unpaired `go run` binary is not
+// allowed to provision privileged executable bytes.
+func CompanionHelperDigest(path string) (string, error) {
+	if ExpectedHelperSHA256 == "" || !hashPattern.MatchString(ExpectedHelperSHA256) {
+		return "", errors.New("farrow binary has no valid packaged hosts-helper digest")
+	}
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", errors.New("companion hosts helper path must be canonical and absolute")
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("companion hosts helper is missing or unsafe: %s", path)
+	}
+	data, _, err := secureRead(path, 64<<20)
+	if err != nil {
+		return "", err
+	}
+	actual := digest(data)
+	if actual != ExpectedHelperSHA256 {
+		return "", errors.New("companion hosts helper digest differs from the packaged CLI")
+	}
+	return actual, nil
+}
+
+// InstalledHelperDigest verifies the complete privileged path/ownership and
+// the CLI/helper digest pairing.
+func InstalledHelperDigest() (string, error) {
+	return installedHelperDigest(InstalledHelperPath)
 }
 
 func nativeLockPath() (string, error) {

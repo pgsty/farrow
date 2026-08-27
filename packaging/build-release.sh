@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck disable=SC1091
+source "${script_directory}/semver.sh"
+
 usage() {
   echo "usage: $0 <version> [output-directory]" >&2
   echo "set SOURCE_DATE_EPOCH and optionally FARROW_COMMIT/FARROW_RELEASE_BASE_URL" >&2
@@ -8,7 +12,7 @@ usage() {
 
 version=${1:-}
 output=${2:-dist}
-if [[ ! ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+if ! farrow_is_semver "${version}"; then
   usage
   exit 2
 fi
@@ -20,7 +24,7 @@ if (( SOURCE_DATE_EPOCH <= 0 )); then
   echo "SOURCE_DATE_EPOCH must be positive" >&2
   exit 2
 fi
-if [[ ${version} != *-* ]]; then
+if ! farrow_is_prerelease_semver "${version}"; then
   echo "build-release.sh is development-only and requires a prerelease version" >&2
   exit 2
 fi
@@ -101,6 +105,7 @@ for target in "${targets[@]}"; do
     "${repo}/docs/cli.md" \
     "${repo}/docs/config.md" \
     "${repo}/docs/development.md" \
+    "${repo}/docs/getting-started.md" \
     "${repo}/docs/images.md" \
     "${repo}/docs/networking.md" \
     "${repo}/docs/phase-2.md" \

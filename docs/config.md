@@ -80,8 +80,8 @@ addresses live in `.9`–`.254`. See [networking.md](networking.md).
 | Key | Default | Notes |
 |---|---|---|
 | `image` | `u24` | any alias from `farrow image list` |
-| `cpus` | `2` | 1–256 |
-| `memory` | `4GiB` | |
+| `cpus` | `1` | 1–256; Quick CLI defaults to 2 |
+| `memory` | `2GiB` | minimum `512MiB`; Quick CLI defaults to 4 GiB |
 | `root_disk` | `64GiB` | grown on first boot; never shrunk |
 
 Each node may override any of these.
@@ -104,15 +104,20 @@ without those fixed numeric IDs.
 |---|---|
 | `data_root` | absolute, clean, non-root path for images, disks and state |
 
-Resolution order, first match wins:
+For a new project, resolution order is:
 
-1. `FARROW_DATA_HOME`
+1. `FARROW_HOME`
 2. `storage.data_root`
-3. `XDG_DATA_HOME/farrow`
-4. `~/Library/Application Support/farrow` (macOS) or `~/.local/share/farrow` (Linux)
+3. `~/.farrow` on both Linux and macOS
 
-Broad roots — your home directory, the working directory, the XDG root itself —
-are rejected, as are symlinked roots.
+Broad roots—your home directory or the working directory—are rejected. The data
+root itself must not be a symlink; existing ancestors are resolved even when
+the final directory has not been created, so broad-root checks cannot be
+bypassed through a symlinked parent.
+
+For an existing project, the data root recorded in its project marker is
+authoritative. Changing `FARROW_HOME` or `storage.data_root` does not move
+state; a conflicting value fails with an explicit data-root migration error.
 
 ## nodes
 
@@ -129,6 +134,10 @@ are rejected, as are symlinked roots.
 | `disks` | no | extra data disks |
 | `shares` | no | opt-in host directories mounted through QEMU 9p |
 | `forwards` | no | host→guest TCP forwards; user mode only |
+
+`host_aliases` work inside the guest on every private subnet. Host-side
+`farrow hosts install` currently publishes only default-subnet
+`10.10.10.0/24` addresses.
 
 ### disks
 
@@ -233,6 +242,6 @@ mix guest distributions, so `--image` is refused unless you pass
 
 | Variable | Effect |
 |---|---|
-| `FARROW_DATA_HOME` | highest-precedence data root |
-| `XDG_DATA_HOME` | data root parent when `FARROW_DATA_HOME` and `storage.data_root` are unset |
+| `FARROW_HOME` | highest-precedence data root |
+| `FARROW_REPO` | image repository URL or absolute local directory; overridden by `--repo` |
 | `XDG_RUNTIME_DIR` | parent for QMP sockets and pidfiles; must be an owner-only 0700 absolute directory, otherwise a short UID-isolated fallback under `/tmp` is used |

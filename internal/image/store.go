@@ -4,18 +4,19 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/fsutil"
@@ -27,8 +28,13 @@ const (
 	MaxArtifactSize int64 = 8 << 30
 )
 
-var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var (
+	digestPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	localImageFilename = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,159}\.(?:qcow2|img)$`)
+)
 
+// Metadata describes bytes verified during this operation. It is returned to
+// callers but is deliberately not written as a sidecar next to every image.
 type Metadata struct {
 	Schema       int       `json:"schema"`
 	Digest       string    `json:"digest"`
@@ -41,30 +47,80 @@ type Metadata struct {
 
 type Store struct {
 	DataRoot   string
+	Repository string
 	QEMUImg    string
 	Runner     execx.Runner
 	HTTPClient *http.Client
+	Progress   activity.Reporter
 }
 
-func (s Store) cacheDir() string { return filepath.Join(s.DataRoot, "cache", "images", "sha256") }
-func (s Store) lockPath() string { return filepath.Join(s.DataRoot, "locks", "cache.lock") }
+const byteProgressInterval = 250 * time.Millisecond
 
-func ensurePrivateDir(path string) error {
-	if err := os.MkdirAll(path, 0o700); err != nil {
+type reportingReader struct {
+	reader   io.Reader
+	reporter activity.Reporter
+	event    activity.Event
+	current  int64
+	last     time.Time
+}
+
+func (reader *reportingReader) Read(buffer []byte) (int, error) {
+	read, err := reader.reader.Read(buffer)
+	reader.current += int64(read)
+	now := time.Now()
+	if read > 0 && (reader.last.IsZero() || now.Sub(reader.last) >= byteProgressInterval) {
+		reader.event.CurrentBytes = reader.current
+		reader.reporter.Report(reader.event)
+		reader.last = now
+	}
+	return read, err
+}
+
+func displayActivitySource(source string) string {
+	parsed, err := url.Parse(source)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return source
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func copyWithProgress(destination io.Writer, source io.Reader, limit int64, reporter activity.Reporter, event activity.Event) (int64, error) {
+	if event.StartedAt.IsZero() {
+		event.StartedAt = time.Now()
+	}
+	reporter.Report(event)
+	tracked := &reportingReader{reader: io.LimitReader(source, limit), reporter: reporter, event: event, last: time.Now()}
+	written, err := io.Copy(destination, tracked)
+	event.CurrentBytes = written
+	event.Done = err == nil
+	reporter.Report(event)
+	return written, err
+}
+
+func (s Store) lockPath() string { return filepath.Join(s.DataRoot, "locks", "images.lock") }
+
+func ensurePrivateDir(pathname string) error {
+	if err := os.MkdirAll(pathname, 0o700); err != nil {
 		return err
 	}
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(pathname)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("cache path is unsafe: %s", path)
+		return fmt.Errorf("farrow path is unsafe: %s", pathname)
 	}
-	return os.Chmod(path, 0o700)
+	return os.Chmod(pathname, 0o700)
 }
 
 func (s Store) validate() error {
 	if s.DataRoot == "" || !filepath.IsAbs(s.DataRoot) || s.QEMUImg == "" || s.Runner == nil {
 		return errors.New("image store data root, qemu-img, and runner are required")
 	}
-	for _, directory := range []string{s.DataRoot, s.cacheDir(), filepath.Dir(s.lockPath())} {
+	if _, err := NormalizeRepository(s.Repository); err != nil {
+		return err
+	}
+	for _, directory := range []string{s.DataRoot, filepath.Dir(s.lockPath())} {
 		if err := ensurePrivateDir(directory); err != nil {
 			return err
 		}
@@ -72,35 +128,52 @@ func (s Store) validate() error {
 	return nil
 }
 
-func (s Store) Path(digest string) (string, error) {
-	if !digestPattern.MatchString(digest) {
-		return "", fmt.Errorf("invalid image digest %q", digest)
+func validStoreFile(filename string) bool {
+	if filename == "" || path.Clean(filename) != filename || strings.HasPrefix(filename, "/") || strings.Contains(filename, "\\") {
+		return false
 	}
-	return filepath.Join(s.cacheDir(), digest+".qcow2"), nil
+	parts := strings.Split(filename, "/")
+	return len(parts) == 2 && catalogName.MatchString(parts[0]) && localImageFilename.MatchString(parts[1])
 }
 
-func (s Store) metadataPath(digest string) (string, error) {
-	if !digestPattern.MatchString(digest) {
-		return "", fmt.Errorf("invalid image digest %q", digest)
+func (s Store) Path(entry Entry) (string, error) {
+	if !validStoreFile(entry.File) {
+		return "", fmt.Errorf("invalid local image path %q", entry.File)
 	}
-	return filepath.Join(s.cacheDir(), digest+".json"), nil
+	return filepath.Join(s.DataRoot, filepath.FromSlash(entry.File)), nil
 }
 
-func digestFile(path string) (string, int64, error) {
-	info, err := os.Lstat(path)
+func (s Store) ensureImageDirectory(entry Entry) (string, error) {
+	target, err := s.Path(entry)
+	if err != nil {
+		return "", err
+	}
+	directory := filepath.Dir(target)
+	if filepath.Dir(directory) != filepath.Clean(s.DataRoot) {
+		return "", errors.New("image path must have exactly one family directory")
+	}
+	if err := ensurePrivateDir(directory); err != nil {
+		return "", err
+	}
+	return directory, nil
+}
+
+func digestFileWithProgress(pathname string, reporter activity.Reporter, event activity.Event) (string, int64, error) {
+	info, err := os.Lstat(pathname)
 	if err != nil || !info.Mode().IsRegular() {
-		return "", 0, fmt.Errorf("image must be a regular non-symlink file: %s", path)
+		return "", 0, fmt.Errorf("image must be a regular non-symlink file: %s", pathname)
 	}
 	if info.Size() > MaxArtifactSize {
 		return "", 0, fmt.Errorf("image size %d exceeds limit %d", info.Size(), MaxArtifactSize)
 	}
-	handle, err := os.Open(path)
+	handle, err := os.Open(pathname)
 	if err != nil {
 		return "", 0, err
 	}
 	defer handle.Close()
 	hash := sha256.New()
-	written, err := io.Copy(hash, io.LimitReader(handle, MaxArtifactSize+1))
+	event.TotalBytes = info.Size()
+	written, err := copyWithProgress(hash, handle, MaxArtifactSize+1, reporter, event)
 	if err != nil {
 		return "", written, err
 	}
@@ -110,63 +183,74 @@ func digestFile(path string) (string, int64, error) {
 	return hex.EncodeToString(hash.Sum(nil)), written, nil
 }
 
+func digestFile(pathname string) (string, int64, error) {
+	return digestFileWithProgress(pathname, nil, activity.Event{})
+}
+
 func (s Store) manager() disk.Manager { return disk.Manager{QEMUImg: s.QEMUImg, Runner: s.Runner} }
 
-func (s Store) ValidateCached(ctx context.Context, digest string) (string, Metadata, error) {
-	path, err := s.Path(digest)
+func validateEntryIdentity(entry Entry) error {
+	if !digestPattern.MatchString(entry.SHA256) || entry.Format != "qcow2" || !validStoreFile(entry.File) {
+		return errors.New("catalog image digest, format, or file is invalid")
+	}
+	if entry.ArtifactSize < 0 || entry.ArtifactSize > MaxArtifactSize || entry.VirtualSize < 0 {
+		return errors.New("catalog image size is invalid")
+	}
+	return nil
+}
+
+func (s Store) ValidateCached(ctx context.Context, entry Entry) (string, Metadata, error) {
+	if err := validateEntryIdentity(entry); err != nil {
+		return "", Metadata{}, err
+	}
+	pathname, err := s.Path(entry)
 	if err != nil {
 		return "", Metadata{}, err
 	}
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(pathname)
 	if err != nil {
 		return "", Metadata{}, err
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o222 != 0 {
-		return "", Metadata{}, errors.New("cached image is not an immutable regular file")
+		return "", Metadata{}, errors.New("local image is not an immutable regular file")
 	}
-	actual, size, err := digestFile(path)
-	if err != nil || actual != digest {
-		return "", Metadata{}, fmt.Errorf("cached image digest mismatch: got %s want %s: %w", actual, digest, err)
+	actual, size, err := digestFileWithProgress(pathname, s.Progress, activity.Event{
+		Phase:   "image-verify",
+		Message: fmt.Sprintf("Verifying cached image %s %s (%s)", entry.Alias, entry.Release, entry.Arch),
+	})
+	if err != nil {
+		return "", Metadata{}, fmt.Errorf("local image digest mismatch: got %s want %s: %w", actual, entry.SHA256, err)
 	}
-	imageInfo, err := s.manager().Inspect(ctx, path)
+	if actual != entry.SHA256 {
+		return "", Metadata{}, fmt.Errorf("local image digest mismatch: got %s want %s", actual, entry.SHA256)
+	}
+	if entry.ArtifactSize > 0 && size != entry.ArtifactSize {
+		return "", Metadata{}, fmt.Errorf("local image size mismatch: got %d want %d", size, entry.ArtifactSize)
+	}
+	imageInfo, err := s.manager().Inspect(ctx, pathname)
 	if err != nil {
 		return "", Metadata{}, err
 	}
 	if err := disk.ValidateBase(imageInfo); err != nil {
 		return "", Metadata{}, err
 	}
-	metadataPath, _ := s.metadataPath(digest)
-	metadataInfo, err := os.Lstat(metadataPath)
-	if err != nil || !metadataInfo.Mode().IsRegular() || metadataInfo.Mode()&os.ModeSymlink != 0 || metadataInfo.Mode().Perm() != 0o600 {
-		return "", Metadata{}, errors.New("cached image metadata is not a mode-0600 regular non-symlink file")
+	if entry.VirtualSize > 0 && imageInfo.VirtualSize != entry.VirtualSize {
+		return "", Metadata{}, fmt.Errorf("local image virtual size mismatch: got %d want %d", imageInfo.VirtualSize, entry.VirtualSize)
 	}
-	metadataBytes, err := os.ReadFile(metadataPath)
-	if err != nil {
-		return "", Metadata{}, err
-	}
-	var metadata Metadata
-	decoder := json.NewDecoder(strings.NewReader(string(metadataBytes)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&metadata); err != nil {
-		return "", Metadata{}, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return "", Metadata{}, errors.New("cached image metadata has trailing JSON data")
-	}
-	if metadata.Schema != MetadataSchema || metadata.Digest != digest || metadata.ArtifactSize != size || metadata.VirtualSize != imageInfo.VirtualSize || metadata.Format != "qcow2" || metadata.Source == "" || metadata.ImportedAt.IsZero() {
-		return "", Metadata{}, errors.New("cached image metadata does not match artifact")
-	}
-	return path, metadata, nil
+	metadata := Metadata{Schema: MetadataSchema, Digest: actual, Format: "qcow2", VirtualSize: imageInfo.VirtualSize, ArtifactSize: size, Source: "local:" + pathname, ImportedAt: info.ModTime().UTC()}
+	return pathname, metadata, nil
 }
 
-func (s Store) publish(ctx context.Context, tempPath, digest, source string, artifactSize int64) (string, Metadata, error) {
-	actual, size, err := digestFile(tempPath)
+func (s Store) publish(ctx context.Context, tempPath string, entry Entry, source string, artifactSize int64) (string, Metadata, error) {
+	actual, size, err := digestFileWithProgress(tempPath, s.Progress, activity.Event{
+		Phase:   "image-verify",
+		Message: fmt.Sprintf("Verifying downloaded image %s %s (%s)", entry.Alias, entry.Release, entry.Arch),
+	})
 	if err != nil {
 		return "", Metadata{}, err
 	}
-	if actual != digest || size != artifactSize {
-		return "", Metadata{}, errors.New("copied/downloaded image digest or size changed before publish")
+	if actual != entry.SHA256 || size != artifactSize || (entry.ArtifactSize > 0 && size != entry.ArtifactSize) {
+		return "", Metadata{}, errors.New("copied or downloaded image digest/size does not match catalog")
 	}
 	imageInfo, err := s.manager().Inspect(ctx, tempPath)
 	if err != nil {
@@ -175,27 +259,20 @@ func (s Store) publish(ctx context.Context, tempPath, digest, source string, art
 	if err := disk.ValidateBase(imageInfo); err != nil {
 		return "", Metadata{}, err
 	}
+	if entry.VirtualSize > 0 && imageInfo.VirtualSize != entry.VirtualSize {
+		return "", Metadata{}, errors.New("copied or downloaded image virtual size does not match catalog")
+	}
 	if err := os.Chmod(tempPath, 0o444); err != nil {
 		return "", Metadata{}, err
 	}
-	target, _ := s.Path(digest)
+	target, _ := s.Path(entry)
 	if err := os.Rename(tempPath, target); err != nil {
 		return "", Metadata{}, err
 	}
-	if err := fsutil.SyncDir(s.cacheDir()); err != nil {
+	if err := fsutil.SyncDir(filepath.Dir(target)); err != nil {
 		return "", Metadata{}, err
 	}
-	metadata := Metadata{Schema: MetadataSchema, Digest: digest, Format: "qcow2", VirtualSize: imageInfo.VirtualSize, ArtifactSize: artifactSize, Source: source, ImportedAt: time.Now().UTC()}
-	metadataPath, _ := s.metadataPath(digest)
-	data, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return "", Metadata{}, err
-	}
-	if err := fsutil.AtomicWrite(metadataPath, append(data, '\n'), 0o600); err != nil {
-		_ = os.Remove(target)
-		_ = fsutil.SyncDir(s.cacheDir())
-		return "", Metadata{}, err
-	}
+	metadata := Metadata{Schema: MetadataSchema, Digest: actual, Format: "qcow2", VirtualSize: imageInfo.VirtualSize, ArtifactSize: size, Source: source, ImportedAt: time.Now().UTC()}
 	return target, metadata, nil
 }
 
@@ -214,20 +291,29 @@ func (s Store) Import(ctx context.Context, source, expectedDigest string) (strin
 	if expectedDigest != "" && digest != expectedDigest {
 		return "", Metadata{}, fmt.Errorf("local image digest %s does not match expected %s", digest, expectedDigest)
 	}
+	basename := filepath.Base(absSource)
+	if !localImageFilename.MatchString(basename) {
+		return "", Metadata{}, errors.New("local image basename must be a safe .qcow2 or .img filename")
+	}
+	entry := Entry{Alias: "local", Release: "local-" + digest[:12], File: "local/" + basename, SHA256: digest, Format: "qcow2", ArtifactSize: sourceSize}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cacheLock, err := lock.Acquire(lockContext, s.lockPath(), false)
+	imageLock, err := lock.Acquire(lockContext, s.lockPath(), false)
 	if err != nil {
 		return "", Metadata{}, err
 	}
-	defer cacheLock.Release()
-	target, _ := s.Path(digest)
+	defer imageLock.Release()
+	directory, err := s.ensureImageDirectory(entry)
+	if err != nil {
+		return "", Metadata{}, err
+	}
+	target, _ := s.Path(entry)
 	if _, err := os.Lstat(target); err == nil {
-		return s.ValidateCached(ctx, digest)
+		return s.ValidateCached(ctx, entry)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", Metadata{}, err
 	}
-	tempPath, copied, err := fsutil.CopyToTemp(absSource, s.cacheDir(), ".import-*.partial", 0o600, MaxArtifactSize)
+	tempPath, copied, err := fsutil.CopyToTemp(absSource, directory, ".import-*.partial", 0o600, MaxArtifactSize)
 	if err != nil {
 		return "", Metadata{}, err
 	}
@@ -240,11 +326,11 @@ func (s Store) Import(ctx context.Context, source, expectedDigest string) (strin
 	if copied != sourceSize {
 		return "", Metadata{}, errors.New("local image changed while importing")
 	}
-	path, metadata, err := s.publish(ctx, tempPath, digest, "local:"+absSource, copied)
+	pathname, metadata, err := s.publish(ctx, tempPath, entry, "local:"+absSource, copied)
 	if err == nil {
 		keep = true
 	}
-	return path, metadata, err
+	return pathname, metadata, err
 }
 
 func (s Store) httpClient() *http.Client {
@@ -257,8 +343,11 @@ func (s Store) httpClient() *http.Client {
 	}
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if len(via) > 5 || request.URL.Scheme != "https" {
-			return errors.New("image redirect is non-HTTPS or exceeds five hops")
+		if len(via) > 5 || (request.URL.Scheme != "http" && request.URL.Scheme != "https") {
+			return errors.New("image redirect scheme is invalid or exceeds five hops")
+		}
+		if len(via) > 0 && via[0].URL.Scheme == "https" && request.URL.Scheme != "https" {
+			return errors.New("image redirect attempts an HTTPS downgrade")
 		}
 		if previousRedirect != nil {
 			return previousRedirect(request, via)
@@ -268,93 +357,168 @@ func (s Store) httpClient() *http.Client {
 	return &client
 }
 
-func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) {
-	if err := s.validate(); err != nil {
-		return "", Metadata{}, err
+func (s Store) stageHTTP(ctx context.Context, source, directory string, entry Entry) (string, int64, error) {
+	parsed, err := url.Parse(source)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", 0, errors.New("repository image URL must be absolute HTTP(S)")
 	}
-	if !digestPattern.MatchString(entry.SHA256) || entry.Format != "qcow2" {
-		return "", Metadata{}, errors.New("manifest entry digest or format is invalid")
-	}
-	if entry.ArtifactSize < 0 || entry.ArtifactSize > MaxArtifactSize {
-		return "", Metadata{}, errors.New("manifest entry artifact size is invalid")
-	}
-	parsed, err := url.Parse(entry.URL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return "", Metadata{}, errors.New("remote image URL must be absolute HTTPS")
-	}
-	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	cacheLock, err := lock.Acquire(lockContext, s.lockPath(), false)
+	displaySource := displayActivitySource(source)
+	s.Progress.Report(activity.Event{
+		Phase: "image-source", Message: fmt.Sprintf("Connecting to an image source for %s %s (%s)", entry.Alias, entry.Release, entry.Arch), Source: displaySource,
+	})
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
-		return "", Metadata{}, err
-	}
-	defer cacheLock.Release()
-	if target, metadata, err := s.ValidateCached(ctx, entry.SHA256); err == nil {
-		return target, metadata, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		if _, statErr := os.Lstat(filepath.Join(s.cacheDir(), entry.SHA256+".qcow2")); statErr == nil {
-			return "", Metadata{}, err
-		}
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, entry.URL, nil)
-	if err != nil {
-		return "", Metadata{}, err
+		return "", 0, err
 	}
 	response, err := s.httpClient().Do(request)
 	if err != nil {
-		return "", Metadata{}, err
+		return "", 0, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return "", Metadata{}, fmt.Errorf("image download returned %s", response.Status)
+		return "", 0, fmt.Errorf("download returned %s", response.Status)
 	}
-	if response.ContentLength > MaxArtifactSize {
-		return "", Metadata{}, errors.New("image Content-Length exceeds limit")
+	if response.Request != nil && response.Request.URL != nil {
+		displaySource = displayActivitySource(response.Request.URL.String())
 	}
-	if entry.ArtifactSize > 0 && response.ContentLength >= 0 && response.ContentLength != entry.ArtifactSize {
-		return "", Metadata{}, errors.New("image Content-Length differs from manifest artifact size")
+	if response.ContentLength > MaxArtifactSize || (entry.ArtifactSize > 0 && response.ContentLength >= 0 && response.ContentLength != entry.ArtifactSize) {
+		return "", 0, errors.New("download Content-Length differs from catalog policy")
 	}
-	temp, err := os.CreateTemp(s.cacheDir(), ".download-*.partial")
+	temp, err := os.CreateTemp(directory, ".download-*.partial")
 	if err != nil {
-		return "", Metadata{}, err
+		return "", 0, err
 	}
 	tempPath := temp.Name()
-	keep := false
+	ok := false
 	defer func() {
 		_ = temp.Close()
-		if !keep {
+		if !ok {
 			_ = os.Remove(tempPath)
 		}
 	}()
 	if err := temp.Chmod(0o600); err != nil {
-		return "", Metadata{}, err
+		return "", 0, err
 	}
-	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(temp, hash), io.LimitReader(response.Body, MaxArtifactSize+1))
+	total := entry.ArtifactSize
+	if total <= 0 {
+		total = response.ContentLength
+	}
+	written, err := copyWithProgress(temp, response.Body, MaxArtifactSize+1, s.Progress, activity.Event{
+		Phase:      "image-download",
+		Message:    fmt.Sprintf("Downloading image %s %s (%s)", entry.Alias, entry.Release, entry.Arch),
+		Source:     displaySource,
+		TotalBytes: total,
+	})
 	if err != nil {
-		return "", Metadata{}, fmt.Errorf("download image: %w", err)
+		return "", written, fmt.Errorf("download image: %w", err)
 	}
-	if written > MaxArtifactSize {
-		return "", Metadata{}, errors.New("download image exceeded size limit")
-	}
-	if response.ContentLength >= 0 && written != response.ContentLength {
-		return "", Metadata{}, errors.New("download size differs from Content-Length")
-	}
-	if entry.ArtifactSize > 0 && written != entry.ArtifactSize {
-		return "", Metadata{}, errors.New("download size differs from manifest artifact size")
-	}
-	if digest := hex.EncodeToString(hash.Sum(nil)); digest != entry.SHA256 {
-		return "", Metadata{}, fmt.Errorf("download digest %s does not match manifest %s", digest, entry.SHA256)
+	if written > MaxArtifactSize || (response.ContentLength >= 0 && written != response.ContentLength) || (entry.ArtifactSize > 0 && written != entry.ArtifactSize) {
+		return "", written, errors.New("downloaded image size differs from catalog policy")
 	}
 	if err := temp.Sync(); err != nil {
-		return "", Metadata{}, err
+		return "", written, err
 	}
 	if err := temp.Close(); err != nil {
+		return "", written, err
+	}
+	ok = true
+	return tempPath, written, nil
+}
+
+func (s Store) stageSource(ctx context.Context, source, directory string, entry Entry) (string, int64, error) {
+	parsed, _ := url.Parse(source)
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		return s.stageHTTP(ctx, source, directory, entry)
+	}
+	if !filepath.IsAbs(source) {
+		return "", 0, errors.New("local repository artifact path must be absolute")
+	}
+	s.Progress.Report(activity.Event{
+		Phase: "image-copy", Message: fmt.Sprintf("Copying image %s %s (%s) from the local repository", entry.Alias, entry.Release, entry.Arch), Source: source,
+	})
+	tempPath, copied, err := fsutil.CopyToTemp(source, directory, ".repository-*.partial", 0o600, MaxArtifactSize)
+	if err == nil {
+		s.Progress.Report(activity.Event{
+			Phase: "image-copy", Message: fmt.Sprintf("Copied image %s %s (%s) from the local repository", entry.Alias, entry.Release, entry.Arch), Source: source,
+			CurrentBytes: copied, TotalBytes: copied, Done: true,
+		})
+	}
+	return tempPath, copied, err
+}
+
+func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) {
+	if err := s.validate(); err != nil {
 		return "", Metadata{}, err
 	}
-	path, metadata, err := s.publish(ctx, tempPath, entry.SHA256, "remote:"+entry.URL, written)
-	if err == nil {
-		keep = true
+	if err := validateEntryIdentity(entry); err != nil {
+		return "", Metadata{}, err
 	}
-	return path, metadata, err
+	upstream, err := url.Parse(entry.Upstream)
+	if err != nil || upstream.Scheme != "https" || upstream.Host == "" || upstream.User != nil || upstream.RawQuery != "" || upstream.Fragment != "" {
+		return "", Metadata{}, errors.New("catalog upstream image URL must be absolute HTTPS")
+	}
+	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	imageLock, err := lock.Acquire(lockContext, s.lockPath(), false)
+	if err != nil {
+		return "", Metadata{}, err
+	}
+	defer imageLock.Release()
+	directory, err := s.ensureImageDirectory(entry)
+	if err != nil {
+		return "", Metadata{}, err
+	}
+	if target, metadata, err := s.ValidateCached(ctx, entry); err == nil {
+		s.Progress.Report(activity.Event{
+			Phase: "image-ready", Message: fmt.Sprintf("Using cached image %s %s (%s)", entry.Alias, entry.Release, entry.Arch), Done: true,
+		})
+		return target, metadata, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		if target, pathErr := s.Path(entry); pathErr == nil {
+			if _, statErr := os.Lstat(target); statErr == nil {
+				return "", Metadata{}, err
+			}
+		}
+	}
+	type candidate struct {
+		kind   string
+		source string
+	}
+	candidates := make([]candidate, 0, 2)
+	if s.Repository != "" {
+		source, sourceErr := RepositoryArtifactSource(s.Repository, entry.File)
+		if sourceErr != nil {
+			return "", Metadata{}, sourceErr
+		}
+		candidates = append(candidates, candidate{kind: "repository", source: source})
+	}
+	candidates = append(candidates, candidate{kind: "upstream", source: entry.Upstream})
+	failures := make([]string, 0, len(candidates))
+	for index, candidate := range candidates {
+		tempPath, copied, stageErr := s.stageSource(ctx, candidate.source, directory, entry)
+		if stageErr != nil {
+			message := fmt.Sprintf("Image %s source %s failed", entry.Alias, candidate.kind)
+			if index+1 < len(candidates) {
+				message += "; trying the next source"
+			}
+			s.Progress.Report(activity.Event{Phase: "image-fallback", Message: message, Source: displayActivitySource(candidate.source)})
+			failures = append(failures, candidate.kind+": "+stageErr.Error())
+			continue
+		}
+		pathname, metadata, publishErr := s.publish(ctx, tempPath, entry, candidate.kind+":"+candidate.source, copied)
+		if publishErr == nil {
+			s.Progress.Report(activity.Event{
+				Phase: "image-ready", Message: fmt.Sprintf("Image %s %s (%s) is ready", entry.Alias, entry.Release, entry.Arch), Done: true,
+			})
+			return pathname, metadata, nil
+		}
+		_ = os.Remove(tempPath)
+		message := fmt.Sprintf("Image %s source %s failed verification: %v", entry.Alias, candidate.kind, publishErr)
+		if index+1 < len(candidates) {
+			message += "; trying the next source"
+		}
+		s.Progress.Report(activity.Event{Phase: "image-fallback", Message: message, Source: displayActivitySource(candidate.source)})
+		failures = append(failures, candidate.kind+": "+publishErr.Error())
+	}
+	return "", Metadata{}, fmt.Errorf("all image sources failed: %s", strings.Join(failures, "; "))
 }

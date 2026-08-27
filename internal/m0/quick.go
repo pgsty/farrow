@@ -522,7 +522,7 @@ func QuickSmoke(ctx context.Context, options QuickOptions) (evidence QuickEviden
 		return evidence, err
 	}
 	evidence.HostOS, evidence.HostArch = profile.OS, profile.Arch
-	qemuPath, err := exec.LookPath(profile.QEMUBinary)
+	qemuPath, err := platform.FindQEMUBinary(profile, exec.LookPath)
 	if err != nil {
 		return evidence, err
 	}

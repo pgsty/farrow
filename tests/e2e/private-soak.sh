@@ -35,21 +35,21 @@ for ((cycle = 1; cycle <= cycles; cycle++)); do
   install -d -m 0700 "${cycle_root}"
 
   started=$(date +%s)
-  (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" stop --json) >"${cycle_root}/stop.json" 2>"${cycle_root}/stop.stderr"
+  (cd "${workdir}" && FARROW_HOME="${data_root}" "${binary}" stop --json) >"${cycle_root}/stop.json" 2>"${cycle_root}/stop.stderr"
   stopped=$(date +%s)
   jq -e '.nodes | length == 4 and all(.state == "stopped" and .runtime == "inactive")' "${cycle_root}/stop.json" >/dev/null
   if ps ax -o comm=,command= | awk -v root="${project_root}" 'index($1, "qemu-system") == 1 && index($0, root) { found=1 } END { exit found ? 0 : 1 }'; then
     printf '%s left a project QEMU process after stop\n' "${cycle_name}" >&2
     exit 1
   fi
-  (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" network status --json) >"${cycle_root}/network-stopped.json" 2>"${cycle_root}/network-stopped.stderr" || true
+  (cd "${workdir}" && FARROW_HOME="${data_root}" "${binary}" network status --json) >"${cycle_root}/network-stopped.json" 2>"${cycle_root}/network-stopped.stderr" || true
   jq -e '.lease.active == false' "${cycle_root}/network-stopped.json" >/dev/null
 
-  (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" start --json) >"${cycle_root}/start.json" 2>"${cycle_root}/start.stderr"
+  (cd "${workdir}" && FARROW_HOME="${data_root}" "${binary}" start --json) >"${cycle_root}/start.json" 2>"${cycle_root}/start.stderr"
   ready=$(date +%s)
   jq -e '.nodes | length == 4 and all(.state == "running" and .runtime == "running" and .pid > 0)' "${cycle_root}/start.json" >/dev/null
   for node in meta node-1 node-2 node-3; do
-    (cd "${workdir}" && FARROW_DATA_HOME="${data_root}" "${binary}" exec "${node}" -- test -f /data/farrow-full-canary)
+    (cd "${workdir}" && FARROW_HOME="${data_root}" "${binary}" exec "${node}" -- test -f /data/farrow-full-canary)
   done
   for address in 10.10.10.10 10.10.10.11 10.10.10.12 10.10.10.13; do
     if [[ $(uname -s) == Darwin ]]; then

@@ -1,0 +1,1141 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/pgsty/farrow/internal/config"
+	"github.com/pgsty/farrow/internal/doctor"
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/hostconfig"
+	"github.com/pgsty/farrow/internal/lease"
+	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
+	linuxnet "github.com/pgsty/farrow/internal/network/linux"
+	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
+	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/profile"
+	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/quick"
+	setuphost "github.com/pgsty/farrow/internal/setup"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/version"
+	"golang.org/x/term"
+)
+
+type setupStep struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Detail  string `json:"detail,omitempty"`
+	Changed bool   `json:"changed,omitempty"`
+}
+
+type setupResult struct {
+	Schema            int                      `json:"schema"`
+	OS                string                   `json:"os"`
+	Arch              string                   `json:"arch"`
+	Mode              string                   `json:"mode"`
+	Profile           string                   `json:"profile"`
+	Config            string                   `json:"config,omitempty"`
+	DryRun            bool                     `json:"dry_run"`
+	Applicable        bool                     `json:"applicable"`
+	Ready             bool                     `json:"ready"`
+	Blocked           bool                     `json:"blocked"`
+	Changed           bool                     `json:"changed"`
+	MutationUncertain bool                     `json:"mutation_uncertain,omitempty"`
+	ExitCode          int                      `json:"exit_code"`
+	Error             string                   `json:"error,omitempty"`
+	Dependencies      setuphost.DependencyPlan `json:"dependencies"`
+	Network           *netpreflight.Report     `json:"network,omitempty"`
+	NetworkCIDR       string                   `json:"network_cidr,omitempty"`
+	NetworkMode       string                   `json:"network_mode,omitempty"`
+	Checks            []doctor.Check           `json:"checks,omitempty"`
+	Lease             *setupLeaseState         `json:"lease,omitempty"`
+	Steps             []setupStep              `json:"steps"`
+	Next              string                   `json:"next"`
+	NextArgv          []string                 `json:"next_argv"`
+	Resolution        string                   `json:"resolution,omitempty"`
+}
+
+type setupLeaseState struct {
+	ProjectID string `json:"project_id"`
+	OwnerUID  int    `json:"owner_uid"`
+	Blocking  bool   `json:"blocking"`
+}
+
+type setupSelection struct {
+	Mode            string
+	Profile         string
+	Resolved        spec.Resolved
+	File            config.File
+	ConfigData      []byte
+	ConfigPath      string
+	Generated       bool
+	Publish         bool
+	ExplicitNetwork bool
+}
+
+type setupCLIOptions struct {
+	FilePath     string
+	NetworkCIDR  string
+	Mode         string
+	ModeExplicit bool
+	DryRun       bool
+	Yes          bool
+}
+
+func (options setupCLIOptions) arguments(profileName string) []string {
+	arguments := make([]string, 0, 6)
+	if profileName != "" {
+		arguments = append(arguments, profileName)
+	}
+	if options.FilePath != "" {
+		arguments = append(arguments, "--file="+options.FilePath)
+	}
+	if options.NetworkCIDR != "" {
+		arguments = append(arguments, "--network-cidr="+options.NetworkCIDR)
+	}
+	if options.ModeExplicit {
+		arguments = append(arguments, "--mode="+options.Mode)
+	}
+	if options.DryRun {
+		arguments = append(arguments, "--dry-run")
+	}
+	if options.Yes {
+		arguments = append(arguments, "--yes")
+	}
+	return arguments
+}
+
+func loadSetupFile(path string) (config.File, spec.Resolved, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return config.File{}, spec.Resolved{}, err
+	}
+	file, err := config.Load(absolute)
+	if err != nil {
+		return config.File{}, spec.Resolved{}, err
+	}
+	resolved, err := file.Resolve()
+	return file, resolved, err
+}
+
+func generatedSetupProfile(name, cidr, target string) (setupSelection, error) {
+	file, _, err := profile.LoadWithOverrides(name, profile.Overrides{Scale: profile.DefaultScale, NetworkCIDR: cidr})
+	if err != nil {
+		return setupSelection{}, err
+	}
+	resolved, err := file.Resolve()
+	if err != nil {
+		return setupSelection{}, err
+	}
+	data, err := config.Marshal(file)
+	if err != nil {
+		return setupSelection{}, err
+	}
+	return setupSelection{
+		Mode: "private", Profile: name, Resolved: resolved, File: file,
+		ConfigData: data, ConfigPath: target, Generated: true, Publish: true,
+		ExplicitNetwork: cidr != "",
+	}, nil
+}
+
+func resolvedHash(value spec.Resolved) (string, error) { return spec.Hash(value) }
+
+func reconcileGeneratedTarget(selection setupSelection) (setupSelection, error) {
+	info, err := os.Lstat(selection.ConfigPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return selection, nil
+	}
+	if err != nil {
+		return selection, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return selection, fmt.Errorf("refuse setup config target that is not a regular file: %s", selection.ConfigPath)
+	}
+	existingFile, existingResolved, err := loadSetupFile(selection.ConfigPath)
+	if err != nil {
+		return selection, fmt.Errorf("existing farrow.yaml is invalid and was preserved: %w", err)
+	}
+	wantedHash, err := resolvedHash(selection.Resolved)
+	if err != nil {
+		return selection, err
+	}
+	existingHash, err := resolvedHash(existingResolved)
+	if err != nil {
+		return selection, err
+	}
+	if wantedHash != existingHash {
+		return selection, fmt.Errorf("existing %s differs from profile %s; use `farrow setup -f %s`, choose an empty directory, or move the existing file", selection.ConfigPath, selection.Profile, selection.ConfigPath)
+	}
+	selection.File = existingFile
+	selection.Resolved = existingResolved
+	selection.Publish = false
+	// Once the file exists it is user-owned input. Setup may reuse it but must
+	// never auto-rebase it while solving a host-network conflict.
+	selection.Generated = false
+	return selection, nil
+}
+
+func resolveSetupSelection(profileName, filePath, networkCIDR, cwd string) (setupSelection, error) {
+	target := filepath.Join(cwd, "farrow.yaml")
+	if filePath != "" && profileName != "" {
+		return setupSelection{}, errors.New("setup accepts either a profile or -f, not both")
+	}
+	if filePath != "" && networkCIDR != "" {
+		return setupSelection{}, errors.New("--network-cidr cannot silently rebase a user configuration; edit the file as one coordinated change")
+	}
+	if filePath != "" {
+		absolute, err := filepath.Abs(filePath)
+		if err != nil {
+			return setupSelection{}, err
+		}
+		file, resolved, err := loadSetupFile(absolute)
+		if err != nil {
+			return setupSelection{}, err
+		}
+		mode := resolved.Network
+		return setupSelection{Mode: mode, Profile: file.Name, Resolved: resolved, File: file, ConfigPath: absolute}, nil
+	}
+	if profileName == "" {
+		if info, err := os.Lstat(target); err == nil {
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return setupSelection{}, fmt.Errorf("farrow.yaml is not a regular file: %s", target)
+			}
+			if networkCIDR != "" {
+				return setupSelection{}, errors.New("--network-cidr cannot silently rebase the discovered farrow.yaml")
+			}
+			file, resolved, err := loadSetupFile(target)
+			if err != nil {
+				return setupSelection{}, err
+			}
+			return setupSelection{Mode: resolved.Network, Profile: file.Name, Resolved: resolved, File: file, ConfigPath: target}, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return setupSelection{}, err
+		}
+		if networkCIDR != "" {
+			return setupSelection{}, errors.New("--network-cidr requires a named private profile such as meta or full")
+		}
+		resolved, err := (quick.Manager{FarrowVersion: version.Version}).Resolved()
+		if err != nil {
+			return setupSelection{}, err
+		}
+		return setupSelection{Mode: "quick", Profile: "quick", Resolved: resolved}, nil
+	}
+	if profileName == "quick" {
+		if networkCIDR != "" {
+			return setupSelection{}, errors.New("quick mode uses QEMU user networking and does not accept --network-cidr")
+		}
+		if _, err := os.Lstat(target); err == nil {
+			return setupSelection{}, fmt.Errorf("%s would make the next `farrow up` use that file, not quick mode; move it or run `farrow setup -f %s`", target, target)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return setupSelection{}, err
+		}
+		resolved, err := (quick.Manager{FarrowVersion: version.Version}).Resolved()
+		if err != nil {
+			return setupSelection{}, err
+		}
+		return setupSelection{Mode: "quick", Profile: "quick", Resolved: resolved}, nil
+	}
+	selection, err := generatedSetupProfile(profileName, networkCIDR, target)
+	if err != nil {
+		return setupSelection{}, err
+	}
+	return reconcileGeneratedTarget(selection)
+}
+
+func (selection *setupSelection) rebaseGenerated(cidr string) error {
+	if !selection.Generated || selection.ExplicitNetwork {
+		return errors.New("setup selection cannot be automatically rebased")
+	}
+	rebased, err := generatedSetupProfile(selection.Profile, cidr, selection.ConfigPath)
+	if err != nil {
+		return err
+	}
+	rebased.ExplicitNetwork = false
+	resolved, err := reconcileGeneratedTarget(rebased)
+	if err != nil {
+		return err
+	}
+	*selection = resolved
+	return nil
+}
+
+func setupAddresses(selection setupSelection) []string {
+	addresses := make([]string, 0, len(selection.Resolved.Nodes))
+	for _, node := range selection.Resolved.Nodes {
+		if node.Address != "" {
+			addresses = append(addresses, node.Address)
+		}
+	}
+	if status, err := (lease.Store{}).Inspect(); err == nil && status.Active {
+		return nil
+	}
+	return addresses
+}
+
+func inspectSetupNetwork(ctx context.Context, selection setupSelection, runner execx.Runner) (netpreflight.Report, error) {
+	if selection.Resolved.Private == nil {
+		return netpreflight.Report{}, errors.New("private setup has no private network configuration")
+	}
+	layout, err := subnet.Parse(selection.Resolved.Private.CIDR)
+	if err != nil {
+		return netpreflight.Report{}, err
+	}
+	return netpreflight.Run(ctx, netpreflight.Request{
+		OS: runtime.GOOS, Arch: runtime.GOARCH, Purpose: netpreflight.Install,
+		Layout: layout, Addresses: setupAddresses(selection),
+	}, netpreflight.Probe{Runner: runner}), nil
+}
+
+func reusableInstalledNetwork(report netpreflight.Report) string {
+	status := report.Installation.Status
+	if (status == "exact" || status == "protected") && report.Installation.CIDR != "" && report.Installation.Healthy {
+		return report.Installation.CIDR
+	}
+	return ""
+}
+
+var setupNetworkCandidates = []string{
+	"172.31.251.0/24",
+	"172.31.252.0/24",
+	"192.168.250.0/24",
+	"192.168.251.0/24",
+}
+
+func selectSetupNetwork(ctx context.Context, selection *setupSelection, runner execx.Runner) (netpreflight.Report, error) {
+	report, err := inspectSetupNetwork(ctx, *selection, runner)
+	if err != nil {
+		return report, err
+	}
+	if report.Ready {
+		return report, nil
+	}
+	if !selection.Generated || selection.ExplicitNetwork {
+		return report, nil
+	}
+	if installed := reusableInstalledNetwork(report); installed != "" {
+		if err := selection.rebaseGenerated(installed); err != nil {
+			return report, err
+		}
+		return inspectSetupNetwork(ctx, *selection, runner)
+	}
+	if report.Installation.Status != "" && report.Installation.Status != "absent" {
+		return report, nil
+	}
+	for _, candidate := range setupNetworkCandidates {
+		if candidate == report.CIDR {
+			continue
+		}
+		original := *selection
+		if err := selection.rebaseGenerated(candidate); err != nil {
+			*selection = original
+			continue
+		}
+		candidateReport, candidateErr := inspectSetupNetwork(ctx, *selection, runner)
+		if candidateErr == nil && candidateReport.Ready {
+			return candidateReport, nil
+		}
+		*selection = original
+	}
+	return report, nil
+}
+
+func constrainSetupNetworkMode(report netpreflight.Report, requested string, explicit bool) (netpreflight.Report, string) {
+	if report.OS != "darwin" {
+		return report, "bridge"
+	}
+	effective := requested
+	installed := report.Installation.Status == "exact" || report.Installation.Status == "protected"
+	if !installed || !report.Installation.Healthy || report.Installation.Mode == "" {
+		return report, effective
+	}
+	if !explicit {
+		return report, report.Installation.Mode
+	}
+	if report.Installation.Mode == requested {
+		return report, requested
+	}
+	report.Findings = append(report.Findings, netpreflight.Finding{
+		Code: "installation.mode_mismatch", Severity: netpreflight.Error, Class: netpreflight.State,
+		Evidence: fmt.Sprintf("installed=%s requested=%s", report.Installation.Mode, requested),
+		Fix:      fmt.Sprintf("rerun setup without --mode to reuse %s, or stop private projects, uninstall the owned network, then rerun with --mode %s", report.Installation.Mode, requested),
+	})
+	report.Ready = false
+	if report.ExitCode < exitConflict {
+		report.ExitCode = exitConflict
+	}
+	return report, effective
+}
+
+func setupFindingError(report netpreflight.Report) error {
+	lines := make([]string, 0, len(report.Findings)+1)
+	for _, finding := range report.Findings {
+		if finding.Severity != netpreflight.Error {
+			continue
+		}
+		line := finding.Code + ": " + finding.Evidence
+		switch finding.Code {
+		case "installation.network_mismatch":
+			line += "; either rebase every project config to the installed network, or stop/destroy private projects, run `farrow network uninstall --yes`, then rerun setup"
+		case "installation.integrity":
+			line += "; run `farrow network status --verbose` and repair only manifest-owned state; setup will not adopt or delete unknown paths"
+		case "installation.mode_mismatch":
+			line += "; " + finding.Fix
+		default:
+			if finding.Fix != "" {
+				line += "; " + finding.Fix
+			}
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "private network is not ready")
+	}
+	return errors.New(strings.Join(lines, "\n"))
+}
+
+func inspectSetupLease(cwd string) (*setupLeaseState, error) {
+	status, err := (lease.Store{}).Inspect()
+	if err != nil {
+		return nil, err
+	}
+	if !status.Active || status.Lease == nil {
+		return nil, nil
+	}
+	state := &setupLeaseState{ProjectID: status.Lease.ProjectID, OwnerUID: status.Lease.OwnerUID, Blocking: true}
+	if current, openErr := project.Open(cwd); openErr == nil && current.Marker.ProjectID == status.Lease.ProjectID {
+		state.Blocking = false
+	}
+	return state, nil
+}
+
+func setupLeaseResolution(state *setupLeaseState) string {
+	return fmt.Sprintf("private network is held by project %s (owner UID %d); run `farrow list --json` to locate it, stop it from its project directory, then rerun setup", state.ProjectID, state.OwnerUID)
+}
+
+func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) error {
+	if yes || !mutating {
+		return nil
+	}
+	terminal, ok := stdin.(interface{ Fd() uintptr })
+	if !ok || !term.IsTerminal(int(terminal.Fd())) {
+		return errors.New("setup needs --yes when stdin is not a terminal")
+	}
+	fmt.Fprint(stderr, "Continue with this setup? [Y/n] ")
+	line, err := bufio.NewReader(io.LimitReader(stdin, 64)).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return nil
+	default:
+		return errors.New("setup cancelled")
+	}
+}
+
+func acquireSetupSudo(ctx context.Context, base execx.Runner, stderr io.Writer) error {
+	if os.Geteuid() == 0 {
+		return nil
+	}
+	const sudo = "/usr/bin/sudo"
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		command := exec.CommandContext(ctx, sudo, "-v")
+		command.Stdin = os.Stdin
+		command.Stdout = rawWriter(stderr)
+		command.Stderr = rawWriter(stderr)
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("acquire sudo credential: %w", err)
+		}
+		return nil
+	}
+	_, err := base.Run(ctx, sudo, "-n", "-v")
+	if err != nil {
+		return errors.New("setup requires an existing non-interactive sudo credential; run sudo -v or use a terminal")
+	}
+	return nil
+}
+
+func setupRootRunner(base execx.Runner) execx.Runner {
+	if os.Geteuid() == 0 {
+		return base
+	}
+	return sudoRunner{base: base}
+}
+
+func runSetupCommands(ctx context.Context, commands []setuphost.Command, base execx.Runner, stderr io.Writer) (changed, mutationUncertain bool, err error) {
+	for _, command := range commands {
+		if err := command.Validate(); err != nil {
+			return changed, false, err
+		}
+		if command.Root {
+			if err := acquireSetupSudo(ctx, base, stderr); err != nil {
+				return changed, false, err
+			}
+		}
+		runner := base
+		if command.Root {
+			runner = setupRootRunner(base)
+		}
+		progressItem := startProgress(ctx, stderr, command.Name)
+		result, err := runner.Run(ctx, command.Binary, command.Args...)
+		progressItem.Stop(err)
+		if err != nil {
+			debugf(stderr, "setup command failed name=%s exit=%d stderr=%q", command.Name, result.ExitCode, strings.TrimSpace(string(result.Stderr)))
+			return changed, true, fmt.Errorf("%s failed with exit code %d", command.Name, result.ExitCode)
+		}
+		changed = true
+		debugf(stderr, "setup command complete name=%s duration=%s stdout=%q stderr=%q", command.Name, result.Duration.Round(time.Millisecond), strings.TrimSpace(string(result.Stdout)), strings.TrimSpace(string(result.Stderr)))
+	}
+	return changed, false, nil
+}
+
+func setupNeedsNetworkInstall(report netpreflight.Report) bool {
+	return report.Installation.Status == "" || report.Installation.Status == "absent"
+}
+
+func applySetupNetwork(ctx context.Context, selection setupSelection, mode string, report netpreflight.Report, base execx.Runner, stderr io.Writer) (setupStep, bool, error) {
+	if !setupNeedsNetworkInstall(report) {
+		return setupStep{Name: "network", Status: "ready", Detail: report.CIDR}, false, nil
+	}
+	// Refresh immediately before the network transaction. Package installation
+	// can legitimately outlive sudo's timestamp window.
+	if err := acquireSetupSudo(ctx, base, stderr); err != nil {
+		return setupStep{}, false, err
+	}
+	if runtime.GOOS == "darwin" {
+		downloadProgress := startProgress(ctx, stderr, "Fetching the pinned Darwin network backend")
+		download, err := setuphost.DownloadPinnedSocketVMNet(ctx, runtime.GOARCH, "", nil)
+		downloadProgress.Stop(err)
+		if err != nil {
+			return setupStep{}, false, err
+		}
+		interfaceID, err := project.NewUUID()
+		if err != nil {
+			return setupStep{}, false, err
+		}
+		executor := darwinnet.Executor{User: base, Root: setupRootRunner(base)}
+		progressItem := startProgress(ctx, stderr, "Installing the private network")
+		installReport, err := executor.InstallModeNetwork(ctx, download.Path, interfaceID, runtime.GOARCH, mode, report.CIDR, true)
+		progressItem.Stop(err)
+		if err != nil {
+			return setupStep{}, true, err
+		}
+		return setupStep{Name: "network", Status: "installed", Detail: installReport.Plan.State.CIDR, Changed: installReport.Applied}, false, nil
+	}
+	linuxConfig, err := linuxnet.ConfigForCIDR(report.CIDR)
+	if err != nil {
+		return setupStep{}, false, err
+	}
+	executor := linuxnet.Executor{User: base, Root: setupRootRunner(base)}
+	progressItem := startProgress(ctx, stderr, "Installing the private network")
+	installReport, err := executor.InstallConfig(ctx, linuxConfig, true)
+	progressItem.Stop(err)
+	if err != nil {
+		return setupStep{}, true, err
+	}
+	return setupStep{Name: "network", Status: "installed", Detail: report.CIDR, Changed: installReport.Applied}, false, nil
+}
+
+func companionHostsHelper() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if canonical, canonicalErr := filepath.EvalSymlinks(executable); canonicalErr == nil {
+		executable = canonical
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return "", err
+	}
+	directory := filepath.Dir(executable)
+	candidates := []string{
+		filepath.Join(directory, "farrow-hosts-helper"),
+		filepath.Join(filepath.Dir(directory), "libexec", "farrow-hosts-helper"),
+	}
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(candidate)
+		if _, err := hostconfig.CompanionHelperDigest(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("matching farrow-hosts-helper was not found beside the CLI or in its package libexec directory")
+}
+
+func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, stderr io.Writer) (setupStep, bool, error) {
+	if digest, err := hostconfig.InstalledHelperDigest(); err == nil {
+		return setupStep{Name: "hosts-helper", Status: "ready", Detail: digest}, false, nil
+	}
+	targetExists := false
+	if _, err := os.Lstat(hostconfig.InstalledHelperPath); err == nil {
+		if _, safeErr := hostconfig.RootOwnedHelperDigest(hostconfig.InstalledHelperPath); safeErr != nil {
+			return setupStep{}, false, fmt.Errorf("existing privileged hosts helper is unsafe and was preserved: %w", safeErr)
+		}
+		targetExists = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return setupStep{}, false, err
+	}
+	source, err := companionHostsHelper()
+	if err != nil {
+		return setupStep{}, false, err
+	}
+	digest, err := hostconfig.CompanionHelperDigest(source)
+	if err != nil {
+		return setupStep{}, false, err
+	}
+	if err := acquireSetupSudo(ctx, base, stderr); err != nil {
+		return setupStep{}, false, err
+	}
+	for _, directory := range []string{"/opt", "/opt/farrow", "/opt/farrow/libexec"} {
+		info, statErr := os.Lstat(directory)
+		if errors.Is(statErr, os.ErrNotExist) {
+			continue
+		}
+		if statErr != nil {
+			return setupStep{}, false, fmt.Errorf("inspect privileged helper directory %s: %w", directory, statErr)
+		}
+		statistics, ok := info.Sys().(*syscall.Stat_t)
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !ok || statistics.Uid != 0 || statistics.Gid != 0 || info.Mode().Perm()&0o022 != 0 {
+			return setupStep{}, false, fmt.Errorf("refuse unsafe privileged helper directory: %s", directory)
+		}
+	}
+	root := setupRootRunner(base)
+	if _, directoryErr := root.Run(ctx, "/usr/bin/install", "-d", "-o", "root", "-g", "0", "-m", "0755", "/opt/farrow", "/opt/farrow/libexec"); directoryErr != nil {
+		return setupStep{}, true, fmt.Errorf("prepare privileged helper directory: %w", directoryErr)
+	}
+	stageID, err := project.NewUUID()
+	if err != nil {
+		return setupStep{}, true, err
+	}
+	staged := filepath.Join(filepath.Dir(hostconfig.InstalledHelperPath), ".farrow-hosts-helper.next-"+stageID)
+	defer func() {
+		if staged != "" {
+			_, _ = root.Run(context.Background(), "/bin/rm", "-f", "--", staged)
+		}
+	}()
+	progressItem := startProgress(ctx, stderr, "Installing the private hosts helper")
+	result, installErr := root.Run(ctx, "/usr/bin/install", "-o", "root", "-g", "0", "-m", "0755", source, staged)
+	progressItem.Stop(installErr)
+	if installErr != nil {
+		debugf(stderr, "hosts helper install exit=%d stderr=%q", result.ExitCode, strings.TrimSpace(string(result.Stderr)))
+		return setupStep{}, true, fmt.Errorf("install private hosts helper failed with exit code %d", result.ExitCode)
+	}
+	stagedDigest, stageErr := hostconfig.RootOwnedHelperDigest(staged)
+	if stageErr != nil || stagedDigest != digest {
+		if stageErr == nil {
+			stageErr = errors.New("staged hosts helper digest differs from the packaged CLI companion")
+		}
+		return setupStep{}, true, fmt.Errorf("verify staged private hosts helper: %w", stageErr)
+	}
+	moveResult, moveErr := root.Run(ctx, "/bin/mv", "-f", "--", staged, hostconfig.InstalledHelperPath)
+	if moveErr != nil {
+		debugf(stderr, "hosts helper publish exit=%d stderr=%q", moveResult.ExitCode, strings.TrimSpace(string(moveResult.Stderr)))
+		return setupStep{}, true, fmt.Errorf("publish private hosts helper failed with exit code %d", moveResult.ExitCode)
+	}
+	staged = ""
+	installedDigest, verifyErr := hostconfig.InstalledHelperDigest()
+	if verifyErr != nil || installedDigest != digest {
+		if verifyErr == nil {
+			verifyErr = errors.New("installed hosts helper digest changed")
+		}
+		return setupStep{Name: "hosts-helper", Status: "failed", Changed: true}, true, fmt.Errorf("verify private hosts helper: %w", verifyErr)
+	}
+	status := "installed"
+	if targetExists {
+		status = "updated"
+	}
+	return setupStep{Name: "hosts-helper", Status: status, Detail: installedDigest, Changed: true}, false, nil
+}
+
+func setupCheckIgnored(name string, private bool) bool {
+	// Setup has already run the mode-aware network preflight with the exact
+	// selected node addresses (and suppresses address probes for an active
+	// lease). Doctor's generic all-address network view is informational here.
+	if strings.HasPrefix(name, "network-") {
+		return true
+	}
+	if private {
+		return false
+	}
+	return name == "linux-networkd" || name == "bridge-helper" || name == "private-bridge"
+}
+
+func verifySetup(ctx context.Context, private bool) ([]doctor.Check, error) {
+	report := (doctor.Probe{}).Run(ctx)
+	errorsFound := make([]string, 0)
+	for _, check := range report.Checks {
+		if check.Status == doctor.Error && !setupCheckIgnored(check.Name, private) {
+			line := check.Name + ": " + check.Evidence
+			if check.Fix != "" {
+				line += "; " + check.Fix
+			}
+			errorsFound = append(errorsFound, line)
+		}
+	}
+	if len(errorsFound) > 0 {
+		return report.Checks, errors.New(strings.Join(errorsFound, "\n"))
+	}
+	return report.Checks, nil
+}
+
+func setupMutating(plan setuphost.DependencyPlan, selection setupSelection, report *netpreflight.Report) bool {
+	if len(plan.Commands) > 0 || selection.Publish {
+		return true
+	}
+	if selection.Mode == "private" {
+		if _, err := hostconfig.InstalledHelperDigest(); err != nil {
+			return true
+		}
+	}
+	return report != nil && setupNeedsNetworkInstall(*report)
+}
+
+func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection setupSelection, report *netpreflight.Report, dryRun bool) {
+	if dryRun {
+		fmt.Fprintf(stderr, "%s setup plan (no changes)\n", styled(stderr, ansiCyan, "→"))
+	} else {
+		fmt.Fprintf(stderr, "%s setup plan\n", styled(stderr, ansiCyan, "→"))
+	}
+	if len(plan.Commands) == 0 {
+		fmt.Fprintln(stderr, "  dependencies  ready")
+	} else {
+		fmt.Fprintf(stderr, "  dependencies  install with %s\n", plan.Manager)
+	}
+	if selection.Mode == "quick" {
+		fmt.Fprintln(stderr, "  network       QEMU user NAT (no host change)")
+	} else if report != nil {
+		action := "reuse"
+		if !report.Ready {
+			action = "blocked"
+		} else if setupNeedsNetworkInstall(*report) {
+			action = "install"
+		}
+		mode := ""
+		if report.Installation.Mode != "" {
+			mode = " (" + report.Installation.Mode + ")"
+		}
+		fmt.Fprintf(stderr, "  network       %s %s%s\n", action, report.CIDR, mode)
+		if _, err := hostconfig.InstalledHelperDigest(); err == nil {
+			fmt.Fprintln(stderr, "  hosts helper  ready")
+		} else {
+			fmt.Fprintln(stderr, "  hosts helper  install paired helper")
+		}
+	} else {
+		fmt.Fprintf(stderr, "  network       prepare %s after dependencies\n", selection.Resolved.Private.CIDR)
+		fmt.Fprintln(stderr, "  hosts helper  install or verify paired helper")
+	}
+	if selection.Publish {
+		fmt.Fprintf(stderr, "  config        create %s\n", selection.ConfigPath)
+	}
+}
+
+func emitSetupResult(result setupResult, stdout, stderr io.Writer) int {
+	if structuredOutput(stdout, false) {
+		return encodeJSON(stdout, stderr, result)
+	}
+	textField(stdout, 14, "host", result.OS+"/"+result.Arch)
+	textField(stdout, 14, "mode", result.Mode)
+	textField(stdout, 14, "profile", result.Profile)
+	dependencyStatus := "ready"
+	if result.DryRun && len(result.Dependencies.Commands) > 0 {
+		dependencyStatus = "would install"
+	} else {
+		for _, step := range result.Steps {
+			if step.Name == "dependencies" && step.Status == "installed" {
+				dependencyStatus = "installed"
+			}
+		}
+	}
+	textField(stdout, 14, "dependencies", statusValue(stdout, dependencyStatus))
+	if result.Network != nil {
+		status := result.Network.Installation.Status
+		if result.Blocked {
+			status = "blocked"
+		} else if status == "" || status == "absent" {
+			status = "pending install"
+		}
+		textField(stdout, 14, "network", fmt.Sprintf("%s (%s)", result.Network.CIDR, status))
+	} else if result.Mode == "private" {
+		textField(stdout, 14, "network", fmt.Sprintf("%s (pending dependencies)", result.NetworkCIDR))
+	} else {
+		textField(stdout, 14, "network", "user NAT")
+	}
+	if result.NetworkMode != "" {
+		textField(stdout, 14, "network mode", result.NetworkMode)
+	}
+	if result.Config != "" {
+		textField(stdout, 14, "config", result.Config)
+	}
+	status := "ready"
+	if result.Blocked {
+		status = "blocked"
+	} else if result.DryRun {
+		status = "plan"
+	}
+	textField(stdout, 14, "status", statusValue(stdout, status))
+	if result.Lease != nil {
+		textField(stdout, 14, "lease", fmt.Sprintf("project %s (owner UID %d)", result.Lease.ProjectID, result.Lease.OwnerUID))
+	}
+	if result.Resolution != "" {
+		textField(stdout, 14, "resolution", strings.ReplaceAll(result.Resolution, "\n", "; "))
+	}
+	if result.MutationUncertain {
+		textField(stdout, 14, "mutation", "uncertain after a failed host command; inspect before retrying")
+	}
+	textField(stdout, 14, "next", result.Next)
+	return exitOK
+}
+
+func failSetup(result *setupResult, code int, failure error, stdout, stderr io.Writer) int {
+	result.Ready = false
+	result.ExitCode = code
+	result.Error = failure.Error()
+	if result.Resolution == "" {
+		result.Resolution = failure.Error()
+		result.Next = "resolve the reported error, then rerun farrow setup"
+		result.NextArgv = nil
+	}
+	errorf(stderr, "%v", failure)
+	if structuredOutput(stdout, false) {
+		if encodeCode := emitSetupResult(*result, stdout, stderr); encodeCode != exitOK {
+			return encodeCode
+		}
+	}
+	return code
+}
+
+func shellQuote(argument string) string {
+	if argument == "" {
+		return "''"
+	}
+	for _, character := range argument {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("_@%+=:,./-", character) {
+			continue
+		}
+		return "'" + strings.ReplaceAll(argument, "'", "'\\''") + "'"
+	}
+	return argument
+}
+
+func setupNextCommand(selection setupSelection, cwd string) (string, []string) {
+	arguments := []string{"farrow", "up"}
+	if selection.ConfigPath != "" && selection.ConfigPath != filepath.Join(cwd, "farrow.yaml") {
+		arguments = append(arguments, "-f", selection.ConfigPath)
+	}
+	return formatSetupCommand(arguments)
+}
+
+func setupApplyCommand(arguments []string, stdout, stderr io.Writer) (string, []string) {
+	apply := []string{"farrow", "setup"}
+	for _, argument := range arguments {
+		if argument == "--dry-run" || argument == "-dry-run" ||
+			strings.HasPrefix(argument, "--dry-run=") || strings.HasPrefix(argument, "-dry-run=") {
+			continue
+		}
+		apply = append(apply, argument)
+	}
+	switch outputFormatFor(stdout) {
+	case outputJSON:
+		apply = append(apply, "--json")
+	case outputYAML:
+		apply = append(apply, "--yaml")
+	}
+	if verboseOutput(stderr) {
+		apply = append(apply, "--verbose")
+	}
+	return formatSetupCommand(apply)
+}
+
+func formatSetupCommand(arguments []string) (string, []string) {
+	quoted := make([]string, len(arguments))
+	for index, argument := range arguments {
+		quoted[index] = shellQuote(argument)
+	}
+	return strings.Join(quoted, " "), arguments
+}
+
+func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr io.Writer) int {
+	result := setupResult{
+		Schema: 1, OS: runtime.GOOS, Arch: runtime.GOARCH, Mode: "unknown",
+		Profile: "unknown", Steps: make([]setupStep, 0, 6), NextArgv: nil,
+	}
+	if profileName != "" {
+		result.Profile = profileName
+	}
+	result.DryRun = options.DryRun
+	if options.DryRun && options.Yes {
+		return failSetup(&result, exitUsage, errors.New("--dry-run and --yes are mutually exclusive"), stdout, stderr)
+	}
+	if options.Mode != "host" && options.Mode != "shared" {
+		return failSetup(&result, exitUsage, errors.New("--mode must be host or shared"), stdout, stderr)
+	}
+	if runtime.GOOS != "darwin" && options.Mode != "host" {
+		return failSetup(&result, exitUsage, errors.New("--mode shared is available only on Darwin"), stdout, stderr)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return failSetup(&result, exitRuntime, err, stdout, stderr)
+	}
+	selection, err := resolveSetupSelection(profileName, options.FilePath, options.NetworkCIDR, cwd)
+	if err != nil {
+		if errors.Is(err, profile.ErrNotFound) {
+			return failSetup(&result, exitUsage, err, stdout, stderr)
+		}
+		return failSetup(&result, exitConflict, err, stdout, stderr)
+	}
+	result.Mode = selection.Mode
+	result.Profile = selection.Profile
+	result.Config = selection.ConfigPath
+	next, nextArgv := setupNextCommand(selection, cwd)
+	result.Next = next
+	result.NextArgv = nextArgv
+	private := selection.Mode == "private"
+	if !private && options.ModeExplicit {
+		return failSetup(&result, exitUsage, errors.New("--mode applies only to a private profile"), stdout, stderr)
+	}
+	dependencyPlan, err := setuphost.PlanDependencies(setuphost.DependencyProbe{}, private)
+	if err != nil {
+		return failSetup(&result, exitCapability, err, stdout, stderr)
+	}
+	result.Dependencies = dependencyPlan
+	if dependencyPlan.Unsupported {
+		return failSetup(&result, exitCapability, errors.New(dependencyPlan.Resolution), stdout, stderr)
+	}
+	base := execx.OSRunner{Timeout: 20 * time.Minute, OutputLimit: 64 << 10}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancel()
+	networkMode := ""
+	if private {
+		networkMode = "bridge"
+		if runtime.GOOS == "darwin" {
+			networkMode = options.Mode
+		}
+	}
+	var networkReport *netpreflight.Report
+	if private && dependencyPlan.Ready {
+		report, reportErr := selectSetupNetwork(ctx, &selection, base)
+		if reportErr != nil {
+			return failSetup(&result, exitCapability, reportErr, stdout, stderr)
+		}
+		report, networkMode = constrainSetupNetworkMode(report, options.Mode, options.ModeExplicit)
+		networkReport = &report
+		result.Network = networkReport
+		result.NetworkMode = networkMode
+	}
+	var leaseState *setupLeaseState
+	if private {
+		leaseState, err = inspectSetupLease(cwd)
+		if err != nil {
+			return failSetup(&result, exitIntegrity, fmt.Errorf("inspect private lease: %w", err), stdout, stderr)
+		}
+	}
+	printSetupPlan(stderr, dependencyPlan, selection, networkReport, options.DryRun)
+	result.Config = selection.ConfigPath
+	result.Dependencies = dependencyPlan
+	result.Network = networkReport
+	result.NetworkMode = networkMode
+	result.Lease = leaseState
+	if private && selection.Resolved.Private != nil {
+		result.NetworkCIDR = selection.Resolved.Private.CIDR
+	}
+	blockerCode := exitOK
+	if leaseState != nil && (leaseState.Blocking || (networkReport != nil && (!networkReport.Ready || setupNeedsNetworkInstall(*networkReport)))) {
+		result.Blocked = true
+		result.Resolution = setupLeaseResolution(leaseState)
+		result.Next = "farrow list --json"
+		result.NextArgv = []string{"farrow", "list", "--json"}
+		blockerCode = exitLease
+	} else if networkReport != nil && !networkReport.Ready {
+		result.Blocked = true
+		result.Resolution = setupFindingError(*networkReport).Error()
+		result.Next = "resolve the reported network conflict, then rerun farrow setup"
+		result.NextArgv = nil
+		blockerCode = networkReport.ExitCode
+		if blockerCode == exitOK {
+			blockerCode = exitConflict
+		}
+	}
+	if options.DryRun {
+		result.Applicable = !result.Blocked
+		result.Ready = false
+		result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "planned"})
+		if private {
+			networkStatus := "planned"
+			if result.Blocked {
+				networkStatus = "blocked"
+			}
+			result.Steps = append(result.Steps, setupStep{Name: "network", Status: networkStatus})
+			result.Steps = append(result.Steps, setupStep{Name: "hosts-helper", Status: "planned"})
+		}
+		if selection.Publish {
+			result.Steps = append(result.Steps, setupStep{Name: "config", Status: "planned", Detail: selection.ConfigPath})
+		}
+		if !result.Blocked {
+			result.Next, result.NextArgv = setupApplyCommand(options.arguments(profileName), stdout, stderr)
+		}
+		if result.Blocked {
+			result.ExitCode = blockerCode
+			errorf(stderr, "%s", result.Resolution)
+		}
+		if code := emitSetupResult(result, stdout, stderr); code != exitOK {
+			return code
+		}
+		return blockerCode
+	}
+	if result.Blocked {
+		result.ExitCode = blockerCode
+		errorf(stderr, "%s", result.Resolution)
+		if code := emitSetupResult(result, stdout, stderr); code != exitOK {
+			return code
+		}
+		return blockerCode
+	}
+	if err := confirmSetup(options.Yes, setupMutating(dependencyPlan, selection, networkReport), os.Stdin, stderr); err != nil {
+		return failSetup(&result, exitConflict, err, stdout, stderr)
+	}
+	if len(dependencyPlan.Commands) > 0 {
+		changed, uncertain, err := runSetupCommands(ctx, dependencyPlan.Commands, base, stderr)
+		result.Changed = result.Changed || changed
+		result.MutationUncertain = result.MutationUncertain || uncertain
+		if err != nil {
+			result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "failed", Changed: changed})
+			return failSetup(&result, exitCapability, err, stdout, stderr)
+		}
+		result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "installed", Changed: changed})
+	} else {
+		result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "ready"})
+	}
+	verifiedDependencies, err := setuphost.PlanDependencies(setuphost.DependencyProbe{}, private)
+	if err != nil || !verifiedDependencies.Ready {
+		if err == nil {
+			err = fmt.Errorf("dependencies remain unavailable: %s", strings.Join(verifiedDependencies.Missing, ", "))
+		}
+		return failSetup(&result, exitCapability, err, stdout, stderr)
+	}
+	result.Dependencies = verifiedDependencies
+	capabilityProgress := startProgress(ctx, stderr, "Verifying native QEMU")
+	capabilityChecks, capabilityErr := verifySetup(ctx, false)
+	capabilityProgress.Stop(capabilityErr)
+	result.Checks = capabilityChecks
+	if capabilityErr != nil {
+		result.Steps = append(result.Steps, setupStep{Name: "capabilities", Status: "failed"})
+		return failSetup(&result, exitCapability, capabilityErr, stdout, stderr)
+	}
+	result.Steps = append(result.Steps, setupStep{Name: "capabilities", Status: "ready"})
+	if private {
+		report, reportErr := selectSetupNetwork(ctx, &selection, base)
+		if reportErr != nil {
+			return failSetup(&result, exitCapability, reportErr, stdout, stderr)
+		}
+		report, networkMode = constrainSetupNetworkMode(report, options.Mode, options.ModeExplicit)
+		result.Network = &report
+		result.NetworkMode = networkMode
+		if selection.Resolved.Private != nil {
+			result.NetworkCIDR = selection.Resolved.Private.CIDR
+		}
+		leaseStatus, leaseErr := inspectSetupLease(cwd)
+		if leaseErr != nil {
+			return failSetup(&result, exitIntegrity, fmt.Errorf("inspect private lease: %w", leaseErr), stdout, stderr)
+		}
+		if leaseStatus != nil && (leaseStatus.Blocking || !report.Ready || setupNeedsNetworkInstall(report)) {
+			result.Blocked = true
+			result.Lease = leaseStatus
+			result.Resolution = setupLeaseResolution(leaseStatus)
+			result.Next = "farrow list --json"
+			result.NextArgv = []string{"farrow", "list", "--json"}
+			return failSetup(&result, exitLease, errors.New(result.Resolution), stdout, stderr)
+		}
+		if !report.Ready {
+			failure := setupFindingError(report)
+			code := report.ExitCode
+			if code == exitOK {
+				code = exitCapability
+			}
+			result.Blocked = true
+			result.Resolution = failure.Error()
+			result.Next = "resolve the reported network conflict, then rerun farrow setup"
+			result.NextArgv = nil
+			return failSetup(&result, code, failure, stdout, stderr)
+		}
+		step, uncertain, installErr := applySetupNetwork(ctx, selection, networkMode, report, base, stderr)
+		if installErr != nil {
+			result.MutationUncertain = result.MutationUncertain || uncertain
+			result.Steps = append(result.Steps, setupStep{Name: "network", Status: "failed"})
+			if errors.Is(installErr, darwinnet.ErrVMNetSharingBusy) {
+				return failSetup(&result, exitLease, installErr, stdout, stderr)
+			}
+			return failSetup(&result, exitIntegrity, installErr, stdout, stderr)
+		}
+		result.Steps = append(result.Steps, step)
+		result.Changed = result.Changed || step.Changed
+		finalReport, finalErr := inspectSetupNetwork(ctx, selection, base)
+		finalReport, _ = constrainSetupNetworkMode(finalReport, networkMode, true)
+		if finalErr != nil || !finalReport.Ready || !finalReport.Installation.Healthy {
+			if finalErr == nil {
+				finalErr = setupFindingError(finalReport)
+			}
+			return failSetup(&result, exitIntegrity, fmt.Errorf("private network verification failed: %w", finalErr), stdout, stderr)
+		}
+		result.Network = &finalReport
+		helperStep, uncertain, helperErr := ensureSetupHostsHelper(ctx, base, stderr)
+		result.Changed = result.Changed || helperStep.Changed
+		result.MutationUncertain = result.MutationUncertain || uncertain
+		if helperErr != nil {
+			if helperStep.Name == "" {
+				helperStep = setupStep{Name: "hosts-helper", Status: "failed"}
+			}
+			result.Steps = append(result.Steps, helperStep)
+			return failSetup(&result, exitIntegrity, helperErr, stdout, stderr)
+		}
+		result.Steps = append(result.Steps, helperStep)
+	} else {
+		result.Steps = append(result.Steps, setupStep{Name: "network", Status: "ready", Detail: "QEMU user NAT"})
+	}
+	if private {
+		verifyProgress := startProgress(ctx, stderr, "Verifying the private host setup")
+		checks, verifyErr := verifySetup(ctx, true)
+		verifyProgress.Stop(verifyErr)
+		result.Checks = checks
+		if verifyErr != nil {
+			result.Steps = append(result.Steps, setupStep{Name: "verify", Status: "failed"})
+			return failSetup(&result, exitCapability, verifyErr, stdout, stderr)
+		}
+		result.Steps = append(result.Steps, setupStep{Name: "verify", Status: "ready"})
+	}
+	if selection.Publish {
+		if len(bytes.TrimSpace(selection.ConfigData)) == 0 {
+			return failSetup(&result, exitIntegrity, errors.New("generated setup configuration is empty"), stdout, stderr)
+		}
+		if err := fsutil.AtomicCreate(selection.ConfigPath, selection.ConfigData, 0o600); err != nil {
+			code := exitIntegrity
+			if errors.Is(err, os.ErrExist) {
+				code = exitConflict
+			}
+			result.Steps = append(result.Steps, setupStep{Name: "config", Status: "failed", Detail: selection.ConfigPath})
+			return failSetup(&result, code, fmt.Errorf("publish setup configuration without replacing concurrent content: %w", err), stdout, stderr)
+		}
+		result.Config = selection.ConfigPath
+		result.Changed = true
+		result.Steps = append(result.Steps, setupStep{Name: "config", Status: "created", Detail: selection.ConfigPath, Changed: true})
+	} else if selection.ConfigPath != "" {
+		result.Config = selection.ConfigPath
+		result.Steps = append(result.Steps, setupStep{Name: "config", Status: "ready", Detail: selection.ConfigPath})
+	}
+	result.Applicable = true
+	result.Ready = true
+	return emitSetupResult(result, stdout, stderr)
+}

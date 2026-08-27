@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck disable=SC1091
+source "${script_directory}/semver.sh"
+
 if [[ $# -ne 6 ]]; then
   printf 'usage: %s <version> <commit> <source-epoch> <goreleaser-dist> <linux-package-dir> <new-output-dir>\n' "$0" >&2
   exit 2
@@ -11,7 +15,7 @@ source_epoch=$3
 goreleaser_dist=$4
 package_directory=$5
 output=$6
-if [[ ! ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ || ! ${commit} =~ ^[0-9a-f]{40}$ || ! ${source_epoch} =~ ^[0-9]+$ ]] || (( source_epoch <= 0 )); then
+if ! farrow_is_semver "${version}" || [[ ! ${commit} =~ ^[0-9a-f]{40}$ || ! ${source_epoch} =~ ^[0-9]+$ ]] || (( source_epoch <= 0 )); then
   printf 'invalid release identity\n' >&2
   exit 2
 fi
@@ -33,7 +37,7 @@ attested=${FARROW_RELEASE_ATTESTED:-false}
 [[ ${signed} == true || ${signed} == false ]]
 [[ ${attested} == true || ${attested} == false ]]
 channel=stable
-[[ ${version} == *-* ]] && channel=prerelease
+farrow_is_prerelease_semver "${version}" && channel=prerelease
 install -d -m 0755 "${output}"
 
 for os_name in darwin linux; do
@@ -57,16 +61,18 @@ done
 
 release_base=${FARROW_RELEASE_BASE_URL:-https://github.com/pgsty/farrow/releases/download/v${version}}
 "${repo}/packaging/render-homebrew.sh" "${version}" "${release_base}" "${output}" "${output}/farrow.rb"
+install -m 0755 "${repo}/packaging/install.sh" "${output}/install.sh"
 jq -n \
   --arg version "${version}" --arg commit "${commit}" --arg date "${build_date}" --arg channel "${channel}" \
   --arg go "${FARROW_GO_VERSION}" --arg goreleaser "${FARROW_GORELEASER_VERSION}" \
-  --arg nfpm "${FARROW_NFPM_VERSION}" --arg syft "${FARROW_SYFT_VERSION}" --arg cosign "${FARROW_COSIGN_VERSION}" \
+  --arg nfpm "${FARROW_GORELEASER_NFPM_VERSION}" --arg nfpm_standalone "${FARROW_NFPM_VERSION}" \
+  --arg syft "${FARROW_SYFT_VERSION}" --arg cosign "${FARROW_COSIGN_VERSION}" \
   --arg staticcheck "${FARROW_STATICCHECK_VERSION}" --arg govulncheck "${FARROW_GOVULNCHECK_VERSION}" \
   --argjson epoch "${source_epoch}" --argjson signed "${signed}" --argjson attested "${attested}" \
   '{schema:1,version:$version,commit:$commit,date:$date,source_date_epoch:$epoch,channel:$channel,
     targets:["darwin/amd64","darwin/arm64","linux/amd64","linux/arm64"],
     packages:["deb/amd64","deb/arm64","rpm/amd64","rpm/arm64"],
-    toolchain:{go:$go,goreleaser:$goreleaser,nfpm:$nfpm,syft:$syft,cosign:$cosign,staticcheck:$staticcheck,govulncheck:$govulncheck},
+    toolchain:{go:$go,goreleaser:$goreleaser,nfpm:$nfpm,nfpm_engine:"goreleaser-embedded",nfpm_standalone:$nfpm_standalone,syft:$syft,cosign:$cosign,staticcheck:$staticcheck,govulncheck:$govulncheck},
     signed:$signed,attested:$attested}' >"${output}/release.json"
 chmod 0644 "${output}/release.json"
 
@@ -83,8 +89,8 @@ chmod 0644 "${output}/provenance-predicate.json"
 
 (
   cd "${output}"
-  shasum -a 256 farrow_* farrow.rb release.json provenance-predicate.json | LC_ALL=C sort >checksums.txt
+  shasum -a 256 farrow_* farrow.rb install.sh release.json provenance-predicate.json | LC_ALL=C sort >checksums.txt
 )
 chmod 0644 "${output}/checksums.txt"
-[[ $(wc -l <"${output}/checksums.txt" | tr -d ' ') -eq 19 ]] || { printf 'unexpected final release asset count\n' >&2; exit 1; }
-printf 'assembled 19 checksummed release assets in %s\n' "${output}"
+[[ $(wc -l <"${output}/checksums.txt" | tr -d ' ') -eq 20 ]] || { printf 'unexpected final release asset count\n' >&2; exit 1; }
+printf 'assembled 20 checksummed release assets in %s\n' "${output}"

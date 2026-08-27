@@ -1,6 +1,10 @@
 package platform
 
-import "testing"
+import (
+	"errors"
+	"reflect"
+	"testing"
+)
 
 func TestResolveSupportMatrix(t *testing.T) {
 	t.Parallel()
@@ -74,13 +78,91 @@ func TestFirmwareCandidatesCoverNativeUEFIArchitectures(t *testing.T) {
 	t.Parallel()
 	amd64, _ := Resolve("linux", "amd64")
 	arm64, _ := Resolve("darwin", "arm64")
-	if len(FirmwareCandidates(amd64)) == 0 || len(FirmwareCandidates(arm64)) == 0 {
+	amd64Candidates := FirmwareCandidates(amd64)
+	if len(amd64Candidates) == 0 || len(FirmwareCandidates(arm64)) == 0 {
 		t.Fatal("UEFI candidate matrix is incomplete")
+	}
+	wantRPMFirmware := Firmware{Code: "/usr/share/edk2/ovmf/OVMF_CODE.fd", Vars: "/usr/share/edk2/ovmf/OVMF_VARS.fd"}
+	if !containsFirmware(amd64Candidates, wantRPMFirmware) {
+		t.Fatalf("amd64 firmware candidates do not cover edk2-ovmf: %#v", amd64Candidates)
 	}
 	if firmware, err := FindFirmwareForBoot(amd64, "bios"); err != nil || firmware != (Firmware{}) {
 		t.Fatalf("amd64 BIOS selection = %#v, %v", firmware, err)
 	}
 	if _, err := FindFirmwareForBoot(arm64, "bios"); err == nil {
 		t.Fatal("required-UEFI arm64 profile accepted BIOS")
+	}
+}
+
+func containsFirmware(candidates []Firmware, want Firmware) bool {
+	for _, candidate := range candidates {
+		if candidate == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestFindQEMUBinaryUsesOnlyControlledLinuxFallback(t *testing.T) {
+	t.Parallel()
+	notFound := errors.New("not found")
+	tests := []struct {
+		name    string
+		profile Profile
+		paths   map[string]string
+		want    string
+		calls   []string
+		wantErr bool
+	}{
+		{
+			name:    "path binary wins",
+			profile: Profile{OS: "linux", Arch: "amd64", QEMUBinary: "qemu-system-x86_64"},
+			paths:   map[string]string{"qemu-system-x86_64": "/usr/bin/qemu-system-x86_64"},
+			want:    "/usr/bin/qemu-system-x86_64",
+			calls:   []string{"qemu-system-x86_64"},
+		},
+		{
+			name:    "rhel libexec fallback",
+			profile: Profile{OS: "linux", Arch: "arm64", QEMUBinary: "qemu-system-aarch64"},
+			paths:   map[string]string{RHELQEMUBinary: RHELQEMUBinary},
+			want:    RHELQEMUBinary,
+			calls:   []string{"qemu-system-aarch64", RHELQEMUBinary},
+		},
+		{
+			name:    "darwin has no libexec fallback",
+			profile: Profile{OS: "darwin", Arch: "arm64", QEMUBinary: "qemu-system-aarch64"},
+			calls:   []string{"qemu-system-aarch64"},
+			wantErr: true,
+		},
+		{
+			name:    "linux stops after fixed fallback",
+			profile: Profile{OS: "linux", Arch: "amd64", QEMUBinary: "qemu-system-x86_64"},
+			calls:   []string{"qemu-system-x86_64", RHELQEMUBinary},
+			wantErr: true,
+		},
+		{
+			name:    "custom linux binary has no fallback",
+			profile: Profile{OS: "linux", Arch: "amd64", QEMUBinary: "custom-qemu"},
+			calls:   []string{"custom-qemu"},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls []string
+			got, err := FindQEMUBinary(tt.profile, func(name string) (string, error) {
+				calls = append(calls, name)
+				if path, ok := tt.paths[name]; ok {
+					return path, nil
+				}
+				return "", notFound
+			})
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("FindQEMUBinary() = %q, %v; want %q, error=%t", got, err, tt.want, tt.wantErr)
+			}
+			if !reflect.DeepEqual(calls, tt.calls) {
+				t.Fatalf("lookup calls = %#v, want %#v", calls, tt.calls)
+			}
+		})
 	}
 }

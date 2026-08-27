@@ -16,15 +16,17 @@ description: |-
 
 overrides:
   deb:
-    recommends:
+    depends:
       - ${FARROW_DEB_QEMU}
       - qemu-utils
+      - ${FARROW_DEB_FIRMWARE}
       - openssh-client
       - iproute2
   rpm:
-    recommends:
+    depends:
       - qemu-kvm
       - qemu-img
+      - ${FARROW_RPM_FIRMWARE}
       - openssh-clients
       - iproute
 
@@ -120,6 +122,9 @@ contents:
   - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/development.md
     expand: true
     dst: /usr/share/doc/farrow/docs/development.md
+  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/getting-started.md
+    expand: true
+    dst: /usr/share/doc/farrow/docs/getting-started.md
   - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/images.md
     expand: true
     dst: /usr/share/doc/farrow/docs/images.md

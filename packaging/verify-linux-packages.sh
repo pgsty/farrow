@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck disable=SC1091
+source "${script_directory}/semver.sh"
+
 if [[ $# -ne 4 ]]; then
   printf 'usage: %s <version> <commit-or-uncommitted> <source-epoch> <package-directory>\n' "$0" >&2
   exit 2
@@ -9,14 +13,14 @@ version=$1
 commit=$2
 source_epoch=$3
 directory=$4
-[[ ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { printf 'invalid version: %s\n' "${version}" >&2; exit 2; }
+farrow_is_semver "${version}" || { printf 'invalid version: %s\n' "${version}" >&2; exit 2; }
 [[ ${commit} == uncommitted || ${commit} =~ ^[0-9a-f]{40}$ ]] || { printf 'expected commit must be a full lowercase hash or uncommitted\n' >&2; exit 2; }
 if [[ ! ${source_epoch} =~ ^[0-9]+$ ]] || (( source_epoch <= 0 )); then
   printf 'expected source epoch must be positive\n' >&2
   exit 2
 fi
 [[ ${directory} == /* && -d ${directory} ]] || { printf 'package directory must be absolute\n' >&2; exit 2; }
-for tool in awk bsdtar cmp date diff file find go grep jq sed shasum sort stat; do
+for tool in awk bsdtar cmp date diff file find go grep jq rpm sed shasum sort stat; do
   command -v "${tool}" >/dev/null || { printf 'required verification tool is missing: %s\n' "${tool}" >&2; exit 3; }
 done
 if date -u -r "${source_epoch}" +%Y-%m-%dT%H:%M:%SZ >/dev/null 2>&1; then
@@ -25,10 +29,12 @@ else
   build_date=$(date -u -d "@${source_epoch}" +%Y-%m-%dT%H:%M:%SZ)
 fi
 debian_version=${version}
-if [[ ${version} == *-* ]]; then
+if farrow_is_prerelease_semver "${version}"; then
   debian_version=${version%%-*}~${version#*-}
 fi
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
+# shellcheck disable=SC1091
+source "${repo}/packaging/payload-inventory.sh"
 wrapper_sha=$(shasum -a 256 "${repo}/packaging/pigsty/vm" | awk '{print $1}')
 # shellcheck disable=SC1091
 source "${repo}/packaging/toolchain.env"
@@ -44,37 +50,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-expected_paths=(
-  opt/farrow/libexec/farrow-hosts-helper
-  usr/bin/farrow
-  usr/bin/pigsty-vm
-  usr/share/doc/farrow/BUILD_INFO.json
-  usr/share/doc/farrow/LICENSE
-  usr/share/doc/farrow/README.md
-  usr/share/doc/farrow/THIRD_PARTY_LICENSES.md
-  usr/share/doc/farrow/docs/architecture.md
-  usr/share/doc/farrow/docs/cli.md
-  usr/share/doc/farrow/docs/config.md
-  usr/share/doc/farrow/docs/development.md
-  usr/share/doc/farrow/docs/images.md
-  usr/share/doc/farrow/docs/networking.md
-  usr/share/doc/farrow/docs/phase-2.md
-  usr/share/doc/farrow/docs/pigsty.md
-  usr/share/doc/farrow/docs/security.md
-  usr/share/doc/farrow/docs/status.md
-  usr/share/doc/farrow/docs/troubleshooting.md
-  usr/share/doc/farrow/licenses/aead.dev-minisign-LICENSE
-  usr/share/doc/farrow/licenses/github.com-diskfs-go-diskfs-LICENSE
-  usr/share/doc/farrow/licenses/github.com-djherbis-times-LICENSE
-  usr/share/doc/farrow/licenses/go.yaml.in-yaml-v3-LICENSE
-  usr/share/doc/farrow/licenses/go.yaml.in-yaml-v3-NOTICE
-  usr/share/doc/farrow/licenses/golang.org-go-stdlib-LICENSE
-  usr/share/doc/farrow/licenses/golang.org-x-crypto-LICENSE
-  usr/share/doc/farrow/licenses/golang.org-x-sys-LICENSE
-  usr/share/doc/farrow/licenses/golang.org-x-term-LICENSE
-  usr/share/doc/farrow/tests/e2e/README.md
-  usr/share/farrow/schemas/farrow-v1.schema.json
-)
+expected_paths=()
+inventory=$(farrow_linux_package_payload_paths "${repo}")
+[[ -n ${inventory} ]] || { printf 'Linux package payload inventory is empty\n' >&2; exit 1; }
+while IFS= read -r path; do
+  expected_paths+=("${path}")
+done <<<"${inventory}"
 expected_list=$(printf '%s\n' "${expected_paths[@]}" | LC_ALL=C sort)
 
 file_mode() {
@@ -164,7 +145,8 @@ verify_payload_archive() {
     while [[ ${normalized} == ./* ]]; do normalized=${normalized#./}; done
     normalized=${normalized#/}
     normalized=${normalized%/}
-    [[ -n ${normalized} && ${normalized} != .. && ${normalized} != ../* && ${normalized} != */../* && ${normalized} != */.. && ${normalized} != *\\* ]] || { printf 'unsafe payload path %q in %s\n' "${member}" "${package}" >&2; exit 1; }
+    [[ -n ${normalized} ]] || continue
+    [[ ${normalized} != .. && ${normalized} != ../* && ${normalized} != */../* && ${normalized} != */.. && ${normalized} != *\\* ]] || { printf 'unsafe payload path %q in %s\n' "${member}" "${package}" >&2; exit 1; }
     allowed=false
     for expected in "${expected_paths[@]}"; do
       if [[ ${normalized} == "${expected}" || ${expected} == "${normalized}"/* ]]; then
@@ -179,7 +161,7 @@ verify_payload_archive() {
 verify_deb_control() {
   local package=$1
   local arch=$2
-  local container control control_root recommends dependency deb_qemu
+  local container control control_root depends dependency deb_qemu deb_firmware
   local -a control_archives
   container=${temporary}/control-${arch}
   install -d -m 0700 "${container}"
@@ -197,12 +179,40 @@ verify_deb_control() {
   grep -Fx "Architecture: ${arch}" "${control}" >/dev/null
   grep -Fx 'Maintainer: Pigsty <repo@pigsty.cc>' "${control}" >/dev/null
   case ${arch} in
-    amd64) deb_qemu=qemu-system-x86 ;;
-    arm64) deb_qemu=qemu-system-arm ;;
+    amd64)
+      deb_qemu=qemu-system-x86
+      deb_firmware=ovmf
+      ;;
+    arm64)
+      deb_qemu=qemu-system-arm
+      deb_firmware=qemu-efi-aarch64
+      ;;
   esac
-  recommends=$(sed -n 's/^Recommends: //p' "${control}")
-  for dependency in "${deb_qemu}" qemu-utils openssh-client iproute2; do
-    [[ ", ${recommends}," == *", ${dependency},"* ]] || { printf 'DEB lacks recommended dependency %s: %s\n' "${dependency}" "${package}" >&2; exit 1; }
+  depends=$(sed -n 's/^Depends: //p' "${control}")
+  for dependency in "${deb_qemu}" qemu-utils "${deb_firmware}" openssh-client iproute2; do
+    [[ ", ${depends}," == *", ${dependency},"* ]] || { printf 'DEB lacks required dependency %s: %s\n' "${dependency}" "${package}" >&2; exit 1; }
+  done
+}
+
+verify_rpm_dependencies() {
+  local package=$1
+  local arch=$2
+  local dependency rpm_firmware rpm_identity requirements expected_arch
+  case ${arch} in
+    amd64) rpm_firmware=edk2-ovmf; expected_arch=x86_64 ;;
+    arm64) rpm_firmware=edk2-aarch64; expected_arch=aarch64 ;;
+  esac
+  rpm_identity=$(rpm -qp --qf '%{NAME}|%{VERSION}|%{RELEASE}|%{ARCH}\n' "${package}")
+  [[ ${rpm_identity} == "farrow|${debian_version}|1|${expected_arch}" ]] || {
+    printf 'RPM identity is %s, expected farrow|%s|1|%s: %s\n' "${rpm_identity}" "${debian_version}" "${expected_arch}" "${package}" >&2
+    exit 1
+  }
+  requirements=$(rpm -qp --requires "${package}")
+  for dependency in qemu-kvm qemu-img "${rpm_firmware}" openssh-clients iproute; do
+    grep -Fx "${dependency}" <<<"${requirements}" >/dev/null || {
+      printf 'RPM lacks hard Requires entry %s: %s\n' "${dependency}" "${package}" >&2
+      exit 1
+    }
   done
 }
 
@@ -216,7 +226,17 @@ expected_checksum_names=$(
     done
   done | LC_ALL=C sort
 )
-[[ ${checksum_names} == "${expected_checksum_names}" ]] || { printf 'unexpected Linux package checksum inventory\n' >&2; exit 1; }
+package_checksum_names=$(
+  while IFS= read -r name; do
+    case ${name} in
+      "farrow_${version}_linux_amd64.deb"|"farrow_${version}_linux_amd64.deb.spdx.json"|\
+      "farrow_${version}_linux_amd64.rpm"|"farrow_${version}_linux_amd64.rpm.spdx.json"|\
+      "farrow_${version}_linux_arm64.deb"|"farrow_${version}_linux_arm64.deb.spdx.json"|\
+      "farrow_${version}_linux_arm64.rpm"|"farrow_${version}_linux_arm64.rpm.spdx.json") printf '%s\n' "${name}" ;;
+    esac
+  done <<<"${checksum_names}"
+)
+[[ ${package_checksum_names} == "${expected_checksum_names}" ]] || { printf 'unexpected Linux package checksum inventory\n' >&2; exit 1; }
 for arch in amd64 arm64; do
   case ${arch} in
     amd64) architecture_pattern='x86-64' ;;
@@ -277,10 +297,21 @@ for arch in amd64 arm64; do
     ' "${root}/usr/share/doc/farrow/BUILD_INFO.json" >/dev/null
     if [[ ${format} == deb ]]; then
       verify_deb_control "${package}" "${arch}"
+    else
+      verify_rpm_dependencies "${package}" "${arch}"
     fi
   done
   for path in "${expected_paths[@]}"; do
     cmp "${temporary}/${arch}-deb/${path}" "${temporary}/${arch}-rpm/${path}"
   done
+  archive=${directory}/farrow_${version}_linux_${arch}.tar.gz
+  if [[ -f ${archive} && ! -L ${archive} ]]; then
+    archive_extract=${temporary}/${arch}-goreleaser-archive
+    install -d -m 0700 "${archive_extract}"
+    bsdtar -xf "${archive}" -C "${archive_extract}"
+    archive_root=${archive_extract}/farrow_${version}_linux_${arch}
+    cmp "${archive_root}/bin/farrow" "${temporary}/${arch}-deb/usr/bin/farrow"
+    cmp "${archive_root}/bin/farrow-hosts-helper" "${temporary}/${arch}-deb/opt/farrow/libexec/farrow-hosts-helper"
+  fi
 done
-printf 'verified checksums, SPDX, metadata, payload, modes, architecture, and DEB/RPM parity in %s\n' "${directory}"
+printf 'verified checksums, SPDX, metadata, payload, modes, architecture, dependencies, and archive/package parity in %s\n' "${directory}"

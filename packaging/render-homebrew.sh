@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck disable=SC1091
+source "${script_directory}/semver.sh"
+
 if [[ $# -ne 4 ]]; then
   printf 'usage: %s <version> <HTTPS-release-base> <absolute-archive-directory> <absolute-formula-output>\n' "$0" >&2
   exit 2
@@ -9,7 +13,7 @@ version=$1
 release_base=$2
 archive_directory=$3
 output=$4
-[[ ${version} =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { printf 'invalid formula version\n' >&2; exit 2; }
+farrow_is_semver "${version}" || { printf 'invalid formula version\n' >&2; exit 2; }
 [[ ${release_base} =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[A-Za-z0-9._~/%+@=-]*)?$ ]] || { printf 'release base must be a narrowly encoded HTTPS URL\n' >&2; exit 2; }
 [[ ${archive_directory} == /* && -d ${archive_directory} && ${output} == /* && ! -L ${output} ]] || { printf 'archive directory/output paths are unsafe\n' >&2; exit 2; }
 for tool in ruby sed shasum; do

@@ -444,13 +444,13 @@ func TestPrivateMaterializesDataRootAndRejectsRootChange(t *testing.T) {
 	}
 	desired := singlePrivateResolved()
 	desired.DataRoot = filepath.Join(root, "configured")
-	t.Setenv("FARROW_DATA_HOME", filepath.Join(root, "environment"))
+	t.Setenv("FARROW_HOME", filepath.Join(root, "environment"))
 	materialized, err := (Manager{CWD: work}).materializeDataRoot(desired)
 	if err != nil || materialized.DataRoot != filepath.Join(root, "environment") {
 		t.Fatalf("materialized = %#v, %v", materialized, err)
 	}
 
-	t.Setenv("FARROW_DATA_HOME", "")
+	t.Setenv("FARROW_HOME", "")
 	if _, err := project.Create(work, filepath.Join(root, "persisted")); err != nil {
 		t.Fatal(err)
 	}

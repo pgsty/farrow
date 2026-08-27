@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -16,9 +18,24 @@ import (
 )
 
 const (
+	developmentPublicRoot1  = "untrusted comment: minisign public key: E87A2D0D9F49B03B\nRWQ7sEmfDS166ELVheon0eL5PZYT1QNdSvZN+cDhd1F204TzYGJR3ml7"
+	developmentPublicRoot2  = "untrusted comment: minisign public key: 10EDAA24D2B13348\nRWRIM7HSJKrtEBNN6GnxF5GuBvl24Haql+TDHXVH3jqmS+i6XtW5UVS/"
 	developmentPrivateRoot1 = "untrusted comment: minisign encrypted secret key\nRWQAAEIyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAO7BJnw0teujbJ9oOq043ZD95Ob7BcsdvNrFUMDvMUw3dfUEnsZAEG0LVheon0eL5PZYT1QNdSvZN+cDhd1F204TzYGJR3ml7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 	developmentPrivateRoot2 = "untrusted comment: minisign encrypted secret key\nRWQAAEIyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASDOx0iSq7RDpxLHyY4Sf8sm1VxTMy8qK17JtEK35cySQAFgg+gXWWxNN6GnxF5GuBvl24Haql+TDHXVH3jqmS+i6XtW5UVS/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 )
+
+func testManifestRoots(t *testing.T) []minisign.PublicKey {
+	t.Helper()
+	result := make([]minisign.PublicKey, 0, 2)
+	for _, text := range []string{developmentPublicRoot1, developmentPublicRoot2} {
+		var key minisign.PublicKey
+		if err := key.UnmarshalText([]byte(text)); err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, key)
+	}
+	return result
+}
 
 func privateKey(t *testing.T, text string) minisign.PrivateKey {
 	t.Helper()
@@ -53,10 +70,95 @@ func signedCatalog(t *testing.T, directory string, version uint64, key minisign.
 	return path
 }
 
+func TestManifestManagerFailsClosedWithoutProductionRoots(t *testing.T) {
+	t.Parallel()
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	untrusted := ManifestManager{DataRoot: dataRoot}
+	if catalog, state, err := untrusted.Current(); err != nil || state.Active != "embedded" || catalog.Version != EmbeddedManifestVersion {
+		t.Fatalf("embedded catalog without external roots = %#v %#v %v", catalog, state, err)
+	}
+	path := signedCatalog(t, t.TempDir(), EmbeddedManifestVersion+1, privateKey(t, developmentPrivateRoot1), nil)
+	if _, err := untrusted.Sync(context.Background(), path, false); err == nil || !strings.Contains(err.Error(), "production public keys") {
+		t.Fatalf("unsigned production trust fallback remained available: %v", err)
+	}
+	trusted := ManifestManager{DataRoot: dataRoot, Keys: testManifestRoots(t)}
+	if _, err := trusted.Sync(context.Background(), path, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := untrusted.Current(); err == nil || !strings.Contains(err.Error(), "production public keys") {
+		t.Fatalf("active external manifest was accepted without its roots: %v", err)
+	}
+	if _, err := untrusted.Reset(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, state, err := untrusted.Current(); err != nil || state.Active != "embedded" {
+		t.Fatalf("embedded reset without external roots = %#v %v", state, err)
+	}
+}
+
+// TestExportDevelopmentRepository is an opt-in helper for the disposable M0
+// repository. Production catalogs must be signed by separately held keys.
+func TestExportDevelopmentRepository(t *testing.T) {
+	directory := os.Getenv("FARROW_TEST_REPO_OUTPUT")
+	if directory == "" {
+		t.Skip("FARROW_TEST_REPO_OUTPUT is not set")
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := EmbeddedCatalogBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, CatalogFilename)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key := privateKey(t, developmentPrivateRoot1)
+	signature := minisign.SignWithComments(key, data, "timestamp:1787702400", "farrow M0 development catalog")
+	if err := os.WriteFile(path+".minisig", signature, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var sums strings.Builder
+	if os.Getenv("FARROW_TEST_REPO_COMPLETE") == "1" {
+		entries := EmbeddedCatalog().Entries()
+		sort.Slice(entries, func(i, j int) bool { return entries[i].File < entries[j].File })
+		for _, entry := range entries {
+			fmt.Fprintf(&sums, "%s  %s\n", entry.SHA256, entry.File)
+		}
+	} else {
+		artifacts, globErr := filepath.Glob(filepath.Join(directory, "*", "*.qcow2"))
+		if globErr != nil {
+			t.Fatal(globErr)
+		}
+		sort.Strings(artifacts)
+		for _, artifact := range artifacts {
+			digest, _, digestErr := digestFile(artifact)
+			if digestErr != nil {
+				t.Fatal(digestErr)
+			}
+			relative, relativeErr := filepath.Rel(directory, artifact)
+			if relativeErr != nil {
+				t.Fatal(relativeErr)
+			}
+			fmt.Fprintf(&sums, "%s  %s\n", digest, filepath.ToSlash(relative))
+		}
+	}
+	sumsPath := filepath.Join(directory, "SHA256SUMS")
+	sumsBytes := []byte(sums.String())
+	if err := os.WriteFile(sumsPath, sumsBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sumsSignature := minisign.SignWithComments(key, sumsBytes, "timestamp:1787702400", "farrow M0 development checksums")
+	if err := os.WriteFile(sumsPath+".minisig", sumsSignature, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManifestSyncTwoKeysRollbackAndReset(t *testing.T) {
 	t.Parallel()
 	dataRoot := filepath.Join(t.TempDir(), "data")
-	manager := ManifestManager{DataRoot: dataRoot}
+	manager := ManifestManager{DataRoot: dataRoot, Keys: testManifestRoots(t)}
 	directory1 := t.TempDir()
 	path1 := signedCatalog(t, directory1, EmbeddedManifestVersion+2, privateKey(t, developmentPrivateRoot1), nil)
 	state, err := manager.Sync(context.Background(), path1, false)
@@ -94,7 +196,7 @@ func TestManifestSyncTwoKeysRollbackAndReset(t *testing.T) {
 
 func TestManifestRejectsTamperUnknownKeyAndEquivocation(t *testing.T) {
 	t.Parallel()
-	manager := ManifestManager{DataRoot: filepath.Join(t.TempDir(), "data")}
+	manager := ManifestManager{DataRoot: filepath.Join(t.TempDir(), "data"), Keys: testManifestRoots(t)}
 	directory := t.TempDir()
 	key := privateKey(t, developmentPrivateRoot1)
 	path := signedCatalog(t, directory, EmbeddedManifestVersion+1, key, nil)
@@ -155,7 +257,7 @@ func TestManifestHTTPSSyncAndDowngradeRedirect(t *testing.T) {
 		_, _ = writer.Write(data)
 	}))
 	defer server.Close()
-	manager := ManifestManager{DataRoot: filepath.Join(t.TempDir(), "data"), HTTPClient: server.Client()}
+	manager := ManifestManager{DataRoot: filepath.Join(t.TempDir(), "data"), Keys: testManifestRoots(t), HTTPClient: server.Client()}
 	state, err := manager.Sync(context.Background(), server.URL+"/images.json", false)
 	if err != nil || state.ActiveVersion != EmbeddedManifestVersion+3 {
 		t.Fatalf("HTTPS sync = %#v, %v", state, err)
@@ -167,9 +269,23 @@ func TestManifestHTTPSSyncAndDowngradeRedirect(t *testing.T) {
 	defer plain.Close()
 	redirect := httptest.NewTLSServer(http.RedirectHandler(plain.URL+"/images.json", http.StatusFound))
 	defer redirect.Close()
-	blocked := ManifestManager{DataRoot: filepath.Join(t.TempDir(), "blocked"), HTTPClient: redirect.Client()}
+	blocked := ManifestManager{DataRoot: filepath.Join(t.TempDir(), "blocked"), Keys: testManifestRoots(t), HTTPClient: redirect.Client()}
 	if _, err := blocked.Sync(context.Background(), redirect.URL, false); err == nil {
 		t.Fatal("HTTPS-to-HTTP manifest redirect unexpectedly accepted")
+	}
+}
+
+func TestManifestRemoteSourceRejectsSecretsAndAmbiguousSuffixes(t *testing.T) {
+	t.Parallel()
+	manager := ManifestManager{DataRoot: filepath.Join(t.TempDir(), "data")}
+	for _, source := range []string{
+		"https://user:secret@example.test/catalog.json",
+		"https://example.test/catalog.json?token=secret",
+		"https://example.test/catalog.json#release",
+	} {
+		if _, _, _, err := manager.readSource(context.Background(), source); err == nil || !strings.Contains(err.Error(), "without credentials, query, or fragment") {
+			t.Errorf("source %q error = %v", source, err)
+		}
 	}
 }
 

@@ -85,7 +85,7 @@ func qemuVersionPreflight(ctx context.Context, profile platform.Profile, runner 
 	if profile.QEMUBinary == "" {
 		return "", platform.Version{}, errors.New("private host profile has no QEMU binary")
 	}
-	qemuPath, err := exec.LookPath(profile.QEMUBinary)
+	qemuPath, err := platform.FindQEMUBinary(profile, exec.LookPath)
 	if err != nil {
 		return "", platform.Version{}, fmt.Errorf("locate QEMU binary: %w", err)
 	}

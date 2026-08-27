@@ -14,6 +14,21 @@ set -euo pipefail
 #   FARROW_IMAGE_PIPELINE_NATIVE_LICENSE     SPDX expression (default NOASSERTION)
 
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
+native_required=${FARROW_IMAGE_PIPELINE_NATIVE_REQUIRED:-0}
+[[ ${native_required} == 0 || ${native_required} == 1 ]] || {
+  printf 'FARROW_IMAGE_PIPELINE_NATIVE_REQUIRED must be 0 or 1\n' >&2
+  exit 2
+}
+
+native_unavailable() {
+  if [[ ${native_required} == 1 ]]; then
+    printf 'FAIL native offline guest mutation NOT RUN: %s\n' "$1" >&2
+    exit 1
+  fi
+  printf 'SKIP native offline guest mutation NOT RUN: %s\n' "$1"
+  exit 0
+}
+
 required=(
   FARROW_IMAGE_PIPELINE_NATIVE_SOURCE
   FARROW_IMAGE_PIPELINE_NATIVE_SHA256
@@ -24,14 +39,12 @@ required=(
 )
 for variable in "${required[@]}"; do
   if [[ -z ${!variable:-} ]]; then
-    printf 'SKIP native offline guest mutation NOT RUN: set the documented FARROW_IMAGE_PIPELINE_NATIVE_* inputs\n'
-    exit 0
+    native_unavailable 'set the documented FARROW_IMAGE_PIPELINE_NATIVE_* inputs'
   fi
 done
 for tool in python3 qemu-img virt-customize virt-cat; do
   if ! command -v "${tool}" >/dev/null; then
-    printf 'SKIP native offline guest mutation NOT RUN: required tool missing: %s\n' "${tool}"
-    exit 0
+    native_unavailable "required tool missing: ${tool}"
   fi
 done
 

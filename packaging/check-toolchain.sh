@@ -19,7 +19,13 @@ check_go() {
 }
 check_goreleaser() {
   command -v goreleaser >/dev/null || { printf 'goreleaser is missing\n' >&2; exit 3; }
+  command -v jq >/dev/null || { printf 'jq is missing\n' >&2; exit 3; }
+  local binary embedded_nfpm
+  binary=$(command -v goreleaser)
   require_version goreleaser "$(goreleaser --version | awk '/GitVersion:/ {gsub(/^v/, "", $2); print $2; exit}')" "${FARROW_GORELEASER_VERSION}"
+  embedded_nfpm=$(go version -m "${binary}" | awk '$1 == "dep" && $2 == "github.com/goreleaser/nfpm/v2" {sub(/^v/, "", $3); print $3; exit}')
+  require_version 'goreleaser embedded nFPM' "${embedded_nfpm}" "${FARROW_GORELEASER_NFPM_VERSION}"
+  printf 'jq %s\n' "$(jq --version | sed 's/^jq-//')"
 }
 check_nfpm() {
   command -v nfpm >/dev/null || { printf 'nfpm is missing\n' >&2; exit 3; }

@@ -49,7 +49,7 @@ func TestControllerCreateAndStartFullSuccess(t *testing.T) {
 	lifecycle := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
 	controller := controllerFixture(t, &fakePrivateDisks{}, lifecycle)
 	result, err := controller.CreateAndStart(context.Background())
-	if err != nil || len(result.Commit.Nodes) != 2 || len(ReadyNames(result.Start)) != 2 {
+	if err != nil || len(result.Commit.Nodes) != 2 || len(readyNames(result.Start)) != 2 {
 		t.Fatalf("controller result=%#v err=%v", result, err)
 	}
 	for _, node := range result.Lease.Nodes {
@@ -89,7 +89,7 @@ func TestControllerCreateAndStartReturnsTypedPartialAndKeepsSuccess(t *testing.T
 	result, err := controller.CreateAndStart(context.Background())
 	operationErr := err
 	var partial *PartialError
-	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" || len(ReadyNames(result.Start)) != 1 || ReadyNames(result.Start)[0] != "meta" {
+	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" || len(readyNames(result.Start)) != 1 || readyNames(result.Start)[0] != "meta" {
 		t.Fatalf("partial controller result=%#v partial=%#v err=%v", result, partial, err)
 	}
 	persisted, err := (state.Store{Project: controller.Project}).ReadNode("meta")
@@ -124,7 +124,7 @@ func TestControllerManagerStartSelectionSkipsPrepareFailure(t *testing.T) {
 	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" {
 		t.Fatalf("manager-style start selection result=%#v partial=%#v err=%v", result, partial, err)
 	}
-	if ready := ReadyNames(result.Start); len(ready) != 1 || ready[0] != "meta" {
+	if ready := readyNames(result.Start); len(ready) != 1 || ready[0] != "meta" {
 		t.Fatalf("successful prepared peer did not start: result=%#v ready=%v", result, ready)
 	}
 	meta, metaErr := (state.Store{Project: controller.Project}).ReadNode("meta")

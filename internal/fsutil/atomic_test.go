@@ -36,6 +36,22 @@ func TestAtomicWriteAndSymlinkRefusal(t *testing.T) {
 	}
 }
 
+func TestAtomicCreateDoesNotReplaceConcurrentTarget(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	target := filepath.Join(directory, "farrow.yaml")
+	if err := AtomicCreate(target, []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicCreate(target, []byte("second\n"), 0o600); err == nil {
+		t.Fatal("atomic create replaced an existing target")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "first\n" {
+		t.Fatalf("target = %q, err=%v", data, err)
+	}
+}
+
 func TestIsWithin(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

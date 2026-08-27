@@ -87,7 +87,7 @@ func (m Manager) preflightNativeQEMU(ctx context.Context, profile platform.Profi
 	if err := ctx.Err(); err != nil {
 		return qemuPreflightEvidence{}, err
 	}
-	qemuPath, err := m.lookPath(profile.QEMUBinary)
+	qemuPath, err := platform.FindQEMUBinary(profile, m.lookPath)
 	if err != nil {
 		return qemuPreflightEvidence{}, &CapabilityError{Reason: fmt.Sprintf("locate QEMU binary: %v", err)}
 	}

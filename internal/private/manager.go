@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/diagnostics"
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/execx"
@@ -23,6 +24,7 @@ import (
 	usernet "github.com/pgsty/farrow/internal/network/user"
 	"github.com/pgsty/farrow/internal/openssh"
 	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/portregistry"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qmp"
@@ -57,6 +59,8 @@ type Manager struct {
 	LeaseStore          *lease.Store
 	ReadyTimeout        time.Duration
 	ConfiguredDataRoot  string
+	Repository          string
+	Progress            activity.Reporter
 	NoWait              bool
 	RollbackFailed      bool
 	ResolveImage        ImageResolver
@@ -68,6 +72,10 @@ type Manager struct {
 	DialSSHAddress      func(string, string) (net.Conn, error)
 	Nodes               []string
 	allowPartialDestroy bool
+}
+
+func (m Manager) report(phase, message string) {
+	m.Progress.Report(activity.Event{Phase: phase, Message: message})
 }
 
 type NodeStatus struct {
@@ -254,30 +262,7 @@ func (m Manager) openProject(create bool) (project.Project, error) {
 	if err != nil {
 		return project.Project{}, err
 	}
-	opened, err := project.Open(cwd)
-	if err == nil {
-		if m.ConfiguredDataRoot != "" || os.Getenv("FARROW_DATA_HOME") != "" {
-			selected, selectErr := project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
-			if selectErr != nil {
-				return project.Project{}, selectErr
-			}
-			if filepath.Clean(selected) != filepath.Clean(opened.DataRoot) {
-				return project.Project{}, fmt.Errorf("%w: project is already rooted at %s, requested %s", project.ErrDataRootMigrationRequired, opened.DataRoot, selected)
-			}
-		}
-		return opened, nil
-	}
-	if !create {
-		return opened, err
-	}
-	if !missingPath(err) {
-		return project.Project{}, err
-	}
-	dataRoot, err := project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
-	if err != nil {
-		return project.Project{}, err
-	}
-	return project.Create(cwd, dataRoot)
+	return project.OpenConfigured(cwd, m.ConfiguredDataRoot, create)
 }
 
 func (m Manager) materializeDataRoot(requested spec.Resolved) (spec.Resolved, error) {
@@ -334,47 +319,6 @@ func materializeExistingForwardPorts(desired, existing spec.Resolved) spec.Resol
 		result.Nodes[nodeIndex].Forwards = spec.ReuseMaterializedForwardPorts(result.Nodes[nodeIndex].Forwards, current.Forwards)
 	}
 	return result
-}
-
-func reservedPorts(dataRoot string) (map[uint16]struct{}, error) {
-	reserved := make(map[uint16]struct{})
-	discovery, err := project.Discover(dataRoot)
-	if err != nil {
-		return nil, err
-	}
-	if len(discovery.Warnings) > 0 {
-		return nil, fmt.Errorf("refuse port allocation with unsafe project registry entries: %v", discovery.Warnings)
-	}
-	for _, projectValue := range discovery.Projects {
-		nodesDir := filepath.Join(projectValue.Root, "nodes")
-		entries, err := os.ReadDir(nodesDir)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		store := state.Store{Project: projectValue}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				return nil, fmt.Errorf("unexpected non-directory node registry entry %s", entry.Name())
-			}
-			node, err := store.ReadNode(entry.Name())
-			if err != nil {
-				return nil, err
-			}
-			if node.Phase == state.Absent {
-				continue
-			}
-			if node.SSHPort != 0 {
-				reserved[node.SSHPort] = struct{}{}
-			}
-			for _, forward := range node.Forwards {
-				reserved[forward.Host] = struct{}{}
-			}
-		}
-	}
-	return reserved, nil
 }
 
 func materializePorts(value spec.Resolved, reserved map[uint16]struct{}) (spec.Resolved, map[string]uint16, error) {
@@ -516,7 +460,7 @@ func (m Manager) resolveOneImage(ctx context.Context, alias string) (image.Entry
 	if m.ResolveImage != nil {
 		return m.ResolveImage(ctx, alias)
 	}
-	resolver := quick.Manager{CWD: m.CWD, FarrowVersion: m.FarrowVersion, Runner: m.Runner, ConfiguredDataRoot: m.ConfiguredDataRoot}
+	resolver := quick.Manager{CWD: m.CWD, FarrowVersion: m.FarrowVersion, Runner: m.Runner, ConfiguredDataRoot: m.ConfiguredDataRoot, Repository: m.Repository, Progress: m.Progress}
 	return resolver.ResolveImage(ctx, alias)
 }
 
@@ -836,6 +780,7 @@ func (m Manager) RecordEvent(ctx context.Context, action, level, message string)
 }
 
 func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error) {
+	m.report("preflight", "Checking the private-network and native QEMU capabilities")
 	m.ConfiguredDataRoot = requested.DataRoot
 	var err error
 	requested, err = m.materializeDataRoot(requested)
@@ -853,6 +798,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err != nil {
 		return Status{}, err
 	}
+	m.Progress.Report(activity.Event{Phase: "preflight", Message: "Private-network and QEMU preflight passed", Done: true})
 	selected, err := selectedNodeNames(requested, m.Nodes)
 	if err != nil {
 		return Status{}, err
@@ -903,6 +849,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 					return Status{}, err
 				}
 				if statusNodesRunning(status) {
+					m.Progress.Report(activity.Event{Phase: "project-state", Message: "All selected private nodes are already running", Done: true})
 					return status, nil
 				}
 				return m.startExisting(ctx, existing, persisted, profile, backend)
@@ -924,11 +871,12 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 			return Status{}, err
 		}
 	}
+	m.report("image-resolve", fmt.Sprintf("Resolving images for %d private node(s)", len(selected)))
 	bases, boot, err := m.resolveBases(ctx, profile, requested)
 	if err != nil {
 		return Status{}, err
 	}
-	qemuPath, err := m.lookPath(profile.QEMUBinary)
+	qemuPath, err := platform.FindQEMUBinary(profile, m.lookPath)
 	if err != nil {
 		return Status{}, err
 	}
@@ -967,7 +915,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		return Status{}, err
 	}
 	defer allocator.Release()
-	reserved, err := reservedPorts(projectValue.DataRoot)
+	reserved, err := portregistry.Reserved(projectValue.DataRoot)
 	if err != nil {
 		return Status{}, err
 	}
@@ -1039,7 +987,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if len(createNodes) != 0 {
 		startNodes = append([]string(nil), createNodes...)
 	}
-	controller := Controller{Project: projectValue, LeaseStore: m.leaseStore(), Prepare: prepare, Lifecycle: lifecycle, Concurrency: boundedConcurrency(len(resolved.Nodes)), ReadyTimeout: readyTimeout, NoWait: m.NoWait, CreateNodes: createNodes, StartNodes: startNodes, Version: m.FarrowVersion}
+	controller := Controller{Project: projectValue, LeaseStore: m.leaseStore(), Prepare: prepare, Lifecycle: lifecycle, Concurrency: boundedConcurrency(len(resolved.Nodes)), ReadyTimeout: readyTimeout, NoWait: m.NoWait, CreateNodes: createNodes, StartNodes: startNodes, Version: m.FarrowVersion, Progress: m.Progress}
 	createResult, err := controller.CreateAndStart(ctx)
 	if err != nil {
 		if m.RollbackFailed {
@@ -1091,6 +1039,7 @@ func leaseIntentFromState(projectValue project.Project, projectState state.Proje
 }
 
 func (m Manager) startExisting(ctx context.Context, projectValue project.Project, projectState state.ProjectState, profile platform.Profile, backend Backend) (Status, error) {
+	m.report("preflight", "Checking the existing private project before start")
 	verifiedBackend, err := m.preflight(ctx, profile, projectState.Resolved)
 	if err != nil {
 		return Status{}, err
@@ -1197,12 +1146,18 @@ func (m Manager) startExisting(ctx context.Context, projectValue project.Project
 		}
 	}
 	if len(names) == 0 {
+		m.Progress.Report(activity.Event{Phase: "project-state", Message: "All selected private nodes are already running", Done: true})
 		return m.statusForLocked(ctx, projectValue, "already running")
 	}
 	readyTimeout, err := m.readyTimeout(projectState.Resolved)
 	if err != nil {
 		return Status{}, err
 	}
+	startMessage := fmt.Sprintf("Starting %d private node(s) and waiting up to %s for guest readiness", len(names), readyTimeout)
+	if m.NoWait {
+		startMessage = fmt.Sprintf("Starting %d private node(s) without waiting for guest readiness", len(names))
+	}
+	m.report("guest-ready", startMessage)
 	outcomes, _, err := StartPrepared(ctx, StartConfig{Project: projectValue, LeaseStore: m.leaseStore(), Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait})
 	if err != nil {
 		return Status{}, err
@@ -1210,6 +1165,11 @@ func (m Manager) startExisting(ctx context.Context, projectValue project.Project
 	if failed := failedStartNames(outcomes); len(failed) > 0 {
 		return Status{}, &PartialError{Nodes: failed}
 	}
+	readyMessage := fmt.Sprintf("All %d private node(s) are ready", len(names))
+	if m.NoWait {
+		readyMessage = fmt.Sprintf("QEMU is running for %d private node(s); guest readiness was skipped", len(names))
+	}
+	m.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
 	return m.statusForLocked(ctx, projectValue, "started private project")
 }
 

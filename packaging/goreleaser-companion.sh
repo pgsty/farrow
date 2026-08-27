@@ -17,24 +17,49 @@ repo=$(cd "$(dirname "$0")/.." && pwd -P)
 if [[ ${staging_root} != /* ]]; then
   staging_root=${repo}/${staging_root}
 fi
-[[ ${staging_root} != / && ${staging_root} != "${repo}" ]] || { printf 'unsafe companion staging root: %s\n' "${staging_root}" >&2; exit 2; }
-install -d -m 0755 "${staging_root}"
-staging_root=$(cd "${staging_root}" && pwd -P)
+expected_root=${repo}/.goreleaser-companion
+[[ ${staging_root} == "${expected_root}" ]] || { printf 'companion staging root must be %s\n' "${expected_root}" >&2; exit 2; }
 stage=${staging_root}/${goos}_${goarch}
 if [[ ${action} == cleanup ]]; then
-  case ${stage} in
-    "${staging_root}"/darwin_amd64|"${staging_root}"/darwin_arm64|"${staging_root}"/linux_amd64|"${staging_root}"/linux_arm64)
-      rm -rf -- "${stage}"
-      rmdir "${staging_root}" 2>/dev/null || true
-      exit 0
-      ;;
-    *) printf 'refuse unsafe companion cleanup: %s\n' "${stage}" >&2; exit 1 ;;
-  esac
+  [[ -e ${staging_root} || -L ${staging_root} ]] || exit 0
+  if [[ -L ${staging_root} || ! -d ${staging_root} || ! -O ${staging_root} ]]; then
+    printf 'refuse unsafe companion cleanup root: %s\n' "${staging_root}" >&2
+    exit 1
+  fi
+  resolved_root=$(cd "${staging_root}" && pwd -P)
+  [[ ${resolved_root} == "${expected_root}" ]] || { printf 'refuse external companion cleanup root: %s\n' "${resolved_root}" >&2; exit 1; }
+  if [[ -e ${stage} || -L ${stage} ]]; then
+    if [[ -L ${stage} || ! -d ${stage} || ! -O ${stage} ]]; then
+      printf 'refuse unsafe companion cleanup stage: %s\n' "${stage}" >&2
+      exit 1
+    fi
+    resolved_stage=$(cd "${stage}" && pwd -P)
+    [[ ${resolved_stage} == "${expected_root}/${goos}_${goarch}" ]] || { printf 'refuse external companion cleanup stage: %s\n' "${resolved_stage}" >&2; exit 1; }
+    rm -rf -- "${resolved_stage}"
+  fi
+  rmdir "${resolved_root}" 2>/dev/null || true
+  exit 0
 fi
 for tool in go jq; do
   command -v "${tool}" >/dev/null || { printf 'required companion tool is missing: %s\n' "${tool}" >&2; exit 3; }
 done
-install -d -m 0700 "${stage}"
+if [[ -L ${staging_root} || (-e ${staging_root} && ! -d ${staging_root}) ]]; then
+  printf 'companion staging root is unsafe: %s\n' "${staging_root}" >&2
+  exit 7
+fi
+if [[ ! -e ${staging_root} ]]; then
+  mkdir -m 0700 "${staging_root}"
+fi
+resolved_root=$(cd "${staging_root}" && pwd -P)
+[[ ${resolved_root} == "${expected_root}" && -O ${resolved_root} ]] || { printf 'companion staging root is not the owned repository path: %s\n' "${resolved_root}" >&2; exit 7; }
+if [[ -e ${stage} || -L ${stage} ]]; then
+  printf 'refuse existing companion target stage: %s\n' "${stage}" >&2
+  exit 7
+fi
+mkdir -m 0700 "${stage}"
+resolved_stage=$(cd "${stage}" && pwd -P)
+[[ ${resolved_stage} == "${expected_root}/${goos}_${goarch}" && -O ${resolved_stage} ]] || { printf 'companion target stage is unsafe: %s\n' "${resolved_stage}" >&2; exit 7; }
+stage=${resolved_stage}
 
 helper=${stage}/farrow-hosts-helper
 (

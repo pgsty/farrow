@@ -25,7 +25,7 @@ func TestResolveDataRootSafety(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	environment := fakeEnv{home: home, values: map[string]string{"FARROW_DATA_HOME": filepath.Join(root, "data")}}
+	environment := fakeEnv{home: home, values: map[string]string{"FARROW_HOME": filepath.Join(root, "data")}}
 	got, err := ResolveDataRoot(work, environment)
 	if err != nil {
 		t.Fatal(err)
@@ -34,10 +34,39 @@ func TestResolveDataRootSafety(t *testing.T) {
 		t.Fatalf("data root = %s", got)
 	}
 	for _, unsafe := range []string{home, work, "/", "relative"} {
-		environment.values["FARROW_DATA_HOME"] = unsafe
+		environment.values["FARROW_HOME"] = unsafe
 		if _, err := ResolveDataRoot(work, environment); err == nil {
 			t.Errorf("unsafe root %q accepted", unsafe)
 		}
+	}
+}
+
+func TestCanonicalWithMissingResolvesSymlinkedParent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	physical := filepath.Join(root, "physical")
+	if err := os.Mkdir(physical, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(physical, link); err != nil {
+		t.Fatal(err)
+	}
+	got, err := canonicalWithMissing(filepath.Join(link, "new", "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canonicalIfExisting(physical), "new", "data")
+	if got != want {
+		t.Fatalf("canonical path = %q, want %q", got, want)
+	}
+	environment := fakeEnv{home: physical, values: map[string]string{"FARROW_HOME": link}}
+	work := filepath.Join(root, "work")
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveDataRoot(work, environment); err == nil {
+		t.Fatal("direct symlink data root was accepted")
 	}
 }
 
@@ -53,26 +82,25 @@ func TestResolveDataRootWithConfigPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	configured := filepath.Join(root, "configured")
-	xdg := filepath.Join(root, "xdg")
 	override := filepath.Join(root, "override")
 
-	environment := fakeEnv{home: home, values: map[string]string{"XDG_DATA_HOME": xdg}}
+	environment := fakeEnv{home: home, values: map[string]string{}}
 	got, err := ResolveDataRootWithConfig(work, configured, environment)
 	if err != nil || got != configured {
 		t.Fatalf("configured root = %q, %v; want %q", got, err, configured)
 	}
-	environment.values["FARROW_DATA_HOME"] = override
+	environment.values["FARROW_HOME"] = override
 	got, err = ResolveDataRootWithConfig(work, configured, environment)
 	if err != nil || got != override {
 		t.Fatalf("environment root = %q, %v; want %q", got, err, override)
 	}
-	delete(environment.values, "FARROW_DATA_HOME")
+	delete(environment.values, "FARROW_HOME")
 	got, err = ResolveDataRootWithConfig(work, "", environment)
-	if err != nil || got != filepath.Join(xdg, "farrow") {
-		t.Fatalf("XDG root = %q, %v", got, err)
+	if err != nil || got != filepath.Join(canonicalIfExisting(home), ".farrow") {
+		t.Fatalf("default Farrow home = %q, %v", got, err)
 	}
 
-	for _, unsafe := range []string{"relative", "/", home, work, xdg} {
+	for _, unsafe := range []string{"relative", "/", home, work} {
 		if _, err := ResolveDataRootWithConfig(work, unsafe, environment); err == nil {
 			t.Errorf("unsafe configured root %q accepted", unsafe)
 		}

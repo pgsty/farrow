@@ -333,14 +333,6 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	return artifacts, nil
 }
 
-func PrepareAll(ctx context.Context, config PrepareConfig, concurrency int) []PrepareOutcome {
-	names := make([]string, 0, len(config.Resolved.Nodes))
-	for _, node := range config.Resolved.Nodes {
-		names = append(names, node.Name)
-	}
-	return PrepareSelected(ctx, config, names, concurrency)
-}
-
 func PrepareSelected(ctx context.Context, config PrepareConfig, names []string, concurrency int) []PrepareOutcome {
 	if concurrency <= 0 {
 		concurrency = 4
