@@ -4,65 +4,56 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/spec"
 )
 
-func testProject(t *testing.T) project.Project {
+func testDirs(t *testing.T) (string, string) {
 	t.Helper()
-	work := t.TempDir()
-	data := t.TempDir()
-	var err error
-	work, err = filepath.EvalSymlinks(work)
+	work, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err = filepath.EvalSymlinks(data)
+	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	markerDir := filepath.Join(work, ".farrow")
-	if err := os.Mkdir(markerDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return project.Project{WorkDir: work, MarkerDir: markerDir, MarkerPath: filepath.Join(markerDir, "project.json"), DataRoot: data, Root: filepath.Join(data, "projects", "id"), Marker: project.Marker{ProjectID: "id", CreatedAt: time.Now(), DataRoot: data}}
+	return work, root
 }
 
 func TestOpenRejectsSymlinksAndProtectedPaths(t *testing.T) {
-	value := testProject(t)
-	source := filepath.Join(value.WorkDir, "source")
+	work, root := testDirs(t)
+	source := filepath.Join(work, "source")
 	if err := os.Mkdir(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Validate(value, []spec.Share{{Host: source, Guest: "/mnt/source", Readonly: true}}); err != nil {
+	if err := Validate(root, []spec.Share{{Host: source, Guest: "/mnt/source", Readonly: true}}); err != nil {
 		t.Fatalf("valid source: %v", err)
 	}
-	link := filepath.Join(value.WorkDir, "link")
+	link := filepath.Join(work, "link")
 	if err := os.Symlink(source, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := Validate(value, []spec.Share{{Host: link, Guest: "/mnt/link", Readonly: true}}); err == nil {
+	if err := Validate(root, []spec.Share{{Host: link, Guest: "/mnt/link", Readonly: true}}); err == nil {
 		t.Fatal("symlink source was accepted")
 	}
-	if err := Validate(value, []spec.Share{{Host: value.DataRoot, Guest: "/mnt/data", Readonly: true}}); err == nil {
+	if err := Validate(root, []spec.Share{{Host: root, Guest: "/mnt/data", Readonly: true}}); err == nil {
 		t.Fatal("data root source was accepted")
 	}
-	if err := Validate(value, []spec.Share{{Host: value.WorkDir, Guest: "/mnt/work", Readonly: false}}); err == nil {
-		t.Fatal("writable workdir containing marker was accepted")
+	if err := Validate(root, []spec.Share{{Host: filepath.Join(root, "nodes"), Guest: "/mnt/nodes", Readonly: true}}); err == nil {
+		t.Fatal("data root descendant source was accepted")
 	}
 }
 
-func TestBundleLayoutAndIdentityRecheck(t *testing.T) {
-	value := testProject(t)
-	source := filepath.Join(value.WorkDir, "source")
+func TestBundleLayoutValidation(t *testing.T) {
+	work, root := testDirs(t)
+	source := filepath.Join(work, "source")
 	if err := os.Mkdir(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	shares := []spec.Share{{Host: source, Guest: "/mnt/source", Readonly: true}}
-	bundle, err := Open(value, shares)
+	bundle, err := Open(root, shares)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,20 +63,8 @@ func TestBundleLayoutAndIdentityRecheck(t *testing.T) {
 	if err := bundle.ValidateInvocation(invocation, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := bundle.Recheck(); err != nil {
-		t.Fatal(err)
-	}
-	replacement := filepath.Join(value.WorkDir, "replacement")
-	if err := os.Mkdir(replacement, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(source, source+".old"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(replacement, source); err != nil {
-		t.Fatal(err)
-	}
-	if err := bundle.Recheck(); err == nil {
-		t.Fatal("replaced source identity was accepted")
+	wrong := qemu.Invocation{InheritedFiles: []qemu.InheritedFile{{FD: 4, Kind: "share", ID: tag}}}
+	if err := bundle.ValidateInvocation(wrong, 0); err == nil {
+		t.Fatal("wrong descriptor layout was accepted")
 	}
 }

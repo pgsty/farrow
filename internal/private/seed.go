@@ -41,10 +41,10 @@ func projectHosts(resolved spec.Resolved) []cloudinit.Host {
 	return hosts
 }
 
-func cloudDisks(projectID string, node spec.Node) ([]cloudinit.Disk, error) {
+func cloudDisks(node spec.Node) ([]cloudinit.Disk, error) {
 	result := make([]cloudinit.Disk, 0, len(node.Disks))
 	for _, disk := range node.Disks {
-		serial, err := identity.DiskSerial(projectID, node.Name, disk.Name)
+		serial, err := identity.DiskSerial(node.Name, disk.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -84,7 +84,7 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 		if generation == 0 {
 			return nil, fmt.Errorf("private seed generation missing for node %s", nodeSpec.Name)
 		}
-		disks, err := cloudDisks(plan.ProjectID, nodeSpec)
+		disks, err := cloudDisks(nodeSpec)
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +96,7 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 			}
 		}
 		files, err := cloudinit.Render(cloudinit.Input{
-			ProjectID: plan.ProjectID, Node: nodeSpec.Name, Hostname: nodeSpec.Name,
+			Node: nodeSpec.Name, Hostname: nodeSpec.Name,
 			Generation: generation, SpecHash: input.SpecHashes[nodeSpec.Name], SSHUser: resolved.SSHUser,
 			PublicKey: strings.TrimSpace(input.PublicKey), PrivateKey: privateKey,
 			Control: nodeSpec.Control, MgmtMAC: nodePlan.ManagementMAC,

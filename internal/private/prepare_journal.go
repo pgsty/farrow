@@ -10,13 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/identity"
 )
 
 const maxPrepareJournalBytes = 1 << 20
 
 func validatePrepareJournal(path string, value PrepareJournal) error {
-	if value.Schema != 1 || !project.ValidUUID(value.OperationID) || !project.ValidUUID(value.ProjectID) || !project.ValidUUID(value.VMUUID) || !nodePattern.MatchString(value.Node) || len(value.SpecHash) != 64 || value.StartedAt.IsZero() || value.UpdatedAt.Before(value.StartedAt) {
+	if value.Schema != 1 || !identity.ValidUUID(value.OperationID) || !identity.ValidUUID(value.VMUUID) || !nodePattern.MatchString(value.Node) || len(value.SpecHash) != 64 || value.StartedAt.IsZero() || value.UpdatedAt.Before(value.StartedAt) {
 		return errors.New("private prepare journal identity, hash, or time is invalid")
 	}
 	if _, err := hex.DecodeString(value.SpecHash); err != nil {

@@ -70,7 +70,6 @@ func (l Lifecycle) sshUser() string {
 }
 
 type ReadyMarker struct {
-	Project    string `json:"project"`
 	Node       string `json:"node"`
 	Generation uint64 `json:"generation"`
 	SpecHash   string `json:"spec_hash"`

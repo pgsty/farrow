@@ -22,7 +22,8 @@ func TestPrivateRepairConvergesDeadRunningStateAndReleasesLease(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(runtimeRoot) })
 	t.Setenv("XDG_RUNTIME_DIR", runtimeRoot)
 	startConfig, nodes := preparedStartFixture(t)
-	store := state.Store{Project: startConfig.Project}
+	t.Setenv("FARROW_HOME", startConfig.Project.Root)
+	store := state.Store{Root: startConfig.Project.Root}
 	for index := range nodes {
 		nodes[index].Phase = state.Running
 		nodes[index].Process = state.ProcessIdentity{PID: 999990 + index, Executable: nodes[index].Invocation.Binary, Started: "stale", ArgvHash: "stale"}
@@ -48,7 +49,7 @@ func TestPrivateRepairConvergesDeadRunningStateAndReleasesLease(t *testing.T) {
 	if _, err := startConfig.LeaseStore.Update(context.Background(), desired); err != nil {
 		t.Fatal(err)
 	}
-	manager := Manager{CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore, Nodes: []string{"meta"}}
+	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore, Nodes: []string{"meta"}}
 	dryRun, err := manager.Repair(context.Background(), false)
 	if err != nil || len(dryRun.Actions) < 3 {
 		t.Fatalf("private repair dry run = %#v, %v", dryRun, err)

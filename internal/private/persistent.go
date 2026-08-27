@@ -10,9 +10,7 @@ import (
 
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/identity"
-	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/persistent"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
@@ -24,19 +22,19 @@ func privateFilesystem(value string) string {
 	return value
 }
 
-func privatePersistentIdentities(projectValue project.Project, resolved spec.Resolved) ([]persistent.Identity, error) {
+func privatePersistentIdentities(projectValue Deployment, resolved spec.Resolved) ([]persistent.Identity, error) {
 	result := make([]persistent.Identity, 0)
 	for _, node := range resolved.Nodes {
 		for _, definition := range node.Disks {
 			if !definition.Persistent {
 				continue
 			}
-			serial, err := identity.DiskSerial(projectValue.Marker.ProjectID, node.Name, definition.Name)
+			serial, err := identity.DiskSerial(node.Name, definition.Name)
 			if err != nil {
 				return nil, err
 			}
 			result = append(result, persistent.Identity{
-				ProjectID: projectValue.Marker.ProjectID, Node: node.Name, Name: definition.Name,
+				Node: node.Name, Name: definition.Name,
 				Serial: serial, Size: definition.Size, Mount: definition.Mount, Filesystem: privateFilesystem(definition.Filesystem),
 			})
 		}
@@ -44,32 +42,32 @@ func privatePersistentIdentities(projectValue project.Project, resolved spec.Res
 	return result, nil
 }
 
-func validatePrivatePersistentDesired(projectValue project.Project, resolved spec.Resolved) error {
+func validatePrivatePersistentDesired(projectValue Deployment, resolved spec.Resolved) error {
 	desired, err := privatePersistentIdentities(projectValue, resolved)
 	if err != nil {
 		return err
 	}
-	_, err = persistent.ValidateDesired(projectValue, desired)
+	_, err = persistent.ValidateDesired(projectValue.Root, desired)
 	return err
 }
 
-func privatePrepareProject(config PrepareConfig) project.Project {
-	return project.Project{Root: config.ProjectRoot, Marker: project.Marker{ProjectID: config.Plan.ProjectID}}
+func privatePrepareProject(config PrepareConfig) Deployment {
+	return Deployment{Root: config.ProjectRoot, DataRoot: config.ProjectRoot}
 }
 
-func validatePrivatePersistentState(projectValue project.Project, projectState state.ProjectState, nodes []state.NodeState) ([]persistent.Identity, error) {
+func validatePrivatePersistentState(projectValue Deployment, projectState state.DeploymentState, nodes []state.NodeState) ([]persistent.Identity, error) {
 	desired, err := privatePersistentIdentities(projectValue, projectState.Resolved)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := persistent.ValidateDesired(projectValue, desired); err != nil {
+	if _, err := persistent.ValidateDesired(projectValue.Root, desired); err != nil {
 		return nil, err
 	}
 	stateDisks := make(map[string]state.DataDisk)
 	for _, node := range nodes {
 		for _, dataDisk := range node.DataDisks {
 			if dataDisk.Persistent {
-				if err := persistent.ValidateSource(projectValue, dataDisk.Path); err != nil {
+				if err := persistent.ValidateSource(projectValue.Root, dataDisk.Path); err != nil {
 					return nil, err
 				}
 				stateDisks[node.Node+"\x00"+dataDisk.Name] = dataDisk
@@ -105,8 +103,8 @@ func resolvePrivateDataDisk(ctx context.Context, config PrepareConfig, nodeDir s
 	if err != nil {
 		return "", false, err
 	}
-	identityValue := persistent.Identity{ProjectID: config.Plan.ProjectID, Node: filepath.Base(nodeDir), Name: definition.Name, Serial: serial, Size: definition.Size, Mount: definition.Mount, Filesystem: privateFilesystem(definition.Filesystem)}
-	record, found, err := persistent.Find(projectValue, desired, identityValue)
+	identityValue := persistent.Identity{Node: filepath.Base(nodeDir), Name: definition.Name, Serial: serial, Size: definition.Size, Mount: definition.Mount, Filesystem: privateFilesystem(definition.Filesystem)}
+	record, found, err := persistent.Find(projectValue.Root, desired, identityValue)
 	if err != nil {
 		return "", false, err
 	}
@@ -134,7 +132,7 @@ func (m Manager) PersistentDisks() ([]persistent.Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	return persistent.Inventory(projectValue)
+	return persistent.Inventory(projectValue.Root)
 }
 
 // DeletePersistent is the only private API which deletes retained data disks.
@@ -147,7 +145,7 @@ func (m Manager) DeletePersistent(ctx context.Context) ([]persistent.Record, err
 	}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		return nil, err
 	}
@@ -172,5 +170,5 @@ func (m Manager) DeletePersistent(ctx context.Context) ([]persistent.Record, err
 		return nil, ctx.Err()
 	default:
 	}
-	return persistent.DeleteAll(projectValue)
+	return persistent.DeleteAll(projectValue.Root)
 }

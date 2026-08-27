@@ -3,6 +3,7 @@ package private
 import (
 	"errors"
 	"fmt"
+	"github.com/pgsty/farrow/internal/identity"
 	"reflect"
 
 	"github.com/pgsty/farrow/internal/lease"
@@ -39,7 +40,7 @@ func SynchronizeLease(existing lease.Lease, nodes []state.NodeState) (lease.Leas
 	}
 	seen := make(map[string]struct{})
 	for _, nodeState := range nodes {
-		if nodeState.ProjectID != existing.ProjectID {
+		if identity.DeploymentID != existing.ProjectID {
 			return lease.Lease{}, fmt.Errorf("node %s project differs from active private lease", nodeState.Node)
 		}
 		index, ok := indices[nodeState.Node]

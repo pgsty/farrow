@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/platform"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qmp"
 )
 
@@ -54,7 +54,7 @@ func acceleratorSmoke(ctx context.Context, qemuPath string, profile platform.Pro
 		_ = os.Remove(qmpPath)
 		_ = os.Remove(root)
 	}()
-	uuid, err := project.NewUUID()
+	uuid, err := identity.NewUUID()
 	if err != nil {
 		return "", err
 	}

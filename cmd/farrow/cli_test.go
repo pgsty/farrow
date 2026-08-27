@@ -3,13 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/pgsty/farrow/internal/project"
 )
 
 func TestCobraRootAndContextualHelp(t *testing.T) {
@@ -42,29 +38,12 @@ func TestCobraRootAndContextualHelp(t *testing.T) {
 	}
 }
 
-func TestSSHShortcutUsesProjectDirectoryName(t *testing.T) {
-	root := t.TempDir()
-	work := filepath.Join(root, "dev")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := project.Create(work, filepath.Join(root, "data")); err != nil {
-		t.Fatal(err)
-	}
-	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(work); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(previous) })
-
+func TestSSHShortcutDefaultsToFixedFarrowName(t *testing.T) {
 	arguments, err := sshShortcutArguments("", []string{"meta"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--install", "--name", "dev", "meta"}
+	want := []string{"--install", "--name", "farrow", "meta"}
 	if !reflect.DeepEqual(arguments, want) {
 		t.Fatalf("shortcut arguments=%v want=%v", arguments, want)
 	}

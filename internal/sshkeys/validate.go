@@ -1,4 +1,4 @@
-package project
+package sshkeys
 
 import (
 	"errors"
@@ -19,9 +19,9 @@ type SSHArtifactError struct {
 
 func (e *SSHArtifactError) Error() string {
 	if e == nil || e.Err == nil {
-		return "project SSH artifact integrity failure"
+		return "SSH artifact integrity failure"
 	}
-	return "project SSH artifact integrity failure: " + e.Err.Error()
+	return "SSH artifact integrity failure: " + e.Err.Error()
 }
 
 func (e *SSHArtifactError) Unwrap() error {
@@ -31,12 +31,12 @@ func (e *SSHArtifactError) Unwrap() error {
 	return e.Err
 }
 
-// ValidateSSHArtifacts verifies the exact marker-owned SSH trust artifacts
-// used by guest integrations. The directory and files must be owned by the
+// ValidateSSHArtifacts verifies the exact deployment SSH trust artifacts used
+// by guest integrations. The keys directory and files must be owned by the
 // current user, have their fixed modes, and be neither symbolic nor hard
 // links. Files are opened relative to the verified directory descriptor with
 // O_NOFOLLOW so validation cannot silently switch to another final object.
-func ValidateSSHArtifacts(projectValue Project) (privateKey, knownHosts string, err error) {
+func ValidateSSHArtifacts(root string) (privateKey, knownHosts string, err error) {
 	defer func() {
 		if err == nil {
 			return
@@ -46,39 +46,39 @@ func ValidateSSHArtifacts(projectValue Project) (privateKey, knownHosts string, 
 			err = &SSHArtifactError{Err: err}
 		}
 	}()
-	if projectValue.Root == "" || !filepath.IsAbs(projectValue.Root) || filepath.Clean(projectValue.Root) != projectValue.Root {
-		return "", "", errors.New("project SSH root is not a clean absolute path")
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return "", "", errors.New("SSH root is not a clean absolute path")
 	}
-	keysDir := filepath.Join(projectValue.Root, "keys")
+	keysDir := filepath.Join(root, "keys")
 	keysInfo, err := os.Lstat(keysDir)
 	if err != nil || !keysInfo.IsDir() || keysInfo.Mode()&os.ModeSymlink != 0 || keysInfo.Mode().Perm() != 0o700 {
-		return "", "", errors.New("project SSH keys directory is missing or unsafe")
+		return "", "", errors.New("SSH keys directory is missing or unsafe")
 	}
 	if err := validateSSHOwner(keysInfo, false); err != nil {
-		return "", "", fmt.Errorf("project SSH keys directory is unsafe: %w", err)
+		return "", "", fmt.Errorf("SSH keys directory is unsafe: %w", err)
 	}
-	canonicalRoot, rootErr := filepath.EvalSymlinks(projectValue.Root)
+	canonicalRoot, rootErr := filepath.EvalSymlinks(root)
 	canonicalKeys, keysErr := filepath.EvalSymlinks(keysDir)
 	if rootErr != nil || keysErr != nil || canonicalKeys != filepath.Join(canonicalRoot, "keys") {
-		return "", "", errors.New("project SSH keys directory escapes the project root")
+		return "", "", errors.New("SSH keys directory escapes the deployment root")
 	}
 
 	descriptor, err := unix.Open(keysDir, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_DIRECTORY, 0)
 	if err != nil {
-		return "", "", fmt.Errorf("open project SSH keys directory: %w", err)
+		return "", "", fmt.Errorf("open SSH keys directory: %w", err)
 	}
 	directory := os.NewFile(uintptr(descriptor), keysDir)
 	if directory == nil {
 		_ = unix.Close(descriptor)
-		return "", "", errors.New("open project SSH keys directory handle")
+		return "", "", errors.New("open SSH keys directory handle")
 	}
 	defer directory.Close()
 	openedDirectory, err := directory.Stat()
 	if err != nil || !os.SameFile(keysInfo, openedDirectory) || !openedDirectory.IsDir() || openedDirectory.Mode().Perm() != 0o700 {
-		return "", "", errors.New("project SSH keys directory identity changed while opening")
+		return "", "", errors.New("SSH keys directory identity changed while opening")
 	}
 	if err := validateSSHOwner(openedDirectory, false); err != nil {
-		return "", "", fmt.Errorf("opened project SSH keys directory is unsafe: %w", err)
+		return "", "", fmt.Errorf("opened SSH keys directory is unsafe: %w", err)
 	}
 
 	privateKey = filepath.Join(keysDir, "id_ed25519")
@@ -105,31 +105,31 @@ func validateSSHOwner(info os.FileInfo, requireSingleLink bool) error {
 func validateSSHArtifact(directory *os.File, pathname string) error {
 	before, err := os.Lstat(pathname)
 	if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 || before.Mode().Perm() != 0o600 || before.Size() <= 0 {
-		return fmt.Errorf("project SSH artifact is missing or unsafe: %s", pathname)
+		return fmt.Errorf("SSH artifact is missing or unsafe: %s", pathname)
 	}
 	if err := validateSSHOwner(before, true); err != nil {
-		return fmt.Errorf("project SSH artifact is unsafe %s: %w", pathname, err)
+		return fmt.Errorf("SSH artifact is unsafe %s: %w", pathname, err)
 	}
 	descriptor, err := unix.Openat(int(directory.Fd()), filepath.Base(pathname), unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		return fmt.Errorf("open project SSH artifact %s: %w", pathname, err)
+		return fmt.Errorf("open SSH artifact %s: %w", pathname, err)
 	}
 	handle := os.NewFile(uintptr(descriptor), pathname)
 	if handle == nil {
 		_ = unix.Close(descriptor)
-		return fmt.Errorf("open project SSH artifact handle: %s", pathname)
+		return fmt.Errorf("open SSH artifact handle: %s", pathname)
 	}
 	opened, statErr := handle.Stat()
 	after, lstatErr := os.Lstat(pathname)
 	closeErr := handle.Close()
 	if statErr != nil || lstatErr != nil || closeErr != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != 0o600 || !after.Mode().IsRegular() || after.Mode().Perm() != 0o600 || opened.Size() <= 0 || opened.Size() != before.Size() || after.Size() != opened.Size() || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
-		return fmt.Errorf("project SSH artifact identity changed while opening: %s", pathname)
+		return fmt.Errorf("SSH artifact identity changed while opening: %s", pathname)
 	}
 	if err := validateSSHOwner(opened, true); err != nil {
-		return fmt.Errorf("opened project SSH artifact is unsafe %s: %w", pathname, err)
+		return fmt.Errorf("opened SSH artifact is unsafe %s: %w", pathname, err)
 	}
 	if err := validateSSHOwner(after, true); err != nil {
-		return fmt.Errorf("project SSH artifact changed after opening %s: %w", pathname, err)
+		return fmt.Errorf("SSH artifact changed after opening %s: %w", pathname, err)
 	}
 	return nil
 }

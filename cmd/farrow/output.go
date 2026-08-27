@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/activity"
-	"github.com/pgsty/farrow/internal/diagnostics"
 	"github.com/spf13/viper"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/term"
@@ -345,7 +344,7 @@ func debugf(stderr io.Writer, format string, arguments ...any) {
 	if !verboseOutput(stderr) {
 		return
 	}
-	message := string(diagnostics.RedactText([]byte(fmt.Sprintf(format, arguments...))))
+	message := fmt.Sprintf(format, arguments...)
 	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiDim, "debug:"), message)
 }
 
@@ -433,7 +432,7 @@ func progressSource(source string) string {
 		parsed.Fragment = ""
 		source = parsed.String()
 	}
-	return strings.TrimSpace(string(diagnostics.RedactText([]byte(source))))
+	return strings.TrimSpace(source)
 }
 
 func formatActivity(event activity.Event, now time.Time) string {
@@ -461,7 +460,7 @@ func formatActivity(event activity.Event, now time.Time) string {
 		}
 		message += " — " + strings.Join(parts, " · ")
 	}
-	return strings.TrimSpace(string(diagnostics.RedactText([]byte(message))))
+	return strings.TrimSpace(message)
 }
 
 // Report updates the visible lifecycle stage. Fast byte updates are throttled

@@ -11,12 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/farrow/internal/config"
 	"github.com/pgsty/farrow/internal/image"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/sshconfig"
+	"github.com/pgsty/farrow/internal/sshkeys"
 	"github.com/pgsty/farrow/internal/state"
 )
 
@@ -49,7 +48,6 @@ func TestVersion(t *testing.T) {
 		t.Fatalf("stdout=%q", stdout.String())
 	}
 }
-
 
 func TestInitInvalidNetworkCIDRIsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -107,6 +105,7 @@ func TestDestructiveConfirmationTTYAndNonTTY(t *testing.T) {
 }
 
 func TestRollbackFlagIsUpOnly(t *testing.T) {
+	t.Setenv("FARROW_HOME", t.TempDir())
 	previous, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +157,7 @@ func TestProvisionRejectsUnsafeInputBeforeProjectAccess(t *testing.T) {
 }
 
 func TestProvisionConnectionExitClassifiesSSHArtifactIntegrity(t *testing.T) {
-	if code := provisionConnectionExit(&project.SSHArtifactError{Err: errors.New("unsafe fixture")}); code != exitIntegrity {
+	if code := provisionConnectionExit(&sshkeys.SSHArtifactError{Err: errors.New("unsafe fixture")}); code != exitIntegrity {
 		t.Fatalf("SSH artifact error exit = %d", code)
 	}
 	if code := provisionConnectionExit(errors.New("runtime identity mismatch")); code != exitRuntime {
@@ -181,61 +180,6 @@ func TestCommandTimeoutHonorsResolvedReadiness(t *testing.T) {
 		t.Fatalf("invalid timeout changed command deadline: %s", got)
 	}
 }
-
-func TestPlanMapsDataRootMigrationToConflict(t *testing.T) {
-	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	persistedRoot := filepath.Join(root, "persisted")
-	projectValue, err := project.Create(work, persistedRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persisted := testInventoryResolved(t, persistedRoot)
-	hash, err := spec.Hash(persisted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := (state.Store{Project: projectValue}).WriteProject(state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: persisted, UpdatedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(work, "pigsty.yml")
-	if err := os.WriteFile(configPath, []byte(testInventoryText), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(work); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(previous) })
-	t.Setenv("FARROW_HOME", filepath.Join(root, "different"))
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"plan", "-f", configPath}, &stdout, &stderr); code != exitConflict || !strings.Contains(stderr.String(), "data-root migration required") {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-}
-
-const testInventoryText = "all:\n  vars: { admin_ip: 10.10.10.10 }\n  children:\n    nodes:\n      hosts:\n        10.10.10.10: { nodename: meta }\n        10.10.10.11: { nodename: node-1 }\n"
-
-func testInventoryResolved(t *testing.T, dataRoot string) spec.Resolved {
-	t.Helper()
-	file, err := config.ParseInventory([]byte(testInventoryText))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := file.Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolved.DataRoot = dataRoot
-	return resolved
-}
-
 
 func TestLoadPrivatePreflightConfigAcceptsRelativePath(t *testing.T) {
 	resolved, err := loadPrivatePreflightConfig("../../tests/fixtures/private-two.yaml")
@@ -302,9 +246,6 @@ func TestNoWaitOnlyAppliesToStartingCommands(t *testing.T) {
 	}
 }
 
-
-
-
 func TestCompletions(t *testing.T) {
 	t.Parallel()
 	for _, shell := range []string{"bash", "zsh", "fish"} {
@@ -324,7 +265,6 @@ func TestCompletions(t *testing.T) {
 	}{
 		{args: []string{"__complete", "setup", ""}, want: []string{"meta", "dual", "trio", "full"}},
 		{args: []string{"__complete", "image", ""}, want: []string{"list", "pull", "sync"}},
-		{args: []string{"__complete", "project", ""}, want: []string{"purge-keys", "upgrade-state"}},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := run(test.args, &stdout, &stderr); code != exitOK {
@@ -338,16 +278,9 @@ func TestCompletions(t *testing.T) {
 	}
 }
 
-func TestPrivateProjectDestroyNeverFallsThroughToQuick(t *testing.T) {
+func TestPrivateDeploymentDestroyNeverFallsThroughToQuick(t *testing.T) {
 	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("FARROW_HOME", root)
 	resolved := spec.Resolved{
 		Schema: 1, Name: "private", Image: "u24", Network: "private", SSHUser: "dba",
 		Private: &spec.PrivateNetwork{CIDR: "10.10.10.0/24", HostAddress: "10.10.10.1", DHCPEnd: "10.10.10.8"},
@@ -357,14 +290,14 @@ func TestPrivateProjectDestroyNeverFallsThroughToQuick(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := (state.Store{Project: projectValue}).WriteProject(state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := (state.Store{Root: root}).WriteDeployment(state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	previous, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(work); err != nil {
+	if err := os.Chdir(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
@@ -380,158 +313,30 @@ func TestPrivateProjectDestroyNeverFallsThroughToQuick(t *testing.T) {
 	if code := run([]string{"repair", "--dry-run"}, &stdout, &stderr); code != exitIntegrity || !strings.Contains(stderr.String(), "private repair blocked") {
 		t.Errorf("private repair dispatch code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"project", "purge-keys", "--dry-run"}, &stdout, &stderr); code != exitOK || !strings.Contains(stdout.String(), "no project keys") {
-		t.Errorf("private key purge plan code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-}
-
-func TestProjectPurgeKeysDefaultsToPlanAndRequiresYes(t *testing.T) {
-	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	keysDir := filepath.Join(projectValue.Root, "keys")
-	if err := os.Mkdir(keysDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for name, mode := range map[string]os.FileMode{"id_ed25519": 0o600, "id_ed25519.pub": 0o644, "known_hosts": 0o600} {
-		if err := os.WriteFile(filepath.Join(keysDir, name), []byte("owned"), mode); err != nil {
-			t.Fatal(err)
-		}
-	}
-	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(work); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(previous) })
-
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"project", "purge-keys"}, &stdout, &stderr); code != exitOK || !strings.Contains(stdout.String(), "would delete") {
-		t.Fatalf("default plan code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if _, err := os.Lstat(filepath.Join(keysDir, "id_ed25519")); err != nil {
-		t.Fatalf("default plan deleted private key: %v", err)
-	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"project", "purge-keys", "--dry-run", "--yes"}, &stdout, &stderr); code != exitUsage {
-		t.Fatalf("ambiguous confirmation code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"project", "purge-keys", "--yes"}, &stdout, &stderr); code != exitOK || !strings.Contains(stdout.String(), "deleted") {
-		t.Fatalf("confirmed purge code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if _, err := os.Lstat(keysDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("confirmed purge left keys directory: %v", err)
-	}
-}
-
-func TestProjectPurgeKeysMapsStateAndIntegrityExitCodes(t *testing.T) {
-	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	keysDir := filepath.Join(projectValue.Root, "keys")
-	if err := os.Mkdir(keysDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for name, mode := range map[string]os.FileMode{"id_ed25519": 0o600, "id_ed25519.pub": 0o644, "known_hosts": 0o600} {
-		if err := os.WriteFile(filepath.Join(keysDir, name), []byte("owned"), mode); err != nil {
-			t.Fatal(err)
-		}
-	}
-	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(work); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(previous) })
-
-	nodeDir, err := projectValue.EnsureNodeDir("meta")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(nodeDir, "root.qcow2"), []byte("retained"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"project", "purge-keys", "--yes"}, &stdout, &stderr); code != exitConflict {
-		t.Fatalf("state blocker code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if err := os.Remove(filepath.Join(nodeDir, "root.qcow2")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(nodeDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(keysDir, "known_hosts")); err != nil {
-		t.Fatal(err)
-	}
-	outside := filepath.Join(root, "outside-known-hosts")
-	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(keysDir, "known_hosts")); err != nil {
-		t.Fatal(err)
-	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"project", "purge-keys", "--yes"}, &stdout, &stderr); code != exitIntegrity {
-		t.Fatalf("integrity blocker code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	data, err := os.ReadFile(outside)
-	if err != nil || string(data) != "outside" {
-		t.Fatalf("outside target was changed: %q %v", data, err)
-	}
 }
 
 func TestSSHConfigRemoveRemainsAvailableAfterResolvedStateIsGone(t *testing.T) {
 	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("FARROW_HOME", filepath.Join(root, "data"))
 	home := filepath.Join(root, "home")
 	if err := os.Mkdir(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	entry := sshconfig.Entry{
-		ProjectID: projectValue.Marker.ProjectID, Name: "lab", Node: "meta", User: "dba",
+		Name: "lab", Node: "meta", User: "dba",
 		Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(root, "key"), KnownHosts: filepath.Join(root, "known"),
 	}
 	installed, err := sshconfig.Install(home, entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A scoped private destroy deliberately preserves only project markers,
-	// keys, and integration rollback authority; resolved.json is absent.
+	// Destroy deliberately preserves keys and integration rollback authority;
+	// removal must work with no deployment state present at all.
 	previous, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(work); err != nil {
+	if err := os.Chdir(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })

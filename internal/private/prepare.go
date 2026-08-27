@@ -18,7 +18,6 @@ import (
 	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/platform"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/spec"
 )
@@ -76,7 +75,6 @@ type OwnedArtifact struct {
 type PrepareJournal struct {
 	Schema         int             `json:"schema"`
 	OperationID    string          `json:"operation_id"`
-	ProjectID      string          `json:"project_id"`
 	Node           string          `json:"node"`
 	VMUUID         string          `json:"vm_uuid"`
 	SpecHash       string          `json:"spec_hash"`
@@ -246,14 +244,14 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	if err != nil {
 		return NodeArtifacts{}, err
 	}
-	if _, err := persistent.ValidateDesired(privatePrepareProject(config), persistentIdentities); err != nil {
+	if _, err := persistent.ValidateDesired(privatePrepareProject(config).Root, persistentIdentities); err != nil {
 		return NodeArtifacts{}, err
 	}
-	operationID, err := project.NewUUID()
+	operationID, err := identity.NewUUID()
 	if config.OperationSource != nil {
 		operationID, err = config.OperationSource()
 	}
-	if err != nil || !project.ValidUUID(operationID) {
+	if err != nil || !identity.ValidUUID(operationID) {
 		return NodeArtifacts{}, errors.New("private prepare operation UUID is invalid")
 	}
 	nodesDir := filepath.Join(config.ProjectRoot, "nodes")
@@ -269,12 +267,12 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	}
 	now := config.now()
 	journalPath := filepath.Join(nodeDir, "private-prepare.json")
-	journal := PrepareJournal{Schema: 1, OperationID: operationID, ProjectID: config.Plan.ProjectID, Node: name, VMUUID: nodePlan.VMUUID, SpecHash: config.NodeHashes[name], StartedAt: now, UpdatedAt: now, Completed: []OwnedArtifact{}}
+	journal := PrepareJournal{Schema: 1, OperationID: operationID, Node: name, VMUUID: nodePlan.VMUUID, SpecHash: config.NodeHashes[name], StartedAt: now, UpdatedAt: now, Completed: []OwnedArtifact{}}
 	if err := writePrepareJournal(journalPath, journal); err != nil {
 		return NodeArtifacts{}, err
 	}
 	artifacts := NodeArtifacts{Name: name, NodeDir: nodeDir, Journal: journalPath, Root: filepath.Join(nodeDir, "root.qcow2"), Seed: filepath.Join(nodeDir, "seed.iso"), SerialLog: filepath.Join(nodeDir, "serial.log"), QEMULog: filepath.Join(nodeDir, "qemu.log"), ImageDigest: base.Digest}
-	artifacts.RootSerial, err = identity.DiskSerial(config.Plan.ProjectID, name, "root")
+	artifacts.RootSerial, err = identity.DiskSerial(name, "root")
 	if err != nil {
 		return artifacts, err
 	}
@@ -286,7 +284,7 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	}
 	qemuData := make([]qemu.Disk, 0, len(definition.Disks))
 	for _, diskSpec := range definition.Disks {
-		serial, err := identity.DiskSerial(config.Plan.ProjectID, name, diskSpec.Name)
+		serial, err := identity.DiskSerial(name, diskSpec.Name)
 		if err != nil {
 			return artifacts, err
 		}

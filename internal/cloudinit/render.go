@@ -43,7 +43,6 @@ type PrivateNetwork struct {
 }
 
 type Input struct {
-	ProjectID  string
 	Node       string
 	Hostname   string
 	Generation uint64
@@ -74,7 +73,6 @@ var (
 	hashPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	userPattern     = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	mountPattern    = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
-	uuidPattern     = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 )
 
 func mountPathsOverlap(left, right string) bool {
@@ -114,9 +112,6 @@ func singleLine(label, value string) error {
 }
 
 func validateInput(input Input) error {
-	if !uuidPattern.MatchString(input.ProjectID) {
-		return errors.New("project ID must be a lowercase UUID")
-	}
 	if !dnsLabelPattern.MatchString(input.Node) || !dnsLabelPattern.MatchString(input.Hostname) {
 		return errors.New("node and hostname must be DNS labels")
 	}
@@ -228,7 +223,7 @@ func validateInput(input Input) error {
 		}
 		parsedPublic, _, _, _, err := ssh.ParseAuthorizedKey([]byte(input.PublicKey))
 		if err != nil || !bytes.Equal(parsedPublic.Marshal(), signer.PublicKey().Marshal()) {
-			return errors.New("control private key does not match the project public key")
+			return errors.New("control private key does not match the deployment public key")
 		}
 	}
 	return nil
@@ -674,11 +669,10 @@ rm -f -- /var/lib/farrow/ready.json /var/lib/farrow/error.json
 
 func renderReadyScript(input Input) (string, error) {
 	ready := struct {
-		Project    string `json:"project"`
 		Node       string `json:"node"`
 		Generation uint64 `json:"generation"`
 		SpecHash   string `json:"spec_hash"`
-	}{input.ProjectID, input.Node, input.Generation, input.SpecHash}
+	}{input.Node, input.Generation, input.SpecHash}
 	data, err := json.Marshal(ready)
 	if err != nil {
 		return "", err
@@ -687,7 +681,7 @@ func renderReadyScript(input Input) (string, error) {
 }
 
 func renderMetaData(input Input) []byte {
-	return []byte(fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", yamlQuote(fmt.Sprintf("farrow-%s-%s-g%d", input.ProjectID, input.Node, input.Generation)), yamlQuote(input.Hostname)))
+	return []byte(fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", yamlQuote(fmt.Sprintf("farrow-%s-g%d", input.Node, input.Generation)), yamlQuote(input.Hostname)))
 }
 
 func renderNetwork(input Input) []byte {

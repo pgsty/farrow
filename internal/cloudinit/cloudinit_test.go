@@ -18,8 +18,7 @@ const testPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEbV2dummydummydummyd
 
 func testInput() Input {
 	return Input{
-		ProjectID: "018f4b8e-1234-7abc-9def-0123456789ab",
-		Node:      "meta", Hostname: "meta", Generation: 1,
+		Node: "meta", Hostname: "meta", Generation: 1,
 		SpecHash: strings.Repeat("a", 64), SSHUser: "dba", PublicKey: testPublicKey,
 		MgmtMAC: "02:11:22:33:44:55",
 		Disks:   []Disk{{Serial: "abcde234567abcde2345", Mount: "/data", Filesystem: "auto"}},
@@ -162,7 +161,7 @@ func TestWriteUserDataForExternalSchemaValidation(t *testing.T) {
 	}
 }
 
-func TestRenderRejectsUnsafeMountsAndProjectID(t *testing.T) {
+func TestRenderRejectsUnsafeMounts(t *testing.T) {
 	t.Parallel()
 	for _, mount := range []string{"/data/../../etc", "/data/..", "/data//nested", "/proc/data", "/var/lib/farrow/data"} {
 		input := testInput()
@@ -170,11 +169,6 @@ func TestRenderRejectsUnsafeMountsAndProjectID(t *testing.T) {
 		if _, err := Render(input); err == nil {
 			t.Errorf("unsafe mount %q was accepted", mount)
 		}
-	}
-	input := testInput()
-	input.ProjectID = `$(touch /tmp/not-allowed)`
-	if _, err := Render(input); err == nil {
-		t.Fatal("non-UUID project ID was accepted")
 	}
 }
 

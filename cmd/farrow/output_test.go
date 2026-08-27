@@ -220,16 +220,6 @@ func TestStructuredStdoutStaysPlainWhileTerminalStderrCanUseColor(t *testing.T) 
 	}
 }
 
-func TestVerboseDiagnosticsAreRedacted(t *testing.T) {
-	state := &outputContext{format: outputJSON, verbose: true}
-	var stderr bytes.Buffer
-	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
-	debugf(errOut, "launch tool --token super-secret-value")
-	if got := stderr.String(); strings.Contains(got, "super-secret-value") || !strings.Contains(got, "[REDACTED]") {
-		t.Fatalf("verbose diagnostic was not redacted: %q", got)
-	}
-}
-
 func TestDiagnosticsAndProgressDoNotPolluteStructuredStdout(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

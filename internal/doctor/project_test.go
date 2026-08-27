@@ -2,42 +2,60 @@ package doctor
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
 )
 
-func TestProjectChecksAreReadOnlyAndReportCurrentProject(t *testing.T) {
-	t.Parallel()
+func TestDeploymentChecksAreReadOnlyAndReportCurrentDeployment(t *testing.T) {
 	root := t.TempDir()
-	workDir := filepath.Join(root, "work")
-	if err := os.Mkdir(workDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(workDir, filepath.Join(root, "data"))
+	t.Setenv("FARROW_HOME", root)
+	store := state.Store{Root: root}
+	resolved := spec.Quick(true, true)
+	hash, err := spec.Hash(resolved)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadDir(projectValue.Root)
+	deployment := state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "dev", SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
+	if err := store.WriteDeployment(deployment); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	checks := (Probe{CWD: workDir}).projectChecks()
-	after, err := os.ReadDir(projectValue.Root)
+	checks := (Probe{}).deploymentChecks()
+	after, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(checks) < 3 || len(before) != len(after) {
+	if len(checks) < 2 || len(before) != len(after) {
 		t.Fatalf("checks=%#v before=%v after=%v", checks, before, after)
 	}
-	foundProject := false
+	foundDeployment := false
+	foundDataRoot := false
 	for _, check := range checks {
-		if check.Name == "project" && check.Status == OK {
-			foundProject = true
+		if check.Name == "deployment" && check.Status == OK {
+			foundDeployment = true
+		}
+		if check.Name == "data-root" {
+			foundDataRoot = true
 		}
 	}
-	if !foundProject {
-		t.Fatalf("project check missing: %#v", checks)
+	if !foundDeployment || !foundDataRoot {
+		t.Fatalf("deployment or data-root check missing: %#v", checks)
+	}
+}
+
+func TestDeploymentChecksReportMissingStateAsOK(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	checks := (Probe{}).deploymentChecks()
+	for _, check := range checks {
+		if check.Name == "deployment" && check.Status != OK {
+			t.Fatalf("absent deployment state should not be an error: %#v", check)
+		}
 	}
 }

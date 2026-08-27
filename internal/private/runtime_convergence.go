@@ -8,9 +8,9 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/process"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/state"
 )
 
@@ -58,14 +58,14 @@ type statusLeaseSyncPlan struct {
 // may mirror the proposed durable node states without mutating it. In
 // particular, every Running -> Stopped lease transition is audited before the
 // caller writes any node state.
-func (m Manager) planStatusLeaseSyncLocked(ctx context.Context, projectValue project.Project, nodes []state.NodeState) (statusLeaseSyncPlan, error) {
+func (m Manager) planStatusLeaseSyncLocked(ctx context.Context, projectValue Deployment, nodes []state.NodeState) (statusLeaseSyncPlan, error) {
 	leaseStore := m.leaseStore()
 	leaseStatus, err := leaseStore.Inspect()
 	if err != nil || !leaseStatus.Active || leaseStatus.Lease == nil {
 		return statusLeaseSyncPlan{}, err
 	}
 	active := *leaseStatus.Lease
-	if active.ProjectID != projectValue.Marker.ProjectID || active.OwnerUID != os.Getuid() {
+	if active.ProjectID != identity.DeploymentID || active.OwnerUID != os.Getuid() {
 		return statusLeaseSyncPlan{}, nil
 	}
 	desired, err := SynchronizeLease(active, nodes)

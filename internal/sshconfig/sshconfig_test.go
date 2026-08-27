@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -22,7 +21,7 @@ func TestInstallIdempotentAndRemovePreservesUserConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := Entry{
-		ProjectID: "12345678-project", Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222,
+		Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222,
 		Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known"),
 	}
 	first, err := Install(home, entry)
@@ -53,7 +52,7 @@ func TestInstallIdempotentAndRemovePreservesUserConfig(t *testing.T) {
 			t.Fatalf("installed config is not globally effective: %v\n%s", err, effective)
 		}
 	}
-	removed, err := Remove(home, entry.ProjectID, entry.Name)
+	removed, err := Remove(home, entry.Name)
 	if err != nil || !removed.Changed {
 		t.Fatalf("remove = %#v, %v", removed, err)
 	}
@@ -77,11 +76,11 @@ func TestInstallAndRemoveRefuseUnownedFragment(t *testing.T) {
 	if err := os.WriteFile(fragment, []byte("Host user-owned\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	entry := Entry{ProjectID: "12345678-project", Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known")}
+	entry := Entry{Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known")}
 	if _, err := Install(home, entry); err == nil {
 		t.Fatal("unowned fragment was overwritten")
 	}
-	if _, err := Remove(home, entry.ProjectID, entry.Name); err == nil {
+	if _, err := Remove(home, entry.Name); err == nil {
 		t.Fatal("unowned fragment was removed")
 	}
 	data, _ := os.ReadFile(fragment)
@@ -96,8 +95,8 @@ func TestInstallManyRendersNodeAndPrivateAddressAliases(t *testing.T) {
 	identity := filepath.Join(home, "id_ed25519")
 	knownHosts := filepath.Join(home, "known_hosts")
 	entries := []Entry{
-		{ProjectID: "12345678-project", Name: "lab", Node: "meta", Aliases: []string{"meta", "10.10.10.10"}, User: "dba", Host: "127.0.0.1", Port: 2222, Identity: identity, KnownHosts: knownHosts},
-		{ProjectID: "12345678-project", Name: "lab", Node: "node-1", Aliases: []string{"node-1", "10.10.10.11"}, User: "dba", Host: "127.0.0.1", Port: 2223, Identity: identity, KnownHosts: knownHosts},
+		{Name: "lab", Node: "meta", Aliases: []string{"meta", "10.10.10.10"}, User: "dba", Host: "127.0.0.1", Port: 2222, Identity: identity, KnownHosts: knownHosts},
+		{Name: "lab", Node: "node-1", Aliases: []string{"node-1", "10.10.10.11"}, User: "dba", Host: "127.0.0.1", Port: 2223, Identity: identity, KnownHosts: knownHosts},
 	}
 	result, err := InstallMany(home, entries)
 	if err != nil || !result.Changed {
@@ -127,7 +126,7 @@ func TestInstallManyRendersNodeAndPrivateAddressAliases(t *testing.T) {
 func TestInstallManyRejectsDuplicateNodeAndUnsafeAlias(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	base := Entry{ProjectID: "12345678-project", Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known")}
+	base := Entry{Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known")}
 	if _, err := InstallMany(home, []Entry{base, base}); err == nil {
 		t.Fatal("duplicate node was accepted")
 	}
@@ -144,8 +143,8 @@ func TestInstallRefusesMalformedOwnedInclude(t *testing.T) {
 	if err := os.Mkdir(sshDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	entry := Entry{ProjectID: "12345678-project", Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known")}
-	marker := "# farrow:" + entry.ProjectID + ":include\n"
+	entry := Entry{Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known")}
+	marker := "# farrow:include\n"
 	if err := os.WriteFile(filepath.Join(sshDir, "config"), []byte(marker+"Host unrelated\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +160,7 @@ func TestInstallRejectsOpenSSHTokenExpansionPaths(t *testing.T) {
 	if err := os.Mkdir(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	entry := Entry{ProjectID: "12345678-project", Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(root, "key"), KnownHosts: filepath.Join(root, "known")}
+	entry := Entry{Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(root, "key"), KnownHosts: filepath.Join(root, "known")}
 	if _, err := Install(home, entry); err == nil {
 		t.Fatal("OpenSSH percent-token home was accepted")
 	}
@@ -176,87 +175,10 @@ func TestInstallRejectsOpenSSHTokenExpansionPaths(t *testing.T) {
 	}
 }
 
-func TestConcurrentDifferentFragmentsPreserveBothIncludes(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	entries := []Entry{
-		{ProjectID: "11111111-project", Name: "alpha", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key-a"), KnownHosts: filepath.Join(home, "known-a")},
-		{ProjectID: "22222222-project", Name: "beta", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2223, Identity: filepath.Join(home, "key-b"), KnownHosts: filepath.Join(home, "known-b")},
-	}
-	start := make(chan struct{})
-	errorsByIndex := make([]error, len(entries))
-	var wait sync.WaitGroup
-	for index := range entries {
-		wait.Add(1)
-		go func(index int) {
-			defer wait.Done()
-			<-start
-			_, errorsByIndex[index] = Install(home, entries[index])
-		}(index)
-	}
-	close(start)
-	wait.Wait()
-	for index, err := range errorsByIndex {
-		if err != nil {
-			t.Fatalf("concurrent install %d: %v", index, err)
-		}
-	}
-	config, err := os.ReadFile(filepath.Join(home, ".ssh", "config"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		marker := "# farrow:" + entry.ProjectID + ":include"
-		include := "Include \"" + filepath.Join(home, ".ssh", entry.Name+"_config") + "\""
-		if strings.Count(string(config), marker) != 1 || strings.Count(string(config), include) != 1 {
-			t.Fatalf("config lost concurrent block %s:\n%s", entry.Name, config)
-		}
-	}
-}
-
-func TestConcurrentSameFragmentNeverMixesProjectOwnership(t *testing.T) {
-	t.Parallel()
-	home := t.TempDir()
-	entries := []Entry{
-		{ProjectID: "11111111-project", Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key-a"), KnownHosts: filepath.Join(home, "known-a")},
-		{ProjectID: "22222222-project", Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2223, Identity: filepath.Join(home, "key-b"), KnownHosts: filepath.Join(home, "known-b")},
-	}
-	start := make(chan struct{})
-	errorsByIndex := make([]error, len(entries))
-	var wait sync.WaitGroup
-	for index := range entries {
-		wait.Add(1)
-		go func(index int) {
-			defer wait.Done()
-			<-start
-			_, errorsByIndex[index] = Install(home, entries[index])
-		}(index)
-	}
-	close(start)
-	wait.Wait()
-	successes := 0
-	winner := -1
-	for index, err := range errorsByIndex {
-		if err == nil {
-			successes++
-			winner = index
-		}
-	}
-	if successes != 1 {
-		t.Fatalf("same-fragment successes=%d errors=%v", successes, errorsByIndex)
-	}
-	fragment, _ := os.ReadFile(filepath.Join(home, ".ssh", "lab_config"))
-	config, _ := os.ReadFile(filepath.Join(home, ".ssh", "config"))
-	marker := "# farrow:" + entries[winner].ProjectID
-	if !strings.Contains(string(fragment), marker+":begin") || !strings.Contains(string(config), marker+":include") {
-		t.Fatalf("fragment/config ownership split:\nfragment=%s\nconfig=%s", fragment, config)
-	}
-}
-
 func TestRemoveValidatesFragmentBeforeChangingConfig(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	entry := Entry{ProjectID: "12345678-project", Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known")}
+	entry := Entry{Name: "lab", Node: "meta", User: "dba", Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(home, "key"), KnownHosts: filepath.Join(home, "known")}
 	installed, err := Install(home, entry)
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +187,7 @@ func TestRemoveValidatesFragmentBeforeChangingConfig(t *testing.T) {
 	if err := os.WriteFile(installed.Fragment, []byte("Host user-owned\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Remove(home, entry.ProjectID, entry.Name); err == nil {
+	if _, err := Remove(home, entry.Name); err == nil {
 		t.Fatal("malformed fragment removal succeeded")
 	}
 	configAfter, _ := os.ReadFile(installed.Config)

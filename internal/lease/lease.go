@@ -22,9 +22,9 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/network/subnet"
 	"github.com/pgsty/farrow/internal/process"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 	"golang.org/x/sys/unix"
 )
@@ -222,7 +222,7 @@ func validMAC(value string) bool {
 }
 
 func validateNode(node Node) error {
-	if !nodePattern.MatchString(node.Name) || !project.ValidUUID(node.VMUUID) || !validPhase(node.Phase) || !validMAC(node.ManagementMAC) || !validMAC(node.PrivateMAC) || strings.EqualFold(node.ManagementMAC, node.PrivateMAC) {
+	if !nodePattern.MatchString(node.Name) || !identity.ValidUUID(node.VMUUID) || !validPhase(node.Phase) || !validMAC(node.ManagementMAC) || !validMAC(node.PrivateMAC) || strings.EqualFold(node.ManagementMAC, node.PrivateMAC) {
 		return fmt.Errorf("node %q has invalid identity, phase, UUID, or MAC", node.Name)
 	}
 	ip := net.ParseIP(node.Address).To4()
@@ -267,7 +267,7 @@ func validateNode(node Node) error {
 }
 
 func Validate(value Lease) error {
-	if value.Schema != Schema || value.Generation == 0 || !project.ValidUUID(value.ProjectID) || value.OwnerUID < 0 || value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) || len(value.Nodes) == 0 || len(value.Nodes) > 20 {
+	if value.Schema != Schema || value.Generation == 0 || !identity.ValidUUID(value.ProjectID) || value.OwnerUID < 0 || value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) || len(value.Nodes) == 0 || len(value.Nodes) > 20 {
 		return errors.New("private lease schema, identity, network, time, or node count is invalid")
 	}
 	layout, layoutErr := subnet.Parse(value.CIDR)

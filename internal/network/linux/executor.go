@@ -17,7 +17,6 @@ import (
 	"github.com/pgsty/farrow/internal/network/subnet"
 	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/process"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/qmp"
 )
@@ -183,11 +182,11 @@ func (e Executor) helperAttachSmoke(ctx context.Context, helper string) (returnE
 	}
 	qmpPath := filepath.Join(runtimeDir, "qmp.sock")
 	pidfile := filepath.Join(runtimeDir, "qemu.pid")
-	uuid, err := project.NewUUID()
+	uuid, err := identity.NewUUID()
 	if err != nil {
 		return err
 	}
-	mac, err := identity.MAC(uuid, "network-smoke", "private")
+	mac, err := identity.MAC("169.254.250.250", identity.NICPrivate)
 	if err != nil {
 		return err
 	}

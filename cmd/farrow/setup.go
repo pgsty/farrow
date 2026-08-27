@@ -20,12 +20,12 @@ import (
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/fsutil"
 	"github.com/pgsty/farrow/internal/hostconfig"
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/lease"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	linuxnet "github.com/pgsty/farrow/internal/network/linux"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/network/subnet"
-	"github.com/pgsty/farrow/internal/project"
 	setuphost "github.com/pgsty/farrow/internal/setup"
 	"github.com/pgsty/farrow/internal/spec"
 	"golang.org/x/term"
@@ -418,14 +418,14 @@ func inspectSetupLease(cwd string) (*setupLeaseState, error) {
 		return nil, nil
 	}
 	state := &setupLeaseState{ProjectID: status.Lease.ProjectID, OwnerUID: status.Lease.OwnerUID, Blocking: true}
-	if current, openErr := project.Open(cwd); openErr == nil && current.Marker.ProjectID == status.Lease.ProjectID {
+	if status.Lease.ProjectID == identity.DeploymentID && status.Lease.OwnerUID == os.Getuid() {
 		state.Blocking = false
 	}
 	return state, nil
 }
 
 func setupLeaseResolution(state *setupLeaseState) string {
-	return fmt.Sprintf("private network is held by project %s (owner UID %d); run `farrow list --json` to locate it, stop it from its project directory, then rerun setup", state.ProjectID, state.OwnerUID)
+	return fmt.Sprintf("private network is held by project %s (owner UID %d); stop it with `farrow stop`, then rerun setup", state.ProjectID, state.OwnerUID)
 }
 
 func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) error {
@@ -561,7 +561,7 @@ func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo
 		return setupStep{}, false, err
 	}
 	if runtime.GOOS == "darwin" {
-		interfaceID, err := project.NewUUID()
+		interfaceID, err := identity.NewUUID()
 		if err != nil {
 			return setupStep{}, false, err
 		}
@@ -718,7 +718,7 @@ func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, sudo *setupS
 	if _, directoryErr := root.Run(ctx, "/usr/bin/install", "-d", "-o", "root", "-g", "0", "-m", "0755", "/opt/farrow", "/opt/farrow/libexec"); directoryErr != nil {
 		return setupStep{}, true, fmt.Errorf("prepare privileged helper directory: %w", directoryErr)
 	}
-	stageID, err := project.NewUUID()
+	stageID, err := identity.NewUUID()
 	if err != nil {
 		return setupStep{}, true, err
 	}

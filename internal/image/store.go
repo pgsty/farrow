@@ -20,8 +20,8 @@ import (
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/fsutil"
-	"github.com/pgsty/farrow/internal/webclient"
 	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/webclient"
 )
 
 const (

@@ -7,25 +7,19 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/state"
 )
 
-func commitFixture(t *testing.T, disks DiskOps) (project.Project, PrepareConfig, []PrepareOutcome) {
+func commitFixture(t *testing.T, disks DiskOps) (Deployment, PrepareConfig, []PrepareOutcome) {
 	t.Helper()
 	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	projectValue := Deployment{Root: root, DataRoot: root}
 	config := privatePrepareConfig(t, projectValue.Root, disks)
-	// privatePrepareConfig creates a fresh intent; bind it to the actual project
-	// marker before preparing or committing state.
-	config.Plan, err = Build(config.Resolved, projectValue.Marker.ProjectID, os.Getuid(), nil, nil)
+	// privatePrepareConfig creates a fresh intent; bind it to the fixed global
+	// deployment identity before preparing or committing state.
+	var err error
+	config.Plan, err = Build(config.Resolved, identity.DeploymentID, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +42,7 @@ func TestCommitPreparedStateAndLeaseVerifiedFinalization(t *testing.T) {
 	if err != nil || len(result.Nodes) != 2 || len(result.Failed) != 0 || result.Project.Resolved.Network != "private" {
 		t.Fatalf("commit result = %#v, %v", result, err)
 	}
-	store := state.Store{Project: projectValue}
+	store := state.Store{Root: projectValue.Root}
 	for _, node := range result.Nodes {
 		persisted, err := store.ReadNode(node.Node)
 		if err != nil || persisted.Phase != state.Prepared || persisted.VMUUID != node.VMUUID {
@@ -87,7 +81,7 @@ func TestCommitPreparedPreservesSuccessfulNodeOnPeerFailure(t *testing.T) {
 	if err != nil || len(result.Nodes) != 1 || len(result.Failed) != 1 || result.Nodes[0].Node != "meta" || result.Failed[0] != "node-1" {
 		t.Fatalf("partial commit = %#v, %v", result, err)
 	}
-	store := state.Store{Project: projectValue}
+	store := state.Store{Root: projectValue.Root}
 	if _, err := store.ReadNode("meta"); err != nil {
 		t.Fatalf("successful peer state missing: %v", err)
 	}

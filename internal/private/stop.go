@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/process"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/runtimepath"
 	"github.com/pgsty/farrow/internal/state"
 	"github.com/pgsty/farrow/internal/vm"
@@ -26,7 +26,7 @@ func (l NativeLifecycle) Stop(ctx context.Context, node state.NodeState, timeout
 }
 
 type StopConfig struct {
-	Project        project.Project
+	Project        Deployment
 	LeaseStore     lease.Store
 	Lifecycle      StopLifecycle
 	Nodes          []string
@@ -128,7 +128,7 @@ func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, *lease.
 	if config.CleanupRuntime == nil {
 		config.CleanupRuntime = cleanupRuntime
 	}
-	store := state.Store{Project: config.Project}
+	store := state.Store{Root: config.Project.Root}
 	nodes, err := loadStoppableNodes(store, config.Nodes)
 	if err != nil {
 		return nil, nil, err
@@ -225,7 +225,7 @@ func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, *lease.
 			}
 		}
 		if allStopped {
-			if _, err := config.LeaseStore.Release(ctx, config.Project.Marker.ProjectID, true, config.Auditor); err != nil {
+			if _, err := config.LeaseStore.Release(ctx, identity.DeploymentID, true, config.Auditor); err != nil {
 				return outcomes, &finalLease, err
 			}
 			return outcomes, nil, nil

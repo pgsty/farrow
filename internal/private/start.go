@@ -11,7 +11,6 @@ import (
 
 	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/process"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/runtimepath"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
@@ -20,12 +19,12 @@ import (
 
 type NodeLifecycle interface {
 	Start(context.Context, state.NodeState) (process.Identity, error)
-	WaitReady(context.Context, state.NodeState, string, time.Duration) error
+	WaitReady(context.Context, state.NodeState, time.Duration) error
 }
 
 type NativeLifecycle struct {
 	VM           vm.Lifecycle
-	Project      project.Project
+	Project      Deployment
 	Shares       map[string][]spec.Share
 	SSHPath      string
 	PrivateKey   string
@@ -93,27 +92,15 @@ func (l NativeLifecycle) Start(ctx context.Context, node state.NodeState) (proce
 	if err != nil {
 		return process.Identity{}, err
 	}
-	if len(shareFiles) == 0 {
-		return identityValue, nil
-	}
-	if err := bundle.Recheck(); err != nil {
-		cleanupContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		stopErr := l.VM.Stop(cleanupContext, node.Runtime.QMP, node.Node, node.VMUUID, identityValue, node.Invocation, 5*time.Second)
-		if stopErr != nil {
-			return process.Identity{}, errors.Join(fmt.Errorf("recheck host shares after starting private node %s: %w", node.Node, err), fmt.Errorf("stop private node after failed host-share recheck: %w", stopErr))
-		}
-		return process.Identity{}, fmt.Errorf("recheck host shares after starting private node %s: %w", node.Node, err)
-	}
 	return identityValue, nil
 }
 
-func (l NativeLifecycle) WaitReady(ctx context.Context, node state.NodeState, projectID string, timeout time.Duration) error {
-	return l.VM.WaitReady(ctx, l.SSHPath, l.PrivateKey, l.KnownHosts, node.SSHPort, vm.ReadyMarker{Project: projectID, Node: node.Node, Generation: node.Generation, SpecHash: node.SpecHash}, timeout)
+func (l NativeLifecycle) WaitReady(ctx context.Context, node state.NodeState, timeout time.Duration) error {
+	return l.VM.WaitReady(ctx, l.SSHPath, l.PrivateKey, l.KnownHosts, node.SSHPort, vm.ReadyMarker{Node: node.Node, Generation: node.Generation, SpecHash: node.SpecHash}, timeout)
 }
 
 type StartConfig struct {
-	Project      project.Project
+	Project      Deployment
 	LeaseStore   lease.Store
 	Lifecycle    NodeLifecycle
 	Nodes        []string
@@ -223,7 +210,7 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, lea
 	if config.SetupRuntime == nil {
 		config.SetupRuntime = setupRuntime
 	}
-	store := state.Store{Project: config.Project}
+	store := state.Store{Root: config.Project.Root}
 	nodes, err := loadNodes(store, config.Nodes)
 	if err != nil {
 		return nil, lease.Lease{}, err
@@ -286,7 +273,7 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, lea
 					outcomes[index].Ready = true
 					continue
 				}
-				if err := config.Lifecycle.WaitReady(ctx, node, config.Project.Marker.ProjectID, config.ReadyTimeout); err != nil {
+				if err := config.Lifecycle.WaitReady(ctx, node, config.ReadyTimeout); err != nil {
 					outcomes[index].Error = err.Error()
 					continue
 				}

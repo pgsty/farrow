@@ -157,36 +157,12 @@ func (p Probe) Run(ctx context.Context) Report {
 			qemuVersion = version.String()
 			report.Checks = append(report.Checks, Check{Name: "qemu-version", Status: OK, Evidence: qemuVersion})
 		}
-		var staticChecks []Check
-		var cacheKey capabilityKey
-		cacheWritable := false
-		if qemuVersion != "" {
-			if key, keyErr := capabilityKeyFor(qemuPath, qemuVersion); keyErr != nil {
-				report.Checks = append(report.Checks, Check{Name: "capability-cache", Status: Warn, Evidence: keyErr.Error()})
-			} else if cached, hit, cacheErr := p.loadCapabilityCache(key); cacheErr != nil {
-				report.Checks = append(report.Checks, Check{Name: "capability-cache", Status: Warn, Evidence: cacheErr.Error(), Fix: "inspect or remove only the unsafe per-user capability cache"})
-			} else if hit {
-				staticChecks = cached
-				report.Checks = append(report.Checks, Check{Name: "capability-cache", Status: OK, Evidence: "hit for exact QEMU path, size, mtime, and version"})
-			} else {
-				cacheKey, cacheWritable = key, true
-			}
-		}
-		if len(staticChecks) == 0 {
-			staticChecks = []Check{
-				p.capability(ctx, qemuPath, "accelerator", []string{"-accel", "help"}, profile.Accelerator),
-				p.capability(ctx, qemuPath, "machine", []string{"-machine", "help"}, profile.Machine),
-				p.capability(ctx, qemuPath, "cpu", []string{"-cpu", "help"}, profile.CPU),
-				p.capability(ctx, qemuPath, "devices", []string{"-device", "help"}, "virtio-blk-pci", "virtio-net-pci", "virtio-scsi-pci"),
-				p.capability(ctx, qemuPath, "netdev", []string{"-machine", "none", "-netdev", "help"}, "user"),
-			}
-			if cacheWritable {
-				if writeErr := p.writeCapabilityCache(cacheKey, staticChecks); writeErr != nil {
-					report.Checks = append(report.Checks, Check{Name: "capability-cache", Status: Warn, Evidence: writeErr.Error()})
-				} else {
-					report.Checks = append(report.Checks, Check{Name: "capability-cache", Status: OK, Evidence: "refreshed after exact QEMU path, size, mtime, or version miss"})
-				}
-			}
+		staticChecks := []Check{
+			p.capability(ctx, qemuPath, "accelerator", []string{"-accel", "help"}, profile.Accelerator),
+			p.capability(ctx, qemuPath, "machine", []string{"-machine", "help"}, profile.Machine),
+			p.capability(ctx, qemuPath, "cpu", []string{"-cpu", "help"}, profile.CPU),
+			p.capability(ctx, qemuPath, "devices", []string{"-device", "help"}, "virtio-blk-pci", "virtio-net-pci", "virtio-scsi-pci"),
+			p.capability(ctx, qemuPath, "netdev", []string{"-machine", "none", "-netdev", "help"}, "user"),
 		}
 		report.Checks = append(report.Checks, staticChecks...)
 		if evidence, smokeErr := p.acceleratorSmoke(ctx, qemuPath, profile); smokeErr != nil {
@@ -233,7 +209,7 @@ func (p Probe) Run(ctx context.Context) Report {
 	} else {
 		report.Checks = append(report.Checks, Check{Name: "ssh", Status: OK, Evidence: filepath.Clean(sshPath)})
 	}
-	report.Checks = append(report.Checks, p.projectChecks()...)
+	report.Checks = append(report.Checks, p.deploymentChecks()...)
 	if profile.OS == "darwin" {
 		report.Checks = append(report.Checks, markClass(p.networkPreflightChecks(ctx, profile), ClassNetwork)...)
 	} else if profile.OS == "linux" {

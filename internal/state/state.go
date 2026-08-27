@@ -1,5 +1,5 @@
-// Package state persists the resolved project, node runtime intent, and
-// transaction journal as strict versioned JSON.
+// Package state persists the resolved deployment, node runtime intent, and
+// transaction journal as strict versioned JSON under the single data root.
 package state
 
 import (
@@ -10,20 +10,25 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
 	"github.com/pgsty/farrow/internal/network/subnet"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/spec"
 )
 
 const (
-	ProjectSchema     = 1
-	NodeSchema        = 1
-	TransactionSchema = 1
+	DeploymentSchema  = 2
+	NodeSchema        = 2
+	TransactionSchema = 2
 )
+
+var nodePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ValidNodeName reports whether name is a safe node/directory identifier.
+func ValidNodeName(name string) bool { return nodePattern.MatchString(name) }
 
 type Phase string
 
@@ -47,10 +52,10 @@ func validPhase(phase Phase) bool {
 	}
 }
 
-type ProjectState struct {
+// DeploymentState is the applied desired state of the one global deployment.
+type DeploymentState struct {
 	Schema        int           `json:"schema"`
 	FarrowVersion string        `json:"farrow_version"`
-	ProjectID     string        `json:"project_id"`
 	SpecHash      string        `json:"spec_hash"`
 	Resolved      spec.Resolved `json:"resolved"`
 	UpdatedAt     time.Time     `json:"updated_at"`
@@ -90,7 +95,6 @@ type ProcessIdentity struct {
 type NodeState struct {
 	Schema        int             `json:"schema"`
 	FarrowVersion string          `json:"farrow_version"`
-	ProjectID     string          `json:"project_id"`
 	Node          string          `json:"node"`
 	VMUUID        string          `json:"vm_uuid"`
 	Phase         Phase           `json:"phase"`
@@ -115,29 +119,69 @@ type Action struct {
 	Resource string `json:"resource,omitempty"`
 }
 
-type ReconcileIntent struct {
-	Action     string       `json:"action"`
-	Project    ProjectState `json:"project"`
-	Node       NodeState    `json:"node"`
-	StagedSeed string       `json:"staged_seed"`
-}
-
 type Transaction struct {
-	Schema        int              `json:"schema"`
-	FarrowVersion string           `json:"farrow_version"`
-	OperationID   string           `json:"operation_id"`
-	ProjectID     string           `json:"project_id"`
-	Node          string           `json:"node"`
-	From          Phase            `json:"from"`
-	To            Phase            `json:"to"`
-	Completed     []Action         `json:"completed,omitempty"`
-	Reconcile     *ReconcileIntent `json:"reconcile,omitempty"`
-	StartedAt     time.Time        `json:"started_at"`
-	UpdatedAt     time.Time        `json:"updated_at"`
+	Schema        int       `json:"schema"`
+	FarrowVersion string    `json:"farrow_version"`
+	OperationID   string    `json:"operation_id"`
+	Node          string    `json:"node"`
+	From          Phase     `json:"from"`
+	To            Phase     `json:"to"`
+	Completed     []Action  `json:"completed,omitempty"`
+	StartedAt     time.Time `json:"started_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// Store reads and writes the deployment documents under one data root.
 type Store struct {
-	Project project.Project
+	Root string
+}
+
+func ensureDir(path string, mode os.FileMode) error {
+	if err := os.MkdirAll(path, mode); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("required path is not a real directory: %s", path)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("required directory is group/world writable: %s mode=%o", path, info.Mode().Perm())
+	}
+	return os.Chmod(path, mode)
+}
+
+// EnsureRoot creates the data root itself (0700) when absent.
+func (s Store) EnsureRoot() error {
+	if s.Root == "" || !filepath.IsAbs(s.Root) {
+		return errors.New("state store root must be absolute")
+	}
+	return ensureDir(s.Root, 0o700)
+}
+
+// NodeDir returns <root>/nodes/<name> after validating the node name.
+func (s Store) NodeDir(name string) (string, error) {
+	if !nodePattern.MatchString(name) {
+		return "", fmt.Errorf("invalid node name %q", name)
+	}
+	return filepath.Join(s.Root, "nodes", name), nil
+}
+
+// EnsureNodeDir creates <root>/nodes/<name> (0700) and its parent.
+func (s Store) EnsureNodeDir(name string) (string, error) {
+	directory, err := s.NodeDir(name)
+	if err != nil {
+		return "", err
+	}
+	if err := s.EnsureRoot(); err != nil {
+		return "", err
+	}
+	if err := ensureDir(filepath.Dir(directory), 0o700); err != nil {
+		return "", err
+	}
+	if err := ensureDir(directory, 0o700); err != nil {
+		return "", err
+	}
+	return directory, nil
 }
 
 func strictRead(path string, destination any) error {
@@ -172,77 +216,80 @@ func writeJSON(path string, value any) error {
 	return fsutil.AtomicWrite(path, append(data, '\n'), 0o600)
 }
 
-func (s Store) projectPath() string { return filepath.Join(s.Project.Root, "resolved.json") }
+func (s Store) deploymentPath() string { return filepath.Join(s.Root, "state.json") }
 
 func (s Store) nodePath(name, filename string) (string, error) {
-	directory, err := s.Project.NodeDir(name)
+	directory, err := s.NodeDir(name)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(directory, filename), nil
 }
 
-func validateProject(value ProjectState, expectedID string) error {
-	if value.Schema != ProjectSchema {
-		return fmt.Errorf("unsupported project state schema %d", value.Schema)
+func validateDeployment(value DeploymentState) error {
+	if value.Schema != DeploymentSchema {
+		return fmt.Errorf("unsupported deployment state schema %d", value.Schema)
 	}
-	if value.FarrowVersion == "" || value.ProjectID != expectedID || value.SpecHash == "" || value.UpdatedAt.IsZero() {
-		return errors.New("project state version/identity/hash/time is invalid")
+	if value.FarrowVersion == "" || value.SpecHash == "" || value.UpdatedAt.IsZero() {
+		return errors.New("deployment state version/hash/time is invalid")
 	}
 	actualHash, err := spec.Hash(value.Resolved)
 	if err != nil {
 		return err
 	}
 	if actualHash != value.SpecHash {
-		return errors.New("project resolved spec hash mismatch")
+		return errors.New("deployment resolved spec hash mismatch")
 	}
 	for _, node := range value.Resolved.Nodes {
 		for _, forward := range node.Forwards {
 			if forward.RequestedHost != 0 && forward.RequestedHost == forward.Host {
-				return fmt.Errorf("project resolved forward %s:%d requested_host must differ from its materialized host port", forward.Bind, forward.Host)
+				return fmt.Errorf("deployment resolved forward %s:%d requested_host must differ from its materialized host port", forward.Bind, forward.Host)
 			}
 		}
 	}
 	if value.Resolved.Network == "private" {
 		if value.Resolved.Private == nil {
-			return errors.New("private project state lacks its network contract")
+			return errors.New("private deployment state lacks its network contract")
 		}
 		layout, err := subnet.Parse(value.Resolved.Private.CIDR)
 		if err != nil || value.Resolved.Private.HostAddress != layout.HostAddress() || value.Resolved.Private.DHCPEnd != layout.DHCPEnd() {
-			return errors.New("private project state network contract is invalid")
+			return errors.New("private deployment state network contract is invalid")
 		}
 		for _, node := range value.Resolved.Nodes {
 			if !layout.IsStatic(node.Address) {
-				return fmt.Errorf("private project state node %s address is outside the static pool", node.Name)
+				return fmt.Errorf("private deployment state node %s address is outside the static pool", node.Name)
 			}
 		}
 	}
 	return nil
 }
 
-func (s Store) WriteProject(value ProjectState) error {
-	if err := validateProject(value, s.Project.Marker.ProjectID); err != nil {
+func (s Store) WriteDeployment(value DeploymentState) error {
+	if err := validateDeployment(value); err != nil {
 		return err
 	}
-	return writeJSON(s.projectPath(), value)
+	if err := s.EnsureRoot(); err != nil {
+		return err
+	}
+	return writeJSON(s.deploymentPath(), value)
 }
 
-func (s Store) ReadProject() (ProjectState, error) {
-	var value ProjectState
-	if err := strictRead(s.projectPath(), &value); err != nil {
-		return ProjectState{}, err
+func (s Store) ReadDeployment() (DeploymentState, error) {
+	var value DeploymentState
+	if err := strictRead(s.deploymentPath(), &value); err != nil {
+		return DeploymentState{}, err
 	}
-	if err := validateProject(value, s.Project.Marker.ProjectID); err != nil {
-		return ProjectState{}, err
+	if err := validateDeployment(value); err != nil {
+		return DeploymentState{}, err
 	}
 	return value, nil
 }
 
-func validateNode(value NodeState, expectedID, expectedNode string) error {
+func validateNode(value NodeState, expectedNode string) error {
 	if value.Schema != NodeSchema {
 		return fmt.Errorf("unsupported node state schema %d", value.Schema)
 	}
-	if value.FarrowVersion == "" || value.ProjectID != expectedID || value.Node != expectedNode || value.VMUUID == "" || !validPhase(value.Phase) || value.Generation == 0 || value.SpecHash == "" || value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() {
+	if value.FarrowVersion == "" || value.Node != expectedNode || value.VMUUID == "" || !validPhase(value.Phase) || value.Generation == 0 || value.SpecHash == "" || value.CreatedAt.IsZero() || value.UpdatedAt.IsZero() {
 		return errors.New("node state version, identity, phase, generation, hash, or time is invalid")
 	}
 	for _, disk := range value.DataDisks {
@@ -259,10 +306,10 @@ func validateNode(value NodeState, expectedID, expectedNode string) error {
 }
 
 func (s Store) WriteNode(value NodeState) error {
-	if err := validateNode(value, s.Project.Marker.ProjectID, value.Node); err != nil {
+	if err := validateNode(value, value.Node); err != nil {
 		return err
 	}
-	if _, err := s.Project.EnsureNodeDir(value.Node); err != nil {
+	if _, err := s.EnsureNodeDir(value.Node); err != nil {
 		return err
 	}
 	path, err := s.nodePath(value.Node, "state.json")
@@ -281,40 +328,24 @@ func (s Store) ReadNode(name string) (NodeState, error) {
 	if err := strictRead(path, &value); err != nil {
 		return NodeState{}, err
 	}
-	if err := validateNode(value, s.Project.Marker.ProjectID, name); err != nil {
+	if err := validateNode(value, name); err != nil {
 		return NodeState{}, err
 	}
 	return value, nil
 }
 
-func validateTransaction(value Transaction, expectedID string) error {
-	if value.Schema != TransactionSchema || value.FarrowVersion == "" || value.ProjectID != expectedID || value.OperationID == "" || value.Node == "" || !validPhase(value.From) || !validPhase(value.To) || value.StartedAt.IsZero() || value.UpdatedAt.IsZero() {
+func validateTransaction(value Transaction) error {
+	if value.Schema != TransactionSchema || value.FarrowVersion == "" || value.OperationID == "" || value.Node == "" || !validPhase(value.From) || !validPhase(value.To) || value.StartedAt.IsZero() || value.UpdatedAt.IsZero() {
 		return errors.New("transaction schema, version, or fields are invalid")
-	}
-	if value.Reconcile != nil {
-		intent := value.Reconcile
-		if value.From != Stopped || value.To != Prepared || (intent.Action != "restart" && intent.Action != "stop" && intent.Action != "reconcile") || !filepath.IsAbs(intent.StagedSeed) {
-			return errors.New("reconcile transaction transition, action, or staged seed is invalid")
-		}
-		if err := validateProject(intent.Project, expectedID); err != nil {
-			return fmt.Errorf("invalid reconcile project intent: %w", err)
-		}
-		if err := validateNode(intent.Node, expectedID, value.Node); err != nil {
-			return fmt.Errorf("invalid reconcile node intent: %w", err)
-		}
-		expectedHash, hashErr := spec.NodeHash(intent.Project.Resolved, value.Node)
-		if hashErr != nil || intent.Node.Phase != Stopped || intent.Node.SpecHash != expectedHash {
-			return errors.New("reconcile node must be stopped and match its desired node hash")
-		}
 	}
 	return nil
 }
 
 func (s Store) WriteTransaction(value Transaction) error {
-	if err := validateTransaction(value, s.Project.Marker.ProjectID); err != nil {
+	if err := validateTransaction(value); err != nil {
 		return err
 	}
-	if _, err := s.Project.EnsureNodeDir(value.Node); err != nil {
+	if _, err := s.EnsureNodeDir(value.Node); err != nil {
 		return err
 	}
 	path, err := s.nodePath(value.Node, "transaction.json")
@@ -333,7 +364,7 @@ func (s Store) ReadTransaction(name string) (Transaction, error) {
 	if err := strictRead(path, &value); err != nil {
 		return Transaction{}, err
 	}
-	if err := validateTransaction(value, s.Project.Marker.ProjectID); err != nil {
+	if err := validateTransaction(value); err != nil {
 		return Transaction{}, err
 	}
 	return value, nil

@@ -77,7 +77,7 @@ func TestStopRunningParallelAndReleaseLease(t *testing.T) {
 	if _, err := startConfig.LeaseStore.Read(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("all-stopped lease remains: %v", err)
 	}
-	store := state.Store{Project: startConfig.Project}
+	store := state.Store{Root: startConfig.Project.Root}
 	for _, name := range startConfig.Nodes {
 		node, err := store.ReadNode(name)
 		if err != nil || node.Phase != state.Stopped || node.Process != (state.ProcessIdentity{}) {
@@ -129,7 +129,7 @@ func TestStopRunningSelectedNodeKeepsPeerAndLease(t *testing.T) {
 	if err != nil || len(outcomes) != 1 || !outcomes[0].Stopped || active == nil {
 		t.Fatalf("selected stop outcomes=%#v active=%#v err=%v", outcomes, active, err)
 	}
-	store := state.Store{Project: startConfig.Project}
+	store := state.Store{Root: startConfig.Project.Root}
 	meta, metaErr := store.ReadNode("meta")
 	peer, peerErr := store.ReadNode("node-1")
 	if metaErr != nil || peerErr != nil || meta.Phase != state.Stopped || peer.Phase != state.Running {
@@ -142,7 +142,7 @@ func TestStopRunningSelectedNodeKeepsPeerAndLease(t *testing.T) {
 
 func TestStopRunningAcceptsAlreadyStoppedPeerAndReleasesLease(t *testing.T) {
 	startConfig := runningStopFixture(t)
-	store := state.Store{Project: startConfig.Project}
+	store := state.Store{Root: startConfig.Project.Root}
 	peer, err := store.ReadNode("node-1")
 	if err != nil {
 		t.Fatal(err)

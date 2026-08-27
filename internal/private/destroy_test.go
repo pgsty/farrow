@@ -7,24 +7,17 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
 
-func TestPrivateDestroyRemovesOnlyNodesAndPreservesKeysProjectCache(t *testing.T) {
-	t.Parallel()
-	startConfig, nodes := preparedStartFixture(t)
-	projectValue := startConfig.Project
-	deadAudit := func(_ context.Context, node lease.Node) (lease.Observation, error) {
-		return lease.Observation{Node: node.Name, Authority: "dead", Evidence: "test runtime absent"}, nil
-	}
-	if _, err := startConfig.LeaseStore.Abort(context.Background(), projectValue.Marker.ProjectID, true, deadAudit); err != nil {
-		t.Fatal(err)
-	}
-	keysDir := filepath.Join(projectValue.Root, "keys")
-	if err := os.Mkdir(keysDir, 0o700); err != nil {
+func writeDestroyKeyFixtures(t *testing.T, root string) string {
+	t.Helper()
+	keysDir := filepath.Join(root, "keys")
+	if err := os.Mkdir(keysDir, 0o700); err != nil && !os.IsExist(err) {
 		t.Fatal(err)
 	}
 	for name, mode := range map[string]os.FileMode{"known_hosts": 0o600, "id_ed25519": 0o600, "id_ed25519.pub": 0o644} {
@@ -32,7 +25,21 @@ func TestPrivateDestroyRemovesOnlyNodesAndPreservesKeysProjectCache(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	manager := Manager{CWD: projectValue.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	return keysDir
+}
+
+func TestPrivateDestroyRemovesOnlyNodesAndPreservesKeysStateCache(t *testing.T) {
+	startConfig, nodes := preparedStartFixture(t)
+	projectValue := startConfig.Project
+	t.Setenv("FARROW_HOME", projectValue.Root)
+	deadAudit := func(_ context.Context, node lease.Node) (lease.Observation, error) {
+		return lease.Observation{Node: node.Name, Authority: "dead", Evidence: "test runtime absent"}, nil
+	}
+	if _, err := startConfig.LeaseStore.Abort(context.Background(), identity.DeploymentID, true, deadAudit); err != nil {
+		t.Fatal(err)
+	}
+	keysDir := writeDestroyKeyFixtures(t, projectValue.Root)
+	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	result, err := manager.Destroy(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -46,43 +53,35 @@ func TestPrivateDestroyRemovesOnlyNodesAndPreservesKeysProjectCache(t *testing.T
 			t.Fatalf("destroyed node directory remains: %s: %v", directory, err)
 		}
 	}
-	if _, err := os.Lstat(filepath.Join(projectValue.Root, "resolved.json")); !os.IsNotExist(err) {
-		t.Fatalf("resolved state remains after private destroy: %v", err)
-	}
-	for _, path := range []string{projectValue.MarkerPath, filepath.Join(projectValue.Root, "project.json"), keysDir, filepath.Join(keysDir, "id_ed25519"), filepath.Join(projectValue.Root, "base.qcow2")} {
+	for _, path := range []string{keysDir, filepath.Join(keysDir, "id_ed25519"), filepath.Join(projectValue.Root, "base.qcow2")} {
 		if _, err := os.Lstat(path); err != nil {
 			t.Fatalf("preserved private artifact missing %s: %v", path, err)
 		}
 	}
+	if _, err := os.Lstat(filepath.Join(projectValue.Root, "state.json")); !os.IsNotExist(err) {
+		t.Fatalf("full destroy must remove the deployment state document: %v", err)
+	}
 }
 
 func TestPrivatePartialRecreateDestroyPreservesPeerStateAndLease(t *testing.T) {
-	t.Parallel()
 	startConfig, _ := preparedStartFixture(t)
 	projectValue := startConfig.Project
-	keysDir := filepath.Join(projectValue.Root, "keys")
-	if err := os.Mkdir(keysDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for name, mode := range map[string]os.FileMode{"known_hosts": 0o600, "id_ed25519": 0o600, "id_ed25519.pub": 0o644} {
-		if err := os.WriteFile(filepath.Join(keysDir, name), nil, mode); err != nil {
-			t.Fatal(err)
-		}
-	}
-	manager := Manager{CWD: projectValue.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore, Nodes: []string{"node-1"}, allowPartialDestroy: true}
+	t.Setenv("FARROW_HOME", projectValue.Root)
+	writeDestroyKeyFixtures(t, projectValue.Root)
+	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore, Nodes: []string{"node-1"}, allowPartialDestroy: true}
 	result, err := manager.Destroy(context.Background())
 	if err != nil || len(result.Nodes) != 1 || result.Nodes[0].Name != "node-1" || result.Nodes[0].State != state.Absent {
 		t.Fatalf("partial destroy result=%#v err=%v", result, err)
 	}
-	store := state.Store{Project: projectValue}
+	store := state.Store{Root: projectValue.Root}
 	if _, err := store.ReadNode("meta"); err != nil {
 		t.Fatalf("peer state was removed: %v", err)
 	}
 	if _, err := store.ReadNode("node-1"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("selected node state remains: %v", err)
 	}
-	if _, err := store.ReadProject(); err != nil {
-		t.Fatalf("project state was removed: %v", err)
+	if _, err := store.ReadDeployment(); err != nil {
+		t.Fatalf("deployment state was removed: %v", err)
 	}
 	leaseStatus, err := startConfig.LeaseStore.Inspect()
 	if err != nil || !leaseStatus.Active {
@@ -101,11 +100,12 @@ func TestPrivatePartialRecreateDestroyPreservesPeerStateAndLease(t *testing.T) {
 func TestControllerRecreatesOnlyMissingSelectedNode(t *testing.T) {
 	lifecycle := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
 	controller := controllerFixture(t, &fakePrivateDisks{}, lifecycle)
+	t.Setenv("FARROW_HOME", controller.Project.Root)
 	created, err := controller.CreateAndStart(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := state.Store{Project: controller.Project}
+	store := state.Store{Root: controller.Project.Root}
 	states := make([]state.NodeState, 0, len(created.Commit.Nodes))
 	for _, node := range created.Commit.Nodes {
 		node.Phase = state.Prepared
@@ -126,16 +126,8 @@ func TestControllerRecreatesOnlyMissingSelectedNode(t *testing.T) {
 	if _, err := controller.LeaseStore.Update(context.Background(), desired); err != nil {
 		t.Fatal(err)
 	}
-	keysDir := filepath.Join(controller.Project.Root, "keys")
-	if err := os.Mkdir(keysDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for name, mode := range map[string]os.FileMode{"known_hosts": 0o600, "id_ed25519": 0o600, "id_ed25519.pub": 0o644} {
-		if err := os.WriteFile(filepath.Join(keysDir, name), nil, mode); err != nil {
-			t.Fatal(err)
-		}
-	}
-	destroyer := Manager{CWD: controller.Project.WorkDir, FarrowVersion: "test", LeaseStore: &controller.LeaseStore, Nodes: []string{"node-1"}, allowPartialDestroy: true}
+	writeDestroyKeyFixtures(t, controller.Project.Root)
+	destroyer := Manager{FarrowVersion: "test", LeaseStore: &controller.LeaseStore, Nodes: []string{"node-1"}, allowPartialDestroy: true}
 	if _, err := destroyer.Destroy(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -152,9 +144,9 @@ func TestControllerRecreatesOnlyMissingSelectedNode(t *testing.T) {
 	}
 }
 
-func markFixtureDiskPersistent(t *testing.T, projectValue state.Store) (state.ProjectState, state.NodeState) {
+func markFixtureDiskPersistent(t *testing.T, projectValue state.Store) (state.DeploymentState, state.NodeState) {
 	t.Helper()
-	projectState, err := projectValue.ReadProject()
+	projectState, err := projectValue.ReadDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +156,7 @@ func markFixtureDiskPersistent(t *testing.T, projectValue state.Store) (state.Pr
 		t.Fatal(err)
 	}
 	projectState.SpecHash = hash
-	if err := projectValue.WriteProject(projectState); err != nil {
+	if err := projectValue.WriteDeployment(projectState); err != nil {
 		t.Fatal(err)
 	}
 	node, err := projectValue.ReadNode(projectState.Resolved.Nodes[0].Name)
@@ -180,10 +172,10 @@ func markFixtureDiskPersistent(t *testing.T, projectValue state.Store) (state.Pr
 }
 
 func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T) {
-	t.Parallel()
 	startConfig, _ := preparedStartFixture(t)
 	projectValue := startConfig.Project
-	store := state.Store{Project: projectValue}
+	t.Setenv("FARROW_HOME", projectValue.Root)
+	store := state.Store{Root: projectValue.Root}
 	projectState, originalNode := markFixtureDiskPersistent(t, store)
 	originalData, err := os.ReadFile(originalNode.DataDisks[0].Path)
 	if err != nil {
@@ -192,23 +184,15 @@ func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T)
 	deadAudit := func(_ context.Context, node lease.Node) (lease.Observation, error) {
 		return lease.Observation{Node: node.Name, Authority: "dead", Evidence: "test runtime absent"}, nil
 	}
-	if _, err := startConfig.LeaseStore.Abort(context.Background(), projectValue.Marker.ProjectID, true, deadAudit); err != nil {
+	if _, err := startConfig.LeaseStore.Abort(context.Background(), identity.DeploymentID, true, deadAudit); err != nil {
 		t.Fatal(err)
 	}
-	keysDir := filepath.Join(projectValue.Root, "keys")
-	if err := os.Mkdir(keysDir, 0o700); err != nil && !os.IsExist(err) {
-		t.Fatal(err)
-	}
-	for name, mode := range map[string]os.FileMode{"known_hosts": 0o600, "id_ed25519": 0o600, "id_ed25519.pub": 0o644} {
-		if err := os.WriteFile(filepath.Join(keysDir, name), nil, mode); err != nil {
-			t.Fatal(err)
-		}
-	}
-	manager := Manager{CWD: projectValue.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	writeDestroyKeyFixtures(t, projectValue.Root)
+	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	if _, err := manager.Destroy(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	records, err := persistent.Inventory(projectValue)
+	records, err := persistent.Inventory(projectValue.Root)
 	if err != nil || len(records) != 1 {
 		t.Fatalf("retained records = %#v, %v", records, err)
 	}
@@ -219,7 +203,7 @@ func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T)
 	prepare := privatePrepareConfig(t, projectValue.Root, &fakePrivateDisks{})
 	prepare.Resolved = projectState.Resolved
 	prepare.SpecHash = projectState.SpecHash
-	prepare.Plan, err = Build(prepare.Resolved, projectValue.Marker.ProjectID, os.Getuid(), nil, nil)
+	prepare.Plan, err = Build(prepare.Resolved, identity.DeploymentID, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,29 +222,21 @@ func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T)
 }
 
 func TestPrivatePersistentDeleteRequiresDestroyedNodes(t *testing.T) {
-	t.Parallel()
 	startConfig, _ := preparedStartFixture(t)
 	projectValue := startConfig.Project
-	_, _ = markFixtureDiskPersistent(t, state.Store{Project: projectValue})
-	manager := Manager{CWD: projectValue.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	t.Setenv("FARROW_HOME", projectValue.Root)
+	_, _ = markFixtureDiskPersistent(t, state.Store{Root: projectValue.Root})
+	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	if _, err := manager.DeletePersistent(context.Background()); err == nil {
 		t.Fatal("persistent disks were deleted while nodes existed")
 	}
 	deadAudit := func(_ context.Context, node lease.Node) (lease.Observation, error) {
 		return lease.Observation{Node: node.Name, Authority: "dead", Evidence: "test runtime absent"}, nil
 	}
-	if _, err := startConfig.LeaseStore.Abort(context.Background(), projectValue.Marker.ProjectID, true, deadAudit); err != nil {
+	if _, err := startConfig.LeaseStore.Abort(context.Background(), identity.DeploymentID, true, deadAudit); err != nil {
 		t.Fatal(err)
 	}
-	keysDir := filepath.Join(projectValue.Root, "keys")
-	if err := os.Mkdir(keysDir, 0o700); err != nil && !os.IsExist(err) {
-		t.Fatal(err)
-	}
-	for name, mode := range map[string]os.FileMode{"known_hosts": 0o600, "id_ed25519": 0o600, "id_ed25519.pub": 0o644} {
-		if err := os.WriteFile(filepath.Join(keysDir, name), nil, mode); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writeDestroyKeyFixtures(t, projectValue.Root)
 	if _, err := manager.Destroy(context.Background()); err != nil {
 		t.Fatal(err)
 	}

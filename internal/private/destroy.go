@@ -9,12 +9,11 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/lease"
-	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/process"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
@@ -44,7 +43,7 @@ func removeOwnedRegularWithin(root, path string) error {
 	return fsutil.SyncDir(root)
 }
 
-func privateNodeTargets(projectValue project.Project, node state.NodeState) (string, []string, error) {
+func privateNodeTargets(projectValue Deployment, node state.NodeState) (string, []string, error) {
 	nodeDir, err := projectValue.NodeDir(node.Node)
 	if err != nil {
 		return "", nil, err
@@ -99,7 +98,7 @@ func privateNodeTargets(projectValue project.Project, node state.NodeState) (str
 	return nodeDir, ordered, nil
 }
 
-func (m Manager) removeKnownHostEntries(ctx context.Context, projectValue project.Project, nodes []state.NodeState, resolvedAddresses map[string]string) error {
+func (m Manager) removeKnownHostEntries(ctx context.Context, projectValue Deployment, nodes []state.NodeState, resolvedAddresses map[string]string) error {
 	sshKeygen, err := m.lookPath("ssh-keygen")
 	if err != nil {
 		return err
@@ -135,8 +134,8 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	store := state.Store{Project: projectValue}
-	projectState, err := store.ReadProject()
+	store := state.Store{Root: projectValue.Root}
+	projectState, err := store.ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
 		return Status{}, errors.New("current project has no valid private state")
 	}
@@ -172,7 +171,7 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 	}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		return Status{}, err
 	}
@@ -185,7 +184,7 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 		if !partial {
 			return Status{}, errors.New("refuse private destroy while a host-global lease is active")
 		}
-		if leaseStatus.Lease.ProjectID != projectValue.Marker.ProjectID || leaseStatus.Lease.OwnerUID != os.Getuid() {
+		if leaseStatus.Lease.ProjectID != identity.DeploymentID || leaseStatus.Lease.OwnerUID != os.Getuid() {
 			return Status{}, errors.New("refuse partial recreate while another project or UID owns the private lease")
 		}
 		for _, leased := range leaseStatus.Lease.Nodes {
@@ -231,9 +230,9 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	resolvedPath := filepath.Join(projectValue.Root, "resolved.json")
+	deploymentStatePath := filepath.Join(projectValue.Root, "state.json")
 	if !partial {
-		if err := ownedRegularWithin(projectValue.Root, resolvedPath); err != nil {
+		if err := ownedRegularWithin(projectValue.Root, deploymentStatePath); err != nil {
 			return Status{}, err
 		}
 	}
@@ -259,7 +258,7 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 			if source == "" {
 				return Status{}, fmt.Errorf("persistent private disk %s/%s has no state path", identityValue.Node, identityValue.Name)
 			}
-			if _, err := persistent.Preserve(projectValue, identityValue, source); err != nil {
+			if _, err := persistent.Preserve(projectValue.Root, identityValue, source); err != nil {
 				return Status{}, err
 			}
 		}
@@ -279,7 +278,7 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	if !partial {
-		if err := removeOwnedRegularWithin(projectValue.Root, resolvedPath); err != nil {
+		if err := removeOwnedRegularWithin(projectValue.Root, deploymentStatePath); err != nil {
 			return Status{}, err
 		}
 	}
@@ -295,11 +294,11 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 		if hashErr != nil {
 			return Status{}, hashErr
 		}
-		updated := state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: m.FarrowVersion, ProjectID: projectValue.Marker.ProjectID, SpecHash: remainingHash, Resolved: remaining, UpdatedAt: time.Now().UTC()}
-		if err := store.WriteProject(updated); err != nil {
+		updated := state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: m.FarrowVersion, SpecHash: remainingHash, Resolved: remaining, UpdatedAt: time.Now().UTC()}
+		if err := store.WriteDeployment(updated); err != nil {
 			return Status{}, err
 		}
-		if leaseStatus.Active && leaseStatus.Lease.ProjectID == projectValue.Marker.ProjectID {
+		if leaseStatus.Active && leaseStatus.Lease.ProjectID == identity.DeploymentID {
 			desiredLease := *leaseStatus.Lease
 			desiredLease.Nodes = nil
 			for _, leased := range leaseStatus.Lease.Nodes {
@@ -319,7 +318,7 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 	case partial:
 		message = "destroyed selected private node artifacts for immediate recreate; project state, peer nodes, lease, keys, and persistent data disks preserved"
 	}
-	result := Status{ProjectID: projectValue.Marker.ProjectID, OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message}
+	result := Status{ProjectID: identity.DeploymentID, OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message}
 	for _, definition := range projectState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
 			continue
@@ -346,14 +345,14 @@ func (m Manager) Recreate(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
+	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
 		return Status{}, errors.New("current project has no valid private state")
 	}
 	return m.RecreateResolved(ctx, projectState.Resolved)
 }
 
-func validatePrivateRecreatePersistent(projectValue project.Project, current, requested spec.Resolved) error {
+func validatePrivateRecreatePersistent(projectValue Deployment, current, requested spec.Resolved) error {
 	currentIdentities, err := privatePersistentIdentities(projectValue, current)
 	if err != nil {
 		return err
@@ -375,7 +374,7 @@ func validatePrivateRecreatePersistent(projectValue project.Project, current, re
 			return fmt.Errorf("recreate desired configuration is incompatible with persistent disk %s/%s", identityValue.Node, identityValue.Name)
 		}
 	}
-	_, err = persistent.ValidateDesired(projectValue, requestedIdentities)
+	_, err = persistent.ValidateDesired(projectValue.Root, requestedIdentities)
 	return err
 }
 
@@ -395,7 +394,7 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err != nil {
 		return Status{}, err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
+	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
 		return Status{}, errors.New("current project has no valid private state")
 	}
@@ -421,7 +420,7 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err := selectedShareSources(projectValue, requested, requestedSelection); err != nil {
 		return Status{}, err
 	}
-	shareBinaries, err := selectedShareInvocationBinaries(state.Store{Project: projectValue}, projectState.Resolved, selected)
+	shareBinaries, err := selectedShareInvocationBinaries(state.Store{Root: projectValue.Root}, projectState.Resolved, selected)
 	if err != nil {
 		return Status{}, err
 	}

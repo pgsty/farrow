@@ -20,8 +20,8 @@ import (
 
 	"aead.dev/minisign"
 	"github.com/pgsty/farrow/internal/fsutil"
-	"github.com/pgsty/farrow/internal/webclient"
 	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/webclient"
 )
 
 const (

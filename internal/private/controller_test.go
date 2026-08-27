@@ -8,24 +8,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/lease"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/state"
 )
 
 func controllerFixture(t *testing.T, disks DiskOps, lifecycle NodeLifecycle) Controller {
 	t.Helper()
 	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	projectValue := Deployment{Root: root, DataRoot: root}
 	prepare := privatePrepareConfig(t, projectValue.Root, disks)
-	prepare.Plan, err = Build(prepare.Resolved, projectValue.Marker.ProjectID, os.Getuid(), nil, nil)
+	var err error
+	prepare.Plan, err = Build(prepare.Resolved, identity.DeploymentID, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +61,7 @@ func TestControllerCreatesAllButStartsSelectedNode(t *testing.T) {
 	if err != nil || len(result.Commit.Nodes) != 2 || len(result.Start) != 1 || result.Start[0].Node != "node-1" || !result.Start[0].Ready {
 		t.Fatalf("selected controller result=%#v err=%v", result, err)
 	}
-	store := state.Store{Project: controller.Project}
+	store := state.Store{Root: controller.Project.Root}
 	meta, metaErr := store.ReadNode("meta")
 	worker, workerErr := store.ReadNode("node-1")
 	if metaErr != nil || workerErr != nil || meta.Phase != state.Prepared || worker.Phase != state.Running {
@@ -92,11 +86,11 @@ func TestControllerCreateAndStartReturnsTypedPartialAndKeepsSuccess(t *testing.T
 	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" || len(readyNames(result.Start)) != 1 || readyNames(result.Start)[0] != "meta" {
 		t.Fatalf("partial controller result=%#v partial=%#v err=%v", result, partial, err)
 	}
-	persisted, err := (state.Store{Project: controller.Project}).ReadNode("meta")
+	persisted, err := (state.Store{Root: controller.Project.Root}).ReadNode("meta")
 	if err != nil || persisted.Phase != state.Running {
 		t.Fatalf("successful node not preserved running: %#v %v", persisted, err)
 	}
-	if _, err := (state.Store{Project: controller.Project}).ReadNode("node-1"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := (state.Store{Root: controller.Project.Root}).ReadNode("node-1"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed node gained stable state: %v", err)
 	}
 	dryRun, err := RollbackFailedPrepares(controller.Project, result, false)
@@ -127,11 +121,11 @@ func TestControllerManagerStartSelectionSkipsPrepareFailure(t *testing.T) {
 	if ready := readyNames(result.Start); len(ready) != 1 || ready[0] != "meta" {
 		t.Fatalf("successful prepared peer did not start: result=%#v ready=%v", result, ready)
 	}
-	meta, metaErr := (state.Store{Project: controller.Project}).ReadNode("meta")
+	meta, metaErr := (state.Store{Root: controller.Project.Root}).ReadNode("meta")
 	if metaErr != nil || meta.Phase != state.Running {
 		t.Fatalf("successful prepared peer state=%#v err=%v", meta, metaErr)
 	}
-	if _, nodeErr := (state.Store{Project: controller.Project}).ReadNode("node-1"); !errors.Is(nodeErr, os.ErrNotExist) {
+	if _, nodeErr := (state.Store{Root: controller.Project.Root}).ReadNode("node-1"); !errors.Is(nodeErr, os.ErrNotExist) {
 		t.Fatalf("failed prepare gained committed state: %v", nodeErr)
 	}
 }
@@ -146,7 +140,7 @@ func TestControllerFailedSelectedStartDoesNotStartUnselectedPeer(t *testing.T) {
 	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" || len(result.Start) != 0 {
 		t.Fatalf("failed selected start result=%#v partial=%#v err=%v", result, partial, err)
 	}
-	meta, metaErr := (state.Store{Project: controller.Project}).ReadNode("meta")
+	meta, metaErr := (state.Store{Root: controller.Project.Root}).ReadNode("meta")
 	if metaErr != nil || meta.Phase != state.Prepared {
 		t.Fatalf("unselected successful peer state=%#v err=%v", meta, metaErr)
 	}

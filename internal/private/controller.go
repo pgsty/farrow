@@ -5,14 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
 	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/lease"
-	"github.com/pgsty/farrow/internal/lock"
-	"github.com/pgsty/farrow/internal/project"
 )
 
 type PartialError struct {
@@ -28,7 +25,7 @@ func (e *PartialError) Error() string {
 }
 
 type Controller struct {
-	Project      project.Project
+	Project      Deployment
 	LeaseStore   lease.Store
 	Prepare      PrepareConfig
 	Lifecycle    NodeLifecycle
@@ -108,7 +105,7 @@ func failedCreateNodes(result CreateResult) []string {
 
 func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, error) {
 	result := CreateResult{}
-	if controller.Project.Root == "" || controller.Prepare.ProjectRoot != controller.Project.Root || controller.Prepare.Plan.ProjectID != controller.Project.Marker.ProjectID || controller.Lifecycle == nil || controller.Version == "" {
+	if controller.Project.Root == "" || controller.Prepare.ProjectRoot != controller.Project.Root || controller.Lifecycle == nil || controller.Version == "" {
 		return result, fmt.Errorf("private controller project, prepare, lifecycle, or version is incomplete")
 	}
 	acquired, err := controller.LeaseStore.Acquire(ctx, controller.Prepare.Plan.Lease)
@@ -124,7 +121,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 	}
 	lockContext, cancelLock := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLock()
-	projectLock, err := lock.Acquire(lockContext, filepath.Join(controller.Project.Root, "project.lock"), false)
+	projectLock, err := acquireDeploymentLock(lockContext, controller.Project.Root, false)
 	if err != nil {
 		return result, cleanupLease(err)
 	}
@@ -209,7 +206,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 	return result, nil
 }
 
-func RollbackFailedPrepares(projectValue project.Project, result CreateResult, apply bool) ([]FailedRollback, error) {
+func RollbackFailedPrepares(projectValue Deployment, result CreateResult, apply bool) ([]FailedRollback, error) {
 	rollbacks := make([]FailedRollback, 0)
 	for _, outcome := range result.Prepare {
 		if outcome.Error == "" {
@@ -224,7 +221,7 @@ func RollbackFailedPrepares(projectValue project.Project, result CreateResult, a
 	return rollbacks, nil
 }
 
-func rollbackCreateFailure(projectValue project.Project, result CreateResult, operationErr error) error {
+func rollbackCreateFailure(projectValue Deployment, result CreateResult, operationErr error) error {
 	rollbacks, err := RollbackFailedPrepares(projectValue, result, true)
 	if err != nil {
 		return fmt.Errorf("%w; requested failed-prepare rollback also failed: %v", operationErr, err)

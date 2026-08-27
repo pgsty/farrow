@@ -8,10 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/process"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/sshkeys"
 	"github.com/pgsty/farrow/internal/state"
 )
@@ -23,7 +21,7 @@ type KeyPurgeIntegrityError = sshkeys.PurgeIntegrityError
 
 // ensureNoRetainedNodes refuses a key purge while any node artifact remains.
 // A node directory counts as retained even when its state cannot be decoded.
-func ensureNoRetainedNodes(ctx context.Context, projectValue project.Project) error {
+func ensureNoRetainedNodes(ctx context.Context, projectValue Deployment) error {
 	if err := ctx.Err(); err != nil {
 		return &sshkeys.PurgeStateError{Reason: fmt.Sprintf("preflight was canceled: %v", err)}
 	}
@@ -38,7 +36,7 @@ func ensureNoRetainedNodes(ctx context.Context, projectValue project.Project) er
 	if len(entries) == 0 {
 		return nil
 	}
-	store := state.Store{Project: projectValue}
+	store := state.Store{Root: projectValue.Root}
 	for _, entry := range entries {
 		node, readErr := store.ReadNode(entry.Name())
 		if readErr != nil {
@@ -54,7 +52,7 @@ func ensureNoRetainedNodes(ctx context.Context, projectValue project.Project) er
 	return &sshkeys.PurgeStateError{Reason: fmt.Sprintf("%d retained node artifact(s) remain under %s; destroy them first", len(entries), nodesDir)}
 }
 
-// PurgeKeys remains available after Destroy removes resolved.json: it refuses
+// PurgeKeys remains available after a full destroy removes state.json: it refuses
 // while node artifacts or retained persistent disks exist, then removes
 // exactly the allowlisted key files.
 func (m Manager) PurgeKeys(ctx context.Context, apply bool) (KeyPurgeReport, error) {
@@ -64,7 +62,7 @@ func (m Manager) PurgeKeys(ctx context.Context, apply bool) (KeyPurgeReport, err
 	}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		return KeyPurgeReport{}, err
 	}
@@ -72,7 +70,7 @@ func (m Manager) PurgeKeys(ctx context.Context, apply bool) (KeyPurgeReport, err
 	if err := ensureNoRetainedNodes(ctx, projectValue); err != nil {
 		return KeyPurgeReport{}, err
 	}
-	retainedDisks, err := persistent.Inventory(projectValue)
+	retainedDisks, err := persistent.Inventory(projectValue.Root)
 	if err != nil {
 		return KeyPurgeReport{}, &sshkeys.PurgeIntegrityError{Reason: fmt.Sprintf("inspect retained persistent disks: %v", err)}
 	}

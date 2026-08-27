@@ -15,7 +15,6 @@ import (
 	"github.com/pgsty/farrow/internal/lease"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/platform"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
@@ -47,15 +46,14 @@ func TestMaterializePrivatePortsIsDeterministicAndNonColliding(t *testing.T) {
 	}
 }
 
-func TestPrivatePlanIsReadOnlyAndSupportsOneNode(t *testing.T) {
-	work := t.TempDir()
-	leaseRoot := testLeaseRoot(t)
+func planFixtureManager(t *testing.T) Manager {
+	t.Helper()
 	profile, err := platform.Resolve("darwin", "arm64")
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := Manager{
-		CWD: work, LeaseStore: &lease.Store{Root: leaseRoot, OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid(), StaleAfter: -1},
+	return Manager{
+		LeaseStore:    &lease.Store{Root: testLeaseRoot(t), OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid(), StaleAfter: -1},
 		NativeProfile: func() (platform.Profile, error) { return profile, nil },
 		DialSSHAddress: func(string, string) (net.Conn, error) {
 			return nil, errors.New("fixture address unused")
@@ -67,6 +65,12 @@ func TestPrivatePlanIsReadOnlyAndSupportsOneNode(t *testing.T) {
 			return netpreflight.Report{Ready: true}
 		},
 	}
+}
+
+func TestPrivatePlanIsReadOnlyAndSupportsOneNode(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data")
+	t.Setenv("FARROW_HOME", root)
+	manager := planFixtureManager(t)
 	plan, err := manager.Plan(context.Background(), singlePrivateResolved())
 	if err != nil {
 		t.Fatal(err)
@@ -74,82 +78,48 @@ func TestPrivatePlanIsReadOnlyAndSupportsOneNode(t *testing.T) {
 	if plan.Action != "create" || len(plan.Nodes) != 1 || plan.Nodes[0] != "meta" {
 		t.Fatalf("private plan = %#v", plan)
 	}
-	if _, err := os.Lstat(filepath.Join(work, ".farrow")); !os.IsNotExist(err) {
-		t.Fatalf("read-only private plan created workspace state: %v", err)
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("read-only private plan created the data root: %v", err)
 	}
 }
 
-func TestPrivatePlanTreatsPreservedMarkerWithoutResolvedStateAsCreate(t *testing.T) {
-	t.Parallel()
+func TestPrivatePlanTreatsEmptyDataRootWithoutStateAsCreate(t *testing.T) {
 	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := project.Create(work, filepath.Join(root, "data")); err != nil {
-		t.Fatal(err)
-	}
-	profileValue, err := platform.Resolve("darwin", "arm64")
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager := Manager{
-		CWD: work, LeaseStore: &lease.Store{Root: testLeaseRoot(t), OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid(), StaleAfter: -1},
-		NativeProfile: func() (platform.Profile, error) { return profileValue, nil },
-		DialSSHAddress: func(string, string) (net.Conn, error) {
-			return nil, errors.New("fixture address unused")
-		},
-		HostPreflight: func(context.Context, platform.Profile, *spec.PrivateNetwork, execx.Runner) (Backend, error) {
-			return Backend{}, nil
-		},
-		NetworkPreflight: func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report {
-			return netpreflight.Report{Ready: true}
-		},
-	}
+	t.Setenv("FARROW_HOME", root)
+	manager := planFixtureManager(t)
 	plan, err := manager.Plan(context.Background(), singlePrivateResolved())
 	if err != nil || plan.Action != "create" || plan.Destructive {
-		t.Fatalf("preserved-marker plan=%#v err=%v", plan, err)
+		t.Fatalf("empty-root plan=%#v err=%v", plan, err)
 	}
 }
 
 func TestPrivateDriftPlansRecreateAndUpReturnsTypedConflict(t *testing.T) {
 	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("FARROW_HOME", root)
 	persisted := singlePrivateResolved()
+	persisted.DataRoot = root
 	persistedHash, err := spec.Hash(persisted)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := state.Store{Project: projectValue}
-	if err := store.WriteProject(state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: persistedHash, Resolved: persisted, UpdatedAt: time.Unix(1, 0).UTC()}); err != nil {
+	store := state.Store{Root: root}
+	if err := store.WriteDeployment(state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: persistedHash, Resolved: persisted, UpdatedAt: time.Unix(1, 0).UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	metaHash, err := spec.NodeHash(persisted, "meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteNode(state.NodeState{
+		Schema: state.NodeSchema, FarrowVersion: "test", Node: "meta",
+		VMUUID: "018f4b8e-1234-4abc-9def-0123456789ab", Phase: state.Stopped, Generation: 1,
+		SpecHash: metaHash, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	requested := cloneResolved(persisted)
 	requested.Nodes[0].CPUs++
-	profile, err := platform.Resolve("darwin", "arm64")
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager := Manager{
-		CWD: work, LeaseStore: &lease.Store{Root: testLeaseRoot(t), OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid(), StaleAfter: -1},
-		NativeProfile: func() (platform.Profile, error) { return profile, nil },
-		DialSSHAddress: func(string, string) (net.Conn, error) {
-			return nil, errors.New("fixture address unused")
-		},
-		NetworkPreflight: func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report {
-			return netpreflight.Report{Ready: true}
-		},
-		HostPreflight: func(context.Context, platform.Profile, *spec.PrivateNetwork, execx.Runner) (Backend, error) {
-			return Backend{}, nil
-		},
-	}
+	manager := planFixtureManager(t)
 	plan, err := manager.Plan(context.Background(), requested)
 	if err != nil || plan.Action != "recreate" || !plan.Destructive {
 		t.Fatalf("drift plan=%#v err=%v", plan, err)
@@ -157,19 +127,19 @@ func TestPrivateDriftPlansRecreateAndUpReturnsTypedConflict(t *testing.T) {
 	if _, err := manager.Up(context.Background(), requested); !errors.Is(err, ErrRecreateRequired) {
 		t.Fatalf("drift up error=%T %v, want ErrRecreateRequired", err, err)
 	}
-	if after, err := store.ReadProject(); err != nil || after.SpecHash != persistedHash {
-		t.Fatalf("drift planning/up mutated project: %#v err=%v", after, err)
+	if after, err := store.ReadDeployment(); err != nil || after.SpecHash != persistedHash {
+		t.Fatalf("drift planning/up mutated deployment: %#v err=%v", after, err)
 	}
 }
 
 func TestPrivatePlanStopsBeforeMutationOnNetworkMismatch(t *testing.T) {
-	work := t.TempDir()
+	root := filepath.Join(t.TempDir(), "data")
+	t.Setenv("FARROW_HOME", root)
 	profile, err := platform.Resolve("darwin", "arm64")
 	if err != nil {
 		t.Fatal(err)
 	}
 	manager := Manager{
-		CWD:           work,
 		NativeProfile: func() (platform.Profile, error) { return profile, nil },
 		NetworkPreflight: func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report {
 			return netpreflight.Report{Ready: false, ExitCode: 4, Findings: []netpreflight.Finding{{Code: "installation.network_mismatch", Severity: netpreflight.Error, Class: netpreflight.State, Evidence: "installed=10.10.10.0/24 requested=172.31.251.0/24"}}}
@@ -191,8 +161,8 @@ func TestPrivatePlanStopsBeforeMutationOnNetworkMismatch(t *testing.T) {
 			t.Fatalf("error=%T %v", err, err)
 		}
 	}
-	if _, err := os.Lstat(filepath.Join(work, ".farrow")); !os.IsNotExist(err) {
-		t.Fatalf("network mismatch created workspace state: %v", err)
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("network mismatch created the data root: %v", err)
 	}
 }
 
@@ -200,21 +170,14 @@ func TestRestartAndRecreatePreflightBeforeLifecycleMutation(t *testing.T) {
 	for _, command := range []string{"restart", "recreate"} {
 		t.Run(command, func(t *testing.T) {
 			root := t.TempDir()
-			work := filepath.Join(root, "work")
-			if err := os.Mkdir(work, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			projectValue, err := project.Create(work, filepath.Join(root, "data"))
-			if err != nil {
-				t.Fatal(err)
-			}
+			t.Setenv("FARROW_HOME", root)
 			resolved := singlePrivateResolved()
 			hash, err := spec.Hash(resolved)
 			if err != nil {
 				t.Fatal(err)
 			}
-			store := state.Store{Project: projectValue}
-			if err := store.WriteProject(state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: time.Unix(1, 0).UTC()}); err != nil {
+			store := state.Store{Root: root}
+			if err := store.WriteDeployment(state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash, Resolved: resolved, UpdatedAt: time.Unix(1, 0).UTC()}); err != nil {
 				t.Fatal(err)
 			}
 			profile, err := platform.Resolve("darwin", "arm64")
@@ -223,7 +186,6 @@ func TestRestartAndRecreatePreflightBeforeLifecycleMutation(t *testing.T) {
 			}
 			preflightCalls := 0
 			manager := Manager{
-				CWD:           work,
 				LeaseStore:    &lease.Store{Root: testLeaseRoot(t), OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid(), StaleAfter: -1},
 				NativeProfile: func() (platform.Profile, error) { return profile, nil },
 				NetworkPreflight: func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report {
@@ -244,8 +206,8 @@ func TestRestartAndRecreatePreflightBeforeLifecycleMutation(t *testing.T) {
 			if !errors.As(err, &preflightErr) || preflightCalls != 1 {
 				t.Fatalf("command=%s calls=%d error=%T %v", command, preflightCalls, err, err)
 			}
-			if _, err := store.ReadProject(); err != nil {
-				t.Fatalf("command=%s mutated/destroyed project state after failed preflight: %v", command, err)
+			if _, err := store.ReadDeployment(); err != nil {
+				t.Fatalf("command=%s mutated/destroyed deployment state after failed preflight: %v", command, err)
 			}
 		})
 	}
@@ -263,9 +225,9 @@ func (runner *rejectingPrivateShareRunner) Run(_ context.Context, binary string,
 	return execx.Result{Stdout: []byte("virtio-net-pci\n")}, nil
 }
 
-func privateShareFixture(t *testing.T, projectValue project.Project) spec.Share {
+func privateShareFixture(t *testing.T) spec.Share {
 	t.Helper()
-	source := filepath.Join(projectValue.WorkDir, "share-source")
+	source := filepath.Join(t.TempDir(), "share-source")
 	if err := os.Mkdir(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -276,9 +238,9 @@ func privateShareFixture(t *testing.T, projectValue project.Project) spec.Share 
 	return spec.Share{Host: canonical, Guest: "/mnt/source", Readonly: true}
 }
 
-func persistPrivateShare(t *testing.T, store state.Store, share spec.Share) state.ProjectState {
+func persistPrivateShare(t *testing.T, store state.Store, share spec.Share) state.DeploymentState {
 	t.Helper()
-	projectState, err := store.ReadProject()
+	projectState, err := store.ReadDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +249,7 @@ func persistPrivateShare(t *testing.T, store state.Store, share spec.Share) stat
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.WriteProject(projectState); err != nil {
+	if err := store.WriteDeployment(projectState); err != nil {
 		t.Fatal(err)
 	}
 	node, err := store.ReadNode(projectState.Resolved.Nodes[0].Name)
@@ -308,7 +270,7 @@ func privateShareCapabilityManager(t *testing.T, fixture StartConfig, runner exe
 		t.Fatal(err)
 	}
 	return Manager{
-		CWD: fixture.Project.WorkDir, LeaseStore: &fixture.LeaseStore, Runner: runner,
+		LeaseStore: &fixture.LeaseStore, Runner: runner,
 		NativeProfile: func() (platform.Profile, error) { return profile, nil },
 		NetworkPreflight: func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report {
 			return netpreflight.Report{Ready: true}
@@ -326,13 +288,13 @@ func assertPrivateShareCapabilityFailurePreservesState(t *testing.T, fixture Sta
 	if !errors.As(err, &capability) {
 		t.Fatalf("error=%T %v, want CapabilityError", err, err)
 	}
-	store := state.Store{Project: fixture.Project}
+	store := state.Store{Root: fixture.Project.Root}
 	afterNode, readErr := store.ReadNode(beforeNode.Node)
 	if readErr != nil || afterNode.Phase != beforeNode.Phase || afterNode.SpecHash != beforeNode.SpecHash {
 		t.Fatalf("node mutated after failed share preflight: before=%#v after=%#v err=%v", beforeNode, afterNode, readErr)
 	}
-	if _, readErr := store.ReadProject(); readErr != nil {
-		t.Fatalf("project state disappeared after failed share preflight: %v", readErr)
+	if _, readErr := store.ReadDeployment(); readErr != nil {
+		t.Fatalf("deployment state disappeared after failed share preflight: %v", readErr)
 	}
 	afterLease, readErr := fixture.LeaseStore.Read()
 	if readErr != nil || afterLease.Generation != beforeGeneration {
@@ -342,8 +304,9 @@ func assertPrivateShareCapabilityFailurePreservesState(t *testing.T, fixture Sta
 
 func TestPrivateRestartShareCapabilityPrecedesStop(t *testing.T) {
 	fixture, _ := preparedStartFixture(t)
-	store := state.Store{Project: fixture.Project}
-	persistPrivateShare(t, store, privateShareFixture(t, fixture.Project))
+	t.Setenv("FARROW_HOME", fixture.Project.Root)
+	store := state.Store{Root: fixture.Project.Root}
+	persistPrivateShare(t, store, privateShareFixture(t))
 	beforeNode, err := store.ReadNode("meta")
 	if err != nil {
 		t.Fatal(err)
@@ -372,9 +335,10 @@ func TestPrivateRecreateShareCapabilityPrecedesDestroy(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture, _ := preparedStartFixture(t)
-			store := state.Store{Project: fixture.Project}
-			share := privateShareFixture(t, fixture.Project)
-			projectState, err := store.ReadProject()
+			t.Setenv("FARROW_HOME", fixture.Project.Root)
+			store := state.Store{Root: fixture.Project.Root}
+			share := privateShareFixture(t)
+			projectState, err := store.ReadDeployment()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -436,27 +400,14 @@ func TestManagerUsesResolvedReadinessTimeout(t *testing.T) {
 	}
 }
 
-func TestPrivateMaterializesDataRootAndRejectsRootChange(t *testing.T) {
+func TestPrivateMaterializesDataRootFromEnvironment(t *testing.T) {
 	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	desired := singlePrivateResolved()
 	desired.DataRoot = filepath.Join(root, "configured")
 	t.Setenv("FARROW_HOME", filepath.Join(root, "environment"))
-	materialized, err := (Manager{CWD: work}).materializeDataRoot(desired)
+	materialized, err := (Manager{}).materializeDataRoot(desired)
 	if err != nil || materialized.DataRoot != filepath.Join(root, "environment") {
 		t.Fatalf("materialized = %#v, %v", materialized, err)
-	}
-
-	t.Setenv("FARROW_HOME", "")
-	if _, err := project.Create(work, filepath.Join(root, "persisted")); err != nil {
-		t.Fatal(err)
-	}
-	desired.DataRoot = filepath.Join(root, "different")
-	if _, err := (Manager{CWD: work}).materializeDataRoot(desired); err == nil {
-		t.Fatal("private data-root change was accepted without migration")
 	}
 }
 

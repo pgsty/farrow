@@ -10,20 +10,19 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
 
 type CommitResult struct {
-	Project state.ProjectState `json:"project"`
-	Nodes   []state.NodeState  `json:"nodes"`
-	Failed  []string           `json:"failed,omitempty"`
+	Project state.DeploymentState `json:"project"`
+	Nodes   []state.NodeState     `json:"nodes"`
+	Failed  []string              `json:"failed,omitempty"`
 }
 
-func desiredProjectState(projectValue project.Project, resolved spec.Resolved, hash, version string, now time.Time) state.ProjectState {
-	return state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: version, ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}
+func desiredDeploymentState(resolved spec.Resolved, hash, version string, now time.Time) state.DeploymentState {
+	return state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: version, SpecHash: hash, Resolved: resolved, UpdatedAt: now}
 }
 
 // envelopeOf strips the node list so project-level settings can be compared
@@ -75,16 +74,13 @@ func additiveResolvedChange(store state.Store, existing, desired spec.Resolved) 
 	return true
 }
 
-func ensureProjectState(store state.Store, desired state.ProjectState) error {
-	existing, err := store.ReadProject()
+func ensureProjectState(store state.Store, desired state.DeploymentState) error {
+	existing, err := store.ReadDeployment()
 	if errors.Is(err, os.ErrNotExist) {
-		return store.WriteProject(desired)
+		return store.WriteDeployment(desired)
 	}
 	if err != nil {
 		return err
-	}
-	if existing.ProjectID != desired.ProjectID {
-		return errors.New("refuse private state commit over a different project")
 	}
 	if existing.SpecHash == desired.SpecHash && reflect.DeepEqual(existing.Resolved, desired.Resolved) {
 		return nil
@@ -92,10 +88,10 @@ func ensureProjectState(store state.Store, desired state.ProjectState) error {
 	if !additiveResolvedChange(store, existing.Resolved, desired.Resolved) {
 		return errors.New("refuse private state commit over different resolved project state")
 	}
-	return store.WriteProject(desired)
+	return store.WriteDeployment(desired)
 }
 
-func stateForArtifacts(config PrepareConfig, projectValue project.Project, artifacts NodeArtifacts, journal PrepareJournal, version string, now time.Time) (state.NodeState, error) {
+func stateForArtifacts(config PrepareConfig, projectValue Deployment, artifacts NodeArtifacts, journal PrepareJournal, version string, now time.Time) (state.NodeState, error) {
 	definition, ok := nodeSpec(config.Resolved, artifacts.Name)
 	if !ok {
 		return state.NodeState{}, fmt.Errorf("resolved spec has no node %s", artifacts.Name)
@@ -115,7 +111,7 @@ func stateForArtifacts(config PrepareConfig, projectValue project.Project, artif
 	if base.Alias == "" {
 		base.Alias = baseAlias
 	}
-	if journal.ProjectID != projectValue.Marker.ProjectID || journal.Node != artifacts.Name || journal.VMUUID != nodePlan.VMUUID || journal.SpecHash != config.NodeHashes[artifacts.Name] || !journal.Prepared || !reflect.DeepEqual(journal.Invocation, artifacts.Invocation) {
+	if journal.Node != artifacts.Name || journal.VMUUID != nodePlan.VMUUID || journal.SpecHash != config.NodeHashes[artifacts.Name] || !journal.Prepared || !reflect.DeepEqual(journal.Invocation, artifacts.Invocation) {
 		return state.NodeState{}, errors.New("private prepared journal does not match artifacts/project intent")
 	}
 	dataState := make([]state.DataDisk, 0, len(artifacts.Data))
@@ -130,7 +126,7 @@ func stateForArtifacts(config PrepareConfig, projectValue project.Project, artif
 		forwards = append(forwards, qemu.Forward{Bind: forward.Bind, Host: forward.Host, Guest: forward.Guest})
 	}
 	return state.NodeState{
-		Schema: state.NodeSchema, FarrowVersion: version, ProjectID: projectValue.Marker.ProjectID,
+		Schema: state.NodeSchema, FarrowVersion: version,
 		Node: artifacts.Name, VMUUID: nodePlan.VMUUID, Phase: state.Prepared, Generation: 1, SpecHash: config.NodeHashes[artifacts.Name],
 		Image:    state.Image{Alias: base.Alias, Release: base.Release, Digest: base.Digest, VirtualSize: base.VirtualSize},
 		RootDisk: artifacts.Root, DataDisks: dataState, Seed: artifacts.Seed, NVRAM: artifacts.NVRAM,
@@ -140,14 +136,14 @@ func stateForArtifacts(config PrepareConfig, projectValue project.Project, artif
 	}, nil
 }
 
-func CommitPrepared(ctx context.Context, projectValue project.Project, config PrepareConfig, outcomes []PrepareOutcome, version string) (CommitResult, error) {
+func CommitPrepared(ctx context.Context, projectValue Deployment, config PrepareConfig, outcomes []PrepareOutcome, version string) (CommitResult, error) {
 	_ = ctx
-	if projectValue.Root != config.ProjectRoot || projectValue.Marker.ProjectID != config.Plan.ProjectID || version == "" {
-		return CommitResult{}, errors.New("private commit project/config/version identity mismatch")
+	if projectValue.Root != config.ProjectRoot || version == "" {
+		return CommitResult{}, errors.New("private commit config/version identity mismatch")
 	}
 	now := config.now()
-	projectState := desiredProjectState(projectValue, config.Resolved, config.SpecHash, version, now)
-	store := state.Store{Project: projectValue}
+	projectState := desiredDeploymentState(config.Resolved, config.SpecHash, version, now)
+	store := state.Store{Root: projectValue.Root}
 	if err := ensureProjectState(store, projectState); err != nil {
 		return CommitResult{}, err
 	}
@@ -190,7 +186,7 @@ func CommitPrepared(ctx context.Context, projectValue project.Project, config Pr
 
 type LeaseCommitVerifier func(state.NodeState) error
 
-func FinalizePrepared(projectValue project.Project, node string, verifyLease LeaseCommitVerifier) error {
+func FinalizePrepared(projectValue Deployment, node string, verifyLease LeaseCommitVerifier) error {
 	if verifyLease == nil {
 		return errors.New("private prepare finalization requires lease verification")
 	}
@@ -206,7 +202,7 @@ func FinalizePrepared(projectValue project.Project, node string, verifyLease Lea
 	if !journal.StateCommitted || journal.StatePath != filepath.Join(nodeDir, "state.json") {
 		return errors.New("private prepare journal state is not committed")
 	}
-	nodeState, err := (state.Store{Project: projectValue}).ReadNode(node)
+	nodeState, err := (state.Store{Root: projectValue.Root}).ReadNode(node)
 	if err != nil {
 		return err
 	}

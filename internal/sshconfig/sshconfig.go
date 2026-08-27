@@ -2,7 +2,6 @@
 package sshconfig
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -14,13 +13,11 @@ import (
 
 	"github.com/pgsty/farrow/internal/fsutil"
 	"github.com/pgsty/farrow/internal/openssh"
-	"golang.org/x/sys/unix"
 )
 
 const maxConfigBytes = 1 << 20
 
 var namePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$`)
-var identityPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{7,63}$`)
 var aliasPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,252}$`)
 
 // ValidName reports whether value is safe as both an SSH Host prefix and the
@@ -32,7 +29,6 @@ func safeOpenSSHPath(value string) bool {
 }
 
 type Entry struct {
-	ProjectID  string
 	Name       string
 	Node       string
 	Aliases    []string
@@ -51,8 +47,8 @@ type Result struct {
 }
 
 func validateEntry(entry Entry) error {
-	if !identityPattern.MatchString(entry.ProjectID) || !namePattern.MatchString(entry.Name) || !namePattern.MatchString(entry.Node) || !namePattern.MatchString(entry.User) || strings.ContainsAny(entry.Host, "\r\n\x00$%") || entry.Host == "" || entry.Port == 0 || !safeOpenSSHPath(entry.Identity) || !safeOpenSSHPath(entry.KnownHosts) {
-		return errors.New("SSH config entry identity, name, connection, or paths are invalid")
+	if !namePattern.MatchString(entry.Name) || !namePattern.MatchString(entry.Node) || !namePattern.MatchString(entry.User) || strings.ContainsAny(entry.Host, "\r\n\x00$%") || entry.Host == "" || entry.Port == 0 || !safeOpenSSHPath(entry.Identity) || !safeOpenSSHPath(entry.KnownHosts) {
+		return errors.New("SSH config entry name, connection, or paths are invalid")
 	}
 	for _, alias := range entry.Aliases {
 		if !aliasPattern.MatchString(alias) {
@@ -62,17 +58,15 @@ func validateEntry(entry Entry) error {
 	return nil
 }
 
-func markers(projectID string) (string, string, string) {
-	begin := "# farrow:" + projectID + ":begin"
-	end := "# farrow:" + projectID + ":end"
-	include := "# farrow:" + projectID + ":include"
-	return begin, end, include
-}
+const (
+	beginMarker   = "# farrow:begin"
+	endMarker     = "# farrow:end"
+	includeMarker = "# farrow:include"
+)
 
 func render(entries []Entry) (string, error) {
-	begin, end, _ := markers(entries[0].ProjectID)
 	var output strings.Builder
-	output.WriteString(begin)
+	output.WriteString(beginMarker)
 	output.WriteByte('\n')
 	for index, entry := range entries {
 		identity, err := openssh.QuoteConfigValue(entry.Identity)
@@ -97,7 +91,7 @@ func render(entries []Entry) (string, error) {
 			output.WriteByte('\n')
 		}
 	}
-	output.WriteString(end)
+	output.WriteString(endMarker)
 	output.WriteByte('\n')
 	return output.String(), nil
 }
@@ -151,60 +145,7 @@ func ensureSSHDir(home string) (string, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 || !statOK || int(stat.Uid) != os.Geteuid() {
 		return "", errors.New("~/.ssh is missing, unsafe, or writable by other users")
 	}
-	handle, err := os.Open(directory)
-	if err != nil {
-		return "", err
-	}
-	opened, statErr := handle.Stat()
-	if statErr != nil || !os.SameFile(info, opened) {
-		_ = handle.Close()
-		return "", errors.New("~/.ssh identity changed while opening")
-	}
-	if err := handle.Chmod(0o700); err != nil {
-		_ = handle.Close()
-		return "", err
-	}
-	if err := handle.Close(); err != nil {
-		return "", err
-	}
 	return directory, nil
-}
-
-func acquireLock(directory string) (func(), error) {
-	path := filepath.Join(directory, ".farrow.lock")
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	closeOnError := true
-	defer func() {
-		if closeOnError {
-			_ = unix.Close(fd)
-		}
-	}()
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || int(stat.Uid) != os.Geteuid() || stat.Nlink != 1 || stat.Mode&0o777 != 0o600 {
-		return nil, errors.New("farrow SSH integration lock metadata is unsafe")
-	}
-	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
-		return nil, err
-	}
-	closeOnError = false
-	return func() {
-		_ = unix.Flock(fd, unix.LOCK_UN)
-		_ = unix.Close(fd)
-	}, nil
-}
-
-func wrongMode(pathname string, exists bool, mode os.FileMode) (bool, error) {
-	if !exists {
-		return false, nil
-	}
-	info, err := os.Lstat(pathname)
-	if err != nil {
-		return false, err
-	}
-	return info.Mode().Perm() != mode.Perm(), nil
 }
 
 func readOptionalRegular(pathname string) ([]byte, bool, error) {
@@ -224,10 +165,6 @@ func readOptionalRegular(pathname string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	defer handle.Close()
-	opened, err := handle.Stat()
-	if err != nil || !os.SameFile(info, opened) {
-		return nil, false, errors.New("SSH config target identity changed while opening")
-	}
 	data, err := io.ReadAll(io.LimitReader(handle, maxConfigBytes+1))
 	if err != nil || len(data) > maxConfigBytes {
 		return nil, false, errors.New("SSH config exceeds 1 MiB limit")
@@ -235,15 +172,11 @@ func readOptionalRegular(pathname string) ([]byte, bool, error) {
 	return data, true, nil
 }
 
-func requireUnchanged(pathname string, expected []byte, expectedExists bool) error {
-	actual, exists, err := readOptionalRegular(pathname)
-	if err != nil {
-		return err
-	}
-	if exists != expectedExists || !bytes.Equal(actual, expected) {
-		return fmt.Errorf("SSH integration target changed after validation: %s", pathname)
-	}
-	return nil
+// markerOwned reports whether fragment content is exactly one marker-owned
+// block; only such fragments may be overwritten or removed.
+func markerOwned(data []byte) bool {
+	trimmed := strings.TrimSuffix(string(data), "\n")
+	return strings.HasPrefix(trimmed, beginMarker+"\n") && strings.HasSuffix(trimmed, "\n"+endMarker) && strings.Count(trimmed, beginMarker) == 1 && strings.Count(trimmed, endMarker) == 1
 }
 
 func Install(home string, entry Entry) (Result, error) {
@@ -251,7 +184,7 @@ func Install(home string, entry Entry) (Result, error) {
 }
 
 // InstallMany atomically publishes one marker-owned fragment containing every
-// node in a project and one marker-owned Include in the user's main config.
+// node of the deployment and one marker-owned Include in the user's config.
 func InstallMany(home string, entries []Entry) (Result, error) {
 	if len(entries) == 0 {
 		return Result{}, errors.New("SSH config install requires at least one entry")
@@ -262,8 +195,8 @@ func InstallMany(home string, entries []Entry) (Result, error) {
 		if err := validateEntry(candidate); err != nil {
 			return Result{}, err
 		}
-		if candidate.ProjectID != entry.ProjectID || candidate.Name != entry.Name {
-			return Result{}, errors.New("SSH config entries must belong to one project and fragment name")
+		if candidate.Name != entry.Name {
+			return Result{}, errors.New("SSH config entries must share one fragment name")
 		}
 		if _, exists := seenNodes[candidate.Node]; exists {
 			return Result{}, fmt.Errorf("duplicate SSH config node %q", candidate.Node)
@@ -274,37 +207,20 @@ func InstallMany(home string, entries []Entry) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	releaseLock, err := acquireLock(directory)
-	if err != nil {
-		return Result{}, err
-	}
-	defer releaseLock()
 	fragment := filepath.Join(directory, entry.Name+"_config")
 	configPath := filepath.Join(directory, "config")
 	content, err := render(entries)
 	if err != nil {
 		return Result{}, err
 	}
-	begin, end, includeMarker := markers(entry.ProjectID)
 	existingFragment, fragmentExists, err := readOptionalRegular(fragment)
 	if err != nil {
 		return Result{}, err
 	}
-	if fragmentExists {
-		trimmed := strings.TrimSuffix(string(existingFragment), "\n")
-		if !strings.HasPrefix(trimmed, begin+"\n") || !strings.HasSuffix(trimmed, "\n"+end) || strings.Count(trimmed, begin) != 1 || strings.Count(trimmed, end) != 1 {
-			return Result{}, errors.New("refuse overwrite of SSH fragment without exact Farrow ownership markers")
-		}
-	}
-	fragmentModeChanged, err := wrongMode(fragment, fragmentExists, 0o600)
-	if err != nil {
-		return Result{}, err
+	if fragmentExists && !markerOwned(existingFragment) {
+		return Result{}, errors.New("refuse overwrite of SSH fragment without exact Farrow ownership markers")
 	}
 	config, configExists, err := readOptionalRegular(configPath)
-	if err != nil {
-		return Result{}, err
-	}
-	configModeChanged, err := wrongMode(configPath, configExists, 0o600)
 	if err != nil {
 		return Result{}, err
 	}
@@ -326,53 +242,31 @@ func InstallMany(home string, entries []Entry) (Result, error) {
 	fragmentChanged := !fragmentExists || string(existingFragment) != content
 	canonicalConfig := installGlobalBlock(configText, block)
 	configChanged := canonicalConfig != configText
-	configText = canonicalConfig
-	fragmentWillWrite := fragmentChanged || fragmentModeChanged
-	configWillWrite := configChanged || configModeChanged || !configExists
-	if fragmentWillWrite || configWillWrite {
-		if err := requireUnchanged(fragment, existingFragment, fragmentExists); err != nil {
-			return Result{}, err
-		}
-		if err := requireUnchanged(configPath, config, configExists); err != nil {
-			return Result{}, err
-		}
-	}
-	if fragmentWillWrite {
+	if fragmentChanged {
 		if err := fsutil.AtomicWrite(fragment, []byte(content), 0o600); err != nil {
 			return Result{}, err
 		}
 	}
-	if configWillWrite {
-		if err := requireUnchanged(fragment, []byte(content), true); err != nil {
-			return Result{Fragment: fragment, Config: configPath, Changed: fragmentWillWrite, Action: "install-partial"}, err
-		}
-		if err := requireUnchanged(configPath, config, configExists); err != nil {
-			return Result{Fragment: fragment, Config: configPath, Changed: fragmentWillWrite, Action: "install-partial"}, err
-		}
-		if err := fsutil.AtomicWrite(configPath, []byte(configText), 0o600); err != nil {
-			return Result{Fragment: fragment, Config: configPath, Changed: fragmentWillWrite, Action: "install-partial"}, err
+	if configChanged || !configExists {
+		if err := fsutil.AtomicWrite(configPath, []byte(canonicalConfig), 0o600); err != nil {
+			return Result{}, err
 		}
 	}
-	changed := fragmentChanged || fragmentModeChanged || configChanged || configModeChanged || !configExists
+	changed := fragmentChanged || configChanged || !configExists
 	return Result{Fragment: fragment, Config: configPath, Changed: changed, Action: "install"}, nil
 }
 
-func Remove(home, projectID, name string) (Result, error) {
-	if !identityPattern.MatchString(projectID) || !namePattern.MatchString(name) {
-		return Result{}, errors.New("SSH remove project identity or name is invalid")
+// Remove deletes only the exact marker-owned fragment and Include line.
+func Remove(home, name string) (Result, error) {
+	if !namePattern.MatchString(name) {
+		return Result{}, errors.New("SSH remove name is invalid")
 	}
 	directory, err := ensureSSHDir(home)
 	if err != nil {
 		return Result{}, err
 	}
-	releaseLock, err := acquireLock(directory)
-	if err != nil {
-		return Result{}, err
-	}
-	defer releaseLock()
 	fragment := filepath.Join(directory, name+"_config")
 	configPath := filepath.Join(directory, "config")
-	begin, end, includeMarker := markers(projectID)
 	quotedFragment, err := openssh.QuoteConfigValue(fragment)
 	if err != nil {
 		return Result{}, err
@@ -387,52 +281,30 @@ func Remove(home, projectID, name string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if fragmentExists {
-		trimmed := strings.TrimSuffix(string(fragmentData), "\n")
-		if !strings.HasPrefix(trimmed, begin+"\n") || !strings.HasSuffix(trimmed, "\n"+end) || strings.Count(trimmed, begin) != 1 || strings.Count(trimmed, end) != 1 {
-			return Result{}, errors.New("refuse removal of SSH fragment without exact Farrow ownership markers")
-		}
+	if fragmentExists && !markerOwned(fragmentData) {
+		return Result{}, errors.New("refuse removal of SSH fragment without exact Farrow ownership markers")
 	}
 	configText := string(config)
 	if strings.Contains(configText, includeLine) && !strings.Contains(configText, block) {
 		return Result{}, errors.New("refuse removal while an unmarked matching SSH Include remains")
 	}
 	changed := false
-	updatedConfig := configText
-	configChanged := false
 	if configExists && strings.Contains(configText, includeMarker) {
-		if strings.Count(string(config), includeMarker) != 1 || strings.Count(string(config), block) != 1 {
+		if strings.Count(configText, includeMarker) != 1 || strings.Count(configText, block) != 1 {
 			return Result{}, errors.New("refuse removal of malformed Farrow SSH Include block")
 		}
-		updatedConfig = strings.Replace(configText, block, "", 1)
-		configChanged = true
-	}
-	if configChanged || fragmentExists {
-		if err := requireUnchanged(configPath, config, configExists); err != nil {
-			return Result{}, err
-		}
-		if err := requireUnchanged(fragment, fragmentData, fragmentExists); err != nil {
-			return Result{}, err
-		}
-	}
-	if configChanged {
-		if err := fsutil.AtomicWrite(configPath, []byte(updatedConfig), 0o600); err != nil {
+		updated := strings.Replace(configText, block, "", 1)
+		if err := fsutil.AtomicWrite(configPath, []byte(updated), 0o600); err != nil {
 			return Result{}, err
 		}
 		changed = true
 	}
 	if fragmentExists {
-		if err := requireUnchanged(configPath, []byte(updatedConfig), configExists); err != nil {
-			return Result{Fragment: fragment, Config: configPath, Changed: configChanged, Action: "remove-partial"}, err
-		}
-		if err := requireUnchanged(fragment, fragmentData, true); err != nil {
-			return Result{Fragment: fragment, Config: configPath, Changed: configChanged, Action: "remove-partial"}, err
-		}
 		if err := os.Remove(fragment); err != nil {
-			return Result{Fragment: fragment, Config: configPath, Changed: configChanged, Action: "remove-partial"}, err
+			return Result{Fragment: fragment, Config: configPath, Changed: changed, Action: "remove"}, err
 		}
 		if err := fsutil.SyncDir(directory); err != nil {
-			return Result{Fragment: fragment, Config: configPath, Changed: true, Action: "remove-partial"}, err
+			return Result{Fragment: fragment, Config: configPath, Changed: true, Action: "remove"}, err
 		}
 		changed = true
 	}

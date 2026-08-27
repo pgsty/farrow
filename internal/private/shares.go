@@ -7,15 +7,14 @@ import (
 	"github.com/pgsty/farrow/internal/cloudinit"
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/hostshare"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
 
-func openPrivateNodeShares(value project.Project, sharesByNode map[string][]spec.Share, node state.NodeState) (*hostshare.Bundle, error) {
+func openPrivateNodeShares(value Deployment, sharesByNode map[string][]spec.Share, node state.NodeState) (*hostshare.Bundle, error) {
 	shares := append([]spec.Share(nil), sharesByNode[node.Node]...)
-	bundle, err := hostshare.Open(value, shares)
+	bundle, err := hostshare.Open(value.Root, shares)
 	if err != nil {
 		return nil, fmt.Errorf("open host shares for private node %s: %w", node.Node, err)
 	}
@@ -70,7 +69,7 @@ func validatePrivateInheritedLayout(node state.NodeState, prefixFiles, shareFile
 	return nil
 }
 
-func selectedShareSources(value project.Project, resolved spec.Resolved, names []string) error {
+func selectedShareSources(value Deployment, resolved spec.Resolved, names []string) error {
 	selected := nodeNameSet(names)
 	for _, node := range resolved.Nodes {
 		if len(selected) != 0 {
@@ -78,7 +77,7 @@ func selectedShareSources(value project.Project, resolved spec.Resolved, names [
 				continue
 			}
 		}
-		if err := hostshare.Validate(value, node.Shares); err != nil {
+		if err := hostshare.Validate(value.Root, node.Shares); err != nil {
 			return fmt.Errorf("validate host shares for private node %s: %w", node.Name, err)
 		}
 	}

@@ -26,7 +26,6 @@ type Event struct {
 	Schema      int       `json:"schema"`
 	Time        time.Time `json:"time"`
 	Level       string    `json:"level"`
-	ProjectID   string    `json:"project_id"`
 	Node        string    `json:"node"`
 	OperationID string    `json:"operation_id"`
 	Action      string    `json:"action"`
@@ -38,7 +37,6 @@ type QEMULogRecord struct {
 	Schema      int       `json:"schema"`
 	Time        time.Time `json:"time"`
 	Level       string    `json:"level"`
-	ProjectID   string    `json:"project_id"`
 	Node        string    `json:"node"`
 	OperationID string    `json:"operation_id"`
 	Action      string    `json:"action"`
@@ -46,8 +44,8 @@ type QEMULogRecord struct {
 }
 
 func validateEvent(event Event) error {
-	if event.Schema != 1 || event.Time.IsZero() || len(event.ProjectID) < 8 || len(event.OperationID) < 8 {
-		return errors.New("event schema, time, project, or operation identity is invalid")
+	if event.Schema != 1 || event.Time.IsZero() || len(event.OperationID) < 8 {
+		return errors.New("event schema, time, or operation identity is invalid")
 	}
 	if event.Level != "error" && event.Level != "warn" && event.Level != "info" && event.Level != "debug" {
 		return fmt.Errorf("invalid event level %q", event.Level)
@@ -152,10 +150,9 @@ func appendJSONLine(ctx context.Context, pathname, basename string, value any) e
 	return handle.Sync()
 }
 
-// AppendEvent writes one bounded, redacted JSON line under an exclusive file
-// lock. O_NOFOLLOW and strict parent/file modes keep the append target scoped.
+// AppendEvent writes one bounded JSON line under an exclusive file lock.
+// O_NOFOLLOW and strict parent/file modes keep the append target scoped.
 func AppendEvent(ctx context.Context, pathname string, event Event) error {
-	event.Message = string(RedactText([]byte(event.Message)))
 	if err := validateEvent(event); err != nil {
 		return err
 	}
@@ -163,8 +160,7 @@ func AppendEvent(ctx context.Context, pathname string, event Event) error {
 }
 
 func AppendQEMULog(ctx context.Context, pathname string, record QEMULogRecord) error {
-	record.Message = string(RedactText([]byte(record.Message)))
-	if record.Schema != 1 || record.Time.IsZero() || len(record.ProjectID) < 8 || len(record.OperationID) < 8 || !eventNamePattern.MatchString(record.Node) || !eventNamePattern.MatchString(record.Action) {
+	if record.Schema != 1 || record.Time.IsZero() || len(record.OperationID) < 8 || !eventNamePattern.MatchString(record.Node) || !eventNamePattern.MatchString(record.Action) {
 		return errors.New("QEMU log record identity/action is invalid")
 	}
 	if record.Level != "error" && record.Level != "warn" && record.Level != "info" && record.Level != "debug" {

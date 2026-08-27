@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/lease"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/spec"
 )
 
@@ -22,7 +22,7 @@ func privateResolved() spec.Resolved {
 
 func TestBuildPrivateIntentDeterministicAndShort(t *testing.T) {
 	t.Parallel()
-	projectID, _ := project.NewUUID()
+	projectID, _ := identity.NewUUID()
 	uuids := []string{"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"}
 	index := 0
 	plan, err := Build(privateResolved(), projectID, 501, nil, func() (string, error) {
@@ -58,7 +58,7 @@ func TestBuildPrivateIntentDeterministicAndShort(t *testing.T) {
 
 func TestBuildPrivateIntentReusesLeaseUUIDs(t *testing.T) {
 	t.Parallel()
-	projectID, _ := project.NewUUID()
+	projectID, _ := identity.NewUUID()
 	first, err := Build(privateResolved(), projectID, 501, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestBuildPrivateIntentReusesLeaseUUIDs(t *testing.T) {
 
 func TestBuildPrivateIntentRejectsInvalidControlAndDuplicateAddress(t *testing.T) {
 	t.Parallel()
-	projectID, _ := project.NewUUID()
+	projectID, _ := identity.NewUUID()
 	resolved := privateResolved()
 	resolved.Nodes[0].Control = false
 	if _, err := Build(resolved, projectID, 501, nil, nil); err == nil {

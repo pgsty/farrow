@@ -9,22 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/state"
 )
 
-func privateKeyPurgeFixture(t *testing.T) (Manager, project.Project, string) {
+func privateKeyPurgeFixture(t *testing.T) (Manager, Deployment, string) {
 	t.Helper()
 	root := t.TempDir()
-	workDir := filepath.Join(root, "work")
-	if err := os.Mkdir(workDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(workDir, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	keysDir := filepath.Join(projectValue.Root, "keys")
+	t.Setenv("FARROW_HOME", root)
+	projectValue := Deployment{Root: root, DataRoot: root}
+	keysDir := filepath.Join(root, "keys")
 	if err := os.Mkdir(keysDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -33,11 +26,10 @@ func privateKeyPurgeFixture(t *testing.T) (Manager, project.Project, string) {
 			t.Fatal(err)
 		}
 	}
-	return Manager{CWD: workDir}, projectValue, keysDir
+	return Manager{}, projectValue, keysDir
 }
 
 func TestPrivatePurgeKeysPlansAppliesAndIsIdempotent(t *testing.T) {
-	t.Parallel()
 	manager, projectValue, keysDir := privateKeyPurgeFixture(t)
 	report, err := manager.PurgeKeys(context.Background(), false)
 	if err != nil || report.Apply || len(report.Actions) != 3 {
@@ -63,8 +55,8 @@ func TestPrivatePurgeKeysPlansAppliesAndIsIdempotent(t *testing.T) {
 	if _, err := os.Lstat(keysDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("keys directory remains: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(projectValue.Root, "project.json")); err != nil {
-		t.Fatalf("project marker was removed: %v", err)
+	if _, err := os.Lstat(projectValue.Root); err != nil {
+		t.Fatalf("deployment root was removed: %v", err)
 	}
 	report, err = manager.PurgeKeys(context.Background(), true)
 	if err != nil || len(report.Actions) != 0 {
@@ -73,7 +65,6 @@ func TestPrivatePurgeKeysPlansAppliesAndIsIdempotent(t *testing.T) {
 }
 
 func TestPrivatePurgeKeysBlocksRetainedArtifactsWithoutDeletingKeys(t *testing.T) {
-	t.Parallel()
 	manager, projectValue, keysDir := privateKeyPurgeFixture(t)
 	nodeDir, err := projectValue.EnsureNodeDir("meta")
 	if err != nil {
@@ -95,7 +86,6 @@ func TestPrivatePurgeKeysBlocksRetainedArtifactsWithoutDeletingKeys(t *testing.T
 }
 
 func TestPrivatePurgeKeysReportsLiveProcessAndDataDisksAsState(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name string
 		node state.NodeState
@@ -106,20 +96,18 @@ func TestPrivatePurgeKeysReportsLiveProcessAndDataDisksAsState(t *testing.T) {
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			manager, projectValue, _ := privateKeyPurgeFixture(t)
 			now := time.Now().UTC()
 			test.node.Schema = state.NodeSchema
 			test.node.FarrowVersion = "test"
-			test.node.ProjectID = projectValue.Marker.ProjectID
 			test.node.Node = "meta"
-			test.node.VMUUID = projectValue.Marker.ProjectID
+			test.node.VMUUID = "018f4b8e-1234-4abc-9def-0123456789ab"
 			test.node.Phase = state.Stopped
 			test.node.Generation = 1
 			test.node.SpecHash = strings.Repeat("a", 64)
 			test.node.CreatedAt = now
 			test.node.UpdatedAt = now
-			if err := (state.Store{Project: projectValue}).WriteNode(test.node); err != nil {
+			if err := (state.Store{Root: projectValue.Root}).WriteNode(test.node); err != nil {
 				t.Fatal(err)
 			}
 			_, err := manager.PurgeKeys(context.Background(), true)
@@ -132,7 +120,6 @@ func TestPrivatePurgeKeysReportsLiveProcessAndDataDisksAsState(t *testing.T) {
 }
 
 func TestPrivatePurgeKeysRejectsUnsafeKeyArtifactsAndPreservesOutside(t *testing.T) {
-	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(*testing.T, string, string)
@@ -148,9 +135,9 @@ func TestPrivatePurgeKeysRejectsUnsafeKeyArtifactsAndPreservesOutside(t *testing
 		},
 		{
 			name: "symlink",
-			mutate: func(t *testing.T, root, keysDir string) {
+			mutate: func(t *testing.T, outsideDir, keysDir string) {
 				t.Helper()
-				outside := filepath.Join(root, "outside-symlink")
+				outside := filepath.Join(outsideDir, "outside-symlink")
 				if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -165,9 +152,8 @@ func TestPrivatePurgeKeysRejectsUnsafeKeyArtifactsAndPreservesOutside(t *testing
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			manager, projectValue, keysDir := privateKeyPurgeFixture(t)
-			test.mutate(t, filepath.Dir(projectValue.Root), keysDir)
+			manager, _, keysDir := privateKeyPurgeFixture(t)
+			test.mutate(t, t.TempDir(), keysDir)
 			_, err := manager.PurgeKeys(context.Background(), true)
 			var integrityErr *KeyPurgeIntegrityError
 			if !errors.As(err, &integrityErr) {

@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/pgsty/farrow/internal/fsutil"
-	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/identity"
 )
 
 type RollbackAction struct {
@@ -47,19 +47,19 @@ func invocationRuntime(journal PrepareJournal) (string, string, error) {
 	return qmpPath, pidfile, nil
 }
 
-func RollbackPrepared(projectValue project.Project, node string, apply bool) (RollbackResult, error) {
+func RollbackPrepared(projectValue Deployment, node string, apply bool) (RollbackResult, error) {
 	nodeDir, err := projectValue.NodeDir(node)
 	if err != nil {
 		return RollbackResult{}, err
 	}
-	result := RollbackResult{ProjectID: projectValue.Marker.ProjectID, Node: node, Apply: apply, Actions: []RollbackAction{}}
+	result := RollbackResult{ProjectID: identity.DeploymentID, Node: node, Apply: apply, Actions: []RollbackAction{}}
 	journalPath := filepath.Join(nodeDir, "private-prepare.json")
 	journal, err := ReadPrepareJournal(journalPath)
 	if err != nil {
 		return result, err
 	}
-	if journal.ProjectID != projectValue.Marker.ProjectID || journal.Node != node {
-		return result, errors.New("private rollback journal identity differs from project/node")
+	if journal.Node != node {
+		return result, errors.New("private rollback journal identity differs from the node")
 	}
 	if journal.StateCommitted {
 		return result, errors.New("refuse rollback after private node state commit")

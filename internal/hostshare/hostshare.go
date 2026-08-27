@@ -9,22 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/spec"
 	"golang.org/x/sys/unix"
 )
 
-type Identity struct {
-	Device uint64
-	Inode  uint64
-}
-
 type Bundle struct {
-	project    project.Project
-	shares     []spec.Share
-	files      []*os.File
-	identities []Identity
+	shares []spec.Share
+	files  []*os.File
 }
 
 func contains(parent, child string) bool {
@@ -39,39 +31,21 @@ func overlaps(first, second string) bool {
 	return contains(first, second) || contains(second, first)
 }
 
-func validateProtectedPaths(value project.Project, share spec.Share) error {
-	for label, protected := range map[string]string{
-		"Farrow data root":    value.DataRoot,
-		"Farrow project root": value.Root,
-	} {
-		if protected != "" && overlaps(share.Host, protected) {
-			return fmt.Errorf("host share %q overlaps the protected %s %q", share.Host, label, protected)
-		}
-	}
-	if value.MarkerDir == "" {
-		return nil
-	}
-	if contains(value.MarkerDir, share.Host) {
-		return fmt.Errorf("host share %q is inside the Farrow marker directory %q", share.Host, value.MarkerDir)
-	}
-	if !share.Readonly && contains(share.Host, value.MarkerDir) {
-		return fmt.Errorf("writable host share %q contains the Farrow marker directory %q; share a safe subdirectory or set readonly: true", share.Host, value.MarkerDir)
+func validateProtectedPaths(root string, share spec.Share) error {
+	if root != "" && overlaps(share.Host, root) {
+		return fmt.Errorf("host share %q overlaps the protected Farrow data root %q", share.Host, root)
 	}
 	return nil
 }
 
-func directoryIdentity(stat *unix.Stat_t) Identity {
-	return Identity{Device: uint64(stat.Dev), Inode: uint64(stat.Ino)}
-}
-
-func openDirectory(share spec.Share) (*os.File, Identity, error) {
+func openDirectory(share spec.Share) (*os.File, error) {
 	if !filepath.IsAbs(share.Host) || filepath.Clean(share.Host) != share.Host || share.Host == "/" || strings.ContainsAny(share.Host, "\x00\r\n") {
-		return nil, Identity{}, fmt.Errorf("host share path must be a clean non-root absolute path: %q", share.Host)
+		return nil, fmt.Errorf("host share path must be a clean non-root absolute path: %q", share.Host)
 	}
 	flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_DIRECTORY
 	descriptor, err := unix.Open(string(filepath.Separator), flags, 0)
 	if err != nil {
-		return nil, Identity{}, fmt.Errorf("open host filesystem root: %w", err)
+		return nil, fmt.Errorf("open host filesystem root: %w", err)
 	}
 	closeDescriptor := true
 	defer func() {
@@ -82,67 +56,66 @@ func openDirectory(share spec.Share) (*os.File, Identity, error) {
 	components := strings.Split(strings.TrimPrefix(share.Host, string(filepath.Separator)), string(filepath.Separator))
 	for _, component := range components {
 		if component == "" || component == "." || component == ".." {
-			return nil, Identity{}, fmt.Errorf("host share has an unsafe path component: %q", share.Host)
+			return nil, fmt.Errorf("host share has an unsafe path component: %q", share.Host)
 		}
 		next, openErr := unix.Openat(descriptor, component, flags, 0)
 		if openErr != nil {
-			return nil, Identity{}, fmt.Errorf("secure-open host share %q at %q: %w", share.Host, component, openErr)
+			return nil, fmt.Errorf("secure-open host share %q at %q: %w", share.Host, component, openErr)
 		}
 		_ = unix.Close(descriptor)
 		descriptor = next
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(descriptor, &stat); err != nil {
-		return nil, Identity{}, fmt.Errorf("fstat host share %q: %w", share.Host, err)
+		return nil, fmt.Errorf("fstat host share %q: %w", share.Host, err)
 	}
 	mode := uint32(stat.Mode)
 	if mode&unix.S_IFMT != unix.S_IFDIR {
-		return nil, Identity{}, fmt.Errorf("host share is not a directory: %q", share.Host)
+		return nil, fmt.Errorf("host share is not a directory: %q", share.Host)
 	}
 	if stat.Uid != uint32(os.Geteuid()) {
-		return nil, Identity{}, fmt.Errorf("host share %q is owned by uid %d, expected %d", share.Host, stat.Uid, os.Geteuid())
+		return nil, fmt.Errorf("host share %q is owned by uid %d, expected %d", share.Host, stat.Uid, os.Geteuid())
 	}
 	permissions := mode & 0o777
 	if permissions&0o022 != 0 {
-		return nil, Identity{}, fmt.Errorf("host share %q is group/world writable (%#o)", share.Host, permissions)
+		return nil, fmt.Errorf("host share %q is group/world writable (%#o)", share.Host, permissions)
 	}
 	required := uint32(0o500)
 	if !share.Readonly {
 		required = 0o700
 	}
 	if permissions&required != required {
-		return nil, Identity{}, fmt.Errorf("host share %q owner permissions %#o do not provide required %#o", share.Host, permissions, required)
+		return nil, fmt.Errorf("host share %q owner permissions %#o do not provide required %#o", share.Host, permissions, required)
 	}
 	file := os.NewFile(uintptr(descriptor), "farrow-host-share")
 	if file == nil {
-		return nil, Identity{}, errors.New("wrap host share directory descriptor")
+		return nil, errors.New("wrap host share directory descriptor")
 	}
 	closeDescriptor = false
-	return file, directoryIdentity(&stat), nil
+	return file, nil
 }
 
 // Open validates protected-path boundaries, securely opens every source in
 // canonical spec order, and closes the partial set on every error.
-func Open(value project.Project, shares []spec.Share) (*Bundle, error) {
-	bundle := &Bundle{project: value, shares: append([]spec.Share(nil), shares...)}
+func Open(root string, shares []spec.Share) (*Bundle, error) {
+	bundle := &Bundle{shares: append([]spec.Share(nil), shares...)}
 	for _, share := range shares {
-		if err := validateProtectedPaths(value, share); err != nil {
+		if err := validateProtectedPaths(root, share); err != nil {
 			_ = bundle.Close()
 			return nil, err
 		}
-		file, identity, err := openDirectory(share)
+		file, err := openDirectory(share)
 		if err != nil {
 			_ = bundle.Close()
 			return nil, err
 		}
 		bundle.files = append(bundle.files, file)
-		bundle.identities = append(bundle.identities, identity)
 	}
 	return bundle, nil
 }
 
-func Validate(value project.Project, shares []spec.Share) error {
-	bundle, err := Open(value, shares)
+func Validate(root string, shares []spec.Share) error {
+	bundle, err := Open(root, shares)
 	if err != nil {
 		return err
 	}
@@ -156,6 +129,9 @@ func (b *Bundle) Files() []*os.File {
 	return append([]*os.File(nil), b.files...)
 }
 
+// ValidateInvocation proves the QEMU invocation's inherited-file layout
+// matches this bundle's share order and tags before any descriptor is handed
+// to the guest.
 func (b *Bundle) ValidateInvocation(invocation qemu.Invocation, prefixFiles int) error {
 	if b == nil {
 		return errors.New("host share bundle is nil")
@@ -169,26 +145,6 @@ func (b *Bundle) ValidateInvocation(invocation qemu.Invocation, prefixFiles int)
 		expectedTag := spec.ShareTag(b.shares[index])
 		if file.FD != expectedFD || file.ID != expectedTag {
 			return fmt.Errorf("QEMU share %d inherited-file layout is %s/fd%d, expected %s/fd%d", index, file.ID, file.FD, expectedTag, expectedFD)
-		}
-	}
-	return nil
-}
-
-// Recheck reopens each pathname and proves it still names the inode anchored
-// in this bundle. The live QEMU export remains bound to the descriptor even if
-// this check fails; callers should stop a just-launched VM before returning.
-func (b *Bundle) Recheck() error {
-	if b == nil || len(b.shares) != len(b.identities) {
-		return errors.New("host share bundle is incomplete")
-	}
-	for index, share := range b.shares {
-		file, identity, err := openDirectory(share)
-		if err != nil {
-			return err
-		}
-		_ = file.Close()
-		if identity != b.identities[index] {
-			return fmt.Errorf("host share %q changed identity during QEMU launch", share.Host)
 		}
 	}
 	return nil

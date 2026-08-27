@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/pgsty/farrow/internal/project"
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/qemu"
 )
 
@@ -14,7 +14,7 @@ func testInvocation() qemu.Invocation {
 
 func reshapeAddNode(t *testing.T, value Lease, name string, lastOctet byte) Lease {
 	t.Helper()
-	vmUUID, err := project.NewUUID()
+	vmUUID, err := identity.NewUUID()
 	if err != nil {
 		t.Fatal(err)
 	}

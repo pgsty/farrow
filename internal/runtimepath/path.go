@@ -1,34 +1,27 @@
 // Package runtimepath owns short, user-scoped QMP and pidfile directories.
+// Unix socket paths are limited to ~104 bytes on macOS, so runtime state
+// lives under XDG_RUNTIME_DIR or a short UID-scoped /tmp root instead of the
+// data root.
 package runtimepath
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"syscall"
-
-	"github.com/pgsty/farrow/internal/project"
 )
 
-var (
-	shortProjectPattern  = regexp.MustCompile(`^[0-9a-f]{8}$`)
-	shortNodePattern     = regexp.MustCompile(`^[0-9a-f]{10}$`)
-	legacyQuickPattern   = regexp.MustCompile(`^farrow-([0-9]+)-([0-9a-f]{8})-meta$`)
-	legacyPrivatePattern = regexp.MustCompile(`^pl-([0-9]+)-([0-9a-f]{8})-([0-9a-f]{10})$`)
-)
+var nodePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func fallbackBase(uid int) string {
 	root := "/tmp"
 	if runtime.GOOS == "darwin" {
 		root = "/private/tmp"
 	}
-	return filepath.Join(root, fmt.Sprintf("farrow-runtime-%d", uid))
+	return filepath.Join(root, fmt.Sprintf("farrow-%d", uid))
 }
 
 func ownerUID(info os.FileInfo) (int, bool) {
@@ -71,27 +64,6 @@ func selectedBase(uid int) (string, error) {
 	return fallbackBase(uid), nil
 }
 
-func nodeToken(projectID, node string) string {
-	digest := sha256.Sum256([]byte(projectID + "\x00" + node))
-	return hex.EncodeToString(digest[:5])
-}
-
-// Directory returns a short new-runtime location without creating it.
-func Directory(projectID, node string, uid int) (string, error) {
-	if !project.ValidUUID(projectID) || node == "" {
-		return "", errors.New("runtime project or node identity is invalid")
-	}
-	base, err := selectedBase(uid)
-	if err != nil {
-		return "", err
-	}
-	directory := filepath.Join(base, "farrow", projectID[:8], nodeToken(projectID, node))
-	if err := Validate(directory, projectID, node, uid); err != nil {
-		return "", err
-	}
-	return directory, nil
-}
-
 func maxSocketPath() int {
 	if runtime.GOOS == "darwin" {
 		return 103
@@ -99,38 +71,35 @@ func maxSocketPath() int {
 	return 107
 }
 
-// Validate proves a persisted new-runtime path belongs to the project/node.
-// The base may be absent after cleanup; Ensure performs ownership checks.
-func Validate(directory, projectID, node string, uid int) error {
-	if !project.ValidUUID(projectID) || node == "" || uid < 0 || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+// Directory returns the node's runtime location without creating it:
+// <base>/farrow/<node>, where base is XDG_RUNTIME_DIR or the UID /tmp root.
+func Directory(node string, uid int) (string, error) {
+	base, err := selectedBase(uid)
+	if err != nil {
+		return "", err
+	}
+	directory := filepath.Join(base, "farrow", node)
+	if err := Validate(directory, node, uid); err != nil {
+		return "", err
+	}
+	return directory, nil
+}
+
+// Validate proves a persisted runtime path belongs to the node and keeps its
+// QMP socket under the platform path limit.
+func Validate(directory, node string, uid int) error {
+	if !nodePattern.MatchString(node) || uid < 0 || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
 		return errors.New("runtime directory identity is invalid")
 	}
-	nodeDir := filepath.Base(directory)
-	projectDir := filepath.Base(filepath.Dir(directory))
-	farrowDir := filepath.Dir(filepath.Dir(directory))
+	farrowDir := filepath.Dir(directory)
 	base := filepath.Dir(farrowDir)
-	if filepath.Base(farrowDir) != "farrow" || projectDir != projectID[:8] || nodeDir != nodeToken(projectID, node) || !shortProjectPattern.MatchString(projectDir) || !shortNodePattern.MatchString(nodeDir) || base == "/" || base == "." {
-		return errors.New("runtime directory does not match project/node identity")
+	if filepath.Base(directory) != node || filepath.Base(farrowDir) != "farrow" || base == "/" || base == "." {
+		return errors.New("runtime directory does not match the node identity")
 	}
 	if len(filepath.Join(directory, "qmp.sock")) > maxSocketPath() {
 		return errors.New("runtime QMP socket path exceeds the platform limit")
 	}
 	return nil
-}
-
-func legacyUID(directory string) (int, bool) {
-	if filepath.Dir(directory) != "/tmp" && filepath.Dir(directory) != "/private/tmp" {
-		return 0, false
-	}
-	for _, pattern := range []*regexp.Regexp{legacyQuickPattern, legacyPrivatePattern} {
-		match := pattern.FindStringSubmatch(filepath.Base(directory))
-		if len(match) == 0 {
-			continue
-		}
-		uid, err := strconv.Atoi(match[1])
-		return uid, err == nil
-	}
-	return 0, false
 }
 
 func ensureOne(path string, uid int, allowCreate bool) error {
@@ -145,45 +114,22 @@ func ensureOne(path string, uid int, allowCreate bool) error {
 	return validateOwnedDirectory(path, uid)
 }
 
-func ensureLegacy(path string, uid int) error {
-	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		return err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	owner, ok := ownerUID(info)
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 || !ok || owner != uid {
-		return fmt.Errorf("legacy runtime directory must be a real owner-%d mode-0700 directory: %s", uid, path)
-	}
-	return nil
-}
-
-// Ensure creates only the validated, user-owned runtime chain. Exact legacy
-// flat /tmp paths are accepted so existing pre-v1 state remains startable.
+// Ensure creates only the validated, user-owned runtime chain.
 func Ensure(directory string, uid int) error {
-	if legacy, ok := legacyUID(directory); ok {
-		if legacy != uid {
-			return errors.New("legacy runtime UID differs from the invoking user")
-		}
-		return ensureLegacy(directory, uid)
-	}
 	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
 		return errors.New("runtime directory must be a clean absolute path")
 	}
 	nodeDir := directory
-	projectDir := filepath.Dir(nodeDir)
-	farrowDir := filepath.Dir(projectDir)
+	farrowDir := filepath.Dir(nodeDir)
 	base := filepath.Dir(farrowDir)
-	if filepath.Base(farrowDir) != "farrow" || !shortProjectPattern.MatchString(filepath.Base(projectDir)) || !shortNodePattern.MatchString(filepath.Base(nodeDir)) {
+	if filepath.Base(farrowDir) != "farrow" || !nodePattern.MatchString(filepath.Base(nodeDir)) {
 		return errors.New("runtime directory has an invalid managed layout")
 	}
 	allowBaseCreate := base == fallbackBase(uid)
 	if err := ensureOne(base, uid, allowBaseCreate); err != nil {
 		return err
 	}
-	for _, path := range []string{farrowDir, projectDir, nodeDir} {
+	for _, path := range []string{farrowDir, nodeDir} {
 		if err := ensureOne(path, uid, true); err != nil {
 			return err
 		}
@@ -194,19 +140,15 @@ func Ensure(directory string, uid int) error {
 // PruneEmptyParents removes only empty managed parents after the node runtime
 // directory has gone. It never removes XDG_RUNTIME_DIR itself.
 func PruneEmptyParents(directory string, uid int) error {
-	if _, legacy := legacyUID(directory); legacy {
-		return nil
-	}
 	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
 		return errors.New("runtime directory must be a clean absolute path")
 	}
-	projectDir := filepath.Dir(directory)
-	farrowDir := filepath.Dir(projectDir)
+	farrowDir := filepath.Dir(directory)
 	base := filepath.Dir(farrowDir)
-	if filepath.Base(farrowDir) != "farrow" || !shortProjectPattern.MatchString(filepath.Base(projectDir)) || !shortNodePattern.MatchString(filepath.Base(directory)) {
+	if filepath.Base(farrowDir) != "farrow" || !nodePattern.MatchString(filepath.Base(directory)) {
 		return errors.New("runtime directory has an invalid managed layout")
 	}
-	candidates := []string{projectDir, farrowDir}
+	candidates := []string{farrowDir}
 	if base == fallbackBase(uid) {
 		candidates = append(candidates, base)
 	}

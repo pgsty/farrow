@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/lease"
-	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/qmp"
 	"github.com/pgsty/farrow/internal/state"
@@ -95,16 +95,16 @@ func (m Manager) Repair(ctx context.Context, apply bool) (RepairReport, error) {
 	if err != nil {
 		return RepairReport{}, err
 	}
-	report := RepairReport{ProjectID: projectValue.Marker.ProjectID, Apply: apply, Actions: []RepairAction{}}
+	report := RepairReport{ProjectID: identity.DeploymentID, Apply: apply, Actions: []RepairAction{}}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		return report, err
 	}
 	defer projectLock.Release()
-	store := state.Store{Project: projectValue}
-	projectState, err := store.ReadProject()
+	store := state.Store{Root: projectValue.Root}
+	projectState, err := store.ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
 		return report, errors.New("current project has no valid private state")
 	}
@@ -190,7 +190,7 @@ func (m Manager) Repair(ctx context.Context, apply bool) (RepairReport, error) {
 		return report, err
 	}
 	if leaseStatus.Active {
-		if leaseStatus.Lease.ProjectID != projectValue.Marker.ProjectID || leaseStatus.Lease.OwnerUID != os.Getuid() {
+		if leaseStatus.Lease.ProjectID != identity.DeploymentID || leaseStatus.Lease.OwnerUID != os.Getuid() {
 			report.Blocked = true
 			return report, &RepairBlockedError{Reason: "host-global lease belongs to another project or UID"}
 		}
@@ -209,7 +209,7 @@ func (m Manager) Repair(ctx context.Context, apply bool) (RepairReport, error) {
 				allStopped = allStopped && node.Phase == lease.Stopped
 			}
 			if allStopped {
-				if _, err := m.leaseStore().Release(ctx, projectValue.Marker.ProjectID, true, lease.RuntimeIdentityAuditor(m.runner(), time.Second)); err != nil {
+				if _, err := m.leaseStore().Release(ctx, identity.DeploymentID, true, lease.RuntimeIdentityAuditor(m.runner(), time.Second)); err != nil {
 					return report, err
 				}
 				report.Actions = append(report.Actions, RepairAction{Kind: "release-dead-lease", Path: filepath.Join(leaseStatus.Root, "private-lease.json"), Reason: "every repaired node is stopped and runtime audit is dead", Applied: true})

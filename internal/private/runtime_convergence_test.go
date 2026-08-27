@@ -25,7 +25,7 @@ func (rejectingStatusRunner) Run(context.Context, string, ...string) (execx.Resu
 
 func persistRuntimeStates(t *testing.T, config StartConfig, nodes []state.NodeState) []state.NodeState {
 	t.Helper()
-	store := state.Store{Project: config.Project}
+	store := state.Store{Root: config.Project.Root}
 	for _, node := range nodes {
 		if err := store.WriteNode(node); err != nil {
 			t.Fatal(err)
@@ -60,6 +60,7 @@ func deadRunningStates(nodes []state.NodeState) []state.NodeState {
 
 func TestPrivateStatusConvergesSelfHaltedNodesAndReleasesLease(t *testing.T) {
 	startConfig, nodes := preparedStartFixture(t)
+	t.Setenv("FARROW_HOME", startConfig.Project.Root)
 	nodes = deadRunningStates(nodes)
 	for _, node := range nodes {
 		if err := setupRuntime(node.Runtime.Directory); err != nil {
@@ -73,12 +74,12 @@ func TestPrivateStatusConvergesSelfHaltedNodesAndReleasesLease(t *testing.T) {
 	}
 	persistRuntimeStates(t, startConfig, nodes)
 
-	manager := Manager{CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
 	status, err := manager.Status(context.Background())
 	if err != nil || len(status.Nodes) != len(nodes) {
 		t.Fatalf("self-halt status=%#v err=%v", status, err)
 	}
-	store := state.Store{Project: startConfig.Project}
+	store := state.Store{Root: startConfig.Project.Root}
 	for _, reported := range status.Nodes {
 		if reported.State != state.Stopped || reported.Runtime != "inactive" || reported.ProcessID != 0 {
 			t.Fatalf("self-halted node did not converge: %#v", reported)
@@ -99,6 +100,7 @@ func TestPrivateStatusConvergesSelfHaltedNodesAndReleasesLease(t *testing.T) {
 
 func TestPrivateStatusAuditsAllNodesBeforeConverging(t *testing.T) {
 	startConfig, nodes := preparedStartFixture(t)
+	t.Setenv("FARROW_HOME", startConfig.Project.Root)
 	nodes = deadRunningStates(nodes)
 	deadIdentity := nodes[0].Process
 	liveIndex := len(nodes) - 1
@@ -109,14 +111,14 @@ func TestPrivateStatusAuditsAllNodesBeforeConverging(t *testing.T) {
 	persistRuntimeStates(t, startConfig, nodes)
 
 	manager := Manager{
-		CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore,
+		FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore,
 		Runner: rejectingStatusRunner{},
 	}
 	_, err := manager.Status(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "alive but full process identity does not match") {
 		t.Fatalf("live mismatched PID was not rejected: %v", err)
 	}
-	store := state.Store{Project: startConfig.Project}
+	store := state.Store{Root: startConfig.Project.Root}
 	deadPersisted, readErr := store.ReadNode(nodes[0].Node)
 	if readErr != nil || deadPersisted.Phase != state.Running || deadPersisted.Process != deadIdentity {
 		t.Fatalf("status partially converged an earlier dead node before rejecting a later mismatch: %#v err=%v", deadPersisted, readErr)
@@ -133,6 +135,7 @@ func TestPrivateStatusAuditsAllNodesBeforeConverging(t *testing.T) {
 
 func TestPrivateStatusPreauditsLeaseBeforeWritingConvergence(t *testing.T) {
 	startConfig, nodes := preparedStartFixture(t)
+	t.Setenv("FARROW_HOME", startConfig.Project.Root)
 	nodes = deadRunningStates(nodes)
 	persistRuntimeStates(t, startConfig, nodes)
 
@@ -153,13 +156,13 @@ func TestPrivateStatusPreauditsLeaseBeforeWritingConvergence(t *testing.T) {
 	}
 
 	manager := Manager{
-		CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore,
+		FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore,
 		Runner: rejectingStatusRunner{},
 	}
 	if _, err := manager.Status(context.Background()); err == nil {
 		t.Fatal("status accepted a lease whose recorded runtime could not be proved dead")
 	}
-	store := state.Store{Project: startConfig.Project}
+	store := state.Store{Root: startConfig.Project.Root}
 	for _, original := range nodes {
 		persisted, readErr := store.ReadNode(original.Node)
 		if readErr != nil || persisted.Phase != state.Running || persisted.Process != original.Process {
@@ -174,8 +177,9 @@ func TestPrivateStatusPreauditsLeaseBeforeWritingConvergence(t *testing.T) {
 
 func TestPrivateUpContinuesAfterSelfHaltConvergenceInSameCall(t *testing.T) {
 	startConfig, nodes := preparedStartFixture(t)
-	store := state.Store{Project: startConfig.Project}
-	projectState, err := store.ReadProject()
+	t.Setenv("FARROW_HOME", startConfig.Project.Root)
+	store := state.Store{Root: startConfig.Project.Root}
+	projectState, err := store.ReadDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +189,7 @@ func TestPrivateUpContinuesAfterSelfHaltConvergenceInSameCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	projectState.UpdatedAt = time.Now().UTC()
-	if err := store.WriteProject(projectState); err != nil {
+	if err := store.WriteDeployment(projectState); err != nil {
 		t.Fatal(err)
 	}
 	nodes = deadRunningStates(nodes)
@@ -201,7 +205,7 @@ func TestPrivateUpContinuesAfterSelfHaltConvergenceInSameCall(t *testing.T) {
 	secondPreflight := errors.New("second preflight proves Up continued into startExisting")
 	hostCalls := 0
 	manager := Manager{
-		CWD: startConfig.Project.WorkDir, FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore,
+		FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore,
 		NativeProfile: func() (platform.Profile, error) { return profile, nil },
 		NetworkPreflight: func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report {
 			return netpreflight.Report{Ready: true}

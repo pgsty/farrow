@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/activity"
-	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	"github.com/pgsty/farrow/internal/fsutil"
+	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	"github.com/pgsty/farrow/internal/webclient"
 )
 

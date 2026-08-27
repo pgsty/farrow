@@ -14,7 +14,6 @@ import (
 	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/network/subnet"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/runtimepath"
 	"github.com/pgsty/farrow/internal/spec"
 )
@@ -77,8 +76,8 @@ func validateResolved(value spec.Resolved) error {
 	return nil
 }
 
-func runtimePaths(projectID, node string, uid int) (lease.RuntimePaths, error) {
-	directory, err := runtimepath.Directory(projectID, node, uid)
+func runtimePaths(node string, uid int) (lease.RuntimePaths, error) {
+	directory, err := runtimepath.Directory(node, uid)
 	if err != nil {
 		return lease.RuntimePaths{}, err
 	}
@@ -103,11 +102,11 @@ func Build(resolved spec.Resolved, projectID string, ownerUID int, existing *lea
 	if err := validateResolved(resolved); err != nil {
 		return Plan{}, err
 	}
-	if !project.ValidUUID(projectID) || ownerUID < 0 {
+	if !identity.ValidUUID(projectID) || ownerUID < 0 {
 		return Plan{}, errors.New("private plan project UUID or owner UID is invalid")
 	}
 	if source == nil {
-		source = project.NewUUID
+		source = identity.NewUUID
 	}
 	knownUUIDs, err := existingUUIDs(existing, projectID, ownerUID)
 	if err != nil {
@@ -127,18 +126,18 @@ func Build(resolved spec.Resolved, projectID string, ownerUID int, existing *lea
 				return Plan{}, err
 			}
 		}
-		if !project.ValidUUID(vmUUID) {
+		if !identity.ValidUUID(vmUUID) {
 			return Plan{}, fmt.Errorf("private node %s VM UUID is invalid", node.Name)
 		}
-		managementMAC, err := identity.MAC(projectID, node.Name, "management")
+		managementMAC, err := identity.MAC(node.Address, identity.NICManagement)
 		if err != nil {
 			return Plan{}, err
 		}
-		privateMAC, err := identity.MAC(projectID, node.Name, "private")
+		privateMAC, err := identity.MAC(node.Address, identity.NICPrivate)
 		if err != nil {
 			return Plan{}, err
 		}
-		runtimeValue, err := runtimePaths(projectID, node.Name, ownerUID)
+		runtimeValue, err := runtimePaths(node.Name, ownerUID)
 		if err != nil {
 			return Plan{}, fmt.Errorf("private node %s runtime path: %w", node.Name, err)
 		}

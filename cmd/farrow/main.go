@@ -14,26 +14,26 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pgsty/farrow/internal/config"
-	"github.com/pgsty/farrow/internal/diagnostics"
 	"github.com/pgsty/farrow/internal/doctor"
 	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/fsutil"
 	"github.com/pgsty/farrow/internal/hostconfig"
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/image"
 	"github.com/pgsty/farrow/internal/lease"
-	"github.com/pgsty/farrow/internal/lock"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	linuxnet "github.com/pgsty/farrow/internal/network/linux"
-	"github.com/pgsty/farrow/internal/fsutil"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/network/subnet"
 	privatevm "github.com/pgsty/farrow/internal/private"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/provision"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/sshconfig"
+	"github.com/pgsty/farrow/internal/sshkeys"
 	"github.com/pgsty/farrow/internal/state"
 	"github.com/pgsty/farrow/internal/version"
 	"github.com/pgsty/farrow/internal/vm"
@@ -515,112 +515,6 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func runProject(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: farrow project purge-keys|upgrade-state|rm|prune [options]")
-		return exitUsage
-	}
-	if args[0] == "rm" {
-		return runProjectRemove(args[1:], stdout, stderr)
-	}
-	if args[0] == "prune" {
-		return runProjectPrune(args[1:], stdout, stderr)
-	}
-	if args[0] == "upgrade-state" {
-		flags := newCommandFlagSet("project upgrade-state", stderr)
-		dryRun := flags.Bool("dry-run", false, "show schema-0 to schema-1 backup/write actions")
-		apply := flags.Bool("yes", false, "write backups and atomically publish upgraded state")
-		jsonOutput := flags.Bool("json", false, "emit stable JSON")
-		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || (*dryRun && *apply) {
-			return exitUsage
-		}
-		leaseStatus, err := (lease.Store{}).Inspect()
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitIntegrity
-		}
-		if leaseStatus.Active {
-			fmt.Fprintf(stderr, "state upgrade requires no active private lease; stop project %s first\n", leaseStatus.Lease.ProjectID)
-			return exitLease
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
-		}
-		projectValue, err := project.Open(cwd)
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitIntegrity
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		debugf(stderr, "project state upgrade project_id=%s apply=%t", projectValue.Marker.ProjectID, *apply)
-		progressItem := startProgress(ctx, stderr, "Inspecting and upgrading project state")
-		report, err := state.UpgradeProject(ctx, projectValue, version.Version, *apply)
-		progressItem.Stop(err)
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitIntegrity
-		}
-		if structuredOutput(stdout, *jsonOutput) {
-			return encodeJSON(stdout, stderr, report)
-		}
-		if len(report.Actions) == 0 {
-			fmt.Fprintln(stdout, "state already uses the current schema")
-			return exitOK
-		}
-		for _, action := range report.Actions {
-			verb := "would upgrade"
-			if action.Applied {
-				verb = "upgraded"
-			}
-			fmt.Fprintf(stdout, "%s %s schema %d→%d (backup %s)\n", verb, action.Path, action.FromSchema, action.ToSchema, action.Backup)
-		}
-		return exitOK
-	}
-	if args[0] != "purge-keys" {
-		fmt.Fprintln(stderr, "usage: farrow project purge-keys|upgrade-state|rm|prune [options]")
-		return exitUsage
-	}
-	flags := newCommandFlagSet("project purge-keys", stderr)
-	dryRun := flags.Bool("dry-run", false, "show exact owned key paths without deleting (the default)")
-	apply := flags.Bool("yes", false, "delete exact owned key paths after node absence preflight")
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || (*dryRun && *apply) {
-		return exitUsage
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	debugf(stderr, "project key purge apply=%t", *apply)
-	progressItem := startProgress(ctx, stderr, "Inspecting project SSH keys")
-	report, err := (privatevm.Manager{FarrowVersion: version.Version}).PurgeKeys(ctx, *apply)
-	progressItem.Stop(err)
-	if err != nil {
-		errorf(stderr, "%v", err)
-		var stateErr *privatevm.KeyPurgeStateError
-		if errors.As(err, &stateErr) {
-			return exitConflict
-		}
-		return exitIntegrity
-	}
-	if structuredOutput(stdout, *jsonOutput) {
-		return encodeJSON(stdout, stderr, report)
-	}
-	if len(report.Actions) == 0 {
-		fmt.Fprintln(stdout, "no project keys")
-		return exitOK
-	}
-	for _, action := range report.Actions {
-		verb := "would delete"
-		if action.Applied {
-			verb = "deleted"
-		}
-		fmt.Fprintf(stdout, "%s %s\n", verb, action.Path)
-	}
-	return exitOK
-}
-
 const structuredCommandCaptureLimit = 4 << 20
 
 type boundedCapture struct {
@@ -774,12 +668,6 @@ func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, st
 func runSSH(commandName string, args []string, stdout, stderr io.Writer) int {
 	resolved, err := currentProjectResolved()
 	if err != nil {
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			if _, markerErr := os.Lstat(filepath.Join(cwd, ".farrow", "project.json")); markerErr == nil {
-				fmt.Fprintln(stderr, "refuse SSH dispatch with unreadable project state:", err)
-				return exitIntegrity
-			}
-		}
 		errorf(stderr, "no deployment state found; run `farrow up` first")
 		return exitConflict
 	}
@@ -828,11 +716,37 @@ func printProvisionReport(stdout, stderr io.Writer, report provision.Report) {
 }
 
 func provisionConnectionExit(err error) int {
-	var artifactError *project.SSHArtifactError
+	var artifactError *sshkeys.SSHArtifactError
 	if errors.As(err, &artifactError) {
 		return exitIntegrity
 	}
 	return exitRuntime
+}
+
+// purgeDeployment removes what destroy deliberately preserves: keys and the
+// deployment state document. Images stay cached; persistent disks were already
+// deleted by the forced --purge destroy.
+func purgeDeployment(ctx context.Context, stdout io.Writer) error {
+	manager := privatevm.Manager{FarrowVersion: version.Version}
+	if _, err := manager.PurgeKeys(ctx, true); err != nil {
+		return err
+	}
+	root, err := state.ResolveDataRoot()
+	if err != nil {
+		return err
+	}
+	for _, name := range []string{"state.json", "events.jsonl"} {
+		if err := os.Remove(filepath.Join(root, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	for _, directory := range []string{"nodes", "disks"} {
+		if err := os.Remove(filepath.Join(root, directory)); err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTEMPTY) {
+			return err
+		}
+	}
+	fmt.Fprintln(stdout, "purged deployment keys and state; images remain cached")
+	return nil
 }
 
 func runProvision(args []string, stdout, stderr io.Writer) int {
@@ -866,24 +780,19 @@ func runProvision(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitIntegrity
 	}
-	operationID, err := project.NewUUID()
+	operationID, err := identity.NewUUID()
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitRuntime
 	}
-	cwd, err := os.Getwd()
+	deployment, err := privatevm.Open()
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitRuntime
-	}
-	projectValue, err := project.Open(cwd)
-	if err != nil {
-		fmt.Fprintln(stderr, "provision requires an existing running Farrow project:", err)
-		return exitConflict
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	projectLock, err := lock.Acquire(ctx, filepath.Join(projectValue.Root, "project.lock"), false)
+	deploymentLock, err := privatevm.AcquireLock(ctx, deployment, false)
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitConflict
@@ -891,34 +800,22 @@ func runProvision(args []string, stdout, stderr io.Writer) int {
 	locked := true
 	defer func() {
 		if locked {
-			_ = projectLock.Release()
+			_ = deploymentLock.Release()
 		}
 	}()
-	// The marker may have changed while the initial path was waiting on its
-	// lock. Re-open under the lock and require the refreshed root to match the
-	// exact live lock token before trusting any state.
-	projectValue, err = project.Open(cwd)
+	deploymentState, err := (state.Store{Root: deployment.Root}).ReadDeployment()
 	if err != nil {
-		fmt.Fprintln(stderr, "refuse provision with a project marker that changed while locking:", err)
-		return exitIntegrity
+		fmt.Fprintln(stderr, "provision requires an existing running deployment:", err)
+		return exitConflict
 	}
-	if err := projectLock.ValidateExclusive(filepath.Join(projectValue.Root, "project.lock")); err != nil {
-		fmt.Fprintln(stderr, "refuse provision with a project marker that changed while locking:", err)
-		return exitIntegrity
-	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
-	if err != nil {
-		fmt.Fprintln(stderr, "refuse provision with unreadable project state:", err)
-		return exitIntegrity
-	}
-	resolved := projectState.Resolved
+	resolved := deploymentState.Resolved
 
 	targets := make([]provision.Target, 0)
 	selectedNames := make([]string, 0)
 	var recordEvent func(context.Context, string, string, string) error
 	if resolved.Network == "private" {
-		manager := privatevm.Manager{CWD: projectValue.WorkDir, FarrowVersion: version.Version, OperationID: operationID, Nodes: append([]string(nil), nodes...)}
-		connections, connectionErr := manager.ConnectionsLocked(ctx, projectValue, projectLock)
+		manager := privatevm.Manager{FarrowVersion: version.Version, OperationID: operationID, Nodes: append([]string(nil), nodes...)}
+		connections, connectionErr := manager.ConnectionsLocked(ctx, deployment, deploymentLock)
 		if connectionErr != nil {
 			errorf(stderr, "%v", connectionErr)
 			return provisionConnectionExit(connectionErr)
@@ -976,7 +873,7 @@ func runProvision(args []string, stdout, stderr io.Writer) int {
 	if auditErr != nil {
 		report.AuditError = "remote execution completed but its audit event could not be appended: " + auditErr.Error()
 	}
-	releaseErr := projectLock.Release()
+	releaseErr := deploymentLock.Release()
 	locked = false
 	if releaseErr != nil {
 		if report.AuditError != "" {
@@ -1037,23 +934,18 @@ func loadLifecycleConfig(command, configPath string) (spec.Resolved, bool, error
 }
 
 func currentProjectResolved() (spec.Resolved, error) {
-	cwd, err := os.Getwd()
+	root, err := state.ResolveDataRoot()
 	if err != nil {
 		return spec.Resolved{}, err
 	}
-	projectValue, err := project.Open(cwd)
+	deploymentState, err := (state.Store{Root: root}).ReadDeployment()
 	if err != nil {
 		return spec.Resolved{}, err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
-	if err != nil {
-		return spec.Resolved{}, err
-	}
-	return projectState.Resolved, nil
+	return deploymentState.Resolved, nil
 }
 
 func printPrivateStatus(out io.Writer, status privatevm.Status) {
-	textField(out, 12, "project", status.ProjectID)
 	textField(out, 12, "spec hash", status.SpecHash)
 	for _, node := range status.Nodes {
 		fmt.Fprintf(out, "%-16s %s  runtime=%s  private=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.Address, node.SSHHost, node.SSHPort)
@@ -1081,9 +973,6 @@ type lifecyclePartialFailure struct {
 }
 
 func reportPrivateLifecycleError(err error, operationID string, jsonOutput bool, stdout, stderr io.Writer) int {
-	if errors.Is(err, project.ErrDataRootMigrationRequired) {
-		return reportCommandFailure(stdout, stderr, jsonOutput, "data_root_migration_required", err.Error(), operationID, exitConflict)
-	}
 	if errors.Is(err, privatevm.ErrRecreateRequired) {
 		return reportCommandFailure(stdout, stderr, jsonOutput, "recreate_required", err.Error(), operationID, exitConflict)
 	}
@@ -1130,7 +1019,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	operationID := ""
 	if command != "status" && command != "plan" {
 		var err error
-		operationID, err = project.NewUUID()
+		operationID, err = identity.NewUUID()
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime
@@ -1242,7 +1131,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		return reportPrivateLifecycleError(err, operationID, jsonOutput, stdout, stderr)
 	}
 	if command == "destroy" && purge {
-		if purgeErr := purgeCurrentProject(ctx, stdout, stderr); purgeErr != nil {
+		if purgeErr := purgeDeployment(ctx, stdout); purgeErr != nil {
 			errorf(stderr, "destroy succeeded but purge failed: %v", purgeErr)
 			return exitIntegrity
 		}
@@ -1298,13 +1187,6 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 		}
 	case persistedErr == nil && persisted.Network == "user":
 		return reportCommandFailure(stdout, stderr, false, "conflict", "this project predates the fixed-IP redesign; remove it with `rm -rf .farrow` (plus any pre-redesign binary for running VMs) and run `farrow up` again", "", exitConflict)
-	case persistedErr != nil:
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			marker := filepath.Join(cwd, ".farrow", "project.json")
-			if _, markerErr := os.Lstat(marker); markerErr == nil {
-				return reportCommandFailure(stdout, stderr, false, "integrity", fmt.Sprintf("refuse lifecycle dispatch with an unreadable persisted project: %v", persistedErr), "", exitIntegrity)
-			}
-		}
 	}
 	if !hasConfig {
 		return reportCommandFailure(stdout, stderr, false, "usage", config.ErrNoConfig.Error(), "", exitConflict)
@@ -1378,35 +1260,20 @@ func runSSHConfig(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprint(stdout, text)
 		return exitOK
-	} else if err != nil {
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-			if _, markerErr := os.Lstat(filepath.Join(cwd, ".farrow", "project.json")); markerErr == nil {
-				fmt.Fprintf(stderr, "refuse ssh-config with unreadable project state: %v\n", err)
-				return exitIntegrity
-			}
-		}
 	}
 	errorf(stderr, "no deployment state found; run `farrow up` first")
 	return exitConflict
 }
 
-// removeSSHConfigFragment is deliberately state-independent: destroy preserves
-// the project marker, and sshconfig.Remove itself deletes only the exact
+// removeSSHConfigFragment is deliberately state-independent: destroy keeps
+// the fragment on disk, and sshconfig.Remove itself deletes only the exact
 // marker-owned fragment and Include line.
 func removeSSHConfigFragment(name string) (sshconfig.Result, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return sshconfig.Result{}, err
-	}
-	projectValue, err := project.Open(cwd)
-	if err != nil {
-		return sshconfig.Result{}, err
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return sshconfig.Result{}, err
 	}
-	return sshconfig.Remove(home, projectValue.Marker.ProjectID, name)
+	return sshconfig.Remove(home, name)
 }
 
 func reportSSHConfigFailure(result sshconfig.Result, err error, jsonOutput bool, stdout, stderr io.Writer) int {
@@ -1445,26 +1312,23 @@ func runHosts(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	manager := privatevm.Manager{FarrowVersion: version.Version}
-	projectID := ""
 	var entries []hostconfig.Entry
 	var err error
 	if action == hostconfig.ActionInstall {
-		projectID, entries, err = manager.HostEntries(ctx)
-	} else {
-		projectID, err = manager.ProjectID()
-	}
-	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitCapability
+		entries, err = manager.HostEntries(ctx)
+		if err != nil {
+			errorf(stderr, "%v", err)
+			return exitCapability
+		}
 	}
 	baseRunner := execx.OSRunner{Timeout: 30 * time.Second, OutputLimit: 1 << 20}
-	debugf(stderr, "hosts action=%s project_id=%s entries=%d apply=%t", action, projectID, len(entries), *apply)
-	progressMessage := "Installing project host entries"
+	debugf(stderr, "hosts action=%s entries=%d apply=%t", action, len(entries), *apply)
+	progressMessage := "Installing deployment host entries"
 	if action == hostconfig.ActionUninstall {
-		progressMessage = "Removing project host entries"
+		progressMessage = "Removing deployment host entries"
 	}
 	progressItem := startProgress(ctx, stderr, progressMessage)
-	report, err := (hostconfig.Executor{Root: sudoRunner{base: baseRunner}}).Execute(ctx, projectID, action, entries, *apply)
+	report, err := (hostconfig.Executor{Root: sudoRunner{base: baseRunner}}).Execute(ctx, action, entries, *apply)
 	progressItem.Stop(err)
 	if err != nil {
 		errorf(stderr, "%v", err)
@@ -1474,7 +1338,6 @@ func runHosts(args []string, stdout, stderr io.Writer) int {
 		return encodeJSON(stdout, stderr, report)
 	}
 	textField(stdout, 16, "action", statusValue(stdout, report.Plan.Action))
-	textField(stdout, 16, "project", report.Plan.ProjectID)
 	textField(stdout, 16, "target", report.Plan.Target)
 	textField(stdout, 16, "changed", report.Plan.Changed)
 	textField(stdout, 16, "applied", report.Applied)
@@ -1482,9 +1345,6 @@ func runHosts(args []string, stdout, stderr io.Writer) int {
 	textField(stdout, 16, "after sha256", report.Plan.AfterSHA256)
 	textField(stdout, 16, "helper", report.Plan.HelperPath)
 	textField(stdout, 16, "helper sha256", report.Plan.HelperSHA256)
-	textField(stdout, 16, "lock", report.Plan.LockPath)
-	textField(stdout, 16, "lock exists", report.Plan.LockExists)
-	textField(stdout, 16, "lock retained", report.Plan.LockRetained)
 	for _, line := range report.Plan.Lines {
 		fmt.Fprintln(stdout, line)
 	}
@@ -1709,70 +1569,6 @@ func runRepair(args []string, stdout, stderr io.Writer) int {
 	return exitConflict
 }
 
-func runDebug(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "bundle" {
-		fmt.Fprintln(stderr, "usage: farrow debug bundle [--output path] [--json|--yaml] [--verbose]")
-		return exitUsage
-	}
-	flags := newCommandFlagSet("debug bundle", stderr)
-	output := flags.String("output", "", "write the mode-0600 tar.gz bundle to this new path")
-	jsonOutput := flags.Bool("json", false, "emit stable JSON after generation")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
-		return exitUsage
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	progressItem := startProgress(ctx, stderr, "Collecting bounded diagnostic inputs")
-	plan, err := (diagnostics.Builder{Version: version.Version}).Build(ctx)
-	progressItem.Stop(err)
-	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
-	}
-	outputPath := *output
-	if outputPath == "" {
-		cwd, getwdErr := os.Getwd()
-		if getwdErr != nil {
-			errorf(stderr, "%v", getwdErr)
-			return exitRuntime
-		}
-		outputPath = filepath.Join(cwd, plan.SuggestedName)
-	} else {
-		outputPath, err = filepath.Abs(outputPath)
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
-		}
-	}
-	if !structuredOutput(stdout, *jsonOutput) {
-		fmt.Fprintln(stdout, "bundle will contain:")
-		for _, file := range plan.Files {
-			fmt.Fprintf(stdout, "  %s (%d bytes)\n", file.Name, file.Size)
-		}
-		for _, skipped := range plan.Skipped {
-			fmt.Fprintf(stdout, "  skipped: %s\n", skipped)
-		}
-		fmt.Fprintf(stdout, "creating: %s\n", outputPath)
-	}
-	writeProgress := startProgress(ctx, stderr, "Writing the diagnostic bundle")
-	result, err := diagnostics.WriteBundle(outputPath, plan)
-	writeProgress.Stop(err)
-	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
-	}
-	if structuredOutput(stdout, *jsonOutput) {
-		response := struct {
-			Files   []diagnostics.BundleFile `json:"files"`
-			Skipped []string                 `json:"skipped,omitempty"`
-			Result  diagnostics.BundleResult `json:"result"`
-		}{Files: plan.Files, Skipped: plan.Skipped, Result: result}
-		return encodeJSON(stdout, stderr, response)
-	}
-	fmt.Fprintf(stdout, "created %s (%d bytes, sha256:%s)\n", result.Path, result.Size, result.SHA256)
-	return exitOK
-}
-
 func runValidate(args []string, stdout, stderr io.Writer) int {
 	flags := newCommandFlagSet("validate", stderr)
 	filePath := flags.String("f", "", "configuration file")
@@ -1795,14 +1591,12 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		errorf(stderr, "%v", err)
 		return exitUsage
 	}
-	if resolved.DataRoot != "" {
-		resolvedRoot, rootErr := project.ResolveDataRootWithConfig(cwd, resolved.DataRoot, nil)
-		if rootErr != nil {
-			errorf(stderr, "%v", rootErr)
-			return exitUsage
-		}
-		resolved.DataRoot = resolvedRoot
+	resolvedRoot, rootErr := state.ResolveDataRoot()
+	if rootErr != nil {
+		errorf(stderr, "%v", rootErr)
+		return exitUsage
 	}
+	resolved.DataRoot = resolvedRoot
 	hash, err := spec.Hash(resolved)
 	if err != nil {
 		errorf(stderr, "%v", err)
@@ -2205,14 +1999,6 @@ func suggestHostsPublication(resolved spec.Resolved, stderr io.Writer) {
 	if !hasAliases {
 		return
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return
-	}
-	current, err := project.Open(cwd)
-	if err != nil {
-		return
-	}
 	target, err := hostconfig.NativePath()
 	if err != nil {
 		return
@@ -2221,7 +2007,7 @@ func suggestHostsPublication(resolved spec.Resolved, stderr io.Writer) {
 	if err != nil || len(data) > 1<<20 {
 		return
 	}
-	if strings.Contains(string(data), "# farrow:"+current.Marker.ProjectID+":begin") {
+	if strings.Contains(string(data), "# farrow:begin") {
 		return
 	}
 	fmt.Fprintln(stderr, "declared host aliases are not published; run `farrow hosts install --yes` to add them to "+target)

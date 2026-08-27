@@ -1,5 +1,5 @@
 // Package hostconfig owns the narrowly scoped, marker-delimited /etc/hosts
-// integration for private projects.
+// integration for the deployment.
 package hostconfig
 
 import (
@@ -21,8 +21,6 @@ import (
 
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/fsutil"
-	"github.com/pgsty/farrow/internal/project"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -39,7 +37,7 @@ const (
 var ExpectedHelperSHA256 string
 
 var (
-	markerPattern = regexp.MustCompile(`^# farrow:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(begin|end)$`)
+	markerPattern = regexp.MustCompile(`^# farrow:(begin|end)$`)
 	hashPattern   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	hostPattern   = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,251}[A-Za-z0-9])?$`)
 )
@@ -52,7 +50,6 @@ type Entry struct {
 type Plan struct {
 	Schema       int      `json:"schema"`
 	Action       string   `json:"action"`
-	ProjectID    string   `json:"project_id"`
 	Target       string   `json:"target"`
 	Changed      bool     `json:"changed"`
 	BeforeSHA256 string   `json:"before_sha256"`
@@ -60,9 +57,6 @@ type Plan struct {
 	Lines        []string `json:"lines,omitempty"`
 	HelperPath   string   `json:"helper_path"`
 	HelperSHA256 string   `json:"helper_sha256,omitempty"`
-	LockPath     string   `json:"lock_path"`
-	LockExists   bool     `json:"lock_exists"`
-	LockRetained bool     `json:"lock_retained"`
 }
 
 type Report struct {
@@ -76,9 +70,8 @@ type Executor struct {
 }
 
 type ownedBlock struct {
-	projectID string
-	start     int
-	end       int
+	start int
+	end   int
 }
 
 func NativePath() (string, error) {
@@ -97,8 +90,8 @@ func digest(data []byte) string {
 	return hex.EncodeToString(value[:])
 }
 
-func markers(projectID string) (string, string) {
-	return "# farrow:" + projectID + ":begin", "# farrow:" + projectID + ":end"
+func markers() (string, string) {
+	return "# farrow:begin", "# farrow:end"
 }
 
 func parseBlocks(data []byte) ([]ownedBlock, error) {
@@ -109,7 +102,6 @@ func parseBlocks(data []byte) ([]ownedBlock, error) {
 		return nil, errors.New("hosts file contains a NUL byte")
 	}
 	blocks := make([]ownedBlock, 0)
-	seen := make(map[string]struct{})
 	var active *ownedBlock
 	for offset := 0; offset < len(data); {
 		lineStart := offset
@@ -127,29 +119,28 @@ func parseBlocks(data []byte) ([]ownedBlock, error) {
 		}
 		match := markerPattern.FindStringSubmatch(line)
 		if match == nil {
-			return nil, fmt.Errorf("malformed Farrow hosts marker at byte %d", lineStart)
+			return nil, fmt.Errorf("malformed or pre-simplification Farrow hosts marker at byte %d; remove the old block manually", lineStart)
 		}
-		projectID, kind := match[1], match[2]
+		kind := match[1]
 		if kind == "begin" {
 			if active != nil {
 				return nil, errors.New("nested Farrow hosts marker blocks are unsafe")
 			}
-			if _, exists := seen[projectID]; exists {
-				return nil, fmt.Errorf("duplicate Farrow hosts block for project %s", projectID)
+			if len(blocks) != 0 {
+				return nil, errors.New("duplicate Farrow hosts block")
 			}
-			active = &ownedBlock{projectID: projectID, start: lineStart}
+			active = &ownedBlock{start: lineStart}
 			continue
 		}
-		if active == nil || active.projectID != projectID {
-			return nil, fmt.Errorf("unmatched Farrow hosts end marker for project %s", projectID)
+		if active == nil {
+			return nil, errors.New("unmatched Farrow hosts end marker")
 		}
 		active.end = offset
 		blocks = append(blocks, *active)
-		seen[projectID] = struct{}{}
 		active = nil
 	}
 	if active != nil {
-		return nil, fmt.Errorf("unterminated Farrow hosts block for project %s", active.projectID)
+		return nil, errors.New("unterminated Farrow hosts block")
 	}
 	return blocks, nil
 }
@@ -200,14 +191,11 @@ func validateEntries(entries []Entry) error {
 	return nil
 }
 
-func renderBlock(projectID string, entries []Entry) ([]byte, []string, error) {
-	if !project.ValidUUID(projectID) {
-		return nil, nil, errors.New("hosts project identity is invalid")
-	}
+func renderBlock(entries []Entry) ([]byte, []string, error) {
 	if err := validateEntries(entries); err != nil {
 		return nil, nil, err
 	}
-	begin, end := markers(projectID)
+	begin, end := markers()
 	lines := make([]string, 0, len(entries))
 	var output strings.Builder
 	output.WriteString(begin)
@@ -223,8 +211,8 @@ func renderBlock(projectID string, entries []Entry) ([]byte, []string, error) {
 	return []byte(output.String()), lines, nil
 }
 
-func validateNoHostConflicts(before []byte, projectID string, entries []Entry) error {
-	base, _, err := stripProject(before, projectID)
+func validateNoHostConflicts(before []byte, entries []Entry) error {
+	base, _, err := stripOwnedBlock(before)
 	if err != nil {
 		return err
 	}
@@ -249,7 +237,7 @@ func validateNoHostConflicts(before []byte, projectID string, entries []Entry) e
 		for _, name := range entry.Names {
 			for address := range mappings[name] {
 				if address != entry.Address {
-					return fmt.Errorf("hosts name %q already maps to %s outside project %s", name, address, projectID)
+					return fmt.Errorf("hosts name %q already maps to %s outside the farrow block", name, address)
 				}
 			}
 		}
@@ -257,33 +245,28 @@ func validateNoHostConflicts(before []byte, projectID string, entries []Entry) e
 	return nil
 }
 
-func findBlock(blocks []ownedBlock, projectID string) (ownedBlock, bool) {
-	for _, block := range blocks {
-		if block.projectID == projectID {
-			return block, true
-		}
+func findBlock(blocks []ownedBlock) (ownedBlock, bool) {
+	if len(blocks) == 0 {
+		return ownedBlock{}, false
 	}
-	return ownedBlock{}, false
+	return blocks[0], true
 }
 
-// ReconcileContent changes only the exact marker-owned block for projectID.
-// Bytes outside that block are preserved verbatim.
-func ReconcileContent(before []byte, projectID, action string, entries []Entry) ([]byte, []string, bool, error) {
-	if !project.ValidUUID(projectID) {
-		return nil, nil, false, errors.New("hosts project identity is invalid")
-	}
+// ReconcileContent changes only the exact marker-owned farrow block. Bytes
+// outside that block are preserved verbatim.
+func ReconcileContent(before []byte, action string, entries []Entry) ([]byte, []string, bool, error) {
 	blocks, err := parseBlocks(before)
 	if err != nil {
 		return nil, nil, false, err
 	}
-	current, exists := findBlock(blocks, projectID)
+	current, exists := findBlock(blocks)
 	switch action {
 	case ActionInstall:
-		block, lines, err := renderBlock(projectID, entries)
+		block, lines, err := renderBlock(entries)
 		if err != nil {
 			return nil, nil, false, err
 		}
-		if err := validateNoHostConflicts(before, projectID, entries); err != nil {
+		if err := validateNoHostConflicts(before, entries); err != nil {
 			return nil, nil, false, err
 		}
 		var after []byte
@@ -340,19 +323,19 @@ func secureRead(path string, limit int64) ([]byte, os.FileInfo, error) {
 	return data, opened, nil
 }
 
-func prepare(target, projectID, action string, entries []Entry) (Plan, []byte, error) {
+func prepare(target, action string, entries []Entry) (Plan, []byte, error) {
 	before, _, err := secureRead(target, maxHostsBytes)
 	if err != nil {
 		return Plan{}, nil, err
 	}
-	after, lines, changed, err := ReconcileContent(before, projectID, action, entries)
+	after, lines, changed, err := ReconcileContent(before, action, entries)
 	if err != nil {
 		return Plan{}, nil, err
 	}
-	return Plan{Schema: 1, Action: action, ProjectID: projectID, Target: target, Changed: changed, BeforeSHA256: digest(before), AfterSHA256: digest(after), Lines: lines}, after, nil
+	return Plan{Schema: 1, Action: action, Target: target, Changed: changed, BeforeSHA256: digest(before), AfterSHA256: digest(after), Lines: lines}, after, nil
 }
 
-func (e Executor) Execute(ctx context.Context, projectID, action string, entries []Entry, apply bool) (Report, error) {
+func (e Executor) Execute(ctx context.Context, action string, entries []Entry, apply bool) (Report, error) {
 	target := e.Target
 	if target == "" {
 		var err error
@@ -361,22 +344,11 @@ func (e Executor) Execute(ctx context.Context, projectID, action string, entries
 			return Report{}, err
 		}
 	}
-	plan, desired, err := prepare(target, projectID, action, entries)
+	plan, desired, err := prepare(target, action, entries)
 	if err != nil {
 		return Report{}, err
 	}
 	plan.HelperPath = InstalledHelperPath
-	lockPath, lockErr := nativeLockPath()
-	if lockErr != nil {
-		return Report{}, lockErr
-	}
-	plan.LockPath = lockPath
-	plan.LockRetained = true
-	if _, err := os.Lstat(lockPath); err == nil {
-		plan.LockExists = true
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Report{}, err
-	}
 	helperDigest, helperErr := installedHelperDigest(InstalledHelperPath)
 	if helperErr == nil {
 		plan.HelperSHA256 = helperDigest
@@ -413,7 +385,7 @@ func (e Executor) Execute(ctx context.Context, projectID, action string, entries
 	if err := staging.Close(); err != nil {
 		return Report{}, err
 	}
-	result, err := e.Root.Run(ctx, helper, "--target", target, "--staging", stagingPath, "--project-id", projectID, "--action", action, "--before-sha256", plan.BeforeSHA256, "--after-sha256", plan.AfterSHA256)
+	result, err := e.Root.Run(ctx, helper, "--target", target, "--staging", stagingPath, "--action", action, "--before-sha256", plan.BeforeSHA256, "--after-sha256", plan.AfterSHA256)
 	if err != nil {
 		return Report{}, fmt.Errorf("privileged hosts apply failed: %w: %s", err, strings.TrimSpace(string(result.Stderr)))
 	}
@@ -523,60 +495,12 @@ func InstalledHelperDigest() (string, error) {
 	return installedHelperDigest(InstalledHelperPath)
 }
 
-func nativeLockPath() (string, error) {
-	switch runtime.GOOS {
-	case "darwin":
-		return "/private/etc/.farrow-hosts.lock", nil
-	case "linux":
-		return "/etc/.farrow-hosts.lock", nil
-	default:
-		return "", fmt.Errorf("hosts lock is unsupported on %s", runtime.GOOS)
-	}
-}
-
-func acquireNativeLock() (func(), error) {
-	path, err := nativeLockPath()
-	if err != nil {
-		return nil, err
-	}
-	parentInfo, err := os.Lstat(filepath.Dir(path))
-	if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || parentInfo.Mode().Perm()&0o022 != 0 {
-		return nil, errors.New("privileged hosts lock parent is missing or unsafe")
-	}
-	parentUID, parentGID, _, err := statOwnership(parentInfo)
-	if err != nil || parentUID != 0 || parentGID != 0 {
-		return nil, errors.New("privileged hosts lock parent must be root-owned")
-	}
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	closeOnError := true
-	defer func() {
-		if closeOnError {
-			_ = unix.Close(fd)
-		}
-	}()
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Uid != 0 || stat.Gid != 0 || stat.Nlink != 1 || stat.Mode&0o777 != 0o600 {
-		return nil, errors.New("privileged hosts lock metadata is unsafe")
-	}
-	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
-		return nil, err
-	}
-	closeOnError = false
-	return func() {
-		_ = unix.Flock(fd, unix.LOCK_UN)
-		_ = unix.Close(fd)
-	}, nil
-}
-
-func stripProject(data []byte, projectID string) ([]byte, bool, error) {
+func stripOwnedBlock(data []byte) ([]byte, bool, error) {
 	blocks, err := parseBlocks(data)
 	if err != nil {
 		return nil, false, err
 	}
-	block, exists := findBlock(blocks, projectID)
+	block, exists := findBlock(blocks)
 	if !exists {
 		return append([]byte(nil), data...), false, nil
 	}
@@ -584,66 +508,6 @@ func stripProject(data []byte, projectID string) ([]byte, bool, error) {
 	result = append(result, data[:block.start]...)
 	result = append(result, data[block.end:]...)
 	return result, true, nil
-}
-
-func installedBlockEntries(data []byte, projectID string) ([]Entry, error) {
-	blocks, err := parseBlocks(data)
-	if err != nil {
-		return nil, err
-	}
-	block, exists := findBlock(blocks, projectID)
-	if !exists {
-		return nil, errors.New("reviewed hosts install has no owned project block")
-	}
-	lines := strings.Split(strings.TrimSuffix(string(data[block.start:block.end]), "\n"), "\n")
-	if len(lines) < 3 {
-		return nil, errors.New("reviewed hosts project block has no entries")
-	}
-	entries := make([]Entry, 0, len(lines)-2)
-	for _, line := range lines[1 : len(lines)-1] {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || strings.Join(fields, " ") != strings.ReplaceAll(line, "\t", " ") {
-			return nil, errors.New("reviewed hosts project block contains a non-canonical entry")
-		}
-		entries = append(entries, Entry{Address: fields[0], Names: fields[1:]})
-	}
-	if err := validateEntries(entries); err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-func validateTransition(before, after []byte, projectID, action string) error {
-	baseBefore, beforeExists, err := stripProject(before, projectID)
-	if err != nil {
-		return err
-	}
-	baseAfter, afterExists, err := stripProject(after, projectID)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(baseBefore, baseAfter) {
-		return errors.New("reviewed hosts transition changes bytes outside this project's marker block")
-	}
-	switch action {
-	case ActionInstall:
-		if !afterExists {
-			return errors.New("reviewed hosts install does not contain the project block")
-		}
-		entries, err := installedBlockEntries(after, projectID)
-		if err != nil {
-			return err
-		}
-		return validateNoHostConflicts(before, projectID, entries)
-	case ActionUninstall:
-		if afterExists {
-			return errors.New("reviewed hosts uninstall still contains the project block")
-		}
-		_ = beforeExists
-		return nil
-	default:
-		return fmt.Errorf("unsupported hosts action %q", action)
-	}
 }
 
 func statOwnership(info os.FileInfo) (int, int, uint64, error) {
@@ -660,18 +524,14 @@ func atomicReplace(target string, data []byte, mode os.FileMode, uid, gid int, e
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("hosts target parent is not a real directory")
 	}
-	targetInfo, err := os.Lstat(target)
+	if _, err := os.Lstat(target); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(parent, ".farrow-hosts-apply-")
 	if err != nil {
 		return err
 	}
-	metadata, err := captureFileMetadata(target, targetInfo)
-	if err != nil {
-		return err
-	}
-	temp, tempPath, err := createMetadataTemp(target, parent, ".farrow-hosts-apply-")
-	if err != nil {
-		return err
-	}
+	tempPath := temp.Name()
 	keep := false
 	defer func() {
 		_ = temp.Close()
@@ -706,13 +566,6 @@ func atomicReplace(target string, data []byte, mode os.FileMode, uid, gid int, e
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	tempInfo, err = os.Lstat(tempPath)
-	if err != nil {
-		return err
-	}
-	if err := applyFileMetadata(tempPath, tempInfo, metadata); err != nil {
-		return err
-	}
 	current, _, err := secureRead(target, maxHostsBytes)
 	if err != nil {
 		return err
@@ -724,24 +577,17 @@ func atomicReplace(target string, data []byte, mode os.FileMode, uid, gid int, e
 		return err
 	}
 	keep = true
-	if err := fsutil.SyncDir(parent); err != nil {
-		return err
-	}
-	return verifyFileMetadata(target, metadata)
+	return fsutil.SyncDir(parent)
 }
 
 // ApplyHelper is the privileged, digest-bound half of Execute. The caller is
 // responsible for restricting target to the native hosts path.
-func ApplyHelper(target, staging, projectID, action, beforeSHA256, afterSHA256 string, requireRootTarget bool) error {
-	if !project.ValidUUID(projectID) || !hashPattern.MatchString(beforeSHA256) || !hashPattern.MatchString(afterSHA256) {
-		return errors.New("hosts apply identity or digests are invalid")
+func ApplyHelper(target, staging, action, beforeSHA256, afterSHA256 string, requireRootTarget bool) error {
+	if !hashPattern.MatchString(beforeSHA256) || !hashPattern.MatchString(afterSHA256) {
+		return errors.New("hosts apply digests are invalid")
 	}
-	if requireRootTarget {
-		release, err := acquireNativeLock()
-		if err != nil {
-			return err
-		}
-		defer release()
+	if action != ActionInstall && action != ActionUninstall {
+		return fmt.Errorf("unsupported hosts action %q", action)
 	}
 	before, info, err := secureRead(target, maxHostsBytes)
 	if err != nil {
@@ -776,9 +622,6 @@ func ApplyHelper(target, staging, projectID, action, beforeSHA256, afterSHA256 s
 	}
 	if stagingUID != expectedStagingUID || stagingLinks != 1 || stagingInfo.Mode().Perm() != 0o600 || digest(after) != afterSHA256 {
 		return errors.New("hosts staging file mode, links, or digest is unsafe")
-	}
-	if err := validateTransition(before, after, projectID, action); err != nil {
-		return err
 	}
 	if err := atomicReplace(target, after, info.Mode().Perm(), uid, gid, beforeSHA256); err != nil {
 		return err

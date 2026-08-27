@@ -15,7 +15,6 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("farrow-hosts-helper", flag.ContinueOnError)
 	target := flags.String("target", "", "native hosts path")
 	staging := flags.String("staging", "", "reviewed staging file")
-	projectID := flags.String("project-id", "", "project identity")
 	action := flags.String("action", "", "install or uninstall")
 	before := flags.String("before-sha256", "", "reviewed target digest")
 	after := flags.String("after-sha256", "", "reviewed result digest")
@@ -32,7 +31,7 @@ func run(args []string) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("farrow-hosts-helper must run as root")
 	}
-	return hostconfig.ApplyHelper(*target, *staging, *projectID, *action, *before, *after, true)
+	return hostconfig.ApplyHelper(*target, *staging, *action, *before, *after, true)
 }
 
 func main() {

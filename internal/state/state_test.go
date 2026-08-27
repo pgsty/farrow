@@ -8,26 +8,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/spec"
 )
 
 func testStore(t *testing.T) Store {
 	t.Helper()
-	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	created, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return Store{Project: created}
+	return Store{Root: t.TempDir()}
 }
 
-func TestProjectAndNodeRoundTrip(t *testing.T) {
+func TestDeploymentAndNodeRoundTrip(t *testing.T) {
 	t.Parallel()
 	store := testStore(t)
 	resolved := spec.Quick(true, true)
@@ -36,25 +26,25 @@ func TestProjectAndNodeRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	projectState := ProjectState{Schema: 1, FarrowVersion: "dev", ProjectID: store.Project.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}
-	if err := store.WriteProject(projectState); err != nil {
+	deployment := DeploymentState{Schema: DeploymentSchema, FarrowVersion: "dev", SpecHash: hash, Resolved: resolved, UpdatedAt: now}
+	if err := store.WriteDeployment(deployment); err != nil {
 		t.Fatal(err)
 	}
-	gotProject, err := store.ReadProject()
-	if err != nil || gotProject.SpecHash != hash {
-		t.Fatalf("project round trip: %#v %v", gotProject, err)
+	gotDeployment, err := store.ReadDeployment()
+	if err != nil || gotDeployment.SpecHash != hash {
+		t.Fatalf("deployment round trip: %#v %v", gotDeployment, err)
 	}
 	node := NodeState{
-		Schema: 1, FarrowVersion: "dev", ProjectID: store.Project.Marker.ProjectID,
+		Schema: NodeSchema, FarrowVersion: "dev",
 		Node: "meta", VMUUID: "018f4b8e-1234-4abc-9def-0123456789ab", Phase: Prepared,
 		Generation: 1, SpecHash: hash,
 		Image:    Image{Alias: "u24", Release: "20260801", Digest: "abc", VirtualSize: 1},
-		RootDisk: filepath.Join(store.Project.Root, "nodes", "meta", "root.qcow2"),
+		RootDisk: filepath.Join(store.Root, "nodes", "meta", "root.qcow2"),
 		DataDisks: []DataDisk{{
-			Name: "data", Path: filepath.Join(store.Project.Root, "nodes", "meta", "data.qcow2"), Serial: "abcdefghijklmnopqrst",
+			Name: "data", Path: filepath.Join(store.Root, "nodes", "meta", "data.qcow2"), Serial: "abcdefghijklmnopqrst",
 			Size: 64 * spec.GiB, Mount: "/data", RequestedFilesystem: "xfs", ActualFilesystem: "xfs",
 		}},
-		Seed: filepath.Join(store.Project.Root, "nodes", "meta", "seed.iso"), SSHPort: 2222,
+		Seed: filepath.Join(store.Root, "nodes", "meta", "seed.iso"), SSHPort: 2222,
 		Forwards:   []qemu.Forward{{Bind: "127.0.0.1", Host: 2222, Guest: 22}},
 		Runtime:    RuntimePaths{Directory: "/tmp/farrow", QMP: "/tmp/farrow/qmp.sock", PIDFile: "/tmp/farrow/qemu.pid"},
 		Invocation: qemu.Invocation{Binary: "/opt/qemu", Args: []string{"-S"}},
@@ -79,15 +69,15 @@ func TestDataDiskFilesystemFieldsAreBackwardCompatible(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	node := NodeState{
-		Schema: NodeSchema, FarrowVersion: "dev", ProjectID: store.Project.Marker.ProjectID,
+		Schema: NodeSchema, FarrowVersion: "dev",
 		Node: "meta", VMUUID: "018f4b8e-1234-4abc-9def-0123456789ab", Phase: Prepared,
 		Generation: 1, SpecHash: hash, Image: Image{Alias: "u24", Release: "test", Digest: "abc", VirtualSize: 1},
-		RootDisk: filepath.Join(store.Project.Root, "nodes", "meta", "root.qcow2"),
+		RootDisk: filepath.Join(store.Root, "nodes", "meta", "root.qcow2"),
 		DataDisks: []DataDisk{{
-			Name: "data", Path: filepath.Join(store.Project.Root, "nodes", "meta", "data.qcow2"), Serial: "abcdefghijklmnopqrst",
+			Name: "data", Path: filepath.Join(store.Root, "nodes", "meta", "data.qcow2"), Serial: "abcdefghijklmnopqrst",
 			Size: 64 * spec.GiB, Mount: "/data",
 		}},
-		Seed: filepath.Join(store.Project.Root, "nodes", "meta", "seed.iso"), SSHPort: 2222,
+		Seed: filepath.Join(store.Root, "nodes", "meta", "seed.iso"), SSHPort: 2222,
 		Forwards:   []qemu.Forward{{Bind: "127.0.0.1", Host: 2222, Guest: 22}},
 		Runtime:    RuntimePaths{Directory: "/tmp/farrow", QMP: "/tmp/farrow/qmp.sock", PIDFile: "/tmp/farrow/qemu.pid"},
 		Invocation: qemu.Invocation{Binary: "/opt/qemu", Args: []string{"-S"}}, CreatedAt: now, UpdatedAt: now,
@@ -95,7 +85,7 @@ func TestDataDiskFilesystemFieldsAreBackwardCompatible(t *testing.T) {
 	if err := store.WriteNode(node); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(store.Project.Root, "nodes", "meta", "state.json")
+	path := filepath.Join(store.Root, "nodes", "meta", "state.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +113,7 @@ func TestDataDiskFilesystemStatePreservesContradictoryEvidence(t *testing.T) {
 	hash, _ := spec.Hash(resolved)
 	now := time.Now().UTC()
 	node := NodeState{
-		Schema: NodeSchema, FarrowVersion: "dev", ProjectID: store.Project.Marker.ProjectID,
+		Schema: NodeSchema, FarrowVersion: "dev",
 		Node: "meta", VMUUID: "018f4b8e-1234-4abc-9def-0123456789ab", Phase: Prepared,
 		Generation: 1, SpecHash: hash, Image: Image{Alias: "u24"}, RootDisk: "/root.qcow2", Seed: "/seed.iso", SSHPort: 2222,
 		DataDisks: []DataDisk{{Name: "data", Path: "/data.qcow2", Serial: "abcdefghijklmnopqrst", Size: spec.GiB, Mount: "/data", RequestedFilesystem: "ext4", ActualFilesystem: "xfs"}},
@@ -139,7 +129,7 @@ func TestDataDiskFilesystemStatePreservesContradictoryEvidence(t *testing.T) {
 	}
 }
 
-func TestProjectForwardRequestEvidenceAndLegacyCompatibility(t *testing.T) {
+func TestDeploymentForwardRequestEvidenceAndLegacyCompatibility(t *testing.T) {
 	t.Parallel()
 	store := testStore(t)
 	resolved := spec.Quick(true, true)
@@ -148,18 +138,18 @@ func TestProjectForwardRequestEvidenceAndLegacyCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value := ProjectState{Schema: ProjectSchema, FarrowVersion: "dev", ProjectID: store.Project.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
-	if err := store.WriteProject(value); err != nil {
+	value := DeploymentState{Schema: DeploymentSchema, FarrowVersion: "dev", SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
+	if err := store.WriteDeployment(value); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(store.Project.Root, "resolved.json"))
+	data, err := os.ReadFile(filepath.Join(store.Root, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), `"requested_host": 15432`) {
-		t.Fatalf("project state lost requested host evidence: %s", data)
+		t.Fatalf("deployment state lost requested host evidence: %s", data)
 	}
-	got, err := store.ReadProject()
+	got, err := store.ReadDeployment()
 	if err != nil || got.Resolved.Nodes[0].Forwards[0].RequestedHost != 15432 {
 		t.Fatalf("requested host evidence did not round trip: %#v, %v", got.Resolved.Nodes[0].Forwards[0], err)
 	}
@@ -173,10 +163,10 @@ func TestProjectForwardRequestEvidenceAndLegacyCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	value.Resolved, value.SpecHash = legacy, legacyHash
-	if err := store.WriteProject(value); err != nil {
+	if err := store.WriteDeployment(value); err != nil {
 		t.Fatalf("legacy state without requested_host was rejected: %v", err)
 	}
-	data, err = os.ReadFile(filepath.Join(store.Project.Root, "resolved.json"))
+	data, err = os.ReadFile(filepath.Join(store.Root, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,13 +183,13 @@ func TestProjectForwardRequestEvidenceAndLegacyCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	value.Resolved, value.SpecHash = invalid, invalidHash
-	if err := store.WriteProject(value); err == nil || !strings.Contains(err.Error(), "must differ") {
+	if err := store.WriteDeployment(value); err == nil || !strings.Contains(err.Error(), "must differ") {
 		t.Fatalf("redundant requested host evidence was accepted: %v", err)
 	}
-	if err := writeJSON(store.projectPath(), value); err != nil {
+	if err := writeJSON(store.deploymentPath(), value); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ReadProject(); err == nil || !strings.Contains(err.Error(), "must differ") {
+	if _, err := store.ReadDeployment(); err == nil || !strings.Contains(err.Error(), "must differ") {
 		t.Fatalf("redundant requested host evidence was accepted while reading: %v", err)
 	}
 }
@@ -209,11 +199,11 @@ func TestStrictStateAndHashValidation(t *testing.T) {
 	store := testStore(t)
 	resolved := spec.Quick(true, true)
 	hash, _ := spec.Hash(resolved)
-	value := ProjectState{Schema: 1, FarrowVersion: "dev", ProjectID: store.Project.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
-	if err := store.WriteProject(value); err != nil {
+	value := DeploymentState{Schema: DeploymentSchema, FarrowVersion: "dev", SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
+	if err := store.WriteDeployment(value); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(store.Project.Root, "resolved.json")
+	path := filepath.Join(store.Root, "state.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -223,17 +213,17 @@ func TestStrictStateAndHashValidation(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ReadProject(); err == nil {
+	if _, err := store.ReadDeployment(); err == nil {
 		t.Fatal("unknown or malformed state unexpectedly accepted")
 	}
 
 	value.SpecHash = "wrong"
-	if err := store.WriteProject(value); err == nil {
+	if err := store.WriteDeployment(value); err == nil {
 		t.Fatal("incorrect spec hash unexpectedly written")
 	}
 	value.SpecHash = hash
 	value.FarrowVersion = ""
-	if err := store.WriteProject(value); err == nil {
+	if err := store.WriteDeployment(value); err == nil {
 		t.Fatal("empty state writer version unexpectedly accepted")
 	}
 }
@@ -242,12 +232,34 @@ func TestTransactionRoundTrip(t *testing.T) {
 	t.Parallel()
 	store := testStore(t)
 	now := time.Now().UTC()
-	transaction := Transaction{Schema: 1, FarrowVersion: "dev", OperationID: "op-1", ProjectID: store.Project.Marker.ProjectID, Node: "meta", From: Absent, To: Preparing, Completed: []Action{{Name: "reserve-port", Resource: "2222"}}, StartedAt: now, UpdatedAt: now}
+	transaction := Transaction{Schema: TransactionSchema, FarrowVersion: "dev", OperationID: "op-1", Node: "meta", From: Absent, To: Preparing, Completed: []Action{{Name: "reserve-port", Resource: "2222"}}, StartedAt: now, UpdatedAt: now}
 	if err := store.WriteTransaction(transaction); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.ReadTransaction("meta")
 	if err != nil || got.OperationID != transaction.OperationID || len(got.Completed) != 1 {
 		t.Fatalf("transaction round trip: %#v %v", got, err)
+	}
+}
+
+func TestResolveDataRootRejectsPreSimplificationLayout(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	resolved, err := ResolveDataRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(resolved) != filepath.Clean(root) {
+		t.Fatalf("resolved root = %q, want %q", resolved, root)
+	}
+	if err := os.Mkdir(filepath.Join(root, "projects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveDataRoot(); err == nil || !strings.Contains(err.Error(), "pre-simplification") {
+		t.Fatalf("pre-simplification layout was accepted: %v", err)
+	}
+	t.Setenv("FARROW_HOME", "relative/path")
+	if _, err := ResolveDataRoot(); err == nil {
+		t.Fatal("relative FARROW_HOME was accepted")
 	}
 }

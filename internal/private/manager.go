@@ -16,6 +16,7 @@ import (
 	"github.com/pgsty/farrow/internal/diagnostics"
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/image"
 	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/lock"
@@ -24,9 +25,7 @@ import (
 	usernet "github.com/pgsty/farrow/internal/network/user"
 	"github.com/pgsty/farrow/internal/openssh"
 	"github.com/pgsty/farrow/internal/platform"
-	"github.com/pgsty/farrow/internal/portregistry"
 	"github.com/pgsty/farrow/internal/process"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qmp"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/sshkeys"
@@ -304,13 +303,6 @@ func (m Manager) preflight(ctx context.Context, profile platform.Profile, resolv
 	return backend, nil
 }
 
-func (m Manager) workDir() (string, error) {
-	if m.CWD != "" {
-		return filepath.Abs(m.CWD)
-	}
-	return os.Getwd()
-}
-
 func missingPath(err error) bool {
 	if errors.Is(err, os.ErrNotExist) {
 		return true
@@ -319,31 +311,16 @@ func missingPath(err error) bool {
 	return errors.As(err, &pathError) && errors.Is(pathError.Err, os.ErrNotExist)
 }
 
-func (m Manager) openProject(create bool) (project.Project, error) {
-	cwd, err := m.workDir()
-	if err != nil {
-		return project.Project{}, err
-	}
-	return project.OpenConfigured(cwd, m.ConfiguredDataRoot, create)
+func (m Manager) openProject(create bool) (Deployment, error) {
+	return openDeployment(create)
 }
 
 func (m Manager) materializeDataRoot(requested spec.Resolved) (spec.Resolved, error) {
-	m.ConfiguredDataRoot = requested.DataRoot
-	cwd, err := m.workDir()
+	root, err := state.ResolveDataRoot()
 	if err != nil {
 		return spec.Resolved{}, err
 	}
-	if existing, openErr := m.openProject(false); openErr == nil {
-		requested.DataRoot = existing.DataRoot
-		return requested, nil
-	} else if !missingPath(openErr) {
-		return spec.Resolved{}, openErr
-	}
-	dataRoot, err := project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
-	if err != nil {
-		return spec.Resolved{}, err
-	}
-	requested.DataRoot = dataRoot
+	requested.DataRoot = root
 	return requested, nil
 }
 
@@ -519,16 +496,7 @@ func ensureSSHAddressesUnusedWithDial(nodes []spec.Node, dial func(string, strin
 }
 
 func (m Manager) imageDataRoot() (string, error) {
-	cwd, err := m.workDir()
-	if err != nil {
-		return "", err
-	}
-	if current, openErr := project.Open(cwd); openErr == nil {
-		return current.DataRoot, nil
-	} else if !missingPath(openErr) {
-		return "", openErr
-	}
-	return project.ResolveDataRootWithConfig(cwd, m.ConfiguredDataRoot, nil)
+	return state.ResolveDataRoot()
 }
 
 func (m Manager) resolveOneImage(ctx context.Context, alias string) (image.Entry, string, image.Metadata, error) {
@@ -567,10 +535,10 @@ func (m Manager) resolveBases(ctx context.Context, profile platform.Profile, val
 	return bases, boot, nil
 }
 
-func (m Manager) ensureKeys(ctx context.Context, projectValue project.Project) (string, string, string, error) {
+func (m Manager) ensureKeys(ctx context.Context, projectValue Deployment) (string, string, string, error) {
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -578,9 +546,9 @@ func (m Manager) ensureKeys(ctx context.Context, projectValue project.Project) (
 	return sshkeys.EnsureKeys(ctx, m.runner(), projectValue.Root)
 }
 
-func (m Manager) statusForLocked(ctx context.Context, projectValue project.Project, message string) (Status, error) {
-	store := state.Store{Project: projectValue}
-	projectState, err := store.ReadProject()
+func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, message string) (Status, error) {
+	store := state.Store{Root: projectValue.Root}
+	projectState, err := store.ReadDeployment()
 	if err != nil {
 		return Status{}, err
 	}
@@ -592,7 +560,7 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue project.Proje
 		return Status{}, err
 	}
 	selectedSet := nodeNameSet(selected)
-	result := Status{ProjectID: projectValue.Marker.ProjectID, OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message, Nodes: make([]NodeStatus, 0, len(projectState.Resolved.Nodes))}
+	result := Status{ProjectID: identity.DeploymentID, OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message, Nodes: make([]NodeStatus, 0, len(projectState.Resolved.Nodes))}
 	lifecycle := vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}
 	nodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
 	convergenceCandidates := make([]state.NodeState, 0)
@@ -668,17 +636,17 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue project.Proje
 		}
 	}
 	if needsLeaseSync {
-		if err := applyStatusLeaseSyncLocked(ctx, projectValue.Marker.ProjectID, leasePlan); err != nil {
+		if err := applyStatusLeaseSyncLocked(ctx, identity.DeploymentID, leasePlan); err != nil {
 			return Status{}, err
 		}
 	}
 	return result, nil
 }
 
-func (m Manager) statusFor(ctx context.Context, projectValue project.Project, message string) (Status, error) {
+func (m Manager) statusFor(ctx context.Context, projectValue Deployment, message string) (Status, error) {
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		return Status{}, err
 	}
@@ -699,7 +667,7 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 	if err != nil {
 		return Connection{}, err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
+	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
 		return Connection{}, errors.New("current project has no valid private state")
 	}
@@ -752,7 +720,7 @@ func (m Manager) LogPath(nodeName, source string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
+	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
 		return "", errors.New("current project has no valid private state")
 	}
@@ -836,21 +804,21 @@ func (m Manager) RecordEvent(ctx context.Context, action, level, message string)
 	if err != nil {
 		return err
 	}
-	event := diagnostics.Event{Schema: 1, Time: time.Now().UTC(), Level: level, ProjectID: projectValue.Marker.ProjectID, Node: "project", OperationID: m.OperationID, Action: action, Message: message}
+	event := diagnostics.Event{Schema: 1, Time: time.Now().UTC(), Level: level, Node: "deployment", OperationID: m.OperationID, Action: action, Message: message}
 	if err := diagnostics.AppendEvent(ctx, filepath.Join(projectValue.Root, "events.jsonl"), event); err != nil {
 		return err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
+	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil {
 		return nil
 	}
-	store := state.Store{Project: projectValue}
+	store := state.Store{Root: projectValue.Root}
 	for _, definition := range projectState.Resolved.Nodes {
 		node, err := store.ReadNode(definition.Name)
 		if err != nil {
 			continue
 		}
-		record := diagnostics.QEMULogRecord{Schema: 1, Time: time.Now().UTC(), Level: level, ProjectID: projectValue.Marker.ProjectID, Node: node.Node, OperationID: m.OperationID, Action: action, Message: message + "; " + execx.Display(node.Invocation.Binary, node.Invocation.Args...)}
+		record := diagnostics.QEMULogRecord{Schema: 1, Time: time.Now().UTC(), Level: level, Node: node.Node, OperationID: m.OperationID, Action: action, Message: message + "; " + execx.Display(node.Invocation.Binary, node.Invocation.Args...)}
 		if err := diagnostics.AppendQEMULog(ctx, filepath.Join(filepath.Dir(node.RootDisk), "qemu.log"), record); err != nil {
 			return err
 		}
@@ -883,11 +851,11 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		return Status{}, err
 	}
 	selectedSet := nodeNameSet(selected)
-	var reusableProject *project.Project
+	var reusableProject *Deployment
 	createNodes := []string(nil)
 	hadExistingState := false
 	if existing, openErr := m.openProject(false); openErr == nil {
-		persisted, err := (state.Store{Project: existing}).ReadProject()
+		persisted, err := (state.Store{Root: existing.Root}).ReadDeployment()
 		if missingPath(err) {
 			reusableProject = &existing
 		} else if err != nil {
@@ -895,7 +863,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		} else {
 			hadExistingState = true
 			requested = materializeExistingForwardPorts(requested, persisted.Resolved)
-			store := state.Store{Project: existing}
+			store := state.Store{Root: existing.Root}
 			hasState := func(name string) bool {
 				_, readErr := store.ReadNode(name)
 				return readErr == nil
@@ -979,7 +947,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err != nil {
 		return Status{}, err
 	}
-	projectValue := project.Project{}
+	projectValue := Deployment{}
 	if reusableProject != nil {
 		projectValue = *reusableProject
 	} else {
@@ -1001,11 +969,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		return Status{}, err
 	}
 	defer allocator.Release()
-	reserved, err := portregistry.Reserved(projectValue.DataRoot)
-	if err != nil {
-		return Status{}, err
-	}
-	resolved, sshPorts, err := materializeMissingNodePorts(requested, createNodes, reserved, state.Store{Project: projectValue})
+	resolved, sshPorts, err := materializeMissingNodePorts(requested, createNodes, make(map[uint16]struct{}), state.Store{Root: projectValue.Root})
 	if err != nil {
 		return Status{}, err
 	}
@@ -1030,12 +994,12 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		return Status{}, err
 	}
 	var existingLease *lease.Lease
-	if leaseStatus.Active && leaseStatus.Lease.ProjectID == projectValue.Marker.ProjectID {
+	if leaseStatus.Active && leaseStatus.Lease.ProjectID == identity.DeploymentID {
 		existingLease = leaseStatus.Lease
 	} else if hadExistingState {
-		existingLease = &lease.Lease{ProjectID: projectValue.Marker.ProjectID, OwnerUID: os.Getuid()}
+		existingLease = &lease.Lease{ProjectID: identity.DeploymentID, OwnerUID: os.Getuid()}
 		createSet := nodeNameSet(createNodes)
-		store := state.Store{Project: projectValue}
+		store := state.Store{Root: projectValue.Root}
 		for _, definition := range resolved.Nodes {
 			if _, create := createSet[definition.Name]; create {
 				continue
@@ -1047,11 +1011,11 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 			existingLease.Nodes = append(existingLease.Nodes, lease.Node{Name: node.Node, VMUUID: node.VMUUID})
 		}
 	}
-	plan, err := Build(resolved, projectValue.Marker.ProjectID, os.Getuid(), existingLease, nil)
+	plan, err := Build(resolved, identity.DeploymentID, os.Getuid(), existingLease, nil)
 	if err != nil {
 		return Status{}, err
 	}
-	if len(createNodes) != 0 && leaseStatus.Active && leaseStatus.Lease.ProjectID == projectValue.Marker.ProjectID && len(leaseStatus.Lease.Nodes) != len(plan.Lease.Nodes) {
+	if len(createNodes) != 0 && leaseStatus.Active && leaseStatus.Lease.ProjectID == identity.DeploymentID && len(leaseStatus.Lease.Nodes) != len(plan.Lease.Nodes) {
 		if _, err := m.leaseStore().Reshape(ctx, plan.Lease); err != nil {
 			return Status{}, err
 		}
@@ -1091,16 +1055,16 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		return Status{}, err
 	}
 	if len(createNodes) != 0 {
-		projectState, err := (state.Store{Project: projectValue}).ReadProject()
+		projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 		if err != nil {
 			return Status{}, err
 		}
 		leaseStatus, err := m.leaseStore().Inspect()
-		if err != nil || !leaseStatus.Active || leaseStatus.Lease.ProjectID != projectValue.Marker.ProjectID {
+		if err != nil || !leaseStatus.Active || leaseStatus.Lease.ProjectID != identity.DeploymentID {
 			return Status{}, errors.New("partial recreate completed but its private lease is absent or mismatched")
 		}
 		allStates := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
-		store := state.Store{Project: projectValue}
+		store := state.Store{Root: projectValue.Root}
 		for _, definition := range projectState.Resolved.Nodes {
 			node, readErr := store.ReadNode(definition.Name)
 			if readErr != nil {
@@ -1120,9 +1084,9 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	return m.statusFor(ctx, projectValue, "created and started private project")
 }
 
-func leaseIntentFromState(projectValue project.Project, projectState state.ProjectState) (Plan, error) {
-	store := state.Store{Project: projectValue}
-	existing := &lease.Lease{ProjectID: projectValue.Marker.ProjectID, OwnerUID: os.Getuid()}
+func leaseIntentFromState(projectValue Deployment, projectState state.DeploymentState) (Plan, error) {
+	store := state.Store{Root: projectValue.Root}
+	existing := &lease.Lease{ProjectID: identity.DeploymentID, OwnerUID: os.Getuid()}
 	for _, definition := range projectState.Resolved.Nodes {
 		node, err := store.ReadNode(definition.Name)
 		if err != nil {
@@ -1130,10 +1094,10 @@ func leaseIntentFromState(projectValue project.Project, projectState state.Proje
 		}
 		existing.Nodes = append(existing.Nodes, lease.Node{Name: node.Node, VMUUID: node.VMUUID})
 	}
-	return Build(projectState.Resolved, projectValue.Marker.ProjectID, os.Getuid(), existing, nil)
+	return Build(projectState.Resolved, identity.DeploymentID, os.Getuid(), existing, nil)
 }
 
-func (m Manager) startExisting(ctx context.Context, projectValue project.Project, projectState state.ProjectState, profile platform.Profile, backend Backend) (Status, error) {
+func (m Manager) startExisting(ctx context.Context, projectValue Deployment, projectState state.DeploymentState, profile platform.Profile, backend Backend) (Status, error) {
 	m.report("preflight", "Checking the existing private project before start")
 	verifiedBackend, err := m.preflight(ctx, profile, projectState.Resolved)
 	if err != nil {
@@ -1147,7 +1111,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue project.Project
 	if err := selectedShareSources(projectValue, projectState.Resolved, selected); err != nil {
 		return Status{}, err
 	}
-	preStartStore := state.Store{Project: projectValue}
+	preStartStore := state.Store{Root: projectValue.Root}
 	shareBinaries, err := selectedShareInvocationBinaries(preStartStore, projectState.Resolved, selected)
 	if err != nil {
 		return Status{}, err
@@ -1209,7 +1173,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue project.Project
 	acquired.Lease = updatedLease.Lease
 	lockContext, cancelLock := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLock()
-	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		_, _ = m.leaseStore().Abort(ctx, acquired.Lease.ProjectID, true, reservedRuntimeAuditor)
 		return Status{}, err
@@ -1222,7 +1186,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue project.Project
 	keysDir := filepath.Join(projectValue.Root, "keys")
 	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}, Project: projectValue, Shares: shareSourcesByNode(projectState.Resolved), SSHPath: sshPath, PrivateKey: filepath.Join(keysDir, "id_ed25519"), KnownHosts: filepath.Join(keysDir, "known_hosts"), DarwinSocket: backend.DarwinSocket}
 	names := make([]string, 0, len(projectState.Resolved.Nodes))
-	store := state.Store{Project: projectValue}
+	store := state.Store{Root: projectValue.Root}
 	for _, definition := range projectState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
 			continue
@@ -1283,7 +1247,7 @@ func (m Manager) Start(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
+	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
 		return Status{}, errors.New("current project has no valid private state")
 	}
@@ -1303,13 +1267,13 @@ func (m Manager) Stop(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
+	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
 		return Status{}, errors.New("current project has no valid private state")
 	}
 	lockContext, cancelLock := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLock()
-	projectLock, err := lock.Acquire(lockContext, filepath.Join(projectValue.Root, "project.lock"), false)
+	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		return Status{}, err
 	}
@@ -1320,7 +1284,7 @@ func (m Manager) Stop(ctx context.Context) (Status, error) {
 	}
 	selectedSet := nodeNameSet(names)
 	releaseLease := true
-	store := state.Store{Project: projectValue}
+	store := state.Store{Root: projectValue.Root}
 	for _, definition := range projectState.Resolved.Nodes {
 		if _, selected := selectedSet[definition.Name]; selected {
 			continue
@@ -1359,7 +1323,7 @@ func (m Manager) Restart(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
+	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
 		return Status{}, errors.New("current project has no valid private state")
 	}
@@ -1377,7 +1341,7 @@ func (m Manager) Restart(ctx context.Context) (Status, error) {
 	if err := selectedShareSources(projectValue, projectState.Resolved, selected); err != nil {
 		return Status{}, err
 	}
-	shareBinaries, err := selectedShareInvocationBinaries(state.Store{Project: projectValue}, projectState.Resolved, selected)
+	shareBinaries, err := selectedShareInvocationBinaries(state.Store{Root: projectValue.Root}, projectState.Resolved, selected)
 	if err != nil {
 		return Status{}, err
 	}
@@ -1434,7 +1398,7 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	if err != nil {
 		return LifecyclePlan{}, err
 	}
-	projectState, err := (state.Store{Project: projectValue}).ReadProject()
+	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if missingPath(err) {
 		return result, nil
 	}
@@ -1447,7 +1411,7 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 		return LifecyclePlan{}, err
 	}
 	result.SpecHash = hash
-	store := state.Store{Project: projectValue}
+	store := state.Store{Root: projectValue.Root}
 	hasState := func(name string) bool {
 		_, readErr := store.ReadNode(name)
 		return readErr == nil

@@ -45,7 +45,7 @@ func (fake *fakeNodeLifecycle) Start(_ context.Context, node state.NodeState) (p
 	return process.Identity{PID: pid, Executable: node.Invocation.Binary, Started: "test-start", ArgvHash: "test-argv-hash"}, nil
 }
 
-func (fake *fakeNodeLifecycle) WaitReady(_ context.Context, node state.NodeState, _ string, _ time.Duration) error {
+func (fake *fakeNodeLifecycle) WaitReady(_ context.Context, node state.NodeState, _ time.Duration) error {
 	fake.mu.Lock()
 	fake.waitCalls++
 	fake.mu.Unlock()
@@ -114,7 +114,7 @@ func TestStartPreparedParallelSuccessAndLeasePhases(t *testing.T) {
 	if fake.maxActive < 2 {
 		t.Fatalf("nodes did not start concurrently: max=%d", fake.maxActive)
 	}
-	store := state.Store{Project: config.Project}
+	store := state.Store{Root: config.Project.Root}
 	for _, name := range config.Nodes {
 		node, err := store.ReadNode(name)
 		if err != nil || node.Phase != state.Running || node.Process.PID == 0 {

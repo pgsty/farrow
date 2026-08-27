@@ -1,4 +1,4 @@
-// Package persistent owns project-scoped data disks which survive node
+// Package persistent owns deployment data disks which survive node
 // destruction.  The store is intentionally small and strict: every retained
 // disk has one typed ownership marker, deterministic paths, and no unowned
 // entries are tolerated.
@@ -18,12 +18,11 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
-	"github.com/pgsty/farrow/internal/project"
 )
 
 const (
 	Schema       = 1
-	rootName     = "persistent-disks"
+	rootName     = "disks"
 	markerName   = "ownership.json"
 	diskFileName = "disk.qcow2"
 )
@@ -34,7 +33,6 @@ var componentPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?
 // Size is deliberately exact: recreate never grows, shrinks, or silently
 // repurposes a retained disk.
 type Identity struct {
-	ProjectID  string
 	Node       string
 	Name       string
 	Serial     string
@@ -47,7 +45,6 @@ type Identity struct {
 // to the exact Farrow-owned file and local account.
 type Record struct {
 	Schema      int       `json:"schema"`
-	ProjectID   string    `json:"project_id"`
 	Node        string    `json:"node"`
 	Name        string    `json:"name"`
 	Path        string    `json:"path"`
@@ -61,10 +58,7 @@ type Record struct {
 
 func key(node, name string) string { return node + "\x00" + name }
 
-func validateIdentity(projectValue project.Project, identity Identity) error {
-	if identity.ProjectID != projectValue.Marker.ProjectID || !project.ValidUUID(identity.ProjectID) {
-		return errors.New("persistent disk project identity does not match project marker")
-	}
+func validateIdentity(identity Identity) error {
 	if !componentPattern.MatchString(identity.Node) || !componentPattern.MatchString(identity.Name) {
 		return errors.New("persistent disk node/name identity is invalid")
 	}
@@ -74,20 +68,20 @@ func validateIdentity(projectValue project.Project, identity Identity) error {
 	return nil
 }
 
-func rootPath(projectValue project.Project) string {
-	return filepath.Join(projectValue.Root, rootName)
+func rootPath(root string) string {
+	return filepath.Join(root, rootName)
 }
 
-func paths(projectValue project.Project, identity Identity) (directory, diskPath, markerPath string, err error) {
-	if err = validateIdentity(projectValue, identity); err != nil {
+func paths(root string, identity Identity) (directory, diskPath, markerPath string, err error) {
+	if err = validateIdentity(identity); err != nil {
 		return "", "", "", err
 	}
-	directory = filepath.Join(rootPath(projectValue), identity.Node, identity.Name)
+	directory = filepath.Join(rootPath(root), identity.Node, identity.Name)
 	diskPath = filepath.Join(directory, diskFileName)
 	markerPath = filepath.Join(directory, markerName)
-	inside, withinErr := fsutil.IsWithin(projectValue.Root, diskPath)
+	inside, withinErr := fsutil.IsWithin(root, diskPath)
 	if withinErr != nil || !inside {
-		return "", "", "", errors.New("persistent disk path escapes project root")
+		return "", "", "", errors.New("persistent disk path escapes the deployment root")
 	}
 	return directory, diskPath, markerPath, nil
 }
@@ -122,7 +116,7 @@ func validateFile(path string, maxSize int64) error {
 func validateCanonicalWithin(root, target string) error {
 	canonicalRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return fmt.Errorf("resolve persistent project root: %w", err)
+		return fmt.Errorf("resolve persistent deployment root: %w", err)
 	}
 	canonicalTarget, err := filepath.EvalSymlinks(target)
 	if err != nil {
@@ -130,22 +124,22 @@ func validateCanonicalWithin(root, target string) error {
 	}
 	inside, err := fsutil.IsWithin(canonicalRoot, canonicalTarget)
 	if err != nil || !inside {
-		return fmt.Errorf("persistent target resolves outside project root: %s", target)
+		return fmt.Errorf("persistent target resolves outside the deployment root: %s", target)
 	}
 	return nil
 }
 
 // ValidateSource proves that a node-local disk is a single-link, mode-0600,
 // current-user file whose fully resolved path remains inside the project.
-func ValidateSource(projectValue project.Project, source string) error {
-	inside, err := fsutil.IsWithin(projectValue.Root, source)
+func ValidateSource(root, source string) error {
+	inside, err := fsutil.IsWithin(root, source)
 	if err != nil || !inside {
-		return errors.New("persistent source disk escapes project root")
+		return errors.New("persistent source disk escapes the deployment root")
 	}
 	if err := validateFile(source, 0); err != nil {
 		return err
 	}
-	return validateCanonicalWithin(projectValue.Root, source)
+	return validateCanonicalWithin(root, source)
 }
 
 func decodeMarker(path string) (Record, error) {
@@ -170,14 +164,14 @@ func decodeMarker(path string) (Record, error) {
 }
 
 func recordIdentity(record Record) Identity {
-	return Identity{ProjectID: record.ProjectID, Node: record.Node, Name: record.Name, Serial: record.Serial, Size: record.Size, Mount: record.Mount, Filesystem: record.Filesystem}
+	return Identity{Node: record.Node, Name: record.Name, Serial: record.Serial, Size: record.Size, Mount: record.Mount, Filesystem: record.Filesystem}
 }
 
-func validateRecord(projectValue project.Project, record Record) error {
+func validateRecord(root string, record Record) error {
 	if record.Schema != Schema || record.OwnerUID != os.Geteuid() || record.PreservedAt.IsZero() {
 		return errors.New("persistent disk ownership marker schema, owner, or timestamp is invalid")
 	}
-	directory, expectedDisk, _, err := paths(projectValue, recordIdentity(record))
+	directory, expectedDisk, _, err := paths(root, recordIdentity(record))
 	if err != nil {
 		return err
 	}
@@ -187,17 +181,17 @@ func validateRecord(projectValue project.Project, record Record) error {
 	if err := validateFile(record.Path, 0); err != nil {
 		return err
 	}
-	return validateCanonicalWithin(projectValue.Root, record.Path)
+	return validateCanonicalWithin(root, record.Path)
 }
 
 func sameIdentity(record Record, expected Identity) bool {
-	return record.ProjectID == expected.ProjectID && record.Node == expected.Node && record.Name == expected.Name && record.Serial == expected.Serial && record.Size == expected.Size && record.Mount == expected.Mount
+	return record.Node == expected.Node && record.Name == expected.Name && record.Serial == expected.Serial && record.Size == expected.Size && record.Mount == expected.Mount
 }
 
 // Inventory performs a complete fail-closed walk of the retained-disk store.
 // An unexpected entry anywhere in the tree makes the whole store unusable.
-func Inventory(projectValue project.Project) ([]Record, error) {
-	root := rootPath(projectValue)
+func Inventory(deploymentRoot string) ([]Record, error) {
+	root := rootPath(deploymentRoot)
 	if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	} else if err != nil {
@@ -248,7 +242,7 @@ func Inventory(projectValue project.Project) ([]Record, error) {
 			if record.Node != nodeEntry.Name() || record.Name != diskEntry.Name() {
 				return nil, errors.New("persistent disk marker identity differs from its directory")
 			}
-			if err := validateRecord(projectValue, record); err != nil {
+			if err := validateRecord(deploymentRoot, record); err != nil {
 				return nil, err
 			}
 			records = append(records, record)
@@ -266,10 +260,10 @@ func Inventory(projectValue project.Project) ([]Record, error) {
 // ValidateDesired verifies all retained disks against the complete desired
 // persistent-disk set. Missing records are allowed for first creation; extra
 // or semantically different records are rejected.
-func ValidateDesired(projectValue project.Project, desired []Identity) (map[string]Record, error) {
+func ValidateDesired(root string, desired []Identity) (map[string]Record, error) {
 	expected := make(map[string]Identity, len(desired))
 	for _, identity := range desired {
-		if err := validateIdentity(projectValue, identity); err != nil {
+		if err := validateIdentity(identity); err != nil {
 			return nil, err
 		}
 		identityKey := key(identity.Node, identity.Name)
@@ -278,7 +272,7 @@ func ValidateDesired(projectValue project.Project, desired []Identity) (map[stri
 		}
 		expected[identityKey] = identity
 	}
-	records, err := Inventory(projectValue)
+	records, err := Inventory(root)
 	if err != nil {
 		return nil, err
 	}
@@ -299,8 +293,8 @@ func ValidateDesired(projectValue project.Project, desired []Identity) (map[stri
 
 // Find returns a previously retained compatible disk, if any, while still
 // validating the complete desired set and store.
-func Find(projectValue project.Project, desired []Identity, identity Identity) (Record, bool, error) {
-	found, err := ValidateDesired(projectValue, desired)
+func Find(root string, desired []Identity, identity Identity) (Record, bool, error) {
+	found, err := ValidateDesired(root, desired)
 	if err != nil {
 		return Record{}, false, err
 	}
@@ -315,20 +309,20 @@ func makeDirectory(path string) error {
 	return validateDirectory(path)
 }
 
-func cleanupEmptyParents(projectValue project.Project, directory string) {
+func cleanupEmptyParents(root, directory string) {
 	_ = os.Remove(directory)
 	_ = os.Remove(filepath.Dir(directory))
-	_ = os.Remove(rootPath(projectValue))
+	_ = os.Remove(rootPath(root))
 }
 
 // Preserve atomically relocates a node-local disk into the deterministic
 // retained store and publishes its ownership marker. Existing compatible
 // retained disks are a no-op only when source already equals the retained path.
-func Preserve(projectValue project.Project, identity Identity, source string) (Record, error) {
-	if err := validateIdentity(projectValue, identity); err != nil {
+func Preserve(root string, identity Identity, source string) (Record, error) {
+	if err := validateIdentity(identity); err != nil {
 		return Record{}, err
 	}
-	records, err := Inventory(projectValue)
+	records, err := Inventory(root)
 	if err != nil {
 		return Record{}, err
 	}
@@ -344,14 +338,14 @@ func Preserve(projectValue project.Project, identity Identity, source string) (R
 		}
 		return existing, nil
 	}
-	if err := ValidateSource(projectValue, source); err != nil {
+	if err := ValidateSource(root, source); err != nil {
 		return Record{}, err
 	}
-	directory, target, marker, err := paths(projectValue, identity)
+	directory, target, marker, err := paths(root, identity)
 	if err != nil {
 		return Record{}, err
 	}
-	if err := makeDirectory(rootPath(projectValue)); err != nil {
+	if err := makeDirectory(rootPath(root)); err != nil {
 		return Record{}, err
 	}
 	if err := makeDirectory(filepath.Dir(directory)); err != nil {
@@ -364,7 +358,7 @@ func Preserve(projectValue project.Project, identity Identity, source string) (R
 		return Record{}, err
 	}
 	if err := os.Rename(source, target); err != nil {
-		cleanupEmptyParents(projectValue, directory)
+		cleanupEmptyParents(root, directory)
 		return Record{}, fmt.Errorf("preserve persistent disk: %w", err)
 	}
 	rollback := true
@@ -372,13 +366,13 @@ func Preserve(projectValue project.Project, identity Identity, source string) (R
 		if rollback {
 			_ = os.Remove(marker)
 			_ = os.Rename(target, source)
-			cleanupEmptyParents(projectValue, directory)
+			cleanupEmptyParents(root, directory)
 		}
 	}()
 	if err := fsutil.SyncDir(filepath.Dir(source)); err != nil {
 		return Record{}, err
 	}
-	record := Record{Schema: Schema, ProjectID: identity.ProjectID, Node: identity.Node, Name: identity.Name, Path: target, Serial: identity.Serial, Size: identity.Size, Mount: identity.Mount, Filesystem: identity.Filesystem, OwnerUID: os.Geteuid(), PreservedAt: time.Now().UTC()}
+	record := Record{Schema: Schema, Node: identity.Node, Name: identity.Name, Path: target, Serial: identity.Serial, Size: identity.Size, Mount: identity.Mount, Filesystem: identity.Filesystem, OwnerUID: os.Geteuid(), PreservedAt: time.Now().UTC()}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return Record{}, err
@@ -386,16 +380,16 @@ func Preserve(projectValue project.Project, identity Identity, source string) (R
 	if err := fsutil.AtomicWrite(marker, append(data, '\n'), 0o600); err != nil {
 		return Record{}, err
 	}
-	if err := validateRecord(projectValue, record); err != nil {
+	if err := validateRecord(root, record); err != nil {
 		return Record{}, err
 	}
 	rollback = false
 	return record, fsutil.SyncDir(directory)
 }
 
-// DeleteAll deletes only a fully validated project-owned retained store.
-func DeleteAll(projectValue project.Project) ([]Record, error) {
-	records, err := Inventory(projectValue)
+// DeleteAll deletes only a fully validated deployment-owned retained store.
+func DeleteAll(deploymentRoot string) ([]Record, error) {
+	records, err := Inventory(deploymentRoot)
 	if err != nil || len(records) == 0 {
 		return records, err
 	}
@@ -411,7 +405,7 @@ func DeleteAll(projectValue project.Project) ([]Record, error) {
 			return nil, err
 		}
 	}
-	root := rootPath(projectValue)
+	root := rootPath(deploymentRoot)
 	nodes, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -429,7 +423,7 @@ func DeleteAll(projectValue project.Project) ([]Record, error) {
 	if err := os.Remove(root); err != nil {
 		return nil, err
 	}
-	if err := fsutil.SyncDir(projectValue.Root); err != nil {
+	if err := fsutil.SyncDir(deploymentRoot); err != nil {
 		return nil, err
 	}
 	return records, nil

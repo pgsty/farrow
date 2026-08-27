@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
@@ -66,50 +65,42 @@ func TestDiffResolvedClassifiesNodeChanges(t *testing.T) {
 	}
 }
 
-func diffTestProject(t *testing.T) project.Project {
+func diffTestProject(t *testing.T) Deployment {
 	t.Helper()
 	root := t.TempDir()
-	work := filepath.Join(root, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	projectValue, err := project.Create(work, filepath.Join(root, "data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return projectValue
+	return Deployment{Root: root, DataRoot: root}
 }
 
-func projectStateFor(t *testing.T, projectValue project.Project, resolved spec.Resolved) state.ProjectState {
+func projectStateFor(t *testing.T, resolved spec.Resolved) state.DeploymentState {
 	t.Helper()
 	hash, err := spec.Hash(resolved)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: time.Unix(1, 0).UTC()}
+	return state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash, Resolved: resolved, UpdatedAt: time.Unix(1, 0).UTC()}
 }
 
 func TestEnsureProjectStateAcceptsAdditionsRefusesRemovals(t *testing.T) {
 	projectValue := diffTestProject(t)
-	store := state.Store{Project: projectValue}
+	store := state.Store{Root: projectValue.Root}
 	persisted := diffFixtureResolved()
-	if err := ensureProjectState(store, projectStateFor(t, projectValue, persisted)); err != nil {
+	if err := ensureProjectState(store, projectStateFor(t, persisted)); err != nil {
 		t.Fatalf("initial write: %v", err)
 	}
 
 	added := diffFixtureResolved()
 	added.Nodes = append(added.Nodes, spec.Node{Name: "node-2", Address: "10.10.10.12", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 64 * spec.GiB})
-	if err := ensureProjectState(store, projectStateFor(t, projectValue, added)); err != nil {
+	if err := ensureProjectState(store, projectStateFor(t, added)); err != nil {
 		t.Fatalf("additive update refused: %v", err)
 	}
-	current, err := store.ReadProject()
+	current, err := store.ReadDeployment()
 	if err != nil || len(current.Resolved.Nodes) != 3 {
 		t.Fatalf("additive update not persisted: %#v %v", current, err)
 	}
 
 	shrunk := diffFixtureResolved()
 	shrunk.Nodes = shrunk.Nodes[:1]
-	if err := ensureProjectState(store, projectStateFor(t, projectValue, shrunk)); err == nil {
+	if err := ensureProjectState(store, projectStateFor(t, shrunk)); err == nil {
 		t.Fatal("node removal must never ride a state commit")
 	}
 
@@ -118,14 +109,14 @@ func TestEnsureProjectStateAcceptsAdditionsRefusesRemovals(t *testing.T) {
 	resized.Nodes = append(resized.Nodes, added.Nodes[2])
 	resized.Nodes[1].Memory = 8 * spec.GiB
 	nodeState := state.NodeState{
-		Schema: state.NodeSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID,
-		Node: "node-1", VMUUID: projectValue.Marker.ProjectID, Phase: state.Stopped, Generation: 1,
+		Schema: state.NodeSchema, FarrowVersion: "test",
+		Node: "node-1", VMUUID: "018f4b8e-1234-4abc-9def-0123456789ab", Phase: state.Stopped, Generation: 1,
 		SpecHash: "deadbeef", CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
 	}
 	if err := store.WriteNode(nodeState); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProjectState(store, projectStateFor(t, projectValue, resized)); err == nil {
+	if err := ensureProjectState(store, projectStateFor(t, resized)); err == nil {
 		t.Fatal("definition change with live node state must be refused")
 	}
 	// ...and accepted once that state is gone (the per-node recreate window).
@@ -133,7 +124,7 @@ func TestEnsureProjectStateAcceptsAdditionsRefusesRemovals(t *testing.T) {
 	if err := os.Remove(filepath.Join(nodeDir, "state.json")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProjectState(store, projectStateFor(t, projectValue, resized)); err != nil {
+	if err := ensureProjectState(store, projectStateFor(t, resized)); err != nil {
 		t.Fatalf("recreate-window update refused: %v", err)
 	}
 }

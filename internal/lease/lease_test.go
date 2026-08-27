@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/process"
-	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qemu"
 )
 
@@ -31,11 +31,11 @@ func testStore(t *testing.T) Store {
 
 func newLease(t *testing.T, lastOctet byte) Lease {
 	t.Helper()
-	projectID, err := project.NewUUID()
+	projectID, err := identity.NewUUID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	vmUUID, err := project.NewUUID()
+	vmUUID, err := identity.NewUUID()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestAcquireSupportsOneCanonicalCustomGlobalSubnet(t *testing.T) {
 		t.Fatalf("custom global subnet rejected: %v", err)
 	}
 	invalid := desired
-	invalid.ProjectID, _ = project.NewUUID()
+	invalid.ProjectID, _ = identity.NewUUID()
 	invalid.Nodes = append([]Node(nil), desired.Nodes...)
 	invalid.Nodes[0].Address = "172.30.50.8"
 	if err := Validate(Lease{Schema: Schema, Generation: 1, ProjectID: invalid.ProjectID, OwnerUID: os.Getuid(), CIDR: invalid.CIDR, HostAddress: invalid.HostAddress, DHCPEnd: invalid.DHCPEnd, Nodes: invalid.Nodes, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC()}); err == nil {
