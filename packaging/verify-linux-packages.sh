@@ -269,7 +269,7 @@ for arch in amd64 arm64; do
     [[ ${actual_list} == "${expected_list}" ]] || { printf 'unexpected package payload in %s\n' "${package}" >&2; diff -u <(printf '%s\n' "${expected_list}") <(printf '%s\n' "${actual_list}") >&2 || true; exit 1; }
     [[ $(file_mode "${root}/usr/bin/farrow") == 755 ]]
     [[ $(file_mode "${root}/opt/farrow/libexec/farrow-hosts-helper") == 755 ]]
-    for path in opt/farrow opt/farrow/libexec usr/share/doc/farrow usr/share/doc/farrow/licenses usr/share/farrow usr/share/farrow/schemas; do
+    for path in opt/farrow opt/farrow/libexec usr/share/doc/farrow usr/share/doc/farrow/licenses; do
       [[ -d ${root}/${path} && $(file_mode "${root}/${path}") == 755 ]] || { printf 'unexpected package directory mode for %s in %s\n' "${path}" "${package}" >&2; exit 1; }
     done
     for path in "${expected_paths[@]}"; do

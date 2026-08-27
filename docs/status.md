@@ -3,98 +3,105 @@
 Farrow is pre-1.0. This page says plainly what has been exercised on real
 hardware, what has not, and what stands between here and a 1.0 tag.
 
-A compile is not a boot. A fake QMP server is not an accelerator. The entries
-marked **verified** below were run end to end on native hosts before the Farrow
-namespace transition. They establish the functional baseline, but do not by
-themselves verify the renamed binary, paths, environment, bridge and packages.
+A compile is not a boot. The tree currently carries **two generations of
+evidence debt**: the historical M0–M4 native runs under `docs/evidence/`
+predate both the Farrow namespace transition *and* the product redirection
+recorded in [REDESIGN.md](../REDESIGN.md). They establish that the underlying
+engine (QEMU lifecycle, transactions, identity, recovery, private networking)
+worked end to end; they do not verify the current binary, configuration
+format, or drift model.
 
-## Functional baseline verified on both Tier‑1 hosts
+## Functional baseline (historical, pre-redesign)
 
-macOS arm64 with HVF, and Linux amd64 with KVM.
+Verified natively on macOS arm64 (HVF) and Linux amd64 (KVM) before the
+namespace transition:
 
 | Area | |
 |---|---|
-| Quick VM | zero-config `up`, SSH, `exec`, outbound network, resolved CPU/memory/disk, default `/data`, stop/start persistence, port re-selection, per-project host-key pinning, guarded destroy |
-| Private `full` lab | fixed `.10`–`.13`, host↔VM and VM↔VM traffic, guest internet over the management NIC, no default route or DNS on the private NIC, NAT SSH fallback, control-only lateral key |
-| Storage | 64 GiB root plus ordinary data disks, four-node MinIO with 16 disks, persistent-disk preserve/reattach/delete |
+| Single-VM lifecycle | zero-config up, SSH, exec, outbound network, stop/start persistence, guarded destroy |
+| Private `full` lab | fixed `.10`–`.13`, host↔VM and VM↔VM traffic, guest internet over the management NIC, NAT SSH fallback, control-only lateral key |
+| Storage | root overlays, data disks, four-node MinIO with 16 disks, persistent-disk preserve/reattach/delete |
 | Concurrency | second private project exits 6, 30-cycle create/destroy soak with no leaks |
 | Recovery | partial failure, crash and repair paths |
 | Privilege | unprivileged QEMU, root-owned helper ownership checks |
 | Guest matrix | seven aliases × two native architectures |
-| Source gates | unit, race, vet, staticcheck, govulncheck, four-target cross-build |
-| Reproducibility | development archives and Linux packages build byte-identical across runs |
 
-## Partially verified
+## The redesign: implemented and unit-tested, not natively replayed
 
-| Area | Gap |
-|---|---|
-| Farrow namespace transition | CLI output unit, race and vet checks pass; whole-tree gates plus post-rename native Quick/private and packaging replay remain pending |
-| Quick negative paths | no dedicated native port-collision injection; `--no-data-disk` not separately run on Linux |
-| Loopback forwards | all four endpoints exercised on Linux, not on macOS |
-| Private node selectors | unit and integration coverage complete; native partial recreate not run |
-| `full` and `minio` profiles | topology and storage verified before the current UID/GID 88 seed; identity refresh not rerun |
-| Linux custom subnet | preflight and dry plan verified; privileged apply not run on a disposable host |
-| Image pipeline | local validation, rejection and reproducibility verified with real `qemu-img`; libguestfs normalization not run natively |
+Everything below builds, passes the unit/race/vet/staticcheck gates, and has
+CLI-level functional tests where a VM is not required. None of it has been
+replayed on native hardware yet:
+
+- **Inventory-as-config.** The Pigsty-compatible inventory format, the
+  `vm_*` namespace, name derivation, defaults, group-conflict rules, and the
+  retirement of the `version:`/`nodes:` format.
+- **Node-granular lifecycle.** Per-node hashes, additive `up` for
+  config-added nodes, lease reshaping, per-node recreate guidance,
+  `destroy <node> --force` removal, and the absence-never-destroys rule.
+- **Single default mode.** `setup` prepares the fixed-IP lab by default;
+  user-mode projects are retired to salvage commands.
+- **NetworkManager backend.** The nmcli bridge transaction for the RHEL
+  family and NM-owned desktops, firewalld zone assignment, the
+  `/etc/farrow/network.json` public identity, and backend-aware preflight,
+  doctor, and uninstall. **No native EL run has happened yet.**
+- **Orphan governance.** Marker schema 2 (work_dir/name), orphan-aware
+  `list`, `project rm`/`project prune`, `destroy --purge`.
+- **Verb alignment.** `halt`, `reload`, any-subnet `hosts install`.
 
 ## Not verified
 
-- A post-rename native replay using the Farrow binary, paths, environment,
-  bridge identity and package names. Historical evidence remains immutable
-  under `docs/evidence`; new Farrow evidence must come from a fresh run.
-- Opt-in QEMU 9p host shares. The source path is wired for Quick and Private,
-  but no build or native Quick/four-node replay has been run after the change.
-- Host reboot persistence, on either Tier‑1 host.
-- Tier‑2 native smoke: macOS amd64, Linux arm64.
-- Private network install on an RPM-family Linux host.
-- Full Pigsty lab bootstrap. Single-node `meta` bootstrap and deploy pass.
+- Any native replay of the current tree: single-node and four-node labs on
+  both Tier-1 hosts, using the inventory format end to end.
+- Scale-out against a **running** lab on native hardware (additive up while
+  peers stay up; lease reshape under a live socket_vmnet/bridge).
+- The NetworkManager backend on real EL9/Rocky/Alma hardware, including
+  firewalld interaction and `network uninstall` prestate restoration.
+- A full Pigsty bootstrap (`configure` → `farrow up` → `install.yml`)
+  against a Pigsty tree whose conf templates carry `vm_*` variables.
+- Opt-in QEMU 9p host shares (wired pre-redesign; still unreplayed).
+- Host reboot persistence, on any host.
+- Tier-2 native smoke: macOS amd64, Linux arm64.
 - Published Homebrew tap, RPM or DEB repository consumption.
 
 ## Blocks 1.0
 
-These are ownership and infrastructure decisions, not code:
+Ownership and infrastructure decisions, unchanged by the redesign:
 
 1. **Production image hosting.** The signed static-repository path is
-   implemented and exercised against the disposable M0 Nginx repository, but
-   the public domain, storage owner and bandwidth are not assigned. No image
-   can move from `testing` to `supported` on the M0 development mirror.
-2. **Image signing custody.** Ordinary binaries intentionally ship without
-   external catalog verification roots, so `image sync` fails closed while the
-   embedded bootstrap catalog remains usable. Development roots and their
-   private halves exist only in tests. Active and standby production custody is
-   not assigned.
-3. **Release custody.** The tag workflow exists and is fail-closed, but has
-   never run. No remote, production tag, publisher identity or two-person
-   review is configured.
-4. **A durable macOS arm64 runner.** Tier‑1 macOS verification currently
-   depends on a developer machine rather than an owned CI host.
+   implemented, but the public domain, storage owner, and bandwidth are not
+   assigned; no image can move from `testing` to `supported`.
+2. **Image signing custody.** The catalog verification roots are development
+   keys; active and standby custody is not assigned.
+3. **Release custody.** The tag workflow exists and is fail-closed but has
+   never run; no publisher identity or two-person review is configured.
+4. **A durable macOS arm64 runner.** Tier-1 macOS verification still depends
+   on a developer machine.
 
-Until all four are resolved and the unverified list above is closed, no `v1.0`
-tag should be created, and development artifacts must stay explicitly unsigned
-and unattested.
+Plus one engineering gate created by the redesign: the **native replay of
+the current tree** listed above. Until these close, no `v1.0` tag should be
+created, and development artifacts stay explicitly unsigned.
 
 ## Known rough edges
 
-- **Linux private network on a wireless host.** `network install` refuses to
-  start a dormant `systemd-networkd` when any existing `.network` file could
-  claim a real link. Since systemd itself ships `80-wifi-adhoc.network`, every
-  host with a wireless interface and dormant networkd hits this and must either
-  adopt networkd deliberately or stay on quick mode. The refusal is correct and
-  fail-closed, but it is the first thing most Linux desktop users will hit.
-- **`doctor` exits 3 on a host without the private network installed**, because
-  private-network readiness is part of its verdict. Quick mode is unaffected,
-  but the exit code reads as a broken host until you know that.
-- **Every VM start prints a `testing` image warning.** It will stay until the
-  hosting and custody gates close.
+- **Restart-class drift is not applied in place.** `vm_cpu`/`vm_mem` changes
+  are reported as per-node recreates; the cold-converge path (stop/apply/
+  start without rebuilding the root disk) is designed but not implemented.
+  `up --restart` is reserved for it.
+- **Guest `/etc/hosts` staleness on scale-out.** Existing peers' seeds
+  predate a newly added node; Pigsty's `node_etc_hosts` management or a
+  per-node recreate covers name resolution of new peers.
+- **One active lab at a time.** The host-global lease still binds the whole
+  network to one project; address-level leasing is a roadmap item and will
+  matter more now that fixed-IP labs are the only mode.
+- **Every VM start prints a `testing` image warning** until the hosting and
+  custody gates close.
 
-The plan for what comes after these close is in
-[phase-2.md](phase-2.md).
+The plan for what comes next is in [phase-2.md](phase-2.md).
 
 ## Deliberately out of scope for 1.0
 
 - Cross-architecture emulation. Native only, no TCG fallback.
-- Rocky Linux 8. Its arm64 image uses a 64 KiB-granule kernel that will not
-  boot on Apple silicon HVF.
-- Standalone partial `destroy`. A private project is destroyed whole.
-- In-place reconcile of a stopped private project. Any desired-state change is
-  an explicit destructive recreate.
-- Any global cleanup command.
+- Rocky Linux 8 guests (64 KiB-granule arm64 kernel) and EL8 hosts.
+- Live QMP snapshots.
+- Automatic repair or a global destructive cleanup command — `project prune`
+  removes only provable orphans and defaults to a dry run.

@@ -7,8 +7,8 @@ Read the limitations at the end before using it anywhere that matters.
 ## Privilege boundary
 
 - QEMU always runs as the invoking user. Never as root.
-- The Quick runtime needs no privileged network component. On Linux, `setup`
-  may use sudo once to install missing system packages through APT or DNF.
+- On Linux, `setup` may use sudo once to install missing system packages
+  through APT or DNF.
 - On macOS, exactly one privileged component exists: a pinned `socket_vmnet`
   daemon, running as root from a root-only path.
 - On Linux, exactly two: root-owned bridge persistence, and the distribution's
@@ -40,7 +40,9 @@ directories so a non-empty one is never blown away. An active private lease
 blocks uninstall with no mutation at all.
 
 Linux staged content is re-hashed before installation, and an unprivileged
-QEMU/QMP attach must succeed before networkd persistence is enabled. macOS
+QEMU/QMP attach must succeed before bridge persistence is enabled (via
+systemd-networkd units or an owned NetworkManager connection, whichever
+manager owns the host). macOS
 verifies the socket_vmnet archive and both extracted binary digests before any
 privileged step, and uninstall boots out only the pinned launchd label.
 
@@ -76,7 +78,7 @@ containing spaces cannot split a per-project `known_hosts` path into a
 home-directory file.
 
 Only a multi-node **control** guest receives the project private key, for
-lateral SSH to its peers. Quick VMs never receive a lateral key.
+lateral SSH to its peers. Single-node labs never receive a lateral key.
 
 ### Explicit guest provisioning
 
@@ -130,7 +132,7 @@ and manifest before sharing a bundle.
 ## Inventory output
 
 Rendered Pigsty inventory is secret-bearing configuration. It is written mode
-0600 beside a strict JSON sidecar holding source and output digests, profile,
+0600 beside a strict JSON sidecar holding source and output digests,
 scale, subnet and mode. Replacement requires `--force` and a current file whose
 digest still matches its sidecar. Unmanaged, hand-edited, symlinked, cross-user
 or multiply-linked files are never adopted.

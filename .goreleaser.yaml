@@ -150,6 +150,8 @@ archives:
         info: *archive_file_info
       - src: docs/phase-2.md
         dst: docs/phase-2.md
+      - src: docs/pigsty.md
+        dst: docs/pigsty.md
         info: *archive_file_info
         info: *archive_file_info
       - src: docs/security.md

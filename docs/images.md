@@ -211,7 +211,7 @@ address/route/DNS checks all pass.
 
 ## The `dba` identity
 
-Built-in profiles use the final Pigsty node-admin identity from first boot:
+Guests use the final Pigsty node-admin identity from first boot:
 `dba` as UID 88 with primary group `admin` GID 88, a real `/home/dba`, bash, a
 locked password and key-only passwordless sudo.
 

@@ -18,14 +18,18 @@ Each layer has one data format, and they do not mix:
 
 | Format | Role |
 |---|---|
-| strict YAML | user configuration and built-in profiles |
+| inventory YAML | user configuration: a Pigsty-compatible inventory, strict inside the `vm_*` namespace, opaque outside it |
 | versioned JSON | resolved spec, project and node state, transaction journals, lease, catalog metadata |
 | qcow2 | managed base images, root overlays, data disks |
 | ISO9660 | NoCloud CIDATA seed |
 
-A **desired spec** is what you wrote. A **resolved spec** is that plus every
-default, chosen port, image digest and generated identifier — it is the hashed
-document, and drift is defined as a change to its hash.
+A **desired spec** is what you wrote, narrowed to the Farrow namespace. A
+**resolved spec** is that plus every default, chosen port, image digest and
+generated identifier. Each node additionally carries its own **node hash** —
+the project envelope plus exactly that node's definition — and drift is
+defined per node as a change to that hash. Adding a peer therefore never
+moves an existing node's identity, and editing non-`vm_*` inventory
+variables never causes drift at all.
 
 Explicit post-boot provisioning deliberately sits above the resolved-spec and
 VM lifecycle layers. The CLI takes one bounded script snapshot and uses the
@@ -121,11 +125,13 @@ before writing that marker.
 
 ## Networking backends
 
-Quick mode uses QEMU's user-mode stack directly. Private mode uses
-`socket_vmnet` on macOS and a root-owned `farrow0` bridge with the distribution
-`qemu-bridge-helper` on Linux. On macOS the QEMU `stream` netdev with probed
-reconnect is preferred, with a Go dial plus `ExtraFiles` and `socket,fd=3` as
-the runtime fallback.
+Every node pairs a user-mode management NIC (slirp: DHCP, DNS, default
+route, egress) with a fixed-address private NIC. The private side uses
+`socket_vmnet` on macOS and a root-owned `farrow0` bridge with the
+distribution `qemu-bridge-helper` on Linux — created through NetworkManager
+(`nmcli`) when it owns the host, or systemd-networkd units otherwise. On
+macOS the QEMU `stream` netdev with probed reconnect is preferred, with a Go
+dial plus `ExtraFiles` and `socket,fd=3` as the runtime fallback.
 
 QEMU is unprivileged in every case. See [security.md](security.md).
 

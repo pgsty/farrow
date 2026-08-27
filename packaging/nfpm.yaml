@@ -59,20 +59,6 @@ contents:
       owner: root
       group: root
       mode: 0755
-  - dst: /usr/share/farrow
-    type: dir
-    packager: rpm
-    file_info:
-      owner: root
-      group: root
-      mode: 0755
-  - dst: /usr/share/farrow/schemas
-    type: dir
-    packager: rpm
-    file_info:
-      owner: root
-      group: root
-      mode: 0755
   - src: ${FARROW_PAYLOAD}/usr/bin/farrow
     dst: /usr/bin/farrow
     expand: true
@@ -152,9 +138,6 @@ contents:
   - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/tests/e2e/README.md
     expand: true
     dst: /usr/share/doc/farrow/tests/e2e/README.md
-  - src: ${FARROW_PAYLOAD}/usr/share/farrow/schemas/farrow-v1.schema.json
-    expand: true
-    dst: /usr/share/farrow/schemas/farrow-v1.schema.json
 
 rpm:
   summary: Native Go/QEMU runtime for Pigsty development VMs

@@ -1,106 +1,63 @@
 # Pigsty integration
 
-Farrow ships `pigsty-vm`, a narrow wrapper that derives the VM topology and
-Pigsty inventory from the same profile, scale, and subnet. Archives and packages
-install it on `PATH`; `VM_IMAGE` affects only the VM configuration.
+The integration is the configuration format itself. Farrow reads a
+Pigsty-compatible Ansible inventory, so one `pigsty.yml` is simultaneously:
 
-## Prepare and start a fresh lab
+- Farrow's VM specification (the `vm_*` variables),
+- Pigsty's deployment inventory (everything else), and
+- the human-readable record of the lab.
 
-`pigsty-vm preflight` is read-only; it does not install host dependencies or
-private networking. On a fresh host, first generate the exact wrapper
-configuration and pass it to `farrow setup`:
+There is no wrapper, no rendering step, and no second file to keep in sync.
+The former `pigsty-vm` wrapper and `farrow pigsty inventory` renderer are
+gone.
+
+## The flow
+
+Inside a Pigsty checkout:
 
 ```bash
-install -d -m 0700 .farrow
-
-export PIGSTY_ROOT="$PWD"
-export VM_SPEC=full
-export VM_NETWORK_CIDR=172.31.251.0/24
-
-pigsty-vm init >"$PWD/.farrow/farrow.yaml"
-farrow setup -f "$PWD/.farrow/farrow.yaml"
-
-pigsty-vm inventory --output "$PWD/.farrow/pigsty.yml"
-pigsty-vm up
-pigsty-vm provision --script /absolute/path/to/bootstrap.sh --sudo --parallel 4
-
-pigsty-vm ssh-config >"$PWD/.farrow/ssh_config"
-chmod 0600 "$PWD/.farrow/ssh_config"
+./configure -c meta     # Pigsty writes pigsty.yml
+farrow setup            # discovers pigsty.yml; prepares host + network
+farrow up               # boots the same file's hosts as VMs
+./install.yml           # Ansible deploys against the same file
 ```
 
-`setup` installs or verifies the required host capabilities and prepares the
-exact generated profile. Subsequent wrapper lifecycle commands regenerate the
-same strict configuration from the exported variables and act on the project in
-the current directory.
-
-With a custom `VM_NETWORK_CIDR`, use the generated SSH config or DNS for host
-aliases. The optional `hosts install` publisher currently accepts only the
-default `10.10.10.0/24`.
-
-Run Pigsty against `.farrow/pigsty.yml` after the VMs are ready.
-
-## Wrapper interface
-
-```text
-pigsty-vm up|plan|preflight|init|inventory|status|start|stop|restart|recreate
-          |destroy|ssh|exec|provision|logs|repair|ssh-config|hosts|network [args...]
-```
-
-The wrapper deliberately has no `setup` subcommand. Its mappings are:
-
-| Wrapper command | Farrow operation |
-|---|---|
-| `init` | `farrow init` with the selected profile overrides |
-| `inventory` | `farrow pigsty inventory` |
-| `preflight` | `farrow network preflight` with a generated temporary config |
-| `up`, `plan`, `recreate` | matching lifecycle command with a generated temporary config |
-| all other accepted commands | matching Farrow command against current project state |
-
-Generated configs are mode 0600, strictly validated, and removed on every exit
-path. Unknown wrapper commands are rejected; no command is silently upgraded to
-a destructive action.
-
-## Variables
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `VM_SPEC` | `meta` | built-in profile |
-| `VM_SCALE` | `1` | CPU/memory scale, 1–64 |
-| `VM_IMAGE` | — | global image override |
-| `VM_FORCE_UNIFORM_IMAGE` | `0` | allow the image override on a mixed-distribution profile |
-| `VM_NETWORK_CIDR` | profile default | host-global RFC1918 `/24` |
-| `VM_ARCH` | `native` | native architecture only |
-| `PIGSTY_ROOT` | working directory | Pigsty source root used by `inventory` |
-| `FARROW_BIN` | `farrow` | CLI path; a value containing `/` must be absolute |
-
-Every value is validated before use. `VM_FORCE_UNIFORM_IMAGE=1` requires
-`VM_IMAGE`; unsafe names, out-of-range scale, malformed image aliases, and
-invalid CIDRs fail before invoking Farrow.
-
-Pigsty may reference the wrapper through one Makefile variable:
-
-```makefile
-PIGSTY_VM ?= pigsty-vm
-```
-
-## Inventory rendering
-
-`pigsty-vm inventory` is equivalent to `farrow pigsty inventory`. It transforms
-the catalog-bound Pigsty template for the selected profile, rebases recognised
-addresses to the selected subnet, applies resource-aware `tiny` tuning, and
-never rewrites the source `conf/` tree.
-
-Unknown address semantics, residual default-subnet references, or a mismatch
-between the VM and inventory node sets fail closed. Output is mode 0600 with a
-digest sidecar; replacing managed output requires `--force`, while unmanaged or
-hand-edited files are never adopted.
-
-The 13 profile bindings and node counts are documented in
-[Configuration](config.md#built-in-profiles).
+Pigsty's conf templates carry the `vm_*` knobs directly (they are inert
+variables for anyone not using Farrow). Outside a Pigsty checkout,
+`farrow init [meta|dual|trio|full]` writes a generic starter inventory you
+can grow into a full Pigsty config later — same file, same format.
 
 ## Guest identity
 
-Built-in profiles create the Pigsty node administrator before Ansible connects:
-`dba` is UID 88 with primary group `admin` GID 88, and readiness checks that
-numeric identity. Pigsty therefore does not have to renumber its active SSH
-account.
+Built-in defaults create the Pigsty node administrator before Ansible
+connects: `dba` with UID 88 and primary group `admin` GID 88, established at
+first boot so Ansible never has to renumber its own live session. Farrow
+honors the inventory's own `node_admin_username`; a custom user gets an
+ordinary account, and `node_admin_uid` other than 88 for `dba` is rejected
+rather than half-honored.
+
+## Name resolution
+
+Farrow derives each VM's name the way Pigsty derives hostnames: explicit
+`nodename` first, then `<pg_cluster>-<pg_seq>` (the `node_id_from_pg`
+convention), then `node-<last octet>`. The two systems therefore agree on
+what every machine is called without repeating anything.
+
+Inside the guests, each node's seed carries the project's names and
+`vm_alias` entries; on the host, `farrow hosts install --yes` publishes the
+aliases (any RFC1918 subnet) so `https://i.pigsty` style access works from
+the browser. Note that Pigsty's own `node_etc_hosts` management supersedes
+the seed copy once `install.yml` has run — which also covers freshly added
+peers that older seeds predate.
+
+## Mixed inventories
+
+An inventory may describe machines Farrow should not touch — real servers,
+cloud instances — alongside the lab VMs. Mark them:
+
+```yaml
+    10.10.10.20: { nodename: backup-host, vm_skip: true }
+```
+
+`vm_skip: true` excludes a host from every Farrow operation while leaving it
+fully visible to Ansible.

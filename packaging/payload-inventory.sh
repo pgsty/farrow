@@ -24,10 +24,10 @@ farrow_common_payload_paths() {
     docs/images.md \
     docs/networking.md \
     docs/phase-2.md \
+    docs/pigsty.md \
     docs/security.md \
     docs/status.md \
     docs/troubleshooting.md \
-    schemas/farrow-v1.schema.json \
     tests/e2e/README.md
   if [[ -n ${licenses} ]]; then
     while IFS= read -r license; do
@@ -58,9 +58,6 @@ farrow_linux_package_payload_paths() {
     case ${path} in
       LICENSE|README.md|THIRD_PARTY_LICENSES.md|docs/*|tests/*)
         printf 'usr/share/doc/farrow/%s\n' "${path}"
-        ;;
-      schemas/*)
-        printf 'usr/share/farrow/%s\n' "${path}"
         ;;
       third_party/licenses/*)
         printf 'usr/share/doc/farrow/licenses/%s\n' "${path##*/}"

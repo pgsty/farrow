@@ -4,9 +4,8 @@ Start by re-running the idempotent bootstrap. It fixes missing supported
 dependencies and reports the first host boundary it cannot safely cross:
 
 ```bash
-farrow setup                       # Quick project
-farrow setup meta                  # private single-node project
-farrow setup full                  # private four-node project
+farrow setup                       # prepare the discovered config, or a single-node lab
+farrow setup full                  # four-node lab template in an empty directory
 ```
 
 Then narrow a runtime problem with:
@@ -43,7 +42,7 @@ decision belongs to the host owner; after Homebrew exists, setup handles QEMU.
 ## `setup` cannot install a Linux dependency
 
 Setup supports APT on Debian/Ubuntu and DNF on Fedora/RHEL-family hosts. Native
-Farrow packages normally install the Quick dependencies before setup runs:
+Farrow packages normally install the base dependencies before setup runs:
 
 | Format/arch | Architecture-specific | Common |
 |---|---|---|
@@ -52,35 +51,20 @@ Farrow packages normally install the Quick dependencies before setup runs:
 | RPM amd64 | `qemu-kvm`, `edk2-ovmf` | `qemu-img`, `openssh-clients`, `iproute` |
 | RPM arm64 | `qemu-kvm`, `edk2-aarch64` | `qemu-img`, `openssh-clients`, `iproute` |
 
-For Private, Debian/Ubuntu also needs `systemd`; Fedora needs
-`systemd-networkd`. Do not substitute an unrelated QEMU binary: setup verifies
-the native system emulator, image tool, UEFI firmware, and accelerator after
-the package manager returns.
+The bridge follows the active network manager: NetworkManager hosts (the
+whole RHEL family, most desktops) need no networkd package at all; only a
+host where neither manager is active pulls in `systemd-networkd`. Do not
+substitute an unrelated QEMU binary: setup verifies the native system
+emulator, image tool, UEFI firmware, and accelerator after the package
+manager returns.
 
-RHEL, Rocky, AlmaLinux, CentOS, and Oracle Linux are currently Quick-only.
-Their supported networking stack is NetworkManager and Farrow does not yet
-implement a safe private NetworkManager backend. Use `farrow setup` without a
-private profile, or run the private lab on Debian/Ubuntu, Fedora, or macOS.
+## `setup` preserves an existing configuration
 
-## `setup` preserves an existing `farrow.yaml`
-
-`farrow setup meta` and `farrow setup full` create `farrow.yaml` only when the
-target is absent or resolves to the exact same generated profile. An invalid or
-different file is never overwritten.
-
-Choose one explicit path:
-
-```bash
-farrow setup -f farrow.yaml       # prepare the existing file exactly as written
-
-# or preserve it and generate the named profile in an empty directory
-mkdir -p ../fresh-lab
-cd ../fresh-lab
-farrow setup full
-```
-
-If the current directory should be Quick, move the private `farrow.yaml` out
-of it first. Plain `farrow up` intentionally discovers that file.
+With a `pigsty.yml`/`farrow.yaml` present, plain `farrow setup` prepares that
+exact file, and `farrow setup <template>` is accepted only when the file
+resolves to the same generated template. An invalid or different file is
+never overwritten — prepare it as written with `farrow setup`, or generate
+the template in an empty directory.
 
 ## `farrow doctor` reports a missing capability
 
@@ -157,17 +141,20 @@ it at `/tmp`, your home directory, or anything shared.
 Run `farrow plan` first — it classifies the pending action without touching
 anything.
 
-On a running quick VM, CPU, memory and forward changes return exit 4 and do
-nothing. Apply them with `farrow up --restart`. Stopped VMs converge on plain
-`up`.
-
-Private projects classify *any* desired spec change as destructive. `up -f`
-returns exit 4; the only apply path is:
+Drift is node-granular. Hosts added to the configuration are created by
+plain `up` without touching peers. A changed node returns exit 4 and `plan`
+names it in its `recreate` list:
 
 ```bash
-farrow plan -f farrow.yaml
-farrow recreate -f farrow.yaml --force
+farrow plan
+farrow recreate --force node-1
 ```
+
+A host deleted from the configuration is only *reported* (`missing` in
+plan); removing it is always the explicit `farrow destroy node-1 --force`.
+Project-level changes (login user, subnet, defaults) recreate the whole
+project. Restart-class in-place application (`vm_cpu`/`vm_mem` without a
+rebuild) is not implemented yet — those report as recreates too.
 
 Persistent disk compatibility is checked before anything is stopped.
 
@@ -210,9 +197,9 @@ is explicit or unsafe to change: a user-supplied config/CIDR, a foreign owner,
 a partial installation, or an active lease. Inspect the evidence:
 
 ```bash
-farrow setup -f farrow.yaml --dry-run --json
+farrow setup --dry-run --json
 farrow network status --json
-farrow network preflight -f farrow.yaml --json
+farrow network preflight -f pigsty.yml --json
 ```
 
 If a foreign route, interface, service, or address owns the subnet, stop that
@@ -222,15 +209,15 @@ generated lab that has not retained data, replace the whole decision:
 ```bash
 farrow destroy --force
 farrow network uninstall --yes
-mv farrow.yaml farrow.yaml.previous
+mv pigsty.yml pigsty.yml.previous
 farrow setup full --network-cidr 172.31.251.0/24
 farrow up
 ```
 
-Review `farrow.yaml.previous` before deleting it. For a hand-maintained config,
-edit every node address and the private `/24` together, then run
-`farrow setup -f farrow.yaml`. Changing only the daemon subnet, node IPs, or
-lease file produces an inconsistent host.
+Review `pigsty.yml.previous` before deleting it. For a hand-maintained
+config, edit every node address together as one `/24` change, then rerun
+`farrow setup`. Changing only the daemon subnet, node IPs, or lease file
+produces an inconsistent host.
 
 ## `setup` finds a partial or unsafe private installation
 
@@ -239,7 +226,7 @@ Start with the read-only record:
 
 ```bash
 farrow network status --json
-farrow network preflight -f farrow.yaml --json
+farrow network preflight -f pigsty.yml --json
 ```
 
 The finding identifies the exact marker, owner, mode, path, service, or
@@ -262,24 +249,12 @@ Farrow will not adopt a foreign interface that happens to hold `.1/24`. Install
 records the exact BSD interface it created, and preflight accepts only that
 one.
 
-## Linux: `doctor` exits 3 but Quick works
+## Linux: `doctor` reports the network is not ready
 
-On a host that has never installed the private network, `doctor` and
-`network status` report:
-
-```text
-[error] linux-networkd: systemd-networkd is not active
-[warn]  bridge-helper: ... requires reversible dpkg-statoverride
-[warn]  network-installation.absent: private network backend is not installed
-```
-
-and exit **3**. This is the private-network readiness verdict, not a verdict on
-Quick. `farrow setup` verifies the capabilities Quick actually needs and makes
-no private host-network change. Use `farrow setup meta` or `farrow setup full`
-only when fixed-IP networking is wanted.
-
-Many desktop Ubuntu installations use NetworkManager with systemd-networkd
-dormant, so this is expected before Private setup.
+On a host that has never run `farrow setup`, doctor lists network-readiness
+findings but exits **0** — a not-yet-installed network is information, not a
+broken host. Capability errors (no QEMU, no accelerator, no firmware) are
+what exit 3.
 
 ## Linux: `setup` refuses with "could affect link"
 
@@ -296,15 +271,16 @@ interface and dormant networkd hits this**. It is a conservative match: Farrow
 does not model `WLANInterfaceType`, so any file that could match a wireless
 link counts as a conflict.
 
-Your options, in order of preference:
+This refusal only applies when **neither** NetworkManager nor
+systemd-networkd is active — on a NetworkManager host Farrow uses the nmcli
+backend and never starts networkd, so the hazard does not exist there. Your
+options:
 
-1. **Use quick mode.** It needs no bridge, no networkd and no privilege.
-2. **Adopt systemd-networkd deliberately**, as the host administrator, before
-   rerunning setup. Once networkd is already active, Farrow does not need the
-   activation safety proof. Understand what this does to a
-   NetworkManager-managed desktop before changing it.
-3. **Run the private lab on a host without the conflicting configuration** — a
-   headless server with no wireless interface typically has none.
+1. **Let NetworkManager own the host** (it usually already does on a
+   desktop); rerun setup and the nmcli backend is selected automatically.
+2. **Adopt systemd-networkd deliberately**, as the host administrator,
+   before rerunning setup. Once networkd is active, Farrow does not need the
+   activation safety proof.
 
 The same refusal covers a `.netdev` file that could create a virtual link, an
 ambiguous match pattern, and wrong `qemu-bridge-helper` ownership. In every
@@ -326,8 +302,8 @@ cannot overlap the project marker, Farrow data root, or managed VM state.
 If the error says `virtio-9p-pci` is missing, the selected QEMU package was
 built without VirtFS support; install a QEMU build that provides that device.
 There is no provider fallback. If the guest mount is unexpectedly read-only,
-remember that `readonly` defaults to `true`; write access requires an explicit
-`readonly: false` in that node's `shares` entry.
+remember that `readonly` defaults to `true`; write access requires an
+explicit `readonly: false` in that node's `vm_shares` entry.
 
 ## Recovering safely
 
@@ -344,12 +320,18 @@ Ordinary `destroy --force` preserves project keys and every `persistent: true`
 disk; a later compatible `up` reattaches them. Deleting persistent data needs
 the separate `--delete-persistent` confirmation alongside `--force`.
 
-Once every node artifact and retained disk is gone:
+`destroy --force --purge` is the terminal one-verb disposal: persistent
+disks, keys, the registration, and the workspace marker. For finer control:
 
 ```bash
 farrow project purge-keys --dry-run
 farrow project purge-keys --yes
 ```
+
+A project whose directory was deleted without a destroy is still removable:
+`farrow list` flags it as an orphan, and `farrow project rm <id> --force`
+(or `farrow project prune --yes` for the provable ones) destroys and
+deregisters it from anywhere.
 
 Any unexpected entry, unsafe owner or mode, live process, remaining node
 artifact or retained disk blocks the whole operation before the first

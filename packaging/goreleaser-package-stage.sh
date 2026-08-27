@@ -62,8 +62,7 @@ install -d -m 0755 \
   "${package_content}/usr/bin" \
   "${package_content}/usr/share/doc/farrow/docs" \
   "${package_content}/usr/share/doc/farrow/licenses" \
-  "${package_content}/usr/share/doc/farrow/tests/e2e" \
-  "${package_content}/usr/share/farrow/schemas"
+  "${package_content}/usr/share/doc/farrow/tests/e2e"
 install -m 0755 "${helper}" "${package_content}/opt/farrow/libexec/farrow-hosts-helper"
 install -m 0644 "${repo}/LICENSE" "${repo}/README.md" "${repo}/THIRD_PARTY_LICENSES.md" \
   "${package_content}/usr/share/doc/farrow/"
@@ -76,12 +75,12 @@ install -m 0644 \
   "${repo}/docs/images.md" \
   "${repo}/docs/networking.md" \
   "${repo}/docs/phase-2.md" \
+  "${repo}/docs/pigsty.md" \
   "${repo}/docs/security.md" \
   "${repo}/docs/status.md" \
   "${repo}/docs/troubleshooting.md" \
   "${package_content}/usr/share/doc/farrow/docs/"
 install -m 0644 "${repo}/tests/e2e/README.md" "${package_content}/usr/share/doc/farrow/tests/e2e/"
-install -m 0644 "${repo}/schemas/farrow-v1.schema.json" "${package_content}/usr/share/farrow/schemas/"
 install -m 0644 "${repo}"/third_party/licenses/* "${package_content}/usr/share/doc/farrow/licenses/"
 
 binary_sha=$(shasum -a 256 "${binary}" | awk '{print $1}')

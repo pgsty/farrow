@@ -68,7 +68,7 @@ for arch in amd64 arm64; do
   payload=${stage}/payload
   install -d -m 0755 "${payload}/usr/bin" "${payload}/opt/farrow/libexec" \
     "${payload}/usr/share/doc/farrow/docs" "${payload}/usr/share/doc/farrow/licenses" \
-    "${payload}/usr/share/doc/farrow/tests/e2e" "${payload}/usr/share/farrow/schemas"
+    "${payload}/usr/share/doc/farrow/tests/e2e"
   helper=${payload}/opt/farrow/libexec/farrow-hosts-helper
   binary=${payload}/usr/bin/farrow
   (
@@ -103,12 +103,12 @@ for arch in amd64 arm64; do
     "${repo}/docs/images.md" \
     "${repo}/docs/networking.md" \
     "${repo}/docs/phase-2.md" \
+    "${repo}/docs/pigsty.md" \
     "${repo}/docs/security.md" \
     "${repo}/docs/status.md" \
     "${repo}/docs/troubleshooting.md" \
     "${payload}/usr/share/doc/farrow/docs/"
   install -m 0644 "${repo}/tests/e2e/README.md" "${payload}/usr/share/doc/farrow/tests/e2e/"
-  install -m 0644 "${repo}/schemas/farrow-v1.schema.json" "${payload}/usr/share/farrow/schemas/"
   install -m 0644 "${repo}"/third_party/licenses/* "${payload}/usr/share/doc/farrow/licenses/"
 
   for format in deb rpm; do

@@ -73,17 +73,14 @@ proves HVF/KVM boot behaviour on real hardware.
 
 ## CLI architecture boundary
 
-The current command tree still uses Go's standard `flag` package. The output
-contract is separate from that parser: text/JSON/YAML rendering, TTY detection,
-colour, progress, and verbose diagnostics must remain reusable when the command
-tree moves to Cobra.
-
-That migration should remain one coherent change. Cobra will own discovery,
-usage, and persistent presentation flags. Viper may own config path,
-environment, and precedence, but it must not weaken `internal/config.Load`:
-unknown-field rejection, the size limit, multi-document rejection, canonical
-paths, and symlink checks remain the project-file boundary. Presentation flags
-are runtime-only and must never be written into `farrow.yaml`.
+Cobra owns command discovery, usage, completion, and the persistent
+presentation flags; Viper owns process-level presentation settings. The
+output contract is independent of both: text/JSON/YAML rendering, TTY
+detection, colour, progress, and verbose diagnostics live in the output
+layer. Neither weakens the configuration boundary: the inventory parser
+keeps its strict `vm_*` namespace, size limit, and symlink checks, and
+presentation flags are runtime-only, never written into the configuration
+file.
 
 ## Test
 
@@ -93,11 +90,10 @@ Run the full gate after a coherent batch of changes:
 make check
 ```
 
-It runs `test`, `race`, `vet`, `staticcheck`, `vuln`, `cross-check`,
-`profile-contract`, `wrapper-test`, the portable `image-pipeline-test`, and
-`license-check`. Native guest mutation is deliberately a separate required-input
-gate, so `make check` never reports success after silently skipping it.
-Use the narrower targets while iterating:
+It runs `test`, `race`, `vet`, `staticcheck`, `vuln`, `cross-check`, the
+portable `image-pipeline-test`, and `license-check`. Native guest mutation is
+deliberately a separate required-input gate, so `make check` never reports
+success after silently skipping it. Use the narrower targets while iterating:
 
 ```bash
 make test
@@ -106,17 +102,10 @@ make vet
 make staticcheck
 make vuln
 make cross-check
-make profile-contract
-make wrapper-test
 make image-pipeline-test
 make image-pipeline-native-test  # requires the documented native image inputs
 make license-check
-
-PIGSTY_SOURCE=/absolute/path/to/pigsty make pigsty-source-test
 ```
-
-`pigsty-source-test` is opt-in because it needs a real Pigsty checkout. It
-validates all 13 inventory templates against the catalog bindings.
 
 The unit suite is hermetic: no test reaches the network or depends on host VM
 state. Inject a seam instead of dialling a real endpoint.
@@ -127,14 +116,14 @@ Generated QEMU argv is not a boot. A fake QMP server is not HVF or KVM. Native
 behaviour is established by the bounded end-to-end scripts:
 
 ```bash
-tests/e2e/quick-product-smoke.sh
 tests/e2e/private-full-product-smoke.sh
 tests/e2e/private-soak.sh
-tests/e2e/quick-smoke.sh
 tests/e2e/host-audit.sh
 ```
 
-The product smokes accept an absolute Farrow binary, an existing mode-0700
+The e2e scripts predate the inventory-as-config redesign and are due for a
+rewrite as part of the native replay gate; treat them as references for the
+safety conventions, not as runnable acceptance today. The product smokes accept an absolute Farrow binary, an existing mode-0700
 data root, and a new evidence root. They remain ownership-bounded. The private
 smoke inspects an existing healthy, lease-free network; it never installs or
 uninstalls host networking. See [`tests/e2e/README.md`](../tests/e2e/README.md).
@@ -233,25 +222,25 @@ path.
 Formal packages come from `.goreleaser.yaml`. The standalone
 `packaging/build-linux-packages.sh` path remains available for iterating on an
 individual amd64/arm64 DEB/RPM payload without running the full release.
-The package payload installs `/usr/bin/farrow`, the `pigsty-vm` wrapper,
-`/opt/farrow/libexec/farrow-hosts-helper`, schemas, documentation, build
-metadata, and license material.
+The package payload installs `/usr/bin/farrow`,
+`/opt/farrow/libexec/farrow-hosts-helper`, documentation, build metadata,
+and license material.
 
 Package metadata uses hard dependencies so installing a native package is
-enough for Quick setup:
+enough for setup:
 
 | Package | amd64 | arm64 | Common |
 |---|---|---|---|
 | DEB | `qemu-system-x86`, `ovmf` | `qemu-system-arm`, `qemu-efi-aarch64` | `qemu-utils`, `openssh-client`, `iproute2` |
 | RPM | `qemu-kvm`, `edk2-ovmf` | `qemu-kvm`, `edk2-aarch64` | `qemu-img`, `openssh-clients`, `iproute` |
 
-Private setup additionally installs `systemd` on Debian/Ubuntu or
-`systemd-networkd` on Fedora when missing. RHEL-family Private remains
-unsupported because the host network is NetworkManager-owned; the RPM still
-supports Quick there.
+Setup additionally installs `systemd` on Debian/Ubuntu, and
+`systemd-networkd` on Fedora only when neither NetworkManager nor networkd
+is available to own the bridge. The RHEL family uses the NetworkManager
+backend and needs no extra network package.
 
 Packages do not enable or alter a host network during package installation.
-That mutation belongs to the visible, idempotent `farrow setup meta|full`
+That mutation belongs to the visible, idempotent `farrow setup`
 transaction.
 
 Each package has an SPDX SBOM. Verification binds `BUILD_INFO.json`, binary
