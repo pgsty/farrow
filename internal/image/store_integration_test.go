@@ -69,7 +69,7 @@ func TestIntegrationImportAndValidateCache(t *testing.T) {
 	if info.Mode().Perm() != 0o444 {
 		t.Fatalf("cached mode = %v", info.Mode())
 	}
-	relative, err := filepath.Rel(store.DataRoot, path)
+	relative, err := filepath.Rel(filepath.Join(store.DataRoot, "images"), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestHTTPRepositoryPrecedesUpstreamAndKeepsReadableName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pathname != filepath.Join(store.DataRoot, "u24", "u24-1-arm64.qcow2") || !strings.HasPrefix(metadata.Source, "repository:") || upstreamHits.Load() != 0 {
+	if pathname != filepath.Join(store.DataRoot, "images", "u24", "u24-1-arm64.qcow2") || !strings.HasPrefix(metadata.Source, "repository:") || upstreamHits.Load() != 0 {
 		t.Fatalf("repository pull = path %q metadata %#v upstream hits %d", pathname, metadata, upstreamHits.Load())
 	}
 }

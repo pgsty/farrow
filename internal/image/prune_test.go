@@ -79,7 +79,7 @@ func TestPruneDryRunAndApplyReadableImages(t *testing.T) {
 func TestPruneDryRunAndApplyOrphanedStagingFiles(t *testing.T) {
 	t.Parallel()
 	dataRoot := t.TempDir()
-	family := filepath.Join(dataRoot, "u24")
+	family := filepath.Join(dataRoot, "images", "u24")
 	for _, directory := range []string{family, filepath.Join(dataRoot, "locks")} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)

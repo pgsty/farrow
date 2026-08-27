@@ -11,7 +11,7 @@ import (
 func TestValidateCachedDigestMismatchHasFactualError(t *testing.T) {
 	t.Parallel()
 	dataRoot := t.TempDir()
-	pathname := filepath.Join(dataRoot, "u24", "fixture.qcow2")
+	pathname := filepath.Join(dataRoot, "images", "u24", "fixture.qcow2")
 	if err := os.MkdirAll(filepath.Dir(pathname), 0o700); err != nil {
 		t.Fatal(err)
 	}

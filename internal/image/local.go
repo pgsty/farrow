@@ -37,7 +37,7 @@ type LocalAliases struct {
 }
 
 func (s Store) localAliasesPath() string {
-	return filepath.Join(s.DataRoot, "local-images.json")
+	return filepath.Join(s.imagesRoot(), "local-images.json")
 }
 
 func validateLocalAlias(value LocalAlias) error {
@@ -108,7 +108,7 @@ func (s Store) RegisterLocalAlias(ctx context.Context, name, pathname string, me
 		return Entry{}, "", Metadata{}, err
 	}
 	name = strings.ToLower(strings.TrimSpace(name))
-	relative, err := filepath.Rel(s.DataRoot, pathname)
+	relative, err := filepath.Rel(s.imagesRoot(), pathname)
 	if err != nil || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
 		return Entry{}, "", Metadata{}, errors.New("imported image is outside the Farrow home")
 	}

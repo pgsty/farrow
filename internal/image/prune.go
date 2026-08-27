@@ -29,8 +29,9 @@ type PruneReport struct {
 	Items      []PruneItem `json:"items"`
 }
 
+// manifests is the one non-family directory inside images/.
 var nonImageRoots = map[string]struct{}{
-	"locks": {}, "manifests": {}, "projects": {},
+	"manifests": {},
 }
 
 func stagingImageName(name string) bool {
@@ -51,7 +52,7 @@ func (s Store) scanPrune(ctx context.Context, referenced map[string]struct{}, ap
 		report.Referenced = append(report.Referenced, digest)
 	}
 	sort.Strings(report.Referenced)
-	roots, err := os.ReadDir(s.DataRoot)
+	roots, err := os.ReadDir(s.imagesRoot())
 	if errors.Is(err, os.ErrNotExist) {
 		return report, nil
 	}
@@ -66,7 +67,7 @@ func (s Store) scanPrune(ctx context.Context, referenced map[string]struct{}, ap
 		if !catalogName.MatchString(root.Name()) {
 			continue
 		}
-		rootPath := filepath.Join(s.DataRoot, root.Name())
+		rootPath := filepath.Join(s.imagesRoot(), root.Name())
 		rootInfo, statErr := os.Lstat(rootPath)
 		if statErr != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 || rootInfo.Mode().Perm()&0o022 != 0 {
 			return report, fmt.Errorf("image family directory is unsafe: %s", rootPath)

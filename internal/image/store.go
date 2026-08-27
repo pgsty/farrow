@@ -103,6 +103,11 @@ func copyWithProgress(destination io.Writer, source io.Reader, limit int64, repo
 
 func (s Store) lockPath() string { return filepath.Join(s.DataRoot, "locks", "images.lock") }
 
+// imagesRoot is the dedicated image subtree of the data root: family
+// directories, local imports, the local-alias registry, and the signed
+// manifests all live under it, never at the data-root top level.
+func (s Store) imagesRoot() string { return filepath.Join(s.DataRoot, "images") }
+
 func ensurePrivateDir(pathname string) error {
 	if err := os.MkdirAll(pathname, 0o700); err != nil {
 		return err
@@ -121,7 +126,7 @@ func (s Store) validate() error {
 	if _, err := NormalizeRepository(s.Repository); err != nil {
 		return err
 	}
-	for _, directory := range []string{s.DataRoot, filepath.Dir(s.lockPath())} {
+	for _, directory := range []string{s.DataRoot, s.imagesRoot(), filepath.Dir(s.lockPath())} {
 		if err := ensurePrivateDir(directory); err != nil {
 			return err
 		}
@@ -141,7 +146,7 @@ func (s Store) Path(entry Entry) (string, error) {
 	if !validStoreFile(entry.File) {
 		return "", fmt.Errorf("invalid local image path %q", entry.File)
 	}
-	return filepath.Join(s.DataRoot, filepath.FromSlash(entry.File)), nil
+	return filepath.Join(s.imagesRoot(), filepath.FromSlash(entry.File)), nil
 }
 
 func (s Store) ensureImageDirectory(entry Entry) (string, error) {
@@ -150,7 +155,7 @@ func (s Store) ensureImageDirectory(entry Entry) (string, error) {
 		return "", err
 	}
 	directory := filepath.Dir(target)
-	if filepath.Dir(directory) != filepath.Clean(s.DataRoot) {
+	if filepath.Dir(directory) != filepath.Clean(s.imagesRoot()) {
 		return "", errors.New("image path must have exactly one family directory")
 	}
 	if err := ensurePrivateDir(directory); err != nil {

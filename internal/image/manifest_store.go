@@ -60,7 +60,7 @@ func (m ManifestManager) keys() ([]minisign.PublicKey, error) {
 	return append([]minisign.PublicKey(nil), keys...), nil
 }
 
-func (m ManifestManager) root() string      { return filepath.Join(m.DataRoot, "manifests") }
+func (m ManifestManager) root() string      { return filepath.Join(m.DataRoot, "images", "manifests") }
 func (m ManifestManager) versions() string  { return filepath.Join(m.root(), "versions") }
 func (m ManifestManager) statePath() string { return filepath.Join(m.root(), "state.json") }
 func (m ManifestManager) lockPath() string {
