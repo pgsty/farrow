@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/farrow/internal/config"
 	"github.com/pgsty/farrow/internal/execx"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/platform"
@@ -95,7 +94,6 @@ func TestPrivateDriftPlansRecreateAndUpReturnsTypedConflict(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("FARROW_HOME", root)
 	persisted := singlePrivateResolved()
-	persisted.DataRoot = root
 	persistedHash, err := spec.Hash(persisted)
 	if err != nil {
 		t.Fatal(err)
@@ -147,9 +145,10 @@ func TestPrivatePlanStopsBeforeMutationOnNetworkMismatch(t *testing.T) {
 			return Backend{}, nil
 		},
 	}
-	requested, err := config.RebasePrivateNetwork(singlePrivateResolved(), "172.31.251.0/24")
-	if err != nil {
-		t.Fatal(err)
+	requested := singlePrivateResolved()
+	requested.Private = &spec.PrivateNetwork{CIDR: "172.31.251.0/24", HostAddress: "172.31.251.1", DHCPEnd: "172.31.251.8"}
+	for index := range requested.Nodes {
+		requested.Nodes[index].Address = "172.31.251.1" + fmt.Sprintf("%d", index)
 	}
 	if _, err := manager.Plan(context.Background(), requested); err == nil {
 		t.Fatal("network mismatch was accepted")
@@ -382,17 +381,6 @@ func TestManagerUsesResolvedReadinessTimeout(t *testing.T) {
 	resolved.SSHWaitTimeoutNS = -1
 	if _, err := (Manager{}).readyTimeout(resolved); err == nil {
 		t.Fatal("negative resolved timeout accepted")
-	}
-}
-
-func TestPrivateMaterializesDataRootFromEnvironment(t *testing.T) {
-	root := t.TempDir()
-	desired := singlePrivateResolved()
-	desired.DataRoot = filepath.Join(root, "configured")
-	t.Setenv("FARROW_HOME", filepath.Join(root, "environment"))
-	materialized, err := (Manager{}).materializeDataRoot(desired)
-	if err != nil || materialized.DataRoot != filepath.Join(root, "environment") {
-		t.Fatalf("materialized = %#v, %v", materialized, err)
 	}
 }
 

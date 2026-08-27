@@ -120,7 +120,6 @@ type Resolved struct {
 	Private          *PrivateNetwork `json:"private,omitempty"`
 	SSHUser          string          `json:"ssh_user"`
 	SSHWaitTimeoutNS int64           `json:"ssh_wait_timeout_ns,omitempty"`
-	DataRoot         string          `json:"data_root,omitempty"`
 	Nodes            []Node          `json:"nodes"`
 }
 
@@ -138,8 +137,8 @@ func (r Resolved) SSHWaitTimeout() (time.Duration, error) {
 	return time.Duration(r.SSHWaitTimeoutNS), nil
 }
 
-// Quick returns the terminal semantics from the active execution prompt. It
-// intentionally differs from migrated Pigsty profile disk defaults.
+// Quick returns a small fixed single-node Resolved. It survives purely as a
+// cross-package test fixture; nothing in the product constructs it.
 func Quick(withDataDisk, withDefaultForwards bool) Resolved {
 	node := Node{
 		Name:     "meta",

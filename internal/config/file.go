@@ -1,12 +1,8 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
-	"net/netip"
-	"os"
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
@@ -19,8 +15,6 @@ import (
 	"github.com/pgsty/farrow/internal/spec"
 	"go.yaml.in/yaml/v3"
 )
-
-const maxConfigBytes = 1 << 20
 
 type Size int64
 
@@ -87,23 +81,12 @@ type SSHConfig struct {
 	WaitTimeout Duration `yaml:"wait_timeout,omitempty"`
 }
 
-type StorageConfig struct {
-	DataRoot string `yaml:"data_root,omitempty"`
-}
-
 type DiskConfig struct {
 	Name       string `yaml:"name"`
 	Size       Size   `yaml:"size"`
 	Mount      string `yaml:"mount"`
 	Filesystem string `yaml:"filesystem,omitempty"`
 	Persistent bool   `yaml:"persistent,omitempty"`
-}
-
-type ForwardConfig struct {
-	Bind     string `yaml:"bind,omitempty"`
-	Host     uint16 `yaml:"host"`
-	Guest    uint16 `yaml:"guest"`
-	Protocol string `yaml:"protocol,omitempty"`
 }
 
 type ShareConfig struct {
@@ -123,17 +106,16 @@ func shareReadonlyYAML(readonly bool) *bool {
 }
 
 type NodeConfig struct {
-	Name        string          `yaml:"name"`
-	Control     bool            `yaml:"control,omitempty"`
-	Address     string          `yaml:"address,omitempty"`
-	HostAliases []string        `yaml:"host_aliases,omitempty"`
-	Image       string          `yaml:"image,omitempty"`
-	CPUs        int             `yaml:"cpus,omitempty"`
-	Memory      Size            `yaml:"memory,omitempty"`
-	RootDisk    Size            `yaml:"root_disk,omitempty"`
-	Disks       []DiskConfig    `yaml:"disks,omitempty"`
-	Forwards    []ForwardConfig `yaml:"forwards,omitempty"`
-	Shares      []ShareConfig   `yaml:"shares,omitempty"`
+	Name        string        `yaml:"name"`
+	Control     bool          `yaml:"control,omitempty"`
+	Address     string        `yaml:"address,omitempty"`
+	HostAliases []string      `yaml:"host_aliases,omitempty"`
+	Image       string        `yaml:"image,omitempty"`
+	CPUs        int           `yaml:"cpus,omitempty"`
+	Memory      Size          `yaml:"memory,omitempty"`
+	RootDisk    Size          `yaml:"root_disk,omitempty"`
+	Disks       []DiskConfig  `yaml:"disks,omitempty"`
+	Shares      []ShareConfig `yaml:"shares,omitempty"`
 }
 
 type File struct {
@@ -143,7 +125,6 @@ type File struct {
 	Network  NetworkConfig  `yaml:"network"`
 	Defaults DefaultsConfig `yaml:"defaults,omitempty"`
 	SSH      SSHConfig      `yaml:"ssh,omitempty"`
-	Storage  StorageConfig  `yaml:"storage,omitempty"`
 	Nodes    []NodeConfig   `yaml:"nodes"`
 }
 
@@ -188,57 +169,12 @@ func guestPathOverlap(first, second string) bool {
 	return cleanPathOverlap(first, second, "/")
 }
 
-func Decode(reader io.Reader) (File, error) {
-	limited := io.LimitReader(reader, maxConfigBytes+1)
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return File{}, err
-	}
-	if len(data) > maxConfigBytes {
-		return File{}, errors.New("configuration exceeds 1 MiB limit")
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	var file File
-	if err := decoder.Decode(&file); err != nil {
-		return File{}, fmt.Errorf("decode strict YAML: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return File{}, errors.New("multiple YAML documents are not supported")
-	}
-	file.defaults()
-	if err := file.Validate(); err != nil {
-		return File{}, err
-	}
-	return file, nil
-}
-
-func Load(path string) (File, error) {
-	if path == "" || !filepath.IsAbs(path) {
-		return File{}, errors.New("configuration path must be absolute")
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return File{}, err
-	}
-	if !info.Mode().IsRegular() {
-		return File{}, errors.New("configuration must be a regular non-symlink file")
-	}
-	handle, err := os.Open(path)
-	if err != nil {
-		return File{}, err
-	}
-	defer handle.Close()
-	return Decode(handle)
-}
-
 func (f *File) defaults() {
 	if f.Arch == "" {
 		f.Arch = "native"
 	}
 	if f.Network.Mode == "" {
-		f.Network.Mode = "user"
+		f.Network.Mode = "private"
 	}
 	if f.Defaults.Image == "" {
 		f.Defaults.Image = "u24"
@@ -288,14 +224,6 @@ func (f *File) defaults() {
 		if node.RootDisk == 0 {
 			node.RootDisk = f.Defaults.RootDisk
 		}
-		for forwardIndex := range node.Forwards {
-			if node.Forwards[forwardIndex].Bind == "" {
-				node.Forwards[forwardIndex].Bind = "127.0.0.1"
-			}
-			if node.Forwards[forwardIndex].Protocol == "" {
-				node.Forwards[forwardIndex].Protocol = "tcp"
-			}
-		}
 		for diskIndex := range node.Disks {
 			if node.Disks[diskIndex].Filesystem == "" {
 				node.Disks[diskIndex].Filesystem = "auto"
@@ -315,20 +243,14 @@ func (f *File) Validate() error {
 	if f.Arch != "native" {
 		return errors.New("v1 supports arch: native only")
 	}
-	if f.Network.Mode != "user" && f.Network.Mode != "private" {
+	if f.Network.Mode != "private" {
 		return fmt.Errorf("unsupported network mode %q", f.Network.Mode)
 	}
 	if !sshUser.MatchString(f.SSH.User) {
 		return fmt.Errorf("invalid SSH user %q", f.SSH.User)
 	}
-	if f.Storage.DataRoot != "" && (!filepath.IsAbs(f.Storage.DataRoot) || filepath.Clean(f.Storage.DataRoot) != f.Storage.DataRoot || filepath.Clean(f.Storage.DataRoot) == "/") {
-		return errors.New("storage.data_root must be a clean non-root absolute path")
-	}
 	if len(f.Nodes) == 0 || len(f.Nodes) > 20 {
 		return errors.New("configuration requires 1..20 nodes")
-	}
-	if f.Network.Mode == "user" && len(f.Nodes) != 1 {
-		return errors.New("user network supports exactly one node")
 	}
 	privateLayout := subnet.Layout{}
 	if f.Network.Mode == "private" {
@@ -456,21 +378,6 @@ func (f *File) Validate() error {
 		if len(node.Shares) == 0 {
 			node.Shares = nil
 		}
-		forwardKeys := make(map[string]struct{})
-		for _, forward := range node.Forwards {
-			address, err := netip.ParseAddr(forward.Bind)
-			if forward.Protocol != "tcp" || err != nil || forward.Host == 0 || forward.Guest == 0 {
-				return fmt.Errorf("invalid forward on node %s", node.Name)
-			}
-			if !address.Is4() {
-				return fmt.Errorf("v1 forward bind address %q on node %s must be IPv4", forward.Bind, node.Name)
-			}
-			key := fmt.Sprintf("%s/%d", forward.Bind, forward.Host)
-			if _, exists := forwardKeys[key]; exists {
-				return fmt.Errorf("duplicate host forward %s", key)
-			}
-			forwardKeys[key] = struct{}{}
-		}
 	}
 	if controls > 1 {
 		return errors.New("at most one control node is allowed")
@@ -486,7 +393,7 @@ func (f File) Resolve() (spec.Resolved, error) {
 	if err := f.Validate(); err != nil {
 		return spec.Resolved{}, err
 	}
-	resolved := spec.Resolved{Schema: 1, Name: f.Name, Image: f.Defaults.Image, Network: f.Network.Mode, SSHUser: f.SSH.User, SSHWaitTimeoutNS: int64(f.SSH.WaitTimeout), DataRoot: f.Storage.DataRoot}
+	resolved := spec.Resolved{Schema: 1, Name: f.Name, Image: f.Defaults.Image, Network: f.Network.Mode, SSHUser: f.SSH.User, SSHWaitTimeoutNS: int64(f.SSH.WaitTimeout)}
 	if f.Network.Mode == "private" {
 		resolved.Private = &spec.PrivateNetwork{CIDR: f.Network.CIDR, HostAddress: f.Network.HostAddress, DHCPEnd: f.Network.DHCPEnd}
 	}
@@ -505,88 +412,7 @@ func (f File) Resolve() (spec.Resolved, error) {
 		for _, sourceShare := range source.Shares {
 			node.Shares = append(node.Shares, spec.Share{Host: sourceShare.Host, Guest: sourceShare.Guest, Readonly: shareReadonly(sourceShare)})
 		}
-		for _, sourceForward := range source.Forwards {
-			node.Forwards = append(node.Forwards, spec.Forward{Bind: sourceForward.Bind, Host: sourceForward.Host, Guest: sourceForward.Guest, Protocol: sourceForward.Protocol})
-		}
 		resolved.Nodes = append(resolved.Nodes, node)
 	}
-	if resolved.Network == "user" && len(resolved.Nodes) == 1 && resolved.Nodes[0].Image != "" {
-		resolved.Image = resolved.Nodes[0].Image
-		resolved.Nodes[0].Image = ""
-	}
 	return resolved, nil
-}
-
-// RebasePrivateNetwork moves a resolved private project to one explicit
-// host-global /24 while preserving every node's last octet.
-func RebasePrivateNetwork(resolved spec.Resolved, targetCIDR string) (spec.Resolved, error) {
-	if resolved.Network != "private" || resolved.Private == nil {
-		return spec.Resolved{}, errors.New("network CIDR override requires a private resolved spec")
-	}
-	source, err := subnet.Parse(resolved.Private.CIDR)
-	if err != nil {
-		return spec.Resolved{}, err
-	}
-	if resolved.Private.HostAddress != source.HostAddress() || resolved.Private.DHCPEnd != source.DHCPEnd() {
-		return spec.Resolved{}, errors.New("resolved private network does not match its /24 layout")
-	}
-	target, err := subnet.Parse(targetCIDR)
-	if err != nil {
-		return spec.Resolved{}, err
-	}
-	result := resolved
-	result.Private = &spec.PrivateNetwork{CIDR: target.CIDR(), HostAddress: target.HostAddress(), DHCPEnd: target.DHCPEnd()}
-	result.Nodes = append([]spec.Node(nil), resolved.Nodes...)
-	for index := range result.Nodes {
-		address, err := target.RebaseStatic(result.Nodes[index].Address, source)
-		if err != nil {
-			return spec.Resolved{}, fmt.Errorf("rebase node %s: %w", result.Nodes[index].Name, err)
-		}
-		result.Nodes[index].Address = address
-	}
-	return result, nil
-}
-
-func FromResolved(resolved spec.Resolved) (File, error) {
-	if resolved.Schema != 1 || len(resolved.Nodes) == 0 {
-		return File{}, errors.New("resolved spec is empty or unsupported")
-	}
-	waitTimeout, err := resolved.SSHWaitTimeout()
-	if err != nil {
-		return File{}, err
-	}
-	file := File{Version: 1, Name: resolved.Name, Arch: "native", Network: NetworkConfig{Mode: resolved.Network}, Defaults: DefaultsConfig{Image: resolved.Image}, SSH: SSHConfig{User: resolved.SSHUser, WaitTimeout: Duration(waitTimeout)}, Storage: StorageConfig{DataRoot: resolved.DataRoot}}
-	if resolved.Private != nil {
-		file.Network.CIDR, file.Network.HostAddress, file.Network.DHCPEnd = resolved.Private.CIDR, resolved.Private.HostAddress, resolved.Private.DHCPEnd
-	}
-	for _, source := range resolved.Nodes {
-		node := NodeConfig{Name: source.Name, Control: source.Control, Address: source.Address, HostAliases: append([]string(nil), source.Aliases...), Image: source.Image, CPUs: source.CPUs, Memory: Size(source.Memory), RootDisk: Size(source.RootDisk)}
-		if node.Image == "" {
-			node.Image = resolved.Image
-		}
-		for _, sourceDisk := range source.Disks {
-			node.Disks = append(node.Disks, DiskConfig{Name: sourceDisk.Name, Size: Size(sourceDisk.Size), Mount: sourceDisk.Mount, Filesystem: sourceDisk.Filesystem, Persistent: sourceDisk.Persistent})
-		}
-		for _, sourceShare := range source.Shares {
-			node.Shares = append(node.Shares, ShareConfig{Host: sourceShare.Host, Guest: sourceShare.Guest, Readonly: shareReadonlyYAML(sourceShare.Readonly)})
-		}
-		for _, sourceForward := range source.Forwards {
-			node.Forwards = append(node.Forwards, ForwardConfig{Bind: sourceForward.Bind, Host: spec.RequestedHostPort(sourceForward), Guest: sourceForward.Guest, Protocol: sourceForward.Protocol})
-		}
-		file.Nodes = append(file.Nodes, node)
-	}
-	return file, nil
-}
-
-func Marshal(file File) ([]byte, error) {
-	var output bytes.Buffer
-	encoder := yaml.NewEncoder(&output)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(file); err != nil {
-		return nil, err
-	}
-	if err := encoder.Close(); err != nil {
-		return nil, err
-	}
-	return output.Bytes(), nil
 }

@@ -362,15 +362,7 @@ func newImageCommand(stdout, stderr io.Writer) *cobra.Command {
 func newNetworkCommand(stdout, stderr io.Writer) *cobra.Command {
 	parent := subcommandGroup("network", "Inspect and manage host-global private networking", stdout, stderr)
 
-	preflight := &cobra.Command{Use: "preflight", Short: "Check a private-network plan", Args: cobra.NoArgs}
-	preflight.Flags().String("cidr", "", "candidate host-global RFC1918 IPv4 /24")
-	preflight.Flags().StringP("file", "f", "", "private configuration whose node addresses should be probed")
-	bindOperation(preflight, stdout, stderr, func(arguments []string, stdout, stderr io.Writer) int {
-		return runNetwork(append([]string{"preflight"}, arguments...), stdout, stderr)
-	})
-	parent.AddCommand(preflight)
-
-	status := &cobra.Command{Use: "status", Short: "Inspect installed network and lease state", Args: cobra.NoArgs}
+	status := &cobra.Command{Use: "status", Short: "Inspect installed network state and readiness", Args: cobra.NoArgs}
 	status.Flags().String("cidr", "", "expected host-global RFC1918 IPv4 /24")
 	bindOperation(status, stdout, stderr, func(arguments []string, stdout, stderr io.Writer) int {
 		return runNetwork(append([]string{"status"}, arguments...), stdout, stderr)

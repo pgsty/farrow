@@ -350,12 +350,7 @@ func validatePrivateRecreatePersistent(projectValue Deployment, current, request
 // RecreateResolved validates the complete desired private spec and persistent
 // attachment contract before the first stop/destroy mutation.
 func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) (Status, error) {
-	m.ConfiguredDataRoot = requested.DataRoot
 	var err error
-	requested, err = m.materializeDataRoot(requested)
-	if err != nil {
-		return Status{}, err
-	}
 	if err := validateResolved(requested); err != nil {
 		return Status{}, err
 	}

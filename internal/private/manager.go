@@ -107,12 +107,10 @@ func (e *NetworkPreflightError) Error() string {
 }
 
 type Manager struct {
-	CWD                 string
 	FarrowVersion       string
 	OperationID         string
 	Runner              execx.Runner
 	ReadyTimeout        time.Duration
-	ConfiguredDataRoot  string
 	Repository          string
 	Progress            activity.Reporter
 	NoWait              bool
@@ -317,15 +315,6 @@ func missingPath(err error) bool {
 
 func (m Manager) openProject(create bool) (Deployment, error) {
 	return openDeployment(create)
-}
-
-func (m Manager) materializeDataRoot(requested spec.Resolved) (spec.Resolved, error) {
-	root, err := state.ResolveDataRoot()
-	if err != nil {
-		return spec.Resolved{}, err
-	}
-	requested.DataRoot = root
-	return requested, nil
 }
 
 func cloneResolved(value spec.Resolved) spec.Resolved {
@@ -818,12 +807,7 @@ func (m Manager) RecordEvent(ctx context.Context, action, level, message string)
 
 func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error) {
 	m.report("preflight", "Checking the private-network and native QEMU capabilities")
-	m.ConfiguredDataRoot = requested.DataRoot
 	var err error
-	requested, err = m.materializeDataRoot(requested)
-	if err != nil {
-		return Status{}, err
-	}
 	if err := validateResolved(requested); err != nil {
 		return Status{}, err
 	}
@@ -1251,12 +1235,7 @@ func (m Manager) Restart(ctx context.Context) (Status, error) {
 }
 
 func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePlan, error) {
-	m.ConfiguredDataRoot = requested.DataRoot
 	var err error
-	requested, err = m.materializeDataRoot(requested)
-	if err != nil {
-		return LifecyclePlan{}, err
-	}
 	if err := validateResolved(requested); err != nil {
 		return LifecyclePlan{}, err
 	}

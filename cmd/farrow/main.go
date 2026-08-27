@@ -198,77 +198,10 @@ func installDarwinNetwork(ctx context.Context, installer darwinNetworkInstaller,
 
 func runNetwork(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: farrow network preflight|status|install|uninstall [--json|--yaml] [--verbose] [--yes]")
+		fmt.Fprintln(stderr, "usage: farrow network status|install|uninstall [--json|--yaml] [--verbose] [--yes]")
 		return exitUsage
 	}
 	command := args[0]
-	if command == "preflight" {
-		flags := newCommandFlagSet("network preflight", stderr)
-		jsonOutput := flags.Bool("json", false, "emit stable JSON")
-		networkCIDR := flags.String("cidr", "", "candidate host-global canonical RFC1918 IPv4 /24; defaults to 10.10.10.0/24")
-		configPath := flags.String("f", "", "private configuration whose exact node addresses should be probed")
-		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
-			return exitUsage
-		}
-		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-			fmt.Fprintln(stderr, "network preflight supports native Linux and Darwin")
-			return exitCapability
-		}
-		cidr := *networkCIDR
-		if cidr == "" {
-			cidr = subnet.DefaultCIDR
-		}
-		layout, err := subnet.Parse(cidr)
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
-		}
-		addresses := layout.StaticAddresses()
-		if *configPath != "" {
-			resolved, loadErr := loadPrivatePreflightConfig(*configPath)
-			if loadErr != nil {
-				errorf(stderr, "%v", loadErr)
-				return exitUsage
-			}
-			configLayout, layoutErr := subnet.Parse(resolved.Private.CIDR)
-			if layoutErr != nil {
-				errorf(stderr, "%v", layoutErr)
-				return exitUsage
-			}
-			if *networkCIDR != "" && configLayout.CIDR() != layout.CIDR() {
-				fmt.Fprintln(stderr, "--cidr differs from the private configuration; generate or edit one coordinated config instead of overriding it during preflight")
-				return exitUsage
-			}
-			layout = configLayout
-			addresses = addresses[:0]
-			for _, node := range resolved.Nodes {
-				addresses = append(addresses, node.Address)
-			}
-		}
-		addresses = withoutRecordedAddresses(addresses)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		debugf(stderr, "network preflight cidr=%s addresses=%d", layout.CIDR(), len(addresses))
-		progressItem := startProgress(ctx, stderr, "Checking host network readiness")
-		report := netpreflight.Run(ctx, netpreflight.Request{OS: runtime.GOOS, Arch: runtime.GOARCH, Purpose: netpreflight.Inspect, Layout: layout, Addresses: addresses}, netpreflight.Probe{Runner: execx.OSRunner{Timeout: 5 * time.Second, OutputLimit: 1 << 20}})
-		progressItem.Stop(nil)
-		if structuredOutput(stdout, *jsonOutput) {
-			if code := encodeJSON(stdout, stderr, report); code != exitOK {
-				return code
-			}
-		} else {
-			fmt.Fprintf(stdout, "network: %s host=%s dhcp_end=%s ready=%t\n", report.CIDR, report.HostAddress, report.DHCPEnd, report.Ready)
-			fmt.Fprintf(stdout, "installation: %s", report.Installation.Status)
-			if report.Installation.Mode != "" {
-				fmt.Fprintf(stdout, " mode=%s cidr=%s interface=%s healthy=%t", report.Installation.Mode, report.Installation.CIDR, report.Installation.Interface, report.Installation.Healthy)
-			}
-			fmt.Fprintln(stdout)
-			for _, finding := range report.Findings {
-				fmt.Fprintf(stdout, "%s %s: %s\n", finding.Severity, finding.Code, finding.Evidence)
-			}
-		}
-		return report.ExitCode
-	}
 	if command == "install" || command == "uninstall" {
 		flags := newCommandFlagSet("network "+command, stderr)
 		jsonOutput := flags.Bool("json", false, "emit stable JSON")
@@ -428,7 +361,7 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	if command != "status" {
-		fmt.Fprintln(stderr, "usage: farrow network preflight|status|install|uninstall [--json|--yaml] [--verbose] [--yes]")
+		fmt.Fprintln(stderr, "usage: farrow network status|install|uninstall [--json|--yaml] [--verbose] [--yes]")
 		return exitUsage
 	}
 	flags := newCommandFlagSet("network status", stderr)
@@ -1584,12 +1517,6 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		errorf(stderr, "%v", err)
 		return exitUsage
 	}
-	resolvedRoot, rootErr := state.ResolveDataRoot()
-	if rootErr != nil {
-		errorf(stderr, "%v", rootErr)
-		return exitUsage
-	}
-	resolved.DataRoot = resolvedRoot
 	hash, err := spec.Hash(resolved)
 	if err != nil {
 		errorf(stderr, "%v", err)

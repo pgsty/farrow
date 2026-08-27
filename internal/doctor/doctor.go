@@ -75,7 +75,6 @@ type Probe struct {
 	Runner           execx.Runner
 	LookPath         func(string) (string, error)
 	AcceleratorSmoke func(context.Context, string, platform.Profile) (string, error)
-	CWD              string
 }
 
 func (p Probe) acceleratorSmoke(ctx context.Context, qemuPath string, profile platform.Profile) (string, error) {
