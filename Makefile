@@ -9,12 +9,6 @@ SNAPSHOT_DIST ?= .goreleaser-snapshot
 
 build:
 	./packaging/build-dev.sh "$$(go env GOOS)" "$$(go env GOARCH)" bin
-	install -m 0755 packaging/pigsty/vm bin/pigsty-vm
-	go build -o bin/farrow-m0 ./cmd/farrow-m0
-	go build -o bin/farrow-net-stage ./cmd/farrow-net-stage
-	go build -o bin/farrow-linux-net-stage ./cmd/farrow-linux-net-stage
-	go build -o bin/farrow-private-m0 ./cmd/farrow-private-m0
-	go build -o bin/farrow-private-fd-m0 ./cmd/farrow-private-fd-m0
 
 build-darwin-amd64:
 	./packaging/build-dev.sh darwin amd64 bin/darwin_amd64

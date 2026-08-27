@@ -269,6 +269,18 @@ func UpgradeProject(ctx context.Context, projectValue project.Project, version s
 	}
 	defer projectLock.Release()
 
+	if projectValue.Marker.Schema != project.MarkerSchema {
+		action := UpgradeAction{Path: projectValue.MarkerPath, Backup: filepath.Join(projectValue.Root, "project.json"), FromSchema: projectValue.Marker.Schema, ToSchema: project.MarkerSchema}
+		if apply {
+			changed, upgradeErr := projectValue.UpgradeMarkers()
+			if upgradeErr != nil {
+				return report, upgradeErr
+			}
+			action.Applied = changed
+		}
+		report.Actions = append(report.Actions, action)
+	}
+
 	projectPath := filepath.Join(projectValue.Root, "resolved.json")
 	var projectState ProjectState
 	candidates := make([]upgradeCandidate, 0)

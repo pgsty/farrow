@@ -2821,6 +2821,9 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stdout, "  fix: %s\n", check.Fix)
 			}
 		}
+		if !report.NetworkReady() {
+			fmt.Fprintln(stdout, "the host-global network is not ready; run `farrow setup` to prepare it")
+		}
 	}
 	if report.HasErrors() {
 		return exitCapability

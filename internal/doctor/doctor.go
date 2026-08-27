@@ -23,11 +23,17 @@ const (
 	Error Status = "error"
 )
 
+// ClassNetwork marks checks about host-global private-network readiness. A
+// host that simply has not run `farrow setup` yet is not broken, so these
+// checks inform the report without failing the capability verdict.
+const ClassNetwork = "network"
+
 type Check struct {
 	Name     string `json:"name"`
 	Status   Status `json:"status"`
 	Evidence string `json:"evidence"`
 	Fix      string `json:"fix,omitempty"`
+	Class    string `json:"class,omitempty"`
 }
 
 type Report struct {
@@ -37,13 +43,32 @@ type Report struct {
 	Checks []Check `json:"checks"`
 }
 
+// HasErrors reports capability errors only. Network-class findings are
+// surfaced by NetworkReady and never turn the whole host verdict into exit 3.
 func (r Report) HasErrors() bool {
 	for _, check := range r.Checks {
-		if check.Status == Error {
+		if check.Status == Error && check.Class != ClassNetwork {
 			return true
 		}
 	}
 	return false
+}
+
+// NetworkReady reports whether every network-class check passed.
+func (r Report) NetworkReady() bool {
+	for _, check := range r.Checks {
+		if check.Class == ClassNetwork && check.Status == Error {
+			return false
+		}
+	}
+	return true
+}
+
+func markClass(checks []Check, class string) []Check {
+	for index := range checks {
+		checks[index].Class = class
+	}
+	return checks
 }
 
 type Probe struct {
@@ -210,10 +235,10 @@ func (p Probe) Run(ctx context.Context) Report {
 	}
 	report.Checks = append(report.Checks, p.projectChecks()...)
 	if profile.OS == "darwin" {
-		report.Checks = append(report.Checks, p.networkPreflightChecks(ctx, profile)...)
+		report.Checks = append(report.Checks, markClass(p.networkPreflightChecks(ctx, profile), ClassNetwork)...)
 	} else if profile.OS == "linux" {
-		report.Checks = append(report.Checks, p.linuxPrivateChecks(ctx)...)
-		report.Checks = append(report.Checks, p.networkPreflightChecks(ctx, profile)...)
+		report.Checks = append(report.Checks, markClass(p.linuxPrivateChecks(ctx), ClassNetwork)...)
+		report.Checks = append(report.Checks, markClass(p.networkPreflightChecks(ctx, profile), ClassNetwork)...)
 	}
 	return report
 }

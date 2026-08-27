@@ -18,13 +18,17 @@ import (
 	"github.com/pgsty/farrow/internal/fsutil"
 )
 
-const MarkerSchema = 1
+// MarkerSchema 2 adds work_dir and name so a data-root project can be traced
+// back to its workspace directory (orphan detection, list, prune). Schema-1
+// markers stay readable; `farrow project upgrade-state` rewrites them.
+const MarkerSchema = 2
 
 var ErrDataRootMigrationRequired = errors.New("project data-root migration required")
 
 var (
 	uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	nodePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 )
 
 type Marker struct {
@@ -32,6 +36,25 @@ type Marker struct {
 	ProjectID string    `json:"project_id"`
 	CreatedAt time.Time `json:"created_at"`
 	DataRoot  string    `json:"data_root"`
+	WorkDir   string    `json:"work_dir,omitempty"`
+	Name      string    `json:"name,omitempty"`
+}
+
+// SameIdentity reports whether two markers describe the same project. The
+// schema and the schema-2 convenience fields may differ transiently while a
+// marker pair is being upgraded; project identity may not.
+func (m Marker) SameIdentity(other Marker) bool {
+	return m.ProjectID == other.ProjectID && m.DataRoot == other.DataRoot && m.CreatedAt.Equal(other.CreatedAt)
+}
+
+// MarkerName returns a display-safe project name for a workspace directory,
+// or "" when the directory basename is not a safe name.
+func MarkerName(workDir string) string {
+	base := filepath.Base(workDir)
+	if namePattern.MatchString(base) {
+		return base
+	}
+	return ""
 }
 
 type Project struct {
@@ -211,8 +234,14 @@ func decodeMarker(path string) (Marker, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return Marker{}, errors.New("project marker contains trailing JSON data")
 	}
-	if marker.Schema != MarkerSchema || !uuidPattern.MatchString(marker.ProjectID) || !filepath.IsAbs(marker.DataRoot) || marker.CreatedAt.IsZero() {
+	if (marker.Schema != 1 && marker.Schema != MarkerSchema) || !uuidPattern.MatchString(marker.ProjectID) || !filepath.IsAbs(marker.DataRoot) || marker.CreatedAt.IsZero() {
 		return Marker{}, errors.New("project marker fields are invalid or unsupported")
+	}
+	if marker.Schema == 1 && (marker.WorkDir != "" || marker.Name != "") {
+		return Marker{}, errors.New("schema-1 project marker unexpectedly carries schema-2 fields")
+	}
+	if marker.Schema == MarkerSchema && (!filepath.IsAbs(marker.WorkDir) || (marker.Name != "" && !namePattern.MatchString(marker.Name))) {
+		return Marker{}, errors.New("project marker work_dir or name is invalid")
 	}
 	return marker, nil
 }
@@ -273,7 +302,7 @@ func Create(cwd, dataRoot string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
-	marker := Marker{Schema: MarkerSchema, ProjectID: projectID, CreatedAt: time.Now().UTC(), DataRoot: filepath.Clean(dataRoot)}
+	marker := Marker{Schema: MarkerSchema, ProjectID: projectID, CreatedAt: time.Now().UTC(), DataRoot: filepath.Clean(dataRoot), WorkDir: workDir, Name: MarkerName(workDir)}
 	project := paths(workDir, marker)
 	if err := ensureDir(project.Root, 0o700); err != nil {
 		return Project{}, err
@@ -343,10 +372,37 @@ func Open(cwd string) (Project, error) {
 		return Project{}, errors.New("project state root is missing, unsafe, or writable by other users")
 	}
 	dataMarker, err := decodeMarker(filepath.Join(project.Root, "project.json"))
-	if err != nil || dataMarker != marker {
+	if err != nil || !dataMarker.SameIdentity(marker) {
 		return Project{}, errors.New("workspace and data-root project markers do not match")
 	}
 	return project, nil
+}
+
+// UpgradeMarkers rewrites both marker copies at the current schema, recording
+// the workspace directory and its display name. The data-root copy is written
+// first so a crash between the two writes still leaves the pair openable.
+func (p Project) UpgradeMarkers() (bool, error) {
+	if p.WorkDir == "" || p.Root == "" {
+		return false, errors.New("marker upgrade requires an opened project")
+	}
+	upgraded := p.Marker
+	upgraded.Schema = MarkerSchema
+	upgraded.WorkDir = p.WorkDir
+	upgraded.Name = MarkerName(p.WorkDir)
+	if upgraded == p.Marker {
+		return false, nil
+	}
+	data, err := json.MarshalIndent(upgraded, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	data = append(data, '\n')
+	for _, path := range []string{filepath.Join(p.Root, "project.json"), p.MarkerPath} {
+		if err := fsutil.AtomicWrite(path, data, 0o600); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func (p Project) NodeDir(name string) (string, error) {

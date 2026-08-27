@@ -34,8 +34,6 @@ rebuild cannot expose a half-old, half-new pair:
 |---|---|
 | `farrow` | CLI |
 | `farrow-hosts-helper` | narrow `/etc/hosts` publisher paired to the CLI |
-| `pigsty-vm` | Pigsty integration wrapper |
-| `farrow-m0`, `farrow-net-stage`, `farrow-linux-net-stage`, `farrow-private-m0`, `farrow-private-fd-m0` | development probes; never released |
 
 Always use the Make target or `packaging/build-dev.sh`, even for a quick local
 build. The builder compiles the hosts helper first, hashes it, and injects that
