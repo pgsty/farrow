@@ -57,18 +57,19 @@ func TestIntegrationRealPrivateOfflinePrepare(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash, _ := spec.Hash(resolved)
+	nodeHashes, _ := spec.NodeHashes(resolved)
 	publicKey, privateKey := testSSHKeyPair(t)
 	seeds, err := RenderSeeds(resolved, plan, SeedInput{
 		PublicKey:  publicKey,
 		PrivateKey: privateKey,
-		SpecHash:   hash, Generation: map[string]uint64{"meta": 1, "node-1": 1},
+		SpecHashes: nodeHashes, Generation: map[string]uint64{"meta": 1, "node-1": 1},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	runner := execx.OSRunner{Timeout: 30 * time.Second, OutputLimit: 1 << 20}
 	config := PrepareConfig{
-		ProjectRoot: output, Resolved: resolved, SpecHash: hash, Plan: plan, Seeds: seeds,
+		ProjectRoot: output, Resolved: resolved, SpecHash: hash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds,
 		Bases:    map[string]BaseImage{"u24": {Path: imagePath, Alias: "u24", Release: "20260801", Digest: strings.Repeat("a", 64), VirtualSize: 3758096384}},
 		SSHPorts: map[string]uint16{"meta": 2222, "node-1": 2223}, Profile: profile,
 		QEMUBinary: qemuPath, Firmware: firmware,

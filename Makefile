@@ -1,8 +1,8 @@
 .PHONY: build \
 	build-darwin-amd64 build-darwin-arm64 build-linux-amd64 build-linux-arm64 \
 	amd arm cross build-cross cross-check \
-	test race vet staticcheck vuln check license-check profile-contract \
-	pigsty-source-test wrapper-test image-pipeline-test image-pipeline-native-test \
+	test race vet staticcheck vuln check license-check \
+	image-pipeline-test image-pipeline-native-test \
 	release-check release-snapshot release-local gr-check gr-snapshot gr-local release-dev
 
 SNAPSHOT_DIST ?= .goreleaser-snapshot
@@ -51,20 +51,10 @@ cross-check:
 	GOOS=linux GOARCH=amd64 go build ./...
 	GOOS=linux GOARCH=arm64 go build ./...
 
-check: test race vet staticcheck vuln cross-check profile-contract wrapper-test image-pipeline-test license-check
+check: test race vet staticcheck vuln cross-check image-pipeline-test license-check
 
 license-check:
 	./packaging/verify-licenses.sh
-
-profile-contract:
-	go test ./internal/profile
-
-pigsty-source-test:
-	@test -n "$(PIGSTY_SOURCE)" || { echo "PIGSTY_SOURCE is required" >&2; exit 2; }
-	PIGSTY_SOURCE="$(PIGSTY_SOURCE)" ./tests/pigsty-source-integration-test.sh
-
-wrapper-test:
-	./tests/pigsty-wrapper-test.sh
 
 image-pipeline-test:
 	./tests/image-pipeline-test.sh

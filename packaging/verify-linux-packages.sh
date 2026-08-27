@@ -35,7 +35,6 @@ fi
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 # shellcheck disable=SC1091
 source "${repo}/packaging/payload-inventory.sh"
-wrapper_sha=$(shasum -a 256 "${repo}/packaging/pigsty/vm" | awk '{print $1}')
 # shellcheck disable=SC1091
 source "${repo}/packaging/toolchain.env"
 
@@ -249,7 +248,7 @@ for arch in amd64 arm64; do
     package_sha=$(shasum -a 256 "${package}" | awk '{print $1}')
     namespace=https://github.com/pgsty/farrow/sbom/${version}/${arch}/${format}/${package_sha}
     jq -e --arg name "$(basename "${package}")" --arg version "${version}" --arg digest "${package_sha}" \
-      --arg created "${build_date}" --arg namespace "${namespace}" --arg go_version "go${FARROW_GO_VERSION}" --arg wrapper_sha "${wrapper_sha}" '
+      --arg created "${build_date}" --arg namespace "${namespace}" --arg go_version "go${FARROW_GO_VERSION}" '
       .spdxVersion == "SPDX-2.3" and
       .name == $name and
       .creationInfo.created == $created and .documentNamespace == $namespace and
@@ -259,7 +258,6 @@ for arch in amd64 arm64; do
       any(.packages[]?; .name == "go.yaml.in/yaml/v3") and
       any(.packages[]?; .name == "stdlib" and .versionInfo == $go_version and .licenseDeclared == "BSD-3-Clause") and
       any(.files[]?; .fileName == "usr/bin/farrow") and
-      any(.files[]?; .fileName == "usr/bin/pigsty-vm" and any(.checksums[]?; .algorithm == "SHA256" and .checksumValue == $wrapper_sha)) and
       any(.files[]?; .fileName == "opt/farrow/libexec/farrow-hosts-helper") and
       ((.packages | length) >= 10) and ((.files | length) >= 3)
     ' "${sbom}" >/dev/null
@@ -271,13 +269,11 @@ for arch in amd64 arm64; do
     [[ ${actual_list} == "${expected_list}" ]] || { printf 'unexpected package payload in %s\n' "${package}" >&2; diff -u <(printf '%s\n' "${expected_list}") <(printf '%s\n' "${actual_list}") >&2 || true; exit 1; }
     [[ $(file_mode "${root}/usr/bin/farrow") == 755 ]]
     [[ $(file_mode "${root}/opt/farrow/libexec/farrow-hosts-helper") == 755 ]]
-    [[ $(file_mode "${root}/usr/bin/pigsty-vm") == 755 ]]
-    cmp "${repo}/packaging/pigsty/vm" "${root}/usr/bin/pigsty-vm"
     for path in opt/farrow opt/farrow/libexec usr/share/doc/farrow usr/share/doc/farrow/licenses usr/share/farrow usr/share/farrow/schemas; do
       [[ -d ${root}/${path} && $(file_mode "${root}/${path}") == 755 ]] || { printf 'unexpected package directory mode for %s in %s\n' "${path}" "${package}" >&2; exit 1; }
     done
     for path in "${expected_paths[@]}"; do
-      case ${path} in opt/farrow/libexec/farrow-hosts-helper|usr/bin/farrow|usr/bin/pigsty-vm) continue ;; esac
+      case ${path} in opt/farrow/libexec/farrow-hosts-helper|usr/bin/farrow) continue ;; esac
       [[ $(file_mode "${root}/${path}") == 644 ]] || { printf 'unexpected mode for %s in %s\n' "${path}" "${package}" >&2; exit 1; }
     done
     file -b "${root}/usr/bin/farrow" | grep -F "${architecture_pattern}" >/dev/null

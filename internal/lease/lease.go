@@ -612,6 +612,67 @@ func (s Store) Update(ctx context.Context, desired Lease) (Result, error) {
 	return Result{Action: "updated", Apply: true, Lease: desired, Previous: &previous}, nil
 }
 
+// Reshape changes the owned reservation's node membership: new reservations
+// may be added and stopped reservations removed, while every node present on
+// both sides keeps its existing record untouched. The network contract and
+// the identity of surviving reservations may not change. This is the sole
+// sanctioned path for growing a running lab or dropping a destroyed node.
+func (s Store) Reshape(ctx context.Context, desired Lease) (Result, error) {
+	lock, err := s.acquireLock(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	defer lock.release()
+	existing, err := s.Read()
+	if err != nil {
+		return Result{}, err
+	}
+	if existing.ProjectID != desired.ProjectID || existing.OwnerUID != s.ownerUID() {
+		return Result{}, &ConflictError{Reason: "reshape requester does not own the active lease", Existing: existing}
+	}
+	if existing.CIDR != desired.CIDR || existing.HostAddress != desired.HostAddress || existing.DHCPEnd != desired.DHCPEnd {
+		return Result{}, &ConflictError{Reason: "reshape may not change the private network contract", Existing: existing}
+	}
+	existingNodes := make(map[string]Node, len(existing.Nodes))
+	for _, node := range existing.Nodes {
+		existingNodes[node.Name] = node
+	}
+	desiredNames := make(map[string]struct{}, len(desired.Nodes))
+	reshaped := make([]Node, 0, len(desired.Nodes))
+	for _, node := range desired.Nodes {
+		if _, duplicate := desiredNames[node.Name]; duplicate {
+			return Result{}, &ConflictError{Reason: "reshape lists node " + node.Name + " twice", Existing: existing}
+		}
+		desiredNames[node.Name] = struct{}{}
+		current, known := existingNodes[node.Name]
+		if !known {
+			reshaped = append(reshaped, node)
+			continue
+		}
+		if current.Address != node.Address || !strings.EqualFold(current.ManagementMAC, node.ManagementMAC) || !strings.EqualFold(current.PrivateMAC, node.PrivateMAC) || !strings.EqualFold(current.VMUUID, node.VMUUID) {
+			return Result{}, &ConflictError{Reason: "reshape may not change the reservation of surviving node " + node.Name, Existing: existing}
+		}
+		reshaped = append(reshaped, current)
+	}
+	for _, node := range existing.Nodes {
+		if _, kept := desiredNames[node.Name]; !kept && node.Phase != Stopped {
+			return Result{}, &ConflictError{Reason: "reshape may only drop stopped node " + node.Name, Existing: existing}
+		}
+	}
+	next := existing
+	next.Nodes = canonicalNodes(reshaped)
+	next.Generation = existing.Generation + 1
+	next.UpdatedAt = s.now()
+	if err := Validate(next); err != nil {
+		return Result{}, err
+	}
+	if err := s.write(next); err != nil {
+		return Result{}, err
+	}
+	previous := existing
+	return Result{Action: "reshaped", Apply: true, Lease: next, Previous: &previous}, nil
+}
+
 func auditAll(ctx context.Context, value Lease, auditor RuntimeAuditor) ([]Observation, bool, error) {
 	if auditor == nil {
 		return nil, false, errors.New("private lease runtime auditor is required")

@@ -13,6 +13,7 @@ import (
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/sshconfig"
 	"github.com/pgsty/farrow/internal/state"
 	"github.com/pgsty/farrow/internal/vm"
@@ -68,8 +69,9 @@ func (m Manager) integrationSnapshotLocked(projectValue project.Project) (projec
 		if err != nil {
 			return project.Project{}, state.ProjectState{}, nil, err
 		}
-		if node.SpecHash != projectState.SpecHash {
-			return project.Project{}, state.ProjectState{}, nil, fmt.Errorf("private node %s and project spec hashes differ", definition.Name)
+		expectedHash, hashErr := spec.NodeHash(projectState.Resolved, definition.Name)
+		if hashErr != nil || node.SpecHash != expectedHash {
+			return project.Project{}, state.ProjectState{}, nil, fmt.Errorf("private node %s state does not match its resolved node hash", definition.Name)
 		}
 		if node.SSHPort == 0 || node.Phase == state.Absent {
 			return project.Project{}, state.ProjectState{}, nil, fmt.Errorf("private node %s has no installable SSH endpoint", definition.Name)

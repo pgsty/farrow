@@ -155,6 +155,11 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 			continue
 		}
 		node, err := store.ReadNode(definition.Name)
+		if missingPath(err) {
+			// A node in the resolved spec without committed state is a pending
+			// creation; there is nothing to stop or destroy for it.
+			continue
+		}
 		if err != nil {
 			return Status{}, err
 		}
@@ -196,6 +201,9 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 	addresses := make(map[string]string)
 	for _, definition := range projectState.Resolved.Nodes {
 		node, err := store.ReadNode(definition.Name)
+		if missingPath(err) {
+			continue
+		}
 		if err != nil {
 			return Status{}, err
 		}
@@ -275,8 +283,40 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 			return Status{}, err
 		}
 	}
+	if partial && m.dropFromSpec {
+		remaining := cloneResolved(projectState.Resolved)
+		remaining.Nodes = remaining.Nodes[:0]
+		for _, definition := range projectState.Resolved.Nodes {
+			if _, removed := selectedSet[definition.Name]; !removed {
+				remaining.Nodes = append(remaining.Nodes, definition)
+			}
+		}
+		remainingHash, hashErr := spec.Hash(remaining)
+		if hashErr != nil {
+			return Status{}, hashErr
+		}
+		updated := state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: m.FarrowVersion, ProjectID: projectValue.Marker.ProjectID, SpecHash: remainingHash, Resolved: remaining, UpdatedAt: time.Now().UTC()}
+		if err := store.WriteProject(updated); err != nil {
+			return Status{}, err
+		}
+		if leaseStatus.Active && leaseStatus.Lease.ProjectID == projectValue.Marker.ProjectID {
+			desiredLease := *leaseStatus.Lease
+			desiredLease.Nodes = nil
+			for _, leased := range leaseStatus.Lease.Nodes {
+				if _, removed := selectedSet[leased.Name]; !removed {
+					desiredLease.Nodes = append(desiredLease.Nodes, leased)
+				}
+			}
+			if _, err := m.leaseStore().Reshape(ctx, desiredLease); err != nil {
+				return Status{}, err
+			}
+		}
+	}
 	message := "destroyed private node artifacts; image cache, project marker, keys, and persistent data disks preserved"
-	if partial {
+	switch {
+	case partial && m.dropFromSpec:
+		message = "destroyed and removed the selected node(s) from the project; peers, lease, keys, and persistent data disks preserved"
+	case partial:
 		message = "destroyed selected private node artifacts for immediate recreate; project state, peer nodes, lease, keys, and persistent data disks preserved"
 	}
 	result := Status{ProjectID: projectValue.Marker.ProjectID, OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message}
@@ -287,6 +327,18 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 		result.Nodes = append(result.Nodes, NodeStatus{Name: definition.Name, Address: definition.Address, State: state.Absent, Runtime: "inactive"})
 	}
 	return result, nil
+}
+
+// DestroyNodes destroys only the selected nodes and removes them from the
+// project's resolved state and lease, so a later `up` does not resurrect
+// them. This is the explicit removal path required by scale-in edits.
+func (m Manager) DestroyNodes(ctx context.Context) (Status, error) {
+	if len(m.Nodes) == 0 {
+		return Status{}, errors.New("node destroy requires explicit node selectors")
+	}
+	m.allowPartialDestroy = true
+	m.dropFromSpec = true
+	return m.Destroy(ctx)
 }
 
 func (m Manager) Recreate(ctx context.Context) (Status, error) {

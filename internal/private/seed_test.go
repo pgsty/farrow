@@ -21,7 +21,7 @@ func TestRenderSeedsPrivateContractAndKeyBoundary(t *testing.T) {
 	publicKey, privateKey := testSSHKeyPair(t)
 	files, err := RenderSeeds(resolved, plan, SeedInput{
 		PublicKey: publicKey, PrivateKey: privateKey,
-		SpecHash: strings.Repeat("a", 64), Generation: map[string]uint64{"meta": 1, "node-1": 1},
+		SpecHashes: map[string]string{"meta": strings.Repeat("a", 64), "node-1": strings.Repeat("a", 64)}, Generation: map[string]uint64{"meta": 1, "node-1": 1},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestRenderSeedsRequiresControlPrivateKeyAndEveryGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	publicKey, privateKey := testSSHKeyPair(t)
-	input := SeedInput{PublicKey: publicKey, SpecHash: strings.Repeat("a", 64), Generation: map[string]uint64{"meta": 1, "node-1": 1}}
+	input := SeedInput{PublicKey: publicKey, SpecHashes: map[string]string{"meta": strings.Repeat("a", 64), "node-1": strings.Repeat("a", 64)}, Generation: map[string]uint64{"meta": 1, "node-1": 1}}
 	if _, err := RenderSeeds(resolved, plan, input); err == nil {
 		t.Fatal("control seed without private key accepted")
 	}
@@ -81,7 +81,7 @@ func TestSingleNodePrivateDoesNotReceiveLateralKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	publicKey, _ := testSSHKeyPair(t)
-	files, err := RenderSeeds(resolved, plan, SeedInput{PublicKey: publicKey, SpecHash: strings.Repeat("a", 64), Generation: map[string]uint64{"meta": 1}})
+	files, err := RenderSeeds(resolved, plan, SeedInput{PublicKey: publicKey, SpecHashes: map[string]string{"meta": strings.Repeat("a", 64)}, Generation: map[string]uint64{"meta": 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

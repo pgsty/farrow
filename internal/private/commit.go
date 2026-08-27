@@ -26,6 +26,55 @@ func desiredProjectState(projectValue project.Project, resolved spec.Resolved, h
 	return state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: version, ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: resolved, UpdatedAt: now}
 }
 
+// envelopeOf strips the node list so project-level settings can be compared
+// on their own. Any envelope change moves every node's hash and is therefore
+// a whole-project recreate, never a silent in-place update.
+func envelopeOf(value spec.Resolved) spec.Resolved {
+	envelope := value
+	if value.Private != nil {
+		privateNetwork := *value.Private
+		envelope.Private = &privateNetwork
+	}
+	envelope.Nodes = nil
+	return envelope
+}
+
+// additiveResolvedChange reports whether desired differs from existing only
+// by node additions, or by replacing definitions of nodes whose state was
+// already destroyed (the per-node recreate window). Nodes may never disappear
+// here — removal is an explicit destroy, not a state-commit side effect.
+func additiveResolvedChange(store state.Store, existing, desired spec.Resolved) bool {
+	if !reflect.DeepEqual(envelopeOf(existing), envelopeOf(desired)) {
+		return false
+	}
+	desiredNodes := make(map[string]spec.Node, len(desired.Nodes))
+	for _, node := range desired.Nodes {
+		desiredNodes[node.Name] = node
+	}
+	for _, node := range existing.Nodes {
+		if _, kept := desiredNodes[node.Name]; !kept {
+			return false
+		}
+	}
+	existingNodes := make(map[string]spec.Node, len(existing.Nodes))
+	for _, node := range existing.Nodes {
+		existingNodes[node.Name] = node
+	}
+	for _, node := range desired.Nodes {
+		current, known := existingNodes[node.Name]
+		if !known {
+			continue
+		}
+		if reflect.DeepEqual(current, node) {
+			continue
+		}
+		if _, err := store.ReadNode(node.Name); !errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+	}
+	return true
+}
+
 func ensureProjectState(store state.Store, desired state.ProjectState) error {
 	existing, err := store.ReadProject()
 	if errors.Is(err, os.ErrNotExist) {
@@ -34,10 +83,16 @@ func ensureProjectState(store state.Store, desired state.ProjectState) error {
 	if err != nil {
 		return err
 	}
-	if existing.ProjectID != desired.ProjectID || existing.SpecHash != desired.SpecHash || !reflect.DeepEqual(existing.Resolved, desired.Resolved) {
+	if existing.ProjectID != desired.ProjectID {
+		return errors.New("refuse private state commit over a different project")
+	}
+	if existing.SpecHash == desired.SpecHash && reflect.DeepEqual(existing.Resolved, desired.Resolved) {
+		return nil
+	}
+	if !additiveResolvedChange(store, existing.Resolved, desired.Resolved) {
 		return errors.New("refuse private state commit over different resolved project state")
 	}
-	return nil
+	return store.WriteProject(desired)
 }
 
 func stateForArtifacts(config PrepareConfig, projectValue project.Project, artifacts NodeArtifacts, journal PrepareJournal, version string, now time.Time) (state.NodeState, error) {
@@ -60,7 +115,7 @@ func stateForArtifacts(config PrepareConfig, projectValue project.Project, artif
 	if base.Alias == "" {
 		base.Alias = baseAlias
 	}
-	if journal.ProjectID != projectValue.Marker.ProjectID || journal.Node != artifacts.Name || journal.VMUUID != nodePlan.VMUUID || journal.SpecHash != config.SpecHash || !journal.Prepared || !reflect.DeepEqual(journal.Invocation, artifacts.Invocation) {
+	if journal.ProjectID != projectValue.Marker.ProjectID || journal.Node != artifacts.Name || journal.VMUUID != nodePlan.VMUUID || journal.SpecHash != config.NodeHashes[artifacts.Name] || !journal.Prepared || !reflect.DeepEqual(journal.Invocation, artifacts.Invocation) {
 		return state.NodeState{}, errors.New("private prepared journal does not match artifacts/project intent")
 	}
 	dataState := make([]state.DataDisk, 0, len(artifacts.Data))
@@ -76,7 +131,7 @@ func stateForArtifacts(config PrepareConfig, projectValue project.Project, artif
 	}
 	return state.NodeState{
 		Schema: state.NodeSchema, FarrowVersion: version, ProjectID: projectValue.Marker.ProjectID,
-		Node: artifacts.Name, VMUUID: nodePlan.VMUUID, Phase: state.Prepared, Generation: 1, SpecHash: config.SpecHash,
+		Node: artifacts.Name, VMUUID: nodePlan.VMUUID, Phase: state.Prepared, Generation: 1, SpecHash: config.NodeHashes[artifacts.Name],
 		Image:    state.Image{Alias: base.Alias, Release: base.Release, Digest: base.Digest, VirtualSize: base.VirtualSize},
 		RootDisk: artifacts.Root, DataDisks: dataState, Seed: artifacts.Seed, NVRAM: artifacts.NVRAM,
 		SSHPort: config.SSHPorts[artifacts.Name], Forwards: forwards,

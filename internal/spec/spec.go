@@ -174,3 +174,43 @@ func Hash(value Resolved) (string, error) {
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:]), nil
 }
+
+// NodeResolved narrows a resolved spec to its project envelope plus exactly
+// one node. Its hash is the node-scoped drift identity: adding or changing a
+// peer never moves another node's hash, while any envelope change (network,
+// image default, SSH user) moves every node. A single-node project's node
+// hash equals its project hash by construction.
+func NodeResolved(value Resolved, name string) (Resolved, bool) {
+	for _, node := range value.Nodes {
+		if node.Name == name {
+			narrowed := value
+			if value.Private != nil {
+				privateNetwork := *value.Private
+				narrowed.Private = &privateNetwork
+			}
+			narrowed.Nodes = []Node{node}
+			return narrowed, true
+		}
+	}
+	return Resolved{}, false
+}
+
+func NodeHash(value Resolved, name string) (string, error) {
+	narrowed, ok := NodeResolved(value, name)
+	if !ok {
+		return "", errors.New("resolved spec has no node " + name)
+	}
+	return Hash(narrowed)
+}
+
+func NodeHashes(value Resolved) (map[string]string, error) {
+	result := make(map[string]string, len(value.Nodes))
+	for _, node := range value.Nodes {
+		hash, err := NodeHash(value, node.Name)
+		if err != nil {
+			return nil, err
+		}
+		result[node.Name] = hash
+	}
+	return result, nil
+}

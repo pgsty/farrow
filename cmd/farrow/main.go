@@ -26,11 +26,10 @@ import (
 	"github.com/pgsty/farrow/internal/lock"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	linuxnet "github.com/pgsty/farrow/internal/network/linux"
+	"github.com/pgsty/farrow/internal/fsutil"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/network/subnet"
-	pigstyint "github.com/pgsty/farrow/internal/pigsty"
 	privatevm "github.com/pgsty/farrow/internal/private"
-	"github.com/pgsty/farrow/internal/profile"
 	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/provision"
 	"github.com/pgsty/farrow/internal/quick"
@@ -54,22 +53,14 @@ const (
 )
 
 type lifecycleOptions struct {
-	Force             bool
-	DeletePersistent  bool
-	NoWait            bool
-	Rollback          bool
-	RestartDrift      bool
-	LogLevel          string
-	ConfigPath        string
-	Repository        string
-	ImageAlias        string
-	CPUs              int
-	Memory            string
-	RootDisk          string
-	DataDisk          string
-	NoDataDisk        bool
-	NoDefaultForwards bool
-	Forwards          []string
+	Force            bool
+	DeletePersistent bool
+	NoWait           bool
+	Rollback         bool
+	RestartDrift     bool
+	LogLevel         string
+	ConfigPath       string
+	Repository       string
 }
 
 func configurationWarnings(resolved spec.Resolved) []string {
@@ -142,7 +133,7 @@ func loadPrivatePreflightConfig(path string) (spec.Resolved, error) {
 	if err != nil {
 		return spec.Resolved{}, err
 	}
-	file, err := config.Load(absolute)
+	file, err := config.LoadPath(absolute)
 	if err != nil {
 		return spec.Resolved{}, err
 	}
@@ -151,7 +142,7 @@ func loadPrivatePreflightConfig(path string) (spec.Resolved, error) {
 		return spec.Resolved{}, err
 	}
 	if resolved.Network != "private" || resolved.Private == nil {
-		return spec.Resolved{}, errors.New("network preflight -f requires a valid private configuration")
+		return spec.Resolved{}, errors.New("network preflight -f requires a valid configuration")
 	}
 	return resolved, nil
 }
@@ -1147,69 +1138,20 @@ func printQuickStatus(out io.Writer, status quick.Status) {
 	}
 }
 
-func buildQuickOptions(imageAlias string, cpus int, memoryText, rootDiskText, dataDiskText string, noDataDisk, noDefaultForwards bool, forwardTexts []string, stderr io.Writer) (quick.Options, error) {
-	options := quick.Options{Image: imageAlias, CPUs: cpus, NoDataDisk: noDataDisk, NoDefaultForwards: noDefaultForwards}
-	for _, sizeFlag := range []struct {
-		text   string
-		target *int64
-	}{{memoryText, &options.Memory}, {rootDiskText, &options.RootDisk}, {dataDiskText, &options.DataDisk}} {
-		if sizeFlag.text == "" {
-			continue
-		}
-		value, err := config.ParseSize(sizeFlag.text)
-		if err != nil {
-			return quick.Options{}, err
-		}
-		*sizeFlag.target = value
-	}
-	for _, text := range forwardTexts {
-		forward, err := config.ParseForward(text)
-		if err != nil {
-			return quick.Options{}, err
-		}
-		if forward.Bind != "127.0.0.1" && forward.Bind != "::1" {
-			warningf(stderr, "forward %s binds beyond loopback", text)
-		}
-		options.Forwards = append(options.Forwards, forward)
-	}
-	if _, err := options.Resolve(); err != nil {
-		return quick.Options{}, err
-	}
-	return options, nil
-}
-
-func loadLifecycleConfig(command, configPath string, options quick.Options) (spec.Resolved, bool, error) {
+func loadLifecycleConfig(command, configPath string) (spec.Resolved, bool, error) {
 	if command != "up" && command != "plan" && command != "recreate" {
 		return spec.Resolved{}, false, nil
 	}
-	if configPath == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			candidate := filepath.Join(cwd, "farrow.yaml")
-			if _, err := os.Stat(candidate); err == nil {
-				configPath = candidate
-			}
-		}
-	}
-	if configPath == "" {
+	file, _, err := config.Discover("", configPath)
+	if errors.Is(err, config.ErrNoConfig) {
 		return spec.Resolved{}, false, nil
 	}
-	absolute, err := filepath.Abs(configPath)
-	if err != nil {
-		return spec.Resolved{}, false, err
-	}
-	file, err := config.Load(absolute)
 	if err != nil {
 		return spec.Resolved{}, false, err
 	}
 	resolved, err := file.Resolve()
 	if err != nil {
 		return spec.Resolved{}, false, err
-	}
-	if options.HasOverrides() {
-		resolved, err = quick.ApplyOptions(resolved, options)
-		if err != nil {
-			return spec.Resolved{}, false, err
-		}
 	}
 	return resolved, true, nil
 }
@@ -1358,35 +1300,12 @@ func reportQuickLifecycleError(err error, operationID string, stdout, stderr io.
 	return reportCommandFailure(stdout, stderr, false, "runtime", err.Error(), operationID, exitRuntime)
 }
 
-func selectQuickLifecycleOperation(command string, options lifecycleOptions, manager *quick.Manager, desired spec.Resolved, hasConfig bool, quickOptions quick.Options, timeoutResolved spec.Resolved, stderr io.Writer) (time.Duration, func(context.Context) (quick.Status, error), error) {
+func selectLegacyQuickOperation(command string, options lifecycleOptions, manager *quick.Manager, timeoutResolved spec.Resolved, stderr io.Writer) (time.Duration, func(context.Context) (quick.Status, error), error) {
 	timeout := 15 * time.Second
 	var operation func(context.Context) (quick.Status, error)
 	switch command {
-	case "up":
-		timeout = withReadinessTimeout(10*time.Minute, timeoutResolved)
-		if hasConfig {
-			operation = func(ctx context.Context) (quick.Status, error) {
-				return manager.UpResolvedWithPolicy(ctx, desired, quick.UpPolicy{Restart: options.RestartDrift})
-			}
-		} else {
-			operation = func(ctx context.Context) (quick.Status, error) {
-				return manager.UpWithOptionsPolicy(ctx, quickOptions, quick.UpPolicy{Restart: options.RestartDrift})
-			}
-		}
 	case "start":
 		timeout, operation = withReadinessTimeout(5*time.Minute, timeoutResolved), manager.Start
-	case "restart":
-		timeout, operation = withReadinessTimeout(7*time.Minute, timeoutResolved), manager.Restart
-	case "recreate":
-		if err := confirmCLIAction(options.Force, "recreate", stderr); err != nil {
-			return 0, nil, err
-		}
-		timeout = withReadinessTimeout(12*time.Minute, timeoutResolved)
-		if hasConfig {
-			operation = func(ctx context.Context) (quick.Status, error) { return manager.RecreateResolved(ctx, desired) }
-		} else {
-			operation = manager.Recreate
-		}
 	case "stop":
 		// Graceful shutdown itself may consume two minutes; leave bounded
 		// headroom for QMP quit, verified SIGTERM/SIGKILL, and audit writes.
@@ -1411,7 +1330,7 @@ func selectQuickLifecycleOperation(command string, options lifecycleOptions, man
 			return status, nil
 		}
 	default:
-		return 0, nil, fmt.Errorf("unsupported quick command %q", command)
+		return 0, nil, fmt.Errorf("retired user-mode projects support only status, start, stop, and destroy; got %q", command)
 	}
 	return timeout, operation, nil
 }
@@ -1443,6 +1362,15 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		textField(stdout, 14, "destructive", plan.Destructive)
 		textField(stdout, 14, "spec hash", plan.SpecHash)
 		textField(stdout, 14, "nodes", strings.Join(plan.Nodes, ","))
+		if len(plan.Create) != 0 {
+			textField(stdout, 14, "create", strings.Join(plan.Create, ","))
+		}
+		if len(plan.Recreate) != 0 {
+			textField(stdout, 14, "recreate", strings.Join(plan.Recreate, ",")+"  (apply: farrow recreate --force "+strings.Join(plan.Recreate, " ")+")")
+		}
+		if len(plan.Missing) != 0 {
+			textField(stdout, 14, "missing", strings.Join(plan.Missing, ",")+"  (config dropped them; remove with: farrow destroy "+strings.Join(plan.Missing, " ")+" --force)")
+		}
 		return exitOK
 	}
 	timeout := 15 * time.Second
@@ -1467,12 +1395,23 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	case "status":
 		operation = manager.Status
 	case "destroy":
-		if err := confirmCLIAction(force, "private destroy", stderr); err != nil {
+		action := "private destroy"
+		if len(nodes) != 0 {
+			action = "private node destroy"
+			if deletePersistent {
+				fmt.Fprintln(stderr, "--delete-persistent applies to whole-project destroy only; delete a removed node's persistent disks afterwards with `farrow destroy --force --delete-persistent`")
+				return exitUsage
+			}
+		}
+		if err := confirmCLIAction(force, action, stderr); err != nil {
 			errorf(stderr, "%v", err)
 			return exitUsage
 		}
 		timeout = 10 * time.Minute
 		operation = func(ctx context.Context) (privatevm.Status, error) {
+			if len(nodes) != 0 {
+				return manager.DestroyNodes(ctx)
+			}
 			status, err := manager.Destroy(ctx)
 			if err != nil || !deletePersistent {
 				return status, err
@@ -1542,29 +1481,22 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 	if !quick.ValidLogLevel(options.LogLevel) {
 		return reportCommandFailure(stdout, stderr, false, "usage", fmt.Sprintf("invalid --log-level %q", options.LogLevel), "", exitUsage)
 	}
-	var progressItem *progress
-	manager := quick.Manager{FarrowVersion: version.Version, Repository: options.Repository, LogLevel: options.LogLevel, NoWait: options.NoWait}
-	manager.Progress = deferredProgressReporter(&progressItem)
-	quickOptions, err := buildQuickOptions(options.ImageAlias, options.CPUs, options.Memory, options.RootDisk, options.DataDisk, options.NoDataDisk, options.NoDefaultForwards, options.Forwards, stderr)
+	resolvedFile, hasConfig, err := loadLifecycleConfig(command, options.ConfigPath)
 	if err != nil {
 		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), "", exitUsage)
 	}
-	resolvedFile, hasConfig, err := loadLifecycleConfig(command, options.ConfigPath, quickOptions)
-	if err != nil {
-		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), "", exitUsage)
-	}
-	privateRequest := hasConfig && resolvedFile.Network == "private"
 	persisted, persistedErr := currentProjectResolved()
-	if persistedErr == nil && persisted.Network == "private" {
-		if hasConfig && resolvedFile.Network != "private" {
-			return reportCommandFailure(stdout, stderr, false, "mode_conflict", "current project is private; refuse dispatch to the quick/meta runtime", "", exitConflict)
-		}
+	switch {
+	case persistedErr == nil && persisted.Network == "private":
 		if !hasConfig {
 			resolvedFile = persisted
 			hasConfig = true
 		}
-		privateRequest = true
-	} else if persistedErr != nil && !(privateRequest && errors.Is(persistedErr, os.ErrNotExist)) {
+	case persistedErr == nil && persisted.Network == "user":
+		// Retired zero-config slirp projects keep salvage commands only, so an
+		// existing lab can be inspected, booted, drained, and removed.
+		return runLegacyQuickCommand(command, options, nodes, persisted, stdout, stderr)
+	case persistedErr != nil:
 		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
 			marker := filepath.Join(cwd, ".farrow", "project.json")
 			if _, markerErr := os.Lstat(marker); markerErr == nil {
@@ -1572,52 +1504,23 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 			}
 		}
 	}
-	if privateRequest {
-		printWarnings(stderr, configurationWarnings(resolvedFile))
-		if options.RestartDrift {
-			return reportCommandFailure(stdout, stderr, false, "usage", "--restart drift policy is not yet available for private projects", "", exitUsage)
-		}
-		return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.NoWait, options.Rollback, false, stdout, stderr)
+	if !hasConfig {
+		return reportCommandFailure(stdout, stderr, false, "usage", config.ErrNoConfig.Error(), "", exitConflict)
 	}
-	if options.Rollback {
-		return reportCommandFailure(stdout, stderr, false, "usage", "--rollback is only valid for declarative private up", "", exitUsage)
+	if options.RestartDrift {
+		return reportCommandFailure(stdout, stderr, false, "usage", "--restart drift application is not available yet; review `farrow plan`, then apply reported changes with `farrow recreate --force <node...>`", "", exitUsage)
 	}
+	printWarnings(stderr, configurationWarnings(resolvedFile))
+	return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.NoWait, options.Rollback, false, stdout, stderr)
+}
+
+func runLegacyQuickCommand(command string, options lifecycleOptions, nodes []string, persisted spec.Resolved, stdout, stderr io.Writer) int {
 	if len(nodes) != 0 && (len(nodes) != 1 || nodes[0] != "meta") {
-		return reportCommandFailure(stdout, stderr, false, "usage", fmt.Sprintf("quick project has only node meta, got %v", nodes), "", exitUsage)
+		return reportCommandFailure(stdout, stderr, false, "usage", fmt.Sprintf("this project has only node meta, got %v", nodes), "", exitUsage)
 	}
-	if command == "up" || command == "plan" || command == "recreate" {
-		warningResolved := resolvedFile
-		if !hasConfig {
-			if persistedErr == nil && !quickOptions.HasOverrides() {
-				warningResolved = persisted
-			} else if candidate, err := quickOptions.Resolve(); err == nil {
-				warningResolved = candidate
-			}
-		}
-		printWarnings(stderr, configurationWarnings(warningResolved))
-	}
-	if command == "plan" {
-		var plan quick.Plan
-		var err error
-		if hasConfig {
-			plan, err = manager.PlanResolved(context.Background(), resolvedFile)
-		} else {
-			plan, err = manager.Plan(context.Background(), quickOptions)
-		}
-		if err != nil {
-			if errors.Is(err, project.ErrDataRootMigrationRequired) {
-				return reportCommandFailure(stdout, stderr, false, "data_root_migration_required", err.Error(), "", exitConflict)
-			}
-			return reportCommandFailure(stdout, stderr, false, "runtime", err.Error(), "", exitRuntime)
-		}
-		if structuredOutput(stdout, false) {
-			return encodeJSON(stdout, stderr, plan)
-		}
-		textField(stdout, 14, "action", statusValue(stdout, plan.Action))
-		textField(stdout, 14, "destructive", plan.Destructive)
-		textField(stdout, 14, "spec hash", plan.SpecHash)
-		return exitOK
-	}
+	var progressItem *progress
+	manager := quick.Manager{FarrowVersion: version.Version, Repository: options.Repository, LogLevel: options.LogLevel, NoWait: options.NoWait}
+	manager.Progress = deferredProgressReporter(&progressItem)
 	operationID := ""
 	if command != "status" {
 		generatedID, operationErr := project.NewUUID()
@@ -1627,22 +1530,14 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 		operationID = generatedID
 		manager.OperationID = operationID
 	}
-	timeoutResolved := resolvedFile
-	if !hasConfig {
-		if persistedErr == nil {
-			timeoutResolved = persisted
-		} else if candidate, resolveErr := quickOptions.Resolve(); resolveErr == nil {
-			timeoutResolved = candidate
-		}
-	}
-	timeout, operation, err := selectQuickLifecycleOperation(command, options, &manager, resolvedFile, hasConfig, quickOptions, timeoutResolved, stderr)
+	timeout, operation, err := selectLegacyQuickOperation(command, options, &manager, persisted, stderr)
 	if err != nil {
-		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), operationID, exitUsage)
+		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), operationID, exitConflict)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	debugf(stderr, "lifecycle=%s mode=quick timeout=%s operation_id=%s", command, timeout, operationID)
-	if command == "destroy" || command == "recreate" {
+	debugf(stderr, "lifecycle=%s mode=legacy-user timeout=%s operation_id=%s", command, timeout, operationID)
+	if command == "destroy" {
 		if eventErr := manager.RecordEvent(ctx, "destroy", "info", "scoped destroy requested"); eventErr != nil {
 			return reportCommandFailure(stdout, stderr, false, "integrity", fmt.Sprintf("refuse destroy without an auditable event append: %v", eventErr), operationID, exitIntegrity)
 		}
@@ -1669,13 +1564,6 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 	progressItem.Stop(err)
 	if err != nil {
 		return reportQuickLifecycleError(err, operationID, stdout, stderr)
-	}
-	if command == "up" || command == "start" || command == "restart" || command == "recreate" {
-		if status.Image.Alias != "" {
-			if info, infoErr := manager.ImageInfo(ctx, status.Image.Alias); infoErr == nil {
-				printImageStatusWarning(stderr, info.Entry)
-			}
-		}
 	}
 	if structuredOutput(stdout, false) {
 		if code := encodeJSON(stdout, stderr, status); code != exitOK {
@@ -2278,40 +2166,23 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		errorf(stderr, "%v", err)
 		return exitRuntime
 	}
-	source := "builtin:quick"
-	resolved := spec.Quick(true, true)
-	path := *filePath
-	if path == "" {
-		candidate := filepath.Join(cwd, "farrow.yaml")
-		if _, err := os.Stat(candidate); err == nil {
-			path = candidate
-		}
+	file, source, err := config.Discover(cwd, *filePath)
+	if err != nil {
+		errorf(stderr, "%v", err)
+		return exitUsage
 	}
-	if path != "" {
-		absolute, err := filepath.Abs(path)
-		if err != nil {
-			errorf(stderr, "%v", err)
+	resolved, err := file.Resolve()
+	if err != nil {
+		errorf(stderr, "%v", err)
+		return exitUsage
+	}
+	if resolved.DataRoot != "" {
+		resolvedRoot, rootErr := project.ResolveDataRootWithConfig(cwd, resolved.DataRoot, nil)
+		if rootErr != nil {
+			errorf(stderr, "%v", rootErr)
 			return exitUsage
 		}
-		file, err := config.Load(absolute)
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
-		}
-		resolved, err = file.Resolve()
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
-		}
-		if resolved.DataRoot != "" {
-			resolvedRoot, rootErr := project.ResolveDataRootWithConfig(cwd, resolved.DataRoot, nil)
-			if rootErr != nil {
-				errorf(stderr, "%v", rootErr)
-				return exitUsage
-			}
-			resolved.DataRoot = resolvedRoot
-		}
-		source = absolute
+		resolved.DataRoot = resolvedRoot
 	}
 	hash, err := spec.Hash(resolved)
 	if err != nil {
@@ -2337,120 +2208,78 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 }
 
 func runInit(args []string, stdout, stderr io.Writer) int {
-	profileName, flagArgs, err := splitInitArgs(args)
-	if err != nil {
-		errorf(stderr, "%v", err)
-		fmt.Fprintln(stderr, "usage: farrow init [profile] [--scale 1..64] [--image alias] [--network-cidr RFC1918/24] [--force-uniform-image] [--json|--yaml] [--verbose]")
-		return exitUsage
-	}
 	flags := newCommandFlagSet("init", stderr)
-	jsonOutput := flags.Bool("json", false, "emit resolved JSON instead of YAML")
-	scale := flags.Int("scale", profile.DefaultScale, "multiply profile CPU and memory by 1..64")
-	imageOverride := flags.String("image", "", "override the guest image for every node")
-	networkCIDR := flags.String("network-cidr", "", "rebase an embedded private profile to one host-global RFC1918 /24")
-	forceUniformImage := flags.Bool("force-uniform-image", false, "allow a uniform override of a mixed-distribution profile")
-	if err := flags.Parse(flagArgs); err != nil || flags.NArg() != 0 {
+	jsonOutput := flags.Bool("json", false, "emit stable JSON")
+	networkCIDR := flags.String("network-cidr", "", "rebase the template to one RFC1918 IPv4 /24")
+	output := flags.String("output", "", "write to this path instead of ./pigsty.yml; '-' writes to stdout")
+	force := flags.Bool("force", false, "overwrite an existing configuration file")
+	if err := flags.Parse(args); err != nil || flags.NArg() > 1 {
+		fmt.Fprintf(stderr, "usage: farrow init [%s] [--network-cidr RFC1918/24] [-o path|-] [--force]\n", strings.Join(config.TemplateNames(), "|"))
 		return exitUsage
 	}
-	if profileName == "" {
-		profileName = "quick"
+	name := "meta"
+	if flags.NArg() == 1 {
+		name = flags.Arg(0)
 	}
-	if profileName == "quick" {
-		if *scale != profile.DefaultScale || *imageOverride != "" || *networkCIDR != "" || *forceUniformImage {
-			fmt.Fprintln(stderr, "quick init does not accept profile overrides; use a named embedded profile")
-			return exitUsage
-		}
-		resolved, err := (quick.Manager{FarrowVersion: version.Version}).Resolved()
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
-		}
-		if structuredOutput(stdout, *jsonOutput) {
-			return encodeJSON(stdout, stderr, resolved)
-		}
-		file, err := config.FromResolved(resolved)
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
-		}
-		data, err := config.Marshal(file)
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
-		}
-		_, _ = stdout.Write(data)
-		return exitOK
-	}
-	var selectedNetwork subnet.Layout
-	if *networkCIDR != "" {
-		selectedNetwork, err = subnet.Parse(*networkCIDR)
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
-		}
-	}
-	file, descriptor, err := profile.LoadWithOverrides(profileName, profile.Overrides{Scale: *scale, Image: *imageOverride, ForceUniformImage: *forceUniformImage, NetworkCIDR: *networkCIDR})
+	data, err := config.Template(name, *networkCIDR)
 	if err != nil {
 		errorf(stderr, "%v", err)
-		if errors.Is(err, profile.ErrNotFound) {
-			return exitUsage
-		}
-		return exitConflict
+		return exitUsage
 	}
 	if *networkCIDR != "" {
-		if warning := selectedNetwork.Warning(); warning != "" {
-			warningf(stderr, "%s", warning)
+		if layout, parseErr := subnet.Parse(*networkCIDR); parseErr == nil {
+			if warning := layout.Warning(); warning != "" {
+				warningf(stderr, "%s", warning)
+			}
 		}
 	}
-	if structuredOutput(stdout, *jsonOutput) {
-		resolved, err := file.Resolve()
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
-		}
-		return encodeJSON(stdout, stderr, resolved)
-	}
-	if *scale == profile.DefaultScale && *imageOverride == "" && *networkCIDR == "" && !*forceUniformImage {
-		data, _, err := profile.YAML(profileName)
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+	if *output == "-" {
+		if structuredOutput(stdout, *jsonOutput) {
+			return encodeJSON(stdout, stderr, struct {
+				Template string `json:"template"`
+				Content  string `json:"content"`
+			}{name, string(data)})
 		}
 		_, _ = stdout.Write(data)
 		return exitOK
 	}
-	data, err := config.Marshal(file)
+	target := *output
+	if target == "" {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			errorf(stderr, "%v", cwdErr)
+			return exitRuntime
+		}
+		target = filepath.Join(cwd, "pigsty.yml")
+	}
+	target, err = filepath.Abs(target)
 	if err != nil {
+		errorf(stderr, "%v", err)
+		return exitUsage
+	}
+	if *force {
+		err = fsutil.AtomicWrite(target, data, 0o600)
+	} else {
+		err = fsutil.AtomicCreate(target, data, 0o600)
+	}
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			errorf(stderr, "%s already exists; edit it, pass --force to replace it, or -o for another path", target)
+			return exitConflict
+		}
 		errorf(stderr, "%v", err)
 		return exitRuntime
 	}
-	fmt.Fprintf(stdout, "# Farrow profile: %s; generated with explicit overrides.\n", descriptor.Name)
-	_, _ = stdout.Write(data)
-	return exitOK
-}
-
-func splitInitArgs(args []string) (string, []string, error) {
-	profileName := ""
-	flagArgs := make([]string, 0, len(args))
-	for index := 0; index < len(args); index++ {
-		argument := args[index]
-		switch {
-		case argument == "--scale" || argument == "-scale" || argument == "--image" || argument == "-image" || argument == "--network-cidr" || argument == "-network-cidr":
-			if index+1 >= len(args) {
-				return "", nil, fmt.Errorf("%s requires a value", argument)
-			}
-			flagArgs = append(flagArgs, argument, args[index+1])
-			index++
-		case strings.HasPrefix(argument, "-"):
-			flagArgs = append(flagArgs, argument)
-		default:
-			if profileName != "" {
-				return "", nil, fmt.Errorf("init accepts one profile, got %q and %q", profileName, argument)
-			}
-			profileName = argument
-		}
+	if structuredOutput(stdout, *jsonOutput) {
+		return encodeJSON(stdout, stderr, struct {
+			Template string `json:"template"`
+			Path     string `json:"path"`
+		}{name, target})
 	}
-	return profileName, flagArgs, nil
+	textField(stdout, 10, "template", name)
+	textField(stdout, 10, "wrote", target)
+	textField(stdout, 10, "next", "farrow setup && farrow up")
+	return exitOK
 }
 
 func runImage(args []string, stdout, stderr io.Writer) int {
@@ -2663,134 +2492,6 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown image command %q\n", args[0])
 		return exitUsage
 	}
-}
-
-type pigstyInventoryResult struct {
-	Profile        string `json:"profile"`
-	SourcePath     string `json:"source_path"`
-	SourceCIDR     string `json:"source_cidr"`
-	TargetCIDR     string `json:"target_cidr"`
-	InventoryMode  string `json:"inventory_mode"`
-	Scale          int    `json:"scale"`
-	Matches        int    `json:"matches"`
-	Replacements   int    `json:"replacements"`
-	OverlayChanges int    `json:"overlay_changes"`
-	TuneChanges    int    `json:"tune_changes"`
-	NoProxyChanges int    `json:"no_proxy_changes"`
-	SourceSHA256   string `json:"source_sha256"`
-	OutputSHA256   string `json:"output_sha256"`
-	Content        string `json:"content,omitempty"`
-	OutputPath     string `json:"output_path,omitempty"`
-	MarkerPath     string `json:"marker_path,omitempty"`
-	Published      bool   `json:"published"`
-	Changed        bool   `json:"changed"`
-}
-
-func pigstyOutput(result pigstyint.Result) pigstyInventoryResult {
-	return pigstyInventoryResult{
-		Profile: result.Profile, SourcePath: result.SourcePath, SourceCIDR: result.SourceCIDR,
-		TargetCIDR: result.TargetCIDR, InventoryMode: string(result.InventoryMode), Scale: result.Scale,
-		Matches: result.Matches, Replacements: result.Replacements, OverlayChanges: result.OverlayChanges,
-		TuneChanges: result.TuneChanges, NoProxyChanges: result.NoProxyChanges,
-		SourceSHA256: result.SourceSHA256, OutputSHA256: result.OutputSHA256,
-	}
-}
-
-func runPigsty(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "inventory" {
-		fmt.Fprintln(stderr, "usage: farrow pigsty inventory --profile NAME --root ABSOLUTE_PATH [--scale 1..64] [--network-cidr RFC1918/24] [--output ABSOLUTE_PATH --force]")
-		return exitUsage
-	}
-	flags := newCommandFlagSet("pigsty inventory", stderr)
-	profileName := flags.String("profile", "", "Farrow-owned profile name")
-	sourceRoot := flags.String("root", "", "absolute physical Pigsty source root")
-	scale := flags.Int("scale", profile.DefaultScale, "profile CPU/memory scale used for inventory tuning")
-	networkCIDR := flags.String("network-cidr", subnet.DefaultCIDR, "target host-global RFC1918 /24")
-	outputPath := flags.String("output", "", "optional absolute output path")
-	force := flags.Bool("force", false, "replace a changed Farrow-managed output file")
-	if err := flags.Parse(args[1:]); err != nil {
-		return exitUsage
-	}
-	if flags.NArg() != 0 || *profileName == "" || *sourceRoot == "" {
-		fmt.Fprintln(stderr, "usage: farrow pigsty inventory --profile NAME --root ABSOLUTE_PATH [--scale 1..64] [--network-cidr RFC1918/24] [--output ABSOLUTE_PATH --force]")
-		return exitUsage
-	}
-	if _, err := subnet.Parse(*networkCIDR); err != nil {
-		errorf(stderr, "%v", err)
-		return exitUsage
-	}
-	if *scale < profile.MinScale || *scale > profile.MaxScale {
-		fmt.Fprintln(stderr, "--scale must be in range 1..64")
-		return exitUsage
-	}
-	if !filepath.IsAbs(*sourceRoot) || filepath.Clean(*sourceRoot) != *sourceRoot {
-		fmt.Fprintln(stderr, "--root must be a clean absolute path")
-		return exitUsage
-	}
-	if *outputPath != "" && (!filepath.IsAbs(*outputPath) || filepath.Clean(*outputPath) != *outputPath) {
-		fmt.Fprintln(stderr, "--output must be a clean absolute path")
-		return exitUsage
-	}
-	if *outputPath == "" && *force {
-		fmt.Fprintln(stderr, "--force requires --output")
-		return exitUsage
-	}
-
-	result, err := pigstyint.RenderScaled(*sourceRoot, *profileName, *networkCIDR, *scale)
-	if err != nil {
-		errorf(stderr, "%v", err)
-		if errors.Is(err, profile.ErrNotFound) {
-			return exitUsage
-		}
-		return exitIntegrity
-	}
-	if layout, parseErr := subnet.Parse(result.TargetCIDR); parseErr == nil {
-		if warning := layout.Warning(); warning != "" {
-			warningf(stderr, "%s", warning)
-		}
-	}
-	debugf(stderr, "pigsty inventory profile=%s source=%s target_cidr=%s scale=%d output=%s", result.Profile, result.SourcePath, result.TargetCIDR, result.Scale, *outputPath)
-	if *outputPath == "" {
-		if structuredOutput(stdout, false) {
-			output := pigstyOutput(result)
-			output.Content = string(result.Data)
-			return encodeJSON(stdout, stderr, output)
-		}
-		if _, err := stdout.Write(result.Data); err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
-		}
-		return exitOK
-	}
-	published, err := pigstyint.Publish(*outputPath, result, *force)
-	if err != nil {
-		errorf(stderr, "%v", err)
-		if errors.Is(err, pigstyint.ErrOutputConflict) {
-			return exitConflict
-		}
-		return exitIntegrity
-	}
-	if structuredOutput(stdout, false) {
-		output := pigstyOutput(result)
-		output.OutputPath = published.Path
-		output.MarkerPath = published.MarkerPath
-		output.Published = true
-		output.Changed = published.Changed
-		return encodeJSON(stdout, stderr, output)
-	}
-	verb := "already current"
-	if published.Changed {
-		verb = "wrote"
-	}
-	textField(stdout, 14, "status", statusValue(stdout, verb))
-	textField(stdout, 14, "inventory", published.Path)
-	textField(stdout, 14, "marker", published.MarkerPath)
-	textField(stdout, 14, "source", result.SourcePath)
-	textField(stdout, 14, "network", result.TargetCIDR)
-	textField(stdout, 14, "mode", result.InventoryMode)
-	textField(stdout, 14, "scale", result.Scale)
-	textField(stdout, 14, "changes", fmt.Sprintf("%d replacements, %d overlay, %d tune", result.Replacements, result.OverlayChanges, result.TuneChanges))
-	return exitOK
 }
 
 func runDoctor(args []string, stdout, stderr io.Writer) int {

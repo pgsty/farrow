@@ -24,7 +24,6 @@ farrow_common_payload_paths() {
     docs/images.md \
     docs/networking.md \
     docs/phase-2.md \
-    docs/pigsty.md \
     docs/security.md \
     docs/status.md \
     docs/troubleshooting.md \
@@ -39,7 +38,7 @@ farrow_common_payload_paths() {
 
 farrow_archive_payload_paths() {
   farrow_common_payload_paths "$1" || return
-  printf '%s\n' bin/farrow bin/farrow-hosts-helper bin/pigsty-vm
+  printf '%s\n' bin/farrow bin/farrow-hosts-helper
 }
 
 farrow_development_archive_payload_paths() {
@@ -53,7 +52,6 @@ farrow_linux_package_payload_paths() {
   printf '%s\n' \
     opt/farrow/libexec/farrow-hosts-helper \
     usr/bin/farrow \
-    usr/bin/pigsty-vm \
     usr/share/doc/farrow/BUILD_INFO.json
   common=$(farrow_common_payload_paths "${repo}") || return
   while IFS= read -r path; do

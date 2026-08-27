@@ -14,7 +14,7 @@ import (
 type SeedInput struct {
 	PublicKey  string
 	PrivateKey string
-	SpecHash   string
+	SpecHashes map[string]string
 	Generation map[string]uint64
 }
 
@@ -61,8 +61,13 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 	if err := validateResolved(resolved); err != nil {
 		return nil, err
 	}
-	if plan.ProjectID == "" || len(plan.Nodes) != len(resolved.Nodes) || strings.TrimSpace(input.PublicKey) == "" || len(input.SpecHash) != 64 {
-		return nil, errors.New("private seed plan, public key, or spec hash is incomplete")
+	if plan.ProjectID == "" || len(plan.Nodes) != len(resolved.Nodes) || strings.TrimSpace(input.PublicKey) == "" {
+		return nil, errors.New("private seed plan or public key is incomplete")
+	}
+	for _, nodeSpec := range resolved.Nodes {
+		if len(input.SpecHashes[nodeSpec.Name]) != 64 {
+			return nil, fmt.Errorf("private seed node hash missing for node %s", nodeSpec.Name)
+		}
 	}
 	prefix, err := prefixLength(resolved.Private.CIDR)
 	if err != nil {
@@ -92,7 +97,7 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 		}
 		files, err := cloudinit.Render(cloudinit.Input{
 			ProjectID: plan.ProjectID, Node: nodeSpec.Name, Hostname: nodeSpec.Name,
-			Generation: generation, SpecHash: input.SpecHash, SSHUser: resolved.SSHUser,
+			Generation: generation, SpecHash: input.SpecHashes[nodeSpec.Name], SSHUser: resolved.SSHUser,
 			PublicKey: strings.TrimSpace(input.PublicKey), PrivateKey: privateKey,
 			Control: nodeSpec.Control, MgmtMAC: nodePlan.ManagementMAC,
 			Private: &cloudinit.PrivateNetwork{MAC: nodePlan.PrivateMAC, Address: nodeSpec.Address, Prefix: prefix, HostAddress: resolved.Private.HostAddress},

@@ -33,7 +33,7 @@ func commitFixture(t *testing.T, disks DiskOps) (project.Project, PrepareConfig,
 	config.Seeds, err = RenderSeeds(config.Resolved, config.Plan, SeedInput{
 		PublicKey:  publicKey,
 		PrivateKey: privateKey,
-		SpecHash:   config.SpecHash, Generation: map[string]uint64{"meta": 1, "node-1": 1},
+		SpecHashes: config.NodeHashes, Generation: map[string]uint64{"meta": 1, "node-1": 1},
 	})
 	if err != nil {
 		t.Fatal(err)

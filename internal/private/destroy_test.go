@@ -224,7 +224,7 @@ func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T)
 		t.Fatal(err)
 	}
 	publicKey, privateKey := testSSHKeyPair(t)
-	prepare.Seeds, err = RenderSeeds(prepare.Resolved, prepare.Plan, SeedInput{PublicKey: publicKey, PrivateKey: privateKey, SpecHash: prepare.SpecHash, Generation: map[string]uint64{"meta": 1, "node-1": 1}})
+	prepare.Seeds, err = RenderSeeds(prepare.Resolved, prepare.Plan, SeedInput{PublicKey: publicKey, PrivateKey: privateKey, SpecHashes: prepare.NodeHashes, Generation: map[string]uint64{"meta": 1, "node-1": 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

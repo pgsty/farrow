@@ -33,7 +33,7 @@ func controllerFixture(t *testing.T, disks DiskOps, lifecycle NodeLifecycle) Con
 	prepare.Seeds, err = RenderSeeds(prepare.Resolved, prepare.Plan, SeedInput{
 		PublicKey:  publicKey,
 		PrivateKey: privateKey,
-		SpecHash:   prepare.SpecHash, Generation: map[string]uint64{"meta": 1, "node-1": 1},
+		SpecHashes: prepare.NodeHashes, Generation: map[string]uint64{"meta": 1, "node-1": 1},
 	})
 	if err != nil {
 		t.Fatal(err)

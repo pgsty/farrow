@@ -47,9 +47,13 @@ type Backend struct {
 }
 
 type PrepareConfig struct {
-	ProjectRoot     string
-	Resolved        spec.Resolved
+	ProjectRoot string
+	Resolved    spec.Resolved
+	// SpecHash is the whole-project drift summary; NodeHashes carries each
+	// node's own drift identity (see spec.NodeHash). Seeds, journals, and node
+	// state bind to the node hash so peers can be added without touching them.
 	SpecHash        string
+	NodeHashes      map[string]string
 	Plan            Plan
 	Seeds           map[string]cloudinit.Files
 	Bases           map[string]BaseImage
@@ -124,6 +128,11 @@ func (config PrepareConfig) now() time.Time {
 func validatePrepareConfig(config PrepareConfig) error {
 	if config.ProjectRoot == "" || !filepath.IsAbs(config.ProjectRoot) || config.QEMUBinary == "" || !filepath.IsAbs(config.QEMUBinary) || config.Disks == nil || len(config.Plan.Nodes) != len(config.Resolved.Nodes) || len(config.Seeds) != len(config.Resolved.Nodes) || len(config.SpecHash) != 64 {
 		return errors.New("private prepare project, QEMU, disks, plan, or seeds are incomplete")
+	}
+	for _, node := range config.Resolved.Nodes {
+		if len(config.NodeHashes[node.Name]) != 64 {
+			return fmt.Errorf("private prepare node hash missing for node %s", node.Name)
+		}
 	}
 	info, err := os.Lstat(config.ProjectRoot)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
@@ -260,7 +269,7 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	}
 	now := config.now()
 	journalPath := filepath.Join(nodeDir, "private-prepare.json")
-	journal := PrepareJournal{Schema: 1, OperationID: operationID, ProjectID: config.Plan.ProjectID, Node: name, VMUUID: nodePlan.VMUUID, SpecHash: config.SpecHash, StartedAt: now, UpdatedAt: now, Completed: []OwnedArtifact{}}
+	journal := PrepareJournal{Schema: 1, OperationID: operationID, ProjectID: config.Plan.ProjectID, Node: name, VMUUID: nodePlan.VMUUID, SpecHash: config.NodeHashes[name], StartedAt: now, UpdatedAt: now, Completed: []OwnedArtifact{}}
 	if err := writePrepareJournal(journalPath, journal); err != nil {
 		return NodeArtifacts{}, err
 	}

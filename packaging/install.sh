@@ -193,7 +193,7 @@ if ! tar -tvzf "${temporary}/${asset}" | awk 'substr($1,1,1) != "-" && substr($1
   exit 7
 fi
 tar -xzf "${temporary}/${asset}" -C "${temporary}"
-for source in bin/farrow bin/farrow-hosts-helper bin/pigsty-vm; do
+for source in bin/farrow bin/farrow-hosts-helper; do
   [[ -f ${temporary}/${root}/${source} && ! -L ${temporary}/${root}/${source} ]] || {
     printf 'release archive is missing %s\n' "${source}" >&2
     exit 7
@@ -245,7 +245,7 @@ resolved_releases=$(cd "${releases}" && pwd -P)
 chmod 0700 "${resolved_releases}"
 releases=${resolved_releases}
 
-for name in farrow farrow-hosts-helper pigsty-vm; do
+for name in farrow farrow-hosts-helper; do
   target=${install_directory}/${name}
   if [[ -e ${target} || -L ${target} ]]; then
     if [[ ! -L ${target} || $(readlink "${target}") != ".farrow-current/${name}" ]]; then
@@ -268,7 +268,7 @@ if [[ -e ${release_root} || -L ${release_root} ]]; then
     exit 7
   fi
   chmod 0700 "${release_root}"
-  for name in farrow farrow-hosts-helper pigsty-vm; do
+  for name in farrow farrow-hosts-helper; do
     if [[ ! -f ${release_root}/${name} || -L ${release_root}/${name} || ! -O ${release_root}/${name} ]] || ! cmp -s "${temporary}/${root}/bin/${name}" "${release_root}/${name}"; then
       printf 'existing versioned release differs from verified archive: %s\n' "${release_root}" >&2
       exit 7
@@ -278,7 +278,7 @@ if [[ -e ${release_root} || -L ${release_root} ]]; then
 else
   release_stage=$(mktemp -d "${install_directory}/.farrow-release.next.XXXXXX")
   chmod 0700 "${release_stage}"
-  for name in farrow farrow-hosts-helper pigsty-vm; do
+  for name in farrow farrow-hosts-helper; do
     install -m 0755 "${temporary}/${root}/bin/${name}" "${release_stage}/${name}"
     cmp -s "${temporary}/${root}/bin/${name}" "${release_stage}/${name}" || {
       printf 'staged entry point differs from verified archive: %s\n' "${name}" >&2
@@ -291,7 +291,7 @@ fi
 
 link_stage=$(mktemp -d "${install_directory}/.farrow-links.next.XXXXXX")
 chmod 0700 "${link_stage}"
-for name in farrow farrow-hosts-helper pigsty-vm; do
+for name in farrow farrow-hosts-helper; do
   if [[ ! -L ${install_directory}/${name} ]]; then
     ln -s ".farrow-current/${name}" "${link_stage}/${name}"
     mv "${link_stage}/${name}" "${install_directory}/${name}"
@@ -307,7 +307,7 @@ fi
 rmdir "${link_stage}"
 link_stage=
 created_entry_points=()
-for name in farrow farrow-hosts-helper pigsty-vm; do
+for name in farrow farrow-hosts-helper; do
   [[ -L ${install_directory}/${name} && $(readlink "${install_directory}/${name}") == ".farrow-current/${name}" && -x ${install_directory}/${name} ]] || {
     printf 'installed entry point is not executable through the current release: %s\n' "${install_directory}/${name}" >&2
     exit 7

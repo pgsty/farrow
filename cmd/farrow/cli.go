@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pgsty/farrow/internal/profile"
+	"github.com/pgsty/farrow/internal/config"
 	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/sshconfig"
 	"github.com/pgsty/farrow/internal/version"
@@ -107,18 +107,11 @@ func addRepositoryFlag(command *cobra.Command) {
 	command.Flags().String("repo", "", "image repository URL or absolute local directory")
 }
 
-func profileCompletion(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
+func templateCompletion(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
 	values := make([]string, 0)
-	if strings.HasPrefix("quick", prefix) {
-		values = append(values, "quick\tQuick single-node VM")
-	}
-	descriptors, err := profile.List()
-	if err != nil {
-		return values, cobra.ShellCompDirectiveNoFileComp
-	}
-	for _, descriptor := range descriptors {
-		if strings.HasPrefix(descriptor.Name, prefix) {
-			values = append(values, descriptor.Name)
+	for _, name := range config.TemplateNames() {
+		if strings.HasPrefix(name, prefix) {
+			values = append(values, name)
 		}
 	}
 	return values, cobra.ShellCompDirectiveNoFileComp
@@ -148,13 +141,13 @@ func subcommandGroup(use, short string, stdout, stderr io.Writer) *cobra.Command
 func newSetupCommand(stdout, stderr io.Writer) *cobra.Command {
 	options := setupCLIOptions{Mode: "host"}
 	command := &cobra.Command{
-		Use:               "setup [quick|profile]",
-		Short:             "Prepare the host and project for first use",
+		Use:               "setup [meta|dual|trio|full]",
+		Short:             "Prepare the host and lab for first use",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: profileCompletion,
+		ValidArgsFunction: templateCompletion,
 	}
 	command.Flags().StringVarP(&options.FilePath, "file", "f", "", "existing configuration to prepare")
-	command.Flags().StringVar(&options.NetworkCIDR, "network-cidr", "", "generated private profile: host-global RFC1918 IPv4 /24")
+	command.Flags().StringVar(&options.NetworkCIDR, "network-cidr", "", "generated lab: host-global RFC1918 IPv4 /24")
 	command.Flags().StringVar(&options.Mode, "mode", options.Mode, "Darwin private network mode: host or shared")
 	command.Flags().BoolVar(&options.DryRun, "dry-run", false, "show the resolved setup plan without changing anything")
 	command.Flags().BoolVar(&options.Yes, "yes", false, "accept the one-time setup plan (required without a terminal)")
@@ -171,15 +164,14 @@ func newSetupCommand(stdout, stderr io.Writer) *cobra.Command {
 
 func newInitCommand(stdout, stderr io.Writer) *cobra.Command {
 	command := &cobra.Command{
-		Use:               "init [profile]",
-		Short:             "Render a built-in profile as farrow.yaml",
+		Use:               "init [meta|dual|trio|full]",
+		Short:             "Write a lab configuration (Pigsty-compatible inventory)",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: profileCompletion,
+		ValidArgsFunction: templateCompletion,
 	}
-	command.Flags().Int("scale", profile.DefaultScale, "multiply profile CPU and memory by 1..64")
-	command.Flags().String("image", "", "override the guest image for every node")
-	command.Flags().String("network-cidr", "", "rebase a private profile to an RFC1918 IPv4 /24")
-	command.Flags().Bool("force-uniform-image", false, "allow a uniform override of a mixed-distribution profile")
+	command.Flags().String("network-cidr", "", "rebase the template to an RFC1918 IPv4 /24")
+	command.Flags().StringP("output", "o", "", "write to this path instead of ./pigsty.yml; '-' writes to stdout")
+	command.Flags().Bool("force", false, "overwrite an existing configuration file")
 	bindOperation(command, stdout, stderr, runInit)
 	return command
 }
@@ -199,14 +191,12 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 	case "plan":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "declarative configuration file")
 		command.Flags().StringVar(&options.Repository, "repo", "", "image repository URL or absolute local directory")
-		addQuickOverrideValues(command, &options)
 	case "up":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "declarative configuration file")
 		command.Flags().StringVar(&options.Repository, "repo", "", "image repository URL or absolute local directory")
-		addQuickOverrideValues(command, &options)
 		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
-		command.Flags().BoolVar(&options.Rollback, "rollback", false, "private mode: remove safe artifacts from nodes that fail to prepare")
-		command.Flags().BoolVar(&options.RestartDrift, "restart", false, "restart a running VM to apply restart-class drift")
+		command.Flags().BoolVar(&options.Rollback, "rollback", false, "remove safe artifacts from nodes that fail to prepare")
+		command.Flags().BoolVar(&options.RestartDrift, "restart", false, "reserved: apply restart-class drift across a stop/start cycle")
 	case "start", "restart":
 		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
 	case "recreate":
@@ -214,26 +204,13 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 		command.Flags().BoolVar(&options.Force, "force", false, "confirm destructive recreation")
 		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
 	case "destroy":
-		command.Use = "destroy"
-		command.Args = cobra.NoArgs
-		command.Flags().BoolVar(&options.Force, "force", false, "confirm project destruction")
+		command.Flags().BoolVar(&options.Force, "force", false, "confirm destruction")
 		command.Flags().BoolVar(&options.DeletePersistent, "delete-persistent", false, "also delete owned persistent data disks")
 	}
 	command.RunE = func(_ *cobra.Command, nodes []string) error {
 		return commandError(runLifecycleCommand(name, options, nodes, stdout, stderr))
 	}
 	return command
-}
-
-func addQuickOverrideValues(command *cobra.Command, options *lifecycleOptions) {
-	command.Flags().StringVar(&options.ImageAlias, "image", "", "quick image alias")
-	command.Flags().IntVar(&options.CPUs, "cpus", 0, "quick CPU count")
-	command.Flags().StringVar(&options.Memory, "memory", "", "quick memory size")
-	command.Flags().StringVar(&options.RootDisk, "root-disk", "", "quick root disk size")
-	command.Flags().StringVar(&options.DataDisk, "data-disk", "", "quick data disk size")
-	command.Flags().BoolVar(&options.NoDataDisk, "no-data-disk", false, "disable the default /data disk")
-	command.Flags().BoolVar(&options.NoDefaultForwards, "no-default-forwards", false, "disable the default quick TCP forwards")
-	command.Flags().StringArrayVar(&options.Forwards, "forward", nil, "append [IPv4-bind:]host:guest TCP forward (repeatable)")
 }
 
 func newProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -459,22 +436,6 @@ func newNetworkCommand(stdout, stderr io.Writer) *cobra.Command {
 	return parent
 }
 
-func newPigstyCommand(stdout, stderr io.Writer) *cobra.Command {
-	parent := subcommandGroup("pigsty", "Generate Pigsty integration artifacts", stdout, stderr)
-	inventory := &cobra.Command{Use: "inventory", Short: "Render a Pigsty inventory", Args: cobra.NoArgs}
-	inventory.Flags().String("profile", "", "Farrow-owned profile name")
-	inventory.Flags().String("root", "", "absolute physical Pigsty source root")
-	inventory.Flags().Int("scale", profile.DefaultScale, "profile CPU and memory scale")
-	inventory.Flags().String("network-cidr", "10.10.10.0/24", "target host-global RFC1918 IPv4 /24")
-	inventory.Flags().String("output", "", "optional absolute output path")
-	inventory.Flags().Bool("force", false, "replace a changed Farrow-managed output file")
-	bindOperation(inventory, stdout, stderr, func(arguments []string, stdout, stderr io.Writer) int {
-		return runPigsty(append([]string{"inventory"}, arguments...), stdout, stderr)
-	})
-	parent.AddCommand(inventory)
-	return parent
-}
-
 func newDebugCommand(stdout, stderr io.Writer) *cobra.Command {
 	parent := subcommandGroup("debug", "Collect bounded diagnostics", stdout, stderr)
 	bundle := &cobra.Command{Use: "bundle", Short: "Create a redacted diagnostic bundle", Args: cobra.NoArgs}
@@ -614,7 +575,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		{"restart", "Restart selected virtual machines"},
 		{"recreate", "Destroy and recreate selected virtual machines"},
 		{"status", "Show current project state"},
-		{"destroy", "Destroy the current project"},
+		{"destroy", "Destroy the project, or remove selected nodes from it"},
 	} {
 		command := newLifecycleCommand(item.name, item.short, stdout, stderr)
 		command.GroupID = "lifecycle"
@@ -658,15 +619,13 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 
 	projectCommand := newProjectCommand(stdout, stderr)
 	projectCommand.GroupID = "advanced"
-	pigsty := newPigstyCommand(stdout, stderr)
-	pigsty.GroupID = "advanced"
 	debug := newDebugCommand(stdout, stderr)
 	debug.GroupID = "advanced"
 	versionCommand := &cobra.Command{Use: "version", Short: "Print build version", Args: cobra.NoArgs, GroupID: "advanced"}
 	bindOperation(versionCommand, stdout, stderr, runVersionCommand)
 	completion := newCompletionCommand(root, stdout, stderr)
 	completion.GroupID = "advanced"
-	root.AddCommand(projectCommand, pigsty, debug, completion, versionCommand)
+	root.AddCommand(projectCommand, debug, completion, versionCommand)
 	return root
 }
 

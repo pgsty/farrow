@@ -71,7 +71,6 @@ for arch in amd64 arm64; do
     "${payload}/usr/share/doc/farrow/tests/e2e" "${payload}/usr/share/farrow/schemas"
   helper=${payload}/opt/farrow/libexec/farrow-hosts-helper
   binary=${payload}/usr/bin/farrow
-  wrapper=${payload}/usr/bin/pigsty-vm
   (
     cd "${repo}"
     CGO_ENABLED=0 GOOS=linux GOARCH=${arch} GOFLAGS=-mod=readonly \
@@ -84,12 +83,8 @@ for arch in amd64 arm64; do
     CGO_ENABLED=0 GOOS=linux GOARCH=${arch} GOFLAGS=-mod=readonly \
       go build -trimpath -buildvcs=false -ldflags "${ldflags}" -o "${binary}" ./cmd/farrow
   )
-  install -m 0755 "${repo}/packaging/pigsty/vm" "${wrapper}"
-  chmod 0755 "${binary}" "${helper}" "${wrapper}"
+  chmod 0755 "${binary}" "${helper}"
   binary_sha=$(shasum -a 256 "${binary}" | awk '{print $1}')
-  wrapper_sha256=$(shasum -a 256 "${wrapper}" | awk '{print $1}')
-  wrapper_sha1=$(shasum "${wrapper}" | awk '{print $1}')
-  wrapper_id=SPDXRef-File-usr-bin-pigsty-vm-${wrapper_sha256:0:16}
   build_info=${payload}/usr/share/doc/farrow/BUILD_INFO.json
   jq -n \
     --arg version "${version}" --arg commit "${commit}" --arg date "${build_date}" \
@@ -108,7 +103,6 @@ for arch in amd64 arm64; do
     "${repo}/docs/images.md" \
     "${repo}/docs/networking.md" \
     "${repo}/docs/phase-2.md" \
-    "${repo}/docs/pigsty.md" \
     "${repo}/docs/security.md" \
     "${repo}/docs/status.md" \
     "${repo}/docs/troubleshooting.md" \
@@ -132,8 +126,7 @@ for arch in amd64 arm64; do
       --output "spdx-json=${sbom}" >/dev/null
     jq --arg name "${package_name}" --arg version "${version}" --arg package_sha "${package_sha}" \
       --arg namespace "https://github.com/pgsty/farrow/sbom/${version}/${arch}/${format}/${package_sha}" \
-      --arg created "${build_date}" --arg wrapper_sha256 "${wrapper_sha256}" \
-      --arg wrapper_sha1 "${wrapper_sha1}" --arg wrapper_id "${wrapper_id}" '
+      --arg created "${build_date}" '
       .name = $name |
       .documentNamespace = $namespace |
       .creationInfo.created = $created |
@@ -145,14 +138,7 @@ for arch in amd64 arm64; do
         .licenseConcluded = "Apache-2.0" |
         .licenseDeclared = "Apache-2.0" |
         .primaryPackagePurpose = "INSTALL"
-      ) |
-      if any(.files[]?; .fileName == "usr/bin/pigsty-vm") then . else
-        (.packages[] | select(.name == $name) | .SPDXID) as $package_id |
-        .files += [{fileName:"usr/bin/pigsty-vm",SPDXID:$wrapper_id,fileTypes:["APPLICATION","SOURCE"],
-          checksums:[{algorithm:"SHA1",checksumValue:$wrapper_sha1},{algorithm:"SHA256",checksumValue:$wrapper_sha256}],
-          licenseConcluded:"NOASSERTION",licenseInfoInFiles:["NOASSERTION"],copyrightText:"NOASSERTION"}] |
-        .relationships += [{spdxElementId:$package_id,relatedSpdxElement:$wrapper_id,relationshipType:"CONTAINS"}]
-      end' \
+      )' \
       "${sbom}" >"${sbom}.normalized"
     mv "${sbom}.normalized" "${sbom}"
     chmod 0644 "${package}" "${sbom}"

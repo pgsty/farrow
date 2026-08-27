@@ -25,12 +25,9 @@ import (
 	linuxnet "github.com/pgsty/farrow/internal/network/linux"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/network/subnet"
-	"github.com/pgsty/farrow/internal/profile"
 	"github.com/pgsty/farrow/internal/project"
-	"github.com/pgsty/farrow/internal/quick"
 	setuphost "github.com/pgsty/farrow/internal/setup"
 	"github.com/pgsty/farrow/internal/spec"
-	"github.com/pgsty/farrow/internal/version"
 	"golang.org/x/term"
 )
 
@@ -123,7 +120,7 @@ func loadSetupFile(path string) (config.File, spec.Resolved, error) {
 	if err != nil {
 		return config.File{}, spec.Resolved{}, err
 	}
-	file, err := config.Load(absolute)
+	file, err := config.LoadPath(absolute)
 	if err != nil {
 		return config.File{}, spec.Resolved{}, err
 	}
@@ -132,15 +129,15 @@ func loadSetupFile(path string) (config.File, spec.Resolved, error) {
 }
 
 func generatedSetupProfile(name, cidr, target string) (setupSelection, error) {
-	file, _, err := profile.LoadWithOverrides(name, profile.Overrides{Scale: profile.DefaultScale, NetworkCIDR: cidr})
+	data, err := config.Template(name, cidr)
+	if err != nil {
+		return setupSelection{}, err
+	}
+	file, err := config.ParseInventory(data)
 	if err != nil {
 		return setupSelection{}, err
 	}
 	resolved, err := file.Resolve()
-	if err != nil {
-		return setupSelection{}, err
-	}
-	data, err := config.Marshal(file)
 	if err != nil {
 		return setupSelection{}, err
 	}
@@ -166,7 +163,7 @@ func reconcileGeneratedTarget(selection setupSelection) (setupSelection, error) 
 	}
 	existingFile, existingResolved, err := loadSetupFile(selection.ConfigPath)
 	if err != nil {
-		return selection, fmt.Errorf("existing farrow.yaml is invalid and was preserved: %w", err)
+		return selection, fmt.Errorf("existing configuration is invalid and was preserved: %w", err)
 	}
 	wantedHash, err := resolvedHash(selection.Resolved)
 	if err != nil {
@@ -188,10 +185,29 @@ func reconcileGeneratedTarget(selection setupSelection) (setupSelection, error) 
 	return selection, nil
 }
 
+// discoverSetupConfig returns the first existing discovery-name path in cwd.
+func discoverSetupConfig(cwd string) (string, error) {
+	for _, name := range config.DiscoveryNames {
+		candidate := filepath.Join(cwd, name)
+		info, err := os.Lstat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("configuration is not a regular file: %s", candidate)
+		}
+		return candidate, nil
+	}
+	return "", nil
+}
+
 func resolveSetupSelection(profileName, filePath, networkCIDR, cwd string) (setupSelection, error) {
-	target := filepath.Join(cwd, "farrow.yaml")
+	target := filepath.Join(cwd, "pigsty.yml")
 	if filePath != "" && profileName != "" {
-		return setupSelection{}, errors.New("setup accepts either a profile or -f, not both")
+		return setupSelection{}, errors.New("setup accepts either a lab template or -f, not both")
 	}
 	if filePath != "" && networkCIDR != "" {
 		return setupSelection{}, errors.New("--network-cidr cannot silently rebase a user configuration; edit the file as one coordinated change")
@@ -205,48 +221,32 @@ func resolveSetupSelection(profileName, filePath, networkCIDR, cwd string) (setu
 		if err != nil {
 			return setupSelection{}, err
 		}
-		mode := resolved.Network
-		return setupSelection{Mode: mode, Profile: file.Name, Resolved: resolved, File: file, ConfigPath: absolute}, nil
+		return setupSelection{Mode: "private", Profile: file.Name, Resolved: resolved, File: file, ConfigPath: absolute}, nil
+	}
+	discovered, err := discoverSetupConfig(cwd)
+	if err != nil {
+		return setupSelection{}, err
+	}
+	if discovered != "" && profileName == "" {
+		if networkCIDR != "" {
+			return setupSelection{}, errors.New("--network-cidr cannot silently rebase the discovered configuration; edit the file as one coordinated change")
+		}
+		file, resolved, err := loadSetupFile(discovered)
+		if err != nil {
+			return setupSelection{}, err
+		}
+		return setupSelection{Mode: "private", Profile: file.Name, Resolved: resolved, File: file, ConfigPath: discovered}, nil
 	}
 	if profileName == "" {
-		if info, err := os.Lstat(target); err == nil {
-			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-				return setupSelection{}, fmt.Errorf("farrow.yaml is not a regular file: %s", target)
-			}
-			if networkCIDR != "" {
-				return setupSelection{}, errors.New("--network-cidr cannot silently rebase the discovered farrow.yaml")
-			}
-			file, resolved, err := loadSetupFile(target)
-			if err != nil {
-				return setupSelection{}, err
-			}
-			return setupSelection{Mode: resolved.Network, Profile: file.Name, Resolved: resolved, File: file, ConfigPath: target}, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return setupSelection{}, err
-		}
-		if networkCIDR != "" {
-			return setupSelection{}, errors.New("--network-cidr requires a named private profile such as meta or full")
-		}
-		resolved, err := (quick.Manager{FarrowVersion: version.Version}).Resolved()
-		if err != nil {
-			return setupSelection{}, err
-		}
-		return setupSelection{Mode: "quick", Profile: "quick", Resolved: resolved}, nil
+		profileName = "meta"
 	}
-	if profileName == "quick" {
-		if networkCIDR != "" {
-			return setupSelection{}, errors.New("quick mode uses QEMU user networking and does not accept --network-cidr")
-		}
-		if _, err := os.Lstat(target); err == nil {
-			return setupSelection{}, fmt.Errorf("%s would make the next `farrow up` use that file, not quick mode; move it or run `farrow setup -f %s`", target, target)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return setupSelection{}, err
-		}
-		resolved, err := (quick.Manager{FarrowVersion: version.Version}).Resolved()
-		if err != nil {
-			return setupSelection{}, err
-		}
-		return setupSelection{Mode: "quick", Profile: "quick", Resolved: resolved}, nil
+	if !config.ValidTemplate(profileName) {
+		return setupSelection{}, fmt.Errorf("unknown lab template %q; available: %s", profileName, strings.Join(config.TemplateNames(), ", "))
+	}
+	if discovered != "" {
+		// Repeating `farrow setup <template>` over the file it generated is
+		// idempotent; a different existing configuration is preserved.
+		target = discovered
 	}
 	selection, err := generatedSetupProfile(profileName, networkCIDR, target)
 	if err != nil {
@@ -714,9 +714,7 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 	} else {
 		fmt.Fprintf(stderr, "  dependencies  install with %s\n", plan.Manager)
 	}
-	if selection.Mode == "quick" {
-		fmt.Fprintln(stderr, "  network       QEMU user NAT (no host change)")
-	} else if report != nil {
+	if report != nil {
 		action := "reuse"
 		if !report.Ready {
 			action = "blocked"
@@ -768,10 +766,8 @@ func emitSetupResult(result setupResult, stdout, stderr io.Writer) int {
 			status = "pending install"
 		}
 		textField(stdout, 14, "network", fmt.Sprintf("%s (%s)", result.Network.CIDR, status))
-	} else if result.Mode == "private" {
-		textField(stdout, 14, "network", fmt.Sprintf("%s (pending dependencies)", result.NetworkCIDR))
 	} else {
-		textField(stdout, 14, "network", "user NAT")
+		textField(stdout, 14, "network", fmt.Sprintf("%s (pending dependencies)", result.NetworkCIDR))
 	}
 	if result.NetworkMode != "" {
 		textField(stdout, 14, "network mode", result.NetworkMode)
@@ -833,7 +829,13 @@ func shellQuote(argument string) string {
 
 func setupNextCommand(selection setupSelection, cwd string) (string, []string) {
 	arguments := []string{"farrow", "up"}
-	if selection.ConfigPath != "" && selection.ConfigPath != filepath.Join(cwd, "farrow.yaml") {
+	discoverable := false
+	for _, name := range config.DiscoveryNames {
+		if selection.ConfigPath == filepath.Join(cwd, name) {
+			discoverable = true
+		}
+	}
+	if selection.ConfigPath != "" && !discoverable {
 		arguments = append(arguments, "-f", selection.ConfigPath)
 	}
 	return formatSetupCommand(arguments)
@@ -892,7 +894,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 	}
 	selection, err := resolveSetupSelection(profileName, options.FilePath, options.NetworkCIDR, cwd)
 	if err != nil {
-		if errors.Is(err, profile.ErrNotFound) {
+		if strings.Contains(err.Error(), "unknown lab template") {
 			return failSetup(&result, exitUsage, err, stdout, stderr)
 		}
 		return failSetup(&result, exitConflict, err, stdout, stderr)

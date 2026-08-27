@@ -42,6 +42,64 @@ type NetworkPreflightError struct{ Report netpreflight.Report }
 
 var ErrRecreateRequired = errors.New("private desired spec requires recreate")
 
+// ErrNodesRemoved reports nodes present in project state but absent from the
+// desired configuration. The absence of a node from a configuration never
+// implies destruction; removal is an explicit `farrow destroy <node> --force`.
+var ErrNodesRemoved = errors.New("configuration no longer defines existing node(s)")
+
+// resolvedDiff is the node-granular classification of a desired configuration
+// against the applied project state.
+type resolvedDiff struct {
+	EnvelopeChanged bool
+	Create          []string // desired nodes without committed state: new peers, or the per-node recreate window
+	Changed         []string // desired nodes whose definition differs while their state still exists
+	Removed         []string // stateful nodes the desired configuration dropped
+	Unchanged       []string
+}
+
+func diffResolved(persisted, desired spec.Resolved, hasState func(string) bool) resolvedDiff {
+	diff := resolvedDiff{}
+	if !equalResolvedEnvelope(persisted, desired) {
+		diff.EnvelopeChanged = true
+	}
+	persistedNodes := make(map[string]spec.Node, len(persisted.Nodes))
+	for _, node := range persisted.Nodes {
+		persistedNodes[node.Name] = node
+	}
+	desiredNames := make(map[string]struct{}, len(desired.Nodes))
+	for _, node := range desired.Nodes {
+		desiredNames[node.Name] = struct{}{}
+		current, known := persistedNodes[node.Name]
+		stateful := known && hasState(node.Name)
+		switch {
+		case !stateful:
+			diff.Create = append(diff.Create, node.Name)
+		case sameResolvedNode(current, node):
+			diff.Unchanged = append(diff.Unchanged, node.Name)
+		default:
+			diff.Changed = append(diff.Changed, node.Name)
+		}
+	}
+	for _, node := range persisted.Nodes {
+		if _, kept := desiredNames[node.Name]; !kept && hasState(node.Name) {
+			diff.Removed = append(diff.Removed, node.Name)
+		}
+	}
+	return diff
+}
+
+func equalResolvedEnvelope(first, second spec.Resolved) bool {
+	firstHash, firstErr := spec.Hash(envelopeOf(first))
+	secondHash, secondErr := spec.Hash(envelopeOf(second))
+	return firstErr == nil && secondErr == nil && firstHash == secondHash
+}
+
+func sameResolvedNode(first, second spec.Node) bool {
+	firstData, firstErr := spec.CanonicalJSON(spec.Resolved{Nodes: []spec.Node{first}})
+	secondData, secondErr := spec.CanonicalJSON(spec.Resolved{Nodes: []spec.Node{second}})
+	return firstErr == nil && secondErr == nil && string(firstData) == string(secondData)
+}
+
 func (e *NetworkPreflightError) Error() string {
 	for _, finding := range e.Report.Findings {
 		if finding.Severity == netpreflight.Error {
@@ -72,6 +130,7 @@ type Manager struct {
 	DialSSHAddress      func(string, string) (net.Conn, error)
 	Nodes               []string
 	allowPartialDestroy bool
+	dropFromSpec        bool
 }
 
 func (m Manager) report(phase, message string) {
@@ -112,6 +171,9 @@ type LifecyclePlan struct {
 	Nodes       []string `json:"nodes"`
 	LeaseActive bool     `json:"lease_active"`
 	Destructive bool     `json:"destructive"`
+	Create      []string `json:"create,omitempty"`
+	Recreate    []string `json:"recreate,omitempty"`
+	Missing     []string `json:"missing,omitempty"`
 }
 
 func (m Manager) runner() execx.Runner {
@@ -816,19 +878,27 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		} else {
 			hadExistingState = true
 			requested = materializeExistingForwardPorts(requested, persisted.Resolved)
-			requestedHash, err := spec.Hash(requested)
-			if err != nil {
-				return Status{}, err
+			store := state.Store{Project: existing}
+			hasState := func(name string) bool {
+				_, readErr := store.ReadNode(name)
+				return readErr == nil
 			}
-			if persisted.SpecHash != requestedHash {
-				return Status{}, fmt.Errorf("%w; run farrow plan, then farrow recreate -f <config> --force", ErrRecreateRequired)
+			diff := diffResolved(persisted.Resolved, requested, hasState)
+			if diff.EnvelopeChanged {
+				return Status{}, fmt.Errorf("%w: project-level settings changed; run farrow plan, then farrow recreate -f <config> --force", ErrRecreateRequired)
+			}
+			if len(diff.Removed) != 0 {
+				return Status{}, fmt.Errorf("%w: %s; farrow never destroys from absence — run `farrow destroy %s --force` to remove them, or restore them in the configuration", ErrNodesRemoved, strings.Join(diff.Removed, ", "), strings.Join(diff.Removed, " "))
+			}
+			if len(diff.Changed) != 0 {
+				return Status{}, fmt.Errorf("%w for node(s) %s; run farrow plan, then `farrow recreate --force %s` with this configuration", ErrRecreateRequired, strings.Join(diff.Changed, ", "), strings.Join(diff.Changed, " "))
 			}
 			allRunning, allRunnable := true, true
-			for _, definition := range persisted.Resolved.Nodes {
+			for _, definition := range requested.Nodes {
 				if _, include := selectedSet[definition.Name]; !include {
 					continue
 				}
-				node, err := (state.Store{Project: existing}).ReadNode(definition.Name)
+				node, err := store.ReadNode(definition.Name)
 				if missingPath(err) {
 					createNodes = append(createNodes, definition.Name)
 					allRunning = false
@@ -842,7 +912,6 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 			}
 			if len(createNodes) != 0 {
 				reusableProject = &existing
-				requested = persisted.Resolved
 			} else if allRunning {
 				status, err := m.statusFor(ctx, existing, "already running")
 				if err != nil {
@@ -927,6 +996,10 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err != nil {
 		return Status{}, err
 	}
+	nodeHashes, err := spec.NodeHashes(resolved)
+	if err != nil {
+		return Status{}, err
+	}
 	privateKeyPath, knownHosts, publicKey, err := m.ensureKeys(ctx, projectValue)
 	if err != nil {
 		return Status{}, err
@@ -961,11 +1034,16 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err != nil {
 		return Status{}, err
 	}
+	if len(createNodes) != 0 && leaseStatus.Active && leaseStatus.Lease.ProjectID == projectValue.Marker.ProjectID && len(leaseStatus.Lease.Nodes) != len(plan.Lease.Nodes) {
+		if _, err := m.leaseStore().Reshape(ctx, plan.Lease); err != nil {
+			return Status{}, err
+		}
+	}
 	generations := make(map[string]uint64, len(resolved.Nodes))
 	for _, node := range resolved.Nodes {
 		generations[node.Name] = 1
 	}
-	seeds, err := RenderSeeds(resolved, plan, SeedInput{PublicKey: publicKey, PrivateKey: string(privateKey), SpecHash: specHash, Generation: generations})
+	seeds, err := RenderSeeds(resolved, plan, SeedInput{PublicKey: publicKey, PrivateKey: string(privateKey), SpecHashes: nodeHashes, Generation: generations})
 	if err != nil {
 		return Status{}, err
 	}
@@ -974,7 +1052,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		return Status{}, err
 	}
 	prepare := PrepareConfig{
-		ProjectRoot: projectValue.Root, Resolved: resolved, SpecHash: specHash, Plan: plan, Seeds: seeds, Bases: bases, SSHPorts: sshPorts,
+		ProjectRoot: projectValue.Root, Resolved: resolved, SpecHash: specHash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds, Bases: bases, SSHPorts: sshPorts,
 		Profile: profile, QEMUBinary: qemuPath, Firmware: firmware, UseUEFI: boot == "uefi", Backend: backend,
 		Disks: disk.Manager{QEMUImg: qemuImg, Runner: m.runner()},
 	}
@@ -1352,9 +1430,29 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 		return LifecyclePlan{}, err
 	}
 	result.SpecHash = hash
-	if projectState.SpecHash != hash {
+	store := state.Store{Project: projectValue}
+	hasState := func(name string) bool {
+		_, readErr := store.ReadNode(name)
+		return readErr == nil
+	}
+	diff := diffResolved(projectState.Resolved, requested, hasState)
+	result.Create = append([]string(nil), diff.Create...)
+	result.Recreate = append([]string(nil), diff.Changed...)
+	result.Missing = append([]string(nil), diff.Removed...)
+	switch {
+	case diff.EnvelopeChanged:
 		result.Action = "recreate"
 		result.Destructive = true
+		return result, nil
+	case len(diff.Removed) != 0:
+		result.Action = "blocked-removal"
+		return result, nil
+	case len(diff.Changed) != 0:
+		result.Action = "recreate"
+		result.Destructive = true
+		return result, nil
+	case len(diff.Create) != 0:
+		result.Action = "converge"
 		return result, nil
 	}
 	allRunning, allStartable := true, true
@@ -1362,7 +1460,7 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 		if _, include := selectedSet[definition.Name]; !include {
 			continue
 		}
-		node, err := (state.Store{Project: projectValue}).ReadNode(definition.Name)
+		node, err := store.ReadNode(definition.Name)
 		if err != nil {
 			return LifecyclePlan{}, err
 		}

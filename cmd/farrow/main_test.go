@@ -20,7 +20,6 @@ import (
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/sshconfig"
 	"github.com/pgsty/farrow/internal/state"
-	"go.yaml.in/yaml/v3"
 )
 
 type recordingDarwinInstaller struct {
@@ -90,18 +89,6 @@ func TestQuickSSHAndStatusUseResolvedUser(t *testing.T) {
 	}
 }
 
-func TestInitProfileCustomNetworkWarningAndSuffixes(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"init", "full", "--network-cidr", "172.31.251.0/24", "--json"}, &stdout, &stderr)
-	if code != exitOK || !strings.Contains(stderr.String(), "warning: non-default host-global private subnet") {
-		t.Fatalf("code=%d stderr=%s", code, stderr.String())
-	}
-	for _, want := range []string{`"cidr": "172.31.251.0/24"`, `"host_address": "172.31.251.1"`, `"address": "172.31.251.10"`, `"address": "172.31.251.13"`} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("custom init missing %s: %s", want, stdout.String())
-		}
-	}
-}
 
 func TestInitInvalidNetworkCIDRIsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -158,15 +145,23 @@ func TestDestructiveConfirmationTTYAndNonTTY(t *testing.T) {
 	}
 }
 
-func TestRollbackFlagIsPrivateUpOnly(t *testing.T) {
+func TestRollbackFlagIsUpOnly(t *testing.T) {
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"plan", "--rollback"}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "unknown flag") {
 		t.Fatalf("plan code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"up", "--rollback"}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "only valid for declarative private up") {
-		t.Fatalf("quick up code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	if code := run([]string{"up", "--rollback"}, &stdout, &stderr); code != exitConflict || !strings.Contains(stderr.String(), "no configuration found") {
+		t.Fatalf("configless up code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -237,8 +232,7 @@ func TestPlanMapsDataRootMigrationToConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	persisted := spec.Quick(true, true)
-	persisted.DataRoot = persistedRoot
+	persisted := testInventoryResolved(t, persistedRoot)
 	hash, err := spec.Hash(persisted)
 	if err != nil {
 		t.Fatal(err)
@@ -246,9 +240,8 @@ func TestPlanMapsDataRootMigrationToConflict(t *testing.T) {
 	if err := (state.Store{Project: projectValue}).WriteProject(state.ProjectState{Schema: state.ProjectSchema, FarrowVersion: "test", ProjectID: projectValue.Marker.ProjectID, SpecHash: hash, Resolved: persisted, UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	configPath := filepath.Join(work, "farrow.yaml")
-	configText := "version: 1\nname: quick\nnetwork: {mode: user}\nstorage: {data_root: " + filepath.Join(root, "different") + "}\nnodes: [{name: meta}]\n"
-	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
+	configPath := filepath.Join(work, "pigsty.yml")
+	if err := os.WriteFile(configPath, []byte(testInventoryText), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	previous, err := os.Getwd()
@@ -259,34 +252,29 @@ func TestPlanMapsDataRootMigrationToConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
-	t.Setenv("FARROW_HOME", "")
+	t.Setenv("FARROW_HOME", filepath.Join(root, "different"))
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"plan", "-f", configPath}, &stdout, &stderr); code != exitConflict || !strings.Contains(stderr.String(), "data-root migration required") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
-func TestValidateRejectsWorkspaceAsConfiguredDataRoot(t *testing.T) {
-	work := t.TempDir()
-	configPath := filepath.Join(work, "farrow.yaml")
-	configText := "version: 1\nname: quick\nnetwork: {mode: user}\nstorage: {data_root: " + work + "}\nnodes: [{name: meta}]\n"
-	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	previous, err := os.Getwd()
+const testInventoryText = "all:\n  vars: { admin_ip: 10.10.10.10 }\n  children:\n    nodes:\n      hosts:\n        10.10.10.10: { nodename: meta }\n        10.10.10.11: { nodename: node-1 }\n"
+
+func testInventoryResolved(t *testing.T, dataRoot string) spec.Resolved {
+	t.Helper()
+	file, err := config.ParseInventory([]byte(testInventoryText))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(work); err != nil {
+	resolved, err := file.Resolve()
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(previous) })
-	t.Setenv("FARROW_HOME", "")
-	var stdout, stderr bytes.Buffer
-	if code := runValidate([]string{"-f", configPath}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "unsafe broad Farrow data root") {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
+	resolved.DataRoot = dataRoot
+	return resolved
 }
+
 
 func TestLoadPrivatePreflightConfigAcceptsRelativePath(t *testing.T) {
 	resolved, err := loadPrivatePreflightConfig("../../tests/fixtures/private-two.yaml")
@@ -353,153 +341,8 @@ func TestNoWaitOnlyAppliesToStartingCommands(t *testing.T) {
 	}
 }
 
-func TestInitEmbeddedProfilesAndOverrides(t *testing.T) {
-	t.Parallel()
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"init", "meta"}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("init meta code=%d stderr=%s", code, stderr.String())
-	}
-	file, err := config.Decode(bytes.NewReader(stdout.Bytes()))
-	if err != nil || file.Name != "meta" || len(file.Nodes) != 1 || !strings.Contains(stdout.String(), "# Farrow-owned profile: meta") {
-		t.Fatalf("embedded meta output file=%#v err=%v\n%s", file, err, stdout.String())
-	}
 
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"init", "meta", "--scale", "64", "--image", "d13", "--json"}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("scaled init code=%d stderr=%s", code, stderr.String())
-	}
-	var resolved spec.Resolved
-	if err := json.Unmarshal(stdout.Bytes(), &resolved); err != nil {
-		t.Fatal(err)
-	}
-	if resolved.Nodes[0].CPUs != 128 || resolved.Nodes[0].Memory != 256*spec.GiB || resolved.Image != "d13" {
-		t.Fatalf("scaled resolved = %#v", resolved)
-	}
 
-	for _, test := range []struct {
-		args []string
-		want string
-	}{
-		{[]string{"init", "deci", "--scale", "2"}, "not scalable"},
-		{[]string{"init", "rpm", "--image", "u24"}, "force-uniform-image"},
-	} {
-		stdout.Reset()
-		stderr.Reset()
-		if code := run(test.args, &stdout, &stderr); code != exitConflict || !strings.Contains(stderr.String(), test.want) {
-			t.Errorf("run(%v) code=%d stderr=%s", test.args, code, stderr.String())
-		}
-	}
-
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"init", "--image", "u24", "rpm", "--force-uniform-image"}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("forced mixed init code=%d stderr=%s", code, stderr.String())
-	}
-	forced, err := config.Decode(bytes.NewReader(stdout.Bytes()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, node := range forced.Nodes {
-		if node.Image != "u24" {
-			t.Errorf("forced node %s image=%s", node.Name, node.Image)
-		}
-	}
-}
-
-func TestPigstyInventoryRenderAndAtomicOutput(t *testing.T) {
-	t.Parallel()
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := filepath.Join(root, "conf", "ha", "full.yml")
-	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	fixture := []byte("---\nall:\n  children:\n    infra: { hosts: { 10.10.10.10: { infra_seq: 1 } } }\n    pg-test:\n      hosts:\n        10.10.10.11: { pg_seq: 1 }\n        10.10.10.12: { pg_seq: 2 }\n        10.10.10.13: { pg_seq: 3 }\n  vars:\n    admin_ip: 10.10.10.10\n")
-	if err := os.WriteFile(source, fixture, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	args := []string{"pigsty", "inventory", "--profile", "full", "--root", root, "--network-cidr", "172.31.251.0/24"}
-	if code := run(args, &stdout, &stderr); code != exitOK {
-		t.Fatalf("render code=%d stderr=%s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "172.31.251.10") || strings.Contains(stdout.String(), "10.10.10.10") || !strings.Contains(stderr.String(), "warning:") {
-		t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
-	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run(append(append([]string(nil), args...), "--yaml"), &stdout, &stderr); code != exitOK {
-		t.Fatalf("structured render code=%d stderr=%s", code, stderr.String())
-	}
-	var structured pigstyInventoryResult
-	if err := yaml.Unmarshal(stdout.Bytes(), &structured); err != nil || structured.Profile != "full" || !strings.Contains(structured.Content, "172.31.251.10") || structured.Published {
-		t.Fatalf("structured=%+v err=%v output=%s", structured, err, stdout.String())
-	}
-
-	output := filepath.Join(root, "pigsty.yml")
-	stdout.Reset()
-	stderr.Reset()
-	writeArgs := append(append([]string(nil), args...), "--output", output)
-	if code := run(writeArgs, &stdout, &stderr); code != exitOK {
-		t.Fatalf("write code=%d stderr=%s", code, stderr.String())
-	}
-	written, err := os.ReadFile(output)
-	if err != nil || !strings.Contains(string(written), "172.31.251.10") {
-		t.Fatalf("written inventory=%q err=%v", written, err)
-	}
-	if info, err := os.Stat(output); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("output mode=%v err=%v", info, err)
-	}
-	marker := output + ".farrow.json"
-	if info, err := os.Stat(marker); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("marker mode=%v err=%v", info, err)
-	}
-	defaultArgs := []string{"pigsty", "inventory", "--profile", "full", "--root", root, "--output", output}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run(defaultArgs, &stdout, &stderr); code != exitConflict {
-		t.Fatalf("overwrite without force code=%d stderr=%s", code, stderr.String())
-	}
-	unchanged, err := os.ReadFile(output)
-	if err != nil || !strings.Contains(string(unchanged), "172.31.251.10") {
-		t.Fatalf("conflicting output changed: %q %v", unchanged, err)
-	}
-	if code := run(append(defaultArgs, "--force"), &stdout, &stderr); code != exitOK {
-		t.Fatalf("forced atomic output code=%d stderr=%s", code, stderr.String())
-	}
-
-	if code := run(append(append([]string(nil), args...), "--output", source, "--force"), &stdout, &stderr); code != exitIntegrity {
-		t.Fatalf("source overwrite code=%d stderr=%s", code, stderr.String())
-	}
-	stillSource, err := os.ReadFile(source)
-	if err != nil || !bytes.Equal(stillSource, fixture) {
-		t.Fatalf("bound source changed: %q %v", stillSource, err)
-	}
-}
-
-func TestPigstyInventoryUsageErrors(t *testing.T) {
-	t.Parallel()
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{
-		{"pigsty"},
-		{"pigsty", "inventory", "--profile", "full", "--root", "relative"},
-		{"pigsty", "inventory", "--profile", "full", "--root", root, "--network-cidr", "8.8.8.0/24"},
-		{"pigsty", "inventory", "--profile", "missing", "--root", root},
-		{"pigsty", "inventory", "--profile", "full", "--root", root, "--force"},
-	} {
-		var stdout, stderr bytes.Buffer
-		if code := run(args, &stdout, &stderr); code != exitUsage {
-			t.Errorf("run(%v) code=%d stderr=%s", args, code, stderr.String())
-		}
-	}
-}
 
 func TestCompletions(t *testing.T) {
 	t.Parallel()
@@ -518,7 +361,7 @@ func TestCompletions(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{args: []string{"__complete", "setup", ""}, want: []string{"quick", "full", "simu"}},
+		{args: []string{"__complete", "setup", ""}, want: []string{"meta", "dual", "trio", "full"}},
 		{args: []string{"__complete", "image", ""}, want: []string{"list", "pull", "sync"}},
 		{args: []string{"__complete", "project", ""}, want: []string{"purge-keys", "upgrade-state"}},
 	} {

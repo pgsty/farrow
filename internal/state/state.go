@@ -302,8 +302,9 @@ func validateTransaction(value Transaction, expectedID string) error {
 		if err := validateNode(intent.Node, expectedID, value.Node); err != nil {
 			return fmt.Errorf("invalid reconcile node intent: %w", err)
 		}
-		if intent.Node.Phase != Stopped || intent.Node.SpecHash != intent.Project.SpecHash {
-			return errors.New("reconcile node must be stopped and match desired project hash")
+		expectedHash, hashErr := spec.NodeHash(intent.Project.Resolved, value.Node)
+		if hashErr != nil || intent.Node.Phase != Stopped || intent.Node.SpecHash != expectedHash {
+			return errors.New("reconcile node must be stopped and match its desired node hash")
 		}
 	}
 	return nil

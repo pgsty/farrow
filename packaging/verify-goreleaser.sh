@@ -121,10 +121,9 @@ for os_name in darwin linux; do
     [[ -z $(find "${root}" ! -type f ! -type d -print -quit) ]] || { printf 'archive contains a special entry: %s\n' "${archive}" >&2; exit 1; }
     actual_list=$(cd "${root}" && find . -type f -print | sed 's#^\./##' | LC_ALL=C sort)
     [[ ${actual_list} == "${expected_list}" ]] || { printf 'unexpected archive payload in %s\n' "${archive}" >&2; diff -u <(printf '%s\n' "${expected_list}") <(printf '%s\n' "${actual_list}") >&2 || true; exit 1; }
-    [[ $(file_mode "${root}/bin/farrow") == 755 && $(file_mode "${root}/bin/farrow-hosts-helper") == 755 && $(file_mode "${root}/bin/pigsty-vm") == 755 ]]
-    cmp "${repo}/packaging/pigsty/vm" "${root}/bin/pigsty-vm"
+    [[ $(file_mode "${root}/bin/farrow") == 755 && $(file_mode "${root}/bin/farrow-hosts-helper") == 755 ]]
     for path in "${expected_paths[@]}"; do
-      case ${path} in bin/farrow|bin/farrow-hosts-helper|bin/pigsty-vm) continue ;; esac
+      case ${path} in bin/farrow|bin/farrow-hosts-helper) continue ;; esac
       [[ $(file_mode "${root}/${path}") == 644 ]] || { printf 'unexpected archive mode: %s/%s\n' "${archive}" "${path}" >&2; exit 1; }
     done
     for path in "${expected_paths[@]}"; do

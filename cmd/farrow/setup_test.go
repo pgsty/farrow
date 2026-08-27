@@ -28,14 +28,21 @@ func (runner *setupSequenceRunner) Run(context.Context, string, ...string) (exec
 	return execx.Result{}, nil
 }
 
-func TestResolveSetupSelectionDefaultsToQuick(t *testing.T) {
+func TestResolveSetupSelectionDefaultsToMeta(t *testing.T) {
 	t.Parallel()
-	selection, err := resolveSetupSelection("", "", "", t.TempDir())
+	directory := t.TempDir()
+	selection, err := resolveSetupSelection("", "", "", directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.Mode != "quick" || selection.Profile != "quick" || selection.Publish || selection.ConfigPath != "" {
-		t.Fatalf("quick selection = %#v", selection)
+	if selection.Mode != "private" || selection.Profile != "meta" || !selection.Publish || !selection.Generated {
+		t.Fatalf("default selection = %#v", selection)
+	}
+	if selection.ConfigPath != filepath.Join(directory, "pigsty.yml") {
+		t.Fatalf("config path = %s", selection.ConfigPath)
+	}
+	if len(selection.Resolved.Nodes) != 1 || selection.Resolved.Nodes[0].Name != "meta" || selection.Resolved.Nodes[0].Address != "10.10.10.10" {
+		t.Fatalf("default meta lab = %#v", selection.Resolved.Nodes)
 	}
 }
 
@@ -49,7 +56,7 @@ func TestResolveSetupSelectionGeneratesPrivateProfileOnce(t *testing.T) {
 	if selection.Mode != "private" || selection.Profile != "meta" || !selection.Publish || !selection.Generated || len(selection.ConfigData) == 0 {
 		t.Fatalf("generated selection = %#v", selection)
 	}
-	if selection.ConfigPath != filepath.Join(directory, "farrow.yaml") {
+	if selection.ConfigPath != filepath.Join(directory, "pigsty.yml") {
 		t.Fatalf("config path = %s", selection.ConfigPath)
 	}
 	if err := os.WriteFile(selection.ConfigPath, selection.ConfigData, 0o600); err != nil {
@@ -75,14 +82,14 @@ func TestResolveSetupSelectionPreservesDifferentExistingConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := resolveSetupSelection("full", "", "", directory); err == nil {
-		t.Fatal("setup accepted a profile over a different existing farrow.yaml")
+		t.Fatal("setup accepted a template over a different existing configuration")
 	}
 	data, err := os.ReadFile(meta.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(data, meta.ConfigData) {
-		t.Fatal("existing farrow.yaml changed")
+		t.Fatal("existing configuration changed")
 	}
 }
 

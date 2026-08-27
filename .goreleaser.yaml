@@ -122,8 +122,6 @@ archives:
         info: *archive_file_info
       - src: THIRD_PARTY_LICENSES.md
         info: *archive_file_info
-      - src: packaging/pigsty/vm
-        dst: bin/pigsty-vm
         info:
           owner: root
           group: root
@@ -153,8 +151,6 @@ archives:
       - src: docs/phase-2.md
         dst: docs/phase-2.md
         info: *archive_file_info
-      - src: docs/pigsty.md
-        dst: docs/pigsty.md
         info: *archive_file_info
       - src: docs/security.md
         dst: docs/security.md

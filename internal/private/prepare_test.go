@@ -85,10 +85,14 @@ func privatePrepareConfig(t *testing.T, root string, disks DiskOps) PrepareConfi
 	if err != nil {
 		t.Fatal(err)
 	}
+	nodeHashes, err := spec.NodeHashes(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
 	publicKey, privateKey := testSSHKeyPair(t)
 	seeds, err := RenderSeeds(resolved, plan, SeedInput{
 		PublicKey: publicKey, PrivateKey: privateKey,
-		SpecHash: hash, Generation: map[string]uint64{"meta": 1, "node-1": 1},
+		SpecHashes: nodeHashes, Generation: map[string]uint64{"meta": 1, "node-1": 1},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +110,7 @@ func privatePrepareConfig(t *testing.T, root string, disks DiskOps) PrepareConfi
 		t.Fatal(err)
 	}
 	return PrepareConfig{
-		ProjectRoot: root, Resolved: resolved, SpecHash: hash, Plan: plan, Seeds: seeds,
+		ProjectRoot: root, Resolved: resolved, SpecHash: hash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds,
 		Bases:    map[string]BaseImage{"u24": {Path: base, Alias: "u24", Release: "test", Digest: strings.Repeat("a", 64), VirtualSize: 4 * spec.GiB}},
 		SSHPorts: map[string]uint16{"meta": 2222, "node-1": 2223},
 		Profile:  profile, QEMUBinary: "/opt/qemu/bin/qemu-system-aarch64",
@@ -130,7 +134,7 @@ func TestPrepareAllBuildsJournaledOfflineArtifacts(t *testing.T) {
 	for _, outcome := range outcomes {
 		artifacts := outcome.Artifacts
 		journal, err := ReadPrepareJournal(artifacts.Journal)
-		if err != nil || !journal.Prepared || journal.Invocation.Binary == "" || journal.SpecHash != config.SpecHash {
+		if err != nil || !journal.Prepared || journal.Invocation.Binary == "" || journal.SpecHash != config.NodeHashes[outcome.Node] {
 			t.Fatalf("journal %s = %#v, %v", outcome.Node, journal, err)
 		}
 		for _, pathname := range []string{artifacts.Root, artifacts.Seed, artifacts.NVRAM} {

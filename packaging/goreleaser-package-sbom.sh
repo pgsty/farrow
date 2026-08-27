@@ -45,10 +45,6 @@ else
   created=$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
 fi
 package_sha=$(shasum -a 256 "${artifact}" | awk '{print $1}')
-wrapper=${sbom_root}/usr/bin/pigsty-vm
-wrapper_sha256=$(shasum -a 256 "${wrapper}" | awk '{print $1}')
-wrapper_sha1=$(shasum "${wrapper}" | awk '{print $1}')
-wrapper_id=SPDXRef-File-usr-bin-pigsty-vm-${wrapper_sha256:0:16}
 raw=${document}.raw
 normalized=${document}.normalized
 cleanup() { rm -f -- "${raw}" "${normalized}"; }
@@ -57,8 +53,7 @@ SYFT_CHECK_FOR_APP_UPDATE=false syft scan "dir:${sbom_root}" --source-name "${ar
   --output "spdx-json=${raw}" >/dev/null
 jq --arg name "${artifact}" --arg version "${version}" --arg package_sha "${package_sha}" \
   --arg namespace "https://github.com/pgsty/farrow/sbom/${version}/${goarch}/${format}/${package_sha}" \
-  --arg created "${created}" --arg wrapper_sha256 "${wrapper_sha256}" \
-  --arg wrapper_sha1 "${wrapper_sha1}" --arg wrapper_id "${wrapper_id}" '
+  --arg created "${created}" '
   .name = $name |
   .documentNamespace = $namespace |
   .creationInfo.created = $created |
@@ -70,13 +65,6 @@ jq --arg name "${artifact}" --arg version "${version}" --arg package_sha "${pack
     .licenseConcluded = "Apache-2.0" |
     .licenseDeclared = "Apache-2.0" |
     .primaryPackagePurpose = "INSTALL"
-  ) |
-  if any(.files[]?; .fileName == "usr/bin/pigsty-vm") then . else
-    (.packages[] | select(.name == $name) | .SPDXID) as $package_id |
-    .files += [{fileName:"usr/bin/pigsty-vm",SPDXID:$wrapper_id,fileTypes:["APPLICATION","SOURCE"],
-      checksums:[{algorithm:"SHA1",checksumValue:$wrapper_sha1},{algorithm:"SHA256",checksumValue:$wrapper_sha256}],
-      licenseConcluded:"NOASSERTION",licenseInfoInFiles:["NOASSERTION"],copyrightText:"NOASSERTION"}] |
-    .relationships += [{spdxElementId:$package_id,relatedSpdxElement:$wrapper_id,relationshipType:"CONTAINS"}]
-  end' "${raw}" >"${normalized}"
+  )' "${raw}" >"${normalized}"
 mv "${normalized}" "${document}"
 chmod 0644 "${document}"
