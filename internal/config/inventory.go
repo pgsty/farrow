@@ -263,13 +263,6 @@ func (host inventoryHost) lookupStringList(key string) ([]string, bool, error) {
 	return value, true, nil
 }
 
-type inventoryDisk struct {
-	Path       string `yaml:"path"`
-	Size       any    `yaml:"size,omitempty"`
-	FS         string `yaml:"fs,omitempty"`
-	Persistent bool   `yaml:"persistent,omitempty"`
-}
-
 func diskNameForPath(path string) (string, error) {
 	name := strings.ReplaceAll(strings.Trim(path, "/"), "/", "-")
 	if !derivedDiskName.MatchString(name) {
