@@ -6,15 +6,24 @@ farrow [--json|--yaml] [--verbose] <command> [flags] [node...]
 
 ## Conventions
 
+**One deployment.** Farrow manages exactly one deployment per user; all state
+lives under the data root (`FARROW_HOME`, default `~/.farrow`), and nothing is
+written into the working directory. `status`, `start`, `stop`, `restart`,
+`ssh`, `exec`, `logs`, `destroy`, `recreate`, `provision`, `ss`, `ssh-config`,
+and `hosts` read that state and work from any directory. `up`, `plan`,
+`reload`, `validate`, and `setup` read the configuration in front of you;
+pointing them at a different file proposes a new desired state for the same
+deployment, diffed node by node.
+
 **Config discovery.** Commands that accept a configuration look for
-`-f <file>` first, then `farrow.yaml`, `pigsty.yml`, and `pigsty.yaml` in the
-working directory. The content is always a Pigsty-compatible inventory; see
-[config.md](config.md).
+`-f <file>` first, then `farrow.yml`, `farrow.yaml`, `pigsty.yml`, and
+`pigsty.yaml` in the working directory. The content is always a
+Pigsty-compatible inventory; see [config.md](config.md).
 
 **Node selectors.** `plan`, `up`, `start`, `stop`, `restart`, `reload`,
 `recreate`, `status`, `provision`, and `destroy` accept trailing node names to
 limit the operation. `destroy` with selectors removes those nodes from the
-project; without selectors it destroys the whole project.
+deployment; without selectors it destroys the whole deployment.
 
 **Output.** Text is the default. `--json` emits JSON; `--yaml` emits YAML with
 the same field contract. Final results go to stdout; progress, warnings, and
@@ -28,7 +37,7 @@ bounded remote stdout/stderr as fields in structured modes; `logs --follow
 --json` is NDJSON.
 
 **Confirmation.** Destructive operations print their plan and change nothing
-until `--force` (project data) or `--yes` (host state). `setup` prints one
+until `--force` (deployment data) or `--yes` (host state). `setup` prints one
 compact transaction and asks once in a terminal; `--yes` covers automation.
 
 ## Exit codes
@@ -39,9 +48,8 @@ compact transaction and asks once in a terminal; `--yes` covers automation.
 | 1 | runtime error | unexpected failure |
 | 2 | usage error | bad flag, invalid config |
 | 3 | capability missing | no QEMU, no native accelerator, no firmware |
-| 4 | state conflict | per-node changes need `recreate --force <node>`; removed nodes need explicit destroy; no configuration found |
+| 4 | state conflict | per-node changes need `recreate --force <node>`; removed nodes need explicit destroy; no configuration found; a foreign vmnet consumer holds the subnet |
 | 5 | partial completion | some nodes of a multi-node operation failed |
-| 6 | resource held | another project owns the private lease |
 | 7 | integrity failure | checksum, signature, or ownership mismatch |
 
 `ssh` and `exec` pass the remote exit code through.
@@ -54,7 +62,7 @@ farrow setup [meta|dual|trio|full] [-f <file>] [--network-cidr <RFC1918/24>] \
 ```
 
 With no template and no discovered configuration, setup generates the
-single-node `meta` lab as `./pigsty.yml`. With a configuration present (or
+single-node `meta` lab as `./farrow.yml`. With a configuration present (or
 `-f`), it prepares exactly that file. Repeating `farrow setup <template>`
 over the file it generated is idempotent; a different existing file is
 preserved and reported.
@@ -92,15 +100,14 @@ farrow destroy   [flags] [node...]   # requires --force
 | `--repo <URL-or-dir>` | `plan`, `up`, `reload` | prefer artifacts from this signed repository |
 | `--force` | `destroy`, `recreate` | confirm a destructive operation |
 | `--delete-persistent` | `destroy` | also delete `persistent: true` data disks |
-| `--purge` | `destroy` | terminal disposal: persistent disks, keys, registration, and workspace marker |
+| `--purge` | `destroy` | terminal disposal: persistent disks, the deployment keys, and the deployment state (images stay cached) |
 | `--no-wait` | starting commands | return once QMP and process identity are confirmed |
 | `--rollback` | `up`, `reload` | remove artifacts from nodes that failed during this prepare |
-| `--restart` | `up` | reserved for restart-class drift application (not implemented yet) |
-| `--log-level <level>` | lifecycle | QEMU diagnostic level |
 
-Once a project exists, `start`, `stop`, `restart`, `status`, and `destroy`
-read the resolved state and take no `-f`; supplying a configuration is how
-you *change* a project.
+Once the deployment exists, `start`, `stop`, `restart`, `status`, and
+`destroy` read the applied state, take no `-f`, and work from any directory;
+supplying a configuration to `up`/`reload` is how you *change* the
+deployment.
 
 ### Drift is node-granular
 
@@ -112,36 +119,31 @@ you *change* a project.
 | `recreate` | nodes whose definition changed | `farrow recreate --force <node...>` |
 | `missing` | stateful nodes the config dropped | `farrow destroy <node...> --force` — never automatic |
 
-A project-level change (login user, subnet, defaults) is a whole-project
-recreate. Editing non-`vm_*` inventory variables never causes drift.
+A deployment-level change (login user, subnet, defaults) is a
+whole-deployment recreate. Editing non-`vm_*` inventory variables never
+causes drift.
 
 ### Deletion
 
-`destroy --force` removes node artifacts and preserves local images, the
-project marker, keys, and `persistent: true` disks (a later compatible `up`
-reattaches them). `destroy <node...> --force` removes only those nodes — from
-the artifacts, the resolved spec, and the lease — so a later `up` does not
-resurrect them. `--delete-persistent` adds persistent disks; `--purge` is the
-one-verb terminal disposal.
+`destroy --force` removes node artifacts and the deployment state document,
+and preserves cached images, the deployment keys, and `persistent: true`
+disks (a later compatible `up` reattaches them). `destroy <node...> --force`
+removes only those nodes — from the artifacts and the resolved spec — so a
+later `up` does not resurrect them. `--delete-persistent` adds persistent
+disks; `--purge` is the one-verb terminal disposal: persistent disks, the
+keys, and the deployment state, leaving only the image cache.
 
 ## Inspection
 
 ```bash
 farrow doctor
-farrow list            # all projects in the data root; alias: ls
 farrow logs [node] [--source serial|qemu|events] [--follow]
-farrow repair [--dry-run|--force]
-farrow debug bundle [--output <path>]
 ```
 
 `doctor` checks QEMU, accelerator, machine/CPU/devices, an accelerated boot
 smoke, firmware, OpenSSH, and network readiness. Network-readiness findings
 are informational — a host that has not run `farrow setup` yet is not broken
 and does not exit 3.
-
-`list` shows every registered project with its workspace directory and flags
-orphans (`workdir-missing`, `workdir-mismatch`, or `unknown-workdir` for
-markers predating schema 2).
 
 ## Configuration
 
@@ -150,10 +152,10 @@ farrow init [meta|dual|trio|full] [--network-cidr <RFC1918/24>] [-o path|-] [--f
 farrow validate [-f <file>]
 ```
 
-`init` writes `./pigsty.yml` (refusing to overwrite without `--force`);
-`-o -` prints to stdout. `validate` parses the discovered or given
-configuration strictly within the `vm_*` namespace and prints the resolved
-spec hash.
+`init` writes `./farrow.yml` (refusing to overwrite without `--force`);
+`-o <path>` selects another file and `-o -` prints to stdout. `validate`
+parses the discovered or given configuration strictly within the `vm_*`
+namespace and prints the resolved spec hash.
 
 ## Access
 
@@ -162,7 +164,7 @@ farrow ssh  [node]
 farrow exec [node] -- <command> [args...]
 farrow provision --script <path> [--sudo] [--parallel 1..4] [--timeout <duration>] [node...]
 farrow ssh-config [--install|--remove] [--name <prefix>] [node...]
-farrow ss [--name <prefix>] [node...]
+farrow ss [node...]
 farrow hosts install|uninstall [--yes]
 ```
 
@@ -170,8 +172,8 @@ farrow hosts install|uninstall [--yes]
 to each selected guest over the verified SSH connection, serial by default.
 
 `ssh-config --install` writes a marker-owned fragment plus one `Include` line
-in `~/.ssh/config`; `farrow ss` is the shortcut with the project directory
-name as prefix. The fragment answers the prefixed alias (`dev-meta`), the
+in `~/.ssh/config`; `farrow ss` is the shortcut, using the fixed fragment
+prefix `farrow`. The fragment answers the prefixed alias (`farrow-meta`), the
 bare node name (`meta`), the fixed address, and every `vm_alias` — so plain
 `ssh meta` works after one `farrow ss`.
 
@@ -193,33 +195,19 @@ See [images.md](images.md).
 
 ## Network
 
-Host-global state, independent of any project:
+Host-global state, serving the one deployment:
 
 ```bash
-farrow network preflight [--cidr <RFC1918/24>] [-f <file>]
 farrow network status    [--cidr <RFC1918/24>]
 farrow network install   [--cidr <RFC1918/24>] [--mode host|shared] [--yes]
 farrow network uninstall [--yes]
 ```
 
-`preflight` is read-only and runs automatically before install and every
-private lifecycle mutation. `install`/`uninstall` print the full privileged
-plan and change nothing without `--yes`. See [networking.md](networking.md).
-
-## Project registry
-
-```bash
-farrow project rm <project-id> --force     # destroy and deregister by ID
-farrow project prune [--dry-run|--yes]     # sweep orphaned registrations
-farrow project purge-keys [--dry-run|--yes]
-farrow project upgrade-state [--dry-run|--yes]
-```
-
-`rm` and `prune` operate from the data-root side, so a project whose
-workspace directory was deleted can still be fully removed — VM artifacts,
-persistent disks, keys, and registration. `prune` removes only provable
-orphans; markers predating schema 2 are listed but never auto-removed.
-`upgrade-state` migrates markers and state to the current schema.
+Read-only preflight probes run internally before install and every lifecycle
+mutation; `network status` reports the installation state plus the same
+readiness findings. `install`/`uninstall` print the full privileged plan and
+change nothing without `--yes`; `uninstall` refuses while any recorded node
+of the deployment is live. See [networking.md](networking.md).
 
 ## Misc
 

@@ -73,7 +73,7 @@ func failedCreateNodes(result CreateResult) []string {
 func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, error) {
 	result := CreateResult{}
 	if controller.Project.Root == "" || controller.Prepare.ProjectRoot != controller.Project.Root || controller.Lifecycle == nil || controller.Version == "" {
-		return result, fmt.Errorf("private controller project, prepare, lifecycle, or version is incomplete")
+		return result, fmt.Errorf("private controller deployment, prepare, lifecycle, or version is incomplete")
 	}
 	lockContext, cancelLock := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLock()
@@ -123,7 +123,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 		}
 	}
 	if len(selected) != 0 {
-		return result, fmt.Errorf("private controller start selection contains nodes outside committed project")
+		return result, fmt.Errorf("private controller start selection contains nodes outside the committed deployment")
 	}
 	if len(startNames) != 0 {
 		startMessage := fmt.Sprintf("Starting %d private node(s) and waiting up to %s for guest readiness", len(startNames), controller.ReadyTimeout)

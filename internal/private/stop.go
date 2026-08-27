@@ -95,6 +95,13 @@ func loadStoppableNodes(store state.Store, names []string) ([]state.NodeState, e
 			if node.Process.PID <= 0 {
 				return nil, fmt.Errorf("private node %s is recorded running without a process", name)
 			}
+		case state.Stopping, state.Starting:
+			// An interrupted transition: re-drive the stop when the process
+			// identity is complete; a dead or identity-less transition is
+			// converged by `farrow status` first.
+			if !completeProcess(node.Process) {
+				return nil, fmt.Errorf("private node %s was interrupted mid-%s without a complete process identity; run `farrow status` to converge it", name, node.Phase)
+			}
 		case state.Stopped, state.Prepared:
 			if node.Process.PID != 0 {
 				return nil, fmt.Errorf("inactive private node %s retains a process identity", name)
@@ -109,7 +116,7 @@ func loadStoppableNodes(store state.Store, names []string) ([]state.NodeState, e
 
 func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, error) {
 	if config.Project.Root == "" || config.Lifecycle == nil {
-		return nil, errors.New("private stop project or lifecycle is incomplete")
+		return nil, errors.New("private stop deployment or lifecycle is incomplete")
 	}
 	if config.Concurrency <= 0 {
 		config.Concurrency = 4
@@ -130,11 +137,12 @@ func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, error) 
 	}
 	hasRunning := false
 	for index := range nodes {
-		if nodes[index].Phase == state.Running {
+		switch nodes[index].Phase {
+		case state.Running, state.Stopping, state.Starting:
 			hasRunning = true
 			nodes[index].Phase = state.Stopping
 			nodes[index].UpdatedAt = config.now()
-		} else if nodes[index].Phase == state.Prepared {
+		case state.Prepared:
 			nodes[index].Phase = state.Stopped
 			nodes[index].UpdatedAt = config.now()
 		}

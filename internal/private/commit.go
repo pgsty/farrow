@@ -16,7 +16,7 @@ import (
 )
 
 type CommitResult struct {
-	Project state.DeploymentState `json:"project"`
+	Project state.DeploymentState `json:"deployment"`
 	Nodes   []state.NodeState     `json:"nodes"`
 	Failed  []string              `json:"failed,omitempty"`
 }
@@ -86,7 +86,7 @@ func ensureProjectState(store state.Store, desired state.DeploymentState) error 
 		return nil
 	}
 	if !additiveResolvedChange(store, existing.Resolved, desired.Resolved) {
-		return errors.New("refuse private state commit over different resolved project state")
+		return errors.New("refuse private state commit over different resolved deployment state")
 	}
 	return store.WriteDeployment(desired)
 }
@@ -112,7 +112,7 @@ func stateForArtifacts(config PrepareConfig, projectValue Deployment, artifacts 
 		base.Alias = baseAlias
 	}
 	if journal.Node != artifacts.Name || journal.VMUUID != nodePlan.VMUUID || journal.SpecHash != config.NodeHashes[artifacts.Name] || !journal.Prepared || !reflect.DeepEqual(journal.Invocation, artifacts.Invocation) {
-		return state.NodeState{}, errors.New("private prepared journal does not match artifacts/project intent")
+		return state.NodeState{}, errors.New("private prepared journal does not match the artifacts/deployment intent")
 	}
 	dataState := make([]state.DataDisk, 0, len(artifacts.Data))
 	for index, data := range artifacts.Data {

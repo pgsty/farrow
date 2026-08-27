@@ -125,7 +125,7 @@ The e2e scripts predate the inventory-as-config redesign and are due for a
 rewrite as part of the native replay gate; treat them as references for the
 safety conventions, not as runnable acceptance today. The product smokes accept an absolute Farrow binary, an existing mode-0700
 data root, and a new evidence root. They remain ownership-bounded. The private
-smoke inspects an existing healthy, lease-free network; it never installs or
+smoke inspects an existing healthy, unoccupied network; it never installs or
 uninstalls host networking. See [`tests/e2e/README.md`](../tests/e2e/README.md).
 
 Tier-1 hosts are macOS arm64 with HVF and Linux amd64 with KVM. macOS amd64 and

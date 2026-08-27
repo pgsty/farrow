@@ -244,7 +244,7 @@ func selectedNodeNames(resolved spec.Resolved, requested []string) ([]string, er
 	result := make([]string, 0, len(requested))
 	for _, name := range requested {
 		if _, ok := known[name]; !ok {
-			return nil, fmt.Errorf("private project has no node %q", name)
+			return nil, fmt.Errorf("the deployment has no node %q", name)
 		}
 		if _, duplicate := seen[name]; duplicate {
 			return nil, fmt.Errorf("private node selection repeats %q", name)
@@ -515,7 +515,7 @@ func (m Manager) resolveBases(ctx context.Context, profile platform.Profile, val
 		if boot == "" {
 			boot = entry.Boot
 		} else if boot != entry.Boot {
-			return nil, "", errors.New("private v1 does not mix BIOS and UEFI images in one project")
+			return nil, "", errors.New("private v1 does not mix BIOS and UEFI images in one deployment")
 		}
 		if profile.RequiresUEFI && entry.Boot != "uefi" {
 			return nil, "", &CapabilityError{Reason: fmt.Sprintf("image %s boot=%s is incompatible with required UEFI host profile", alias, entry.Boot)}
@@ -546,7 +546,7 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 		return Status{}, err
 	}
 	if projectState.Resolved.Network != "private" {
-		return Status{}, errors.New("current project is not private")
+		return Status{}, errors.New("the deployment state is not private")
 	}
 	selected, err := selectedNodeNames(projectState.Resolved, m.Nodes)
 	if err != nil {
@@ -577,17 +577,17 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 			case qmpErr == nil && processMatches:
 				runtimeState = "running"
 			case qmpErr == nil:
-				return Status{}, fmt.Errorf("private node %s has matching QMP but its recorded process identity does not match; repair is required", node.Node)
+				return Status{}, fmt.Errorf("private node %s has matching QMP but its recorded process identity does not match; recreate --force it", node.Node)
 			case errors.Is(qmpErr, vm.ErrQMPIdentityMismatch):
-				return Status{}, fmt.Errorf("private node %s has mismatched QMP identity; repair is required: %w", node.Node, qmpErr)
+				return Status{}, fmt.Errorf("private node %s has mismatched QMP identity; recreate --force it: %w", node.Node, qmpErr)
 			case processMatches:
-				return Status{}, fmt.Errorf("private node %s process identity matches but QMP is unavailable; repair is required", node.Node)
+				return Status{}, fmt.Errorf("private node %s process identity matches but QMP is unavailable; run `farrow stop` to converge it", node.Node)
 			case node.Runtime.Directory == "" || node.Runtime.QMP == "" || node.Runtime.PIDFile == "":
 				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete runtime identity; recreate is required", node.Node)
 			case !completeProcess(node.Process):
 				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete process identity; recreate is required", node.Node)
 			case process.Alive(node.Process.PID):
-				return Status{}, fmt.Errorf("private node %s recorded PID %d is alive but full process identity does not match; repair is required", node.Node, node.Process.PID)
+				return Status{}, fmt.Errorf("private node %s recorded PID %d is alive but full process identity does not match; verify and stop it manually", node.Node, node.Process.PID)
 			default:
 				// ValidateIdentity alone cannot distinguish a wholly stale QMP
 				// socket from a live endpoint whose name responded but UUID query
@@ -602,6 +602,22 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 				}
 				// This is the safe self-halt case. Converge durable state without
 				// touching stale runtime files.
+				node.Phase = state.Stopped
+				node.Process = state.ProcessIdentity{}
+				node.UpdatedAt = time.Now().UTC()
+				convergenceCandidates = append(convergenceCandidates, node)
+			}
+		} else if node.Phase == state.Stopping || node.Phase == state.Starting || node.Phase == state.Destroying {
+			// An interrupted transition (a killed CLI mid-stop/start/destroy).
+			// Prove the runtime dead before converging; a live runtime is
+			// reported honestly and finished by `farrow stop`.
+			observation, auditErr := RuntimeIdentityAuditor(m.runner(), time.Second)(ctx, node)
+			if auditErr != nil {
+				return Status{}, fmt.Errorf("private node %s was interrupted mid-%s and its runtime death audit is inconclusive: %w", node.Node, node.Phase, auditErr)
+			}
+			if observation.Live {
+				runtimeState = "running"
+			} else {
 				node.Phase = state.Stopped
 				node.Process = state.ProcessIdentity{}
 				node.UpdatedAt = time.Now().UTC()
@@ -638,7 +654,7 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return m.statusFor(ctx, projectValue, "private project status")
+	return m.statusFor(ctx, projectValue, "deployment status")
 }
 
 func (m Manager) Connection(ctx context.Context, requestedNode string) (Connection, error) {
@@ -648,7 +664,7 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 	}
 	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
-		return Connection{}, errors.New("current project has no valid private state")
+		return Connection{}, errors.New("the deployment has no valid private state")
 	}
 	if requestedNode == "" {
 		for _, node := range projectState.Resolved.Nodes {
@@ -666,7 +682,7 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 		knownNode = knownNode || node.Name == requestedNode
 	}
 	if !knownNode {
-		return Connection{}, fmt.Errorf("private project has no node %q", requestedNode)
+		return Connection{}, fmt.Errorf("the deployment has no node %q", requestedNode)
 	}
 	status, err := m.statusFor(ctx, projectValue, "")
 	if err != nil {
@@ -701,7 +717,7 @@ func (m Manager) LogPath(nodeName, source string) (string, error) {
 	}
 	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
-		return "", errors.New("current project has no valid private state")
+		return "", errors.New("the deployment has no valid private state")
 	}
 	if source == "events" {
 		path := filepath.Join(projectValue.Root, "events.jsonl")
@@ -731,7 +747,7 @@ func (m Manager) LogPath(nodeName, source string) (string, error) {
 		known = known || node.Name == nodeName
 	}
 	if !known {
-		return "", fmt.Errorf("private project has no node %q", nodeName)
+		return "", fmt.Errorf("the deployment has no node %q", nodeName)
 	}
 	logName := "serial.log"
 	if source == "qemu" {
@@ -844,7 +860,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 			}
 			diff := diffResolved(persisted.Resolved, requested, hasState)
 			if diff.EnvelopeChanged {
-				return Status{}, fmt.Errorf("%w: project-level settings changed; run farrow plan, then farrow recreate -f <config> --force", ErrRecreateRequired)
+				return Status{}, fmt.Errorf("%w: deployment-level settings changed; run farrow plan, then farrow recreate -f <config> --force", ErrRecreateRequired)
 			}
 			if len(diff.Removed) != 0 {
 				return Status{}, fmt.Errorf("%w: %s; farrow never destroys from absence — run `farrow destroy %s --force` to remove them, or restore them in the configuration", ErrNodesRemoved, strings.Join(diff.Removed, ", "), strings.Join(diff.Removed, " "))
@@ -877,14 +893,14 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 					return Status{}, err
 				}
 				if statusNodesRunning(status) {
-					m.Progress.Report(activity.Event{Phase: "project-state", Message: "All selected private nodes are already running", Done: true})
+					m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected private nodes are already running", Done: true})
 					return status, nil
 				}
 				return m.startExisting(ctx, existing, persisted, profile, backend)
 			} else if allRunnable {
 				return m.startExisting(ctx, existing, persisted, profile, backend)
 			} else {
-				return Status{}, errors.New("private project has mixed or transitional node phases; repair is required")
+				return Status{}, errors.New("the deployment has mixed node phases; run `farrow status` to converge interrupted transitions, then retry")
 			}
 		}
 	} else if !missingPath(openErr) {
@@ -1017,11 +1033,11 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		}
 		return m.startExisting(ctx, projectValue, projectState, profile, backend)
 	}
-	return m.statusFor(ctx, projectValue, "created and started private project")
+	return m.statusFor(ctx, projectValue, "created and started the deployment")
 }
 
 func (m Manager) startExisting(ctx context.Context, projectValue Deployment, projectState state.DeploymentState, profile platform.Profile, backend Backend) (Status, error) {
-	m.report("preflight", "Checking the existing private project before start")
+	m.report("preflight", "Checking the existing deployment before start")
 	verifiedBackend, err := m.preflight(ctx, profile, projectState.Resolved)
 	if err != nil {
 		return Status{}, err
@@ -1095,7 +1111,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue Deployment, pro
 		}
 	}
 	if len(names) == 0 {
-		m.Progress.Report(activity.Event{Phase: "project-state", Message: "All selected private nodes are already running", Done: true})
+		m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected private nodes are already running", Done: true})
 		return m.statusForLocked(ctx, projectValue, "already running")
 	}
 	readyTimeout, err := m.readyTimeout(projectState.Resolved)
@@ -1119,7 +1135,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue Deployment, pro
 		readyMessage = fmt.Sprintf("QEMU is running for %d private node(s); guest readiness was skipped", len(names))
 	}
 	m.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
-	return m.statusForLocked(ctx, projectValue, "started private project")
+	return m.statusForLocked(ctx, projectValue, "started the deployment")
 }
 
 func statusNodesRunning(status Status) bool {
@@ -1148,7 +1164,7 @@ func (m Manager) Start(ctx context.Context) (Status, error) {
 	}
 	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
-		return Status{}, errors.New("current project has no valid private state")
+		return Status{}, errors.New("the deployment has no valid private state")
 	}
 	profile, err := m.nativeProfile()
 	if err != nil {
@@ -1168,7 +1184,7 @@ func (m Manager) Stop(ctx context.Context) (Status, error) {
 	}
 	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
-		return Status{}, errors.New("current project has no valid private state")
+		return Status{}, errors.New("the deployment has no valid private state")
 	}
 	lockContext, cancelLock := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLock()
@@ -1205,7 +1221,7 @@ func (m Manager) Restart(ctx context.Context) (Status, error) {
 	}
 	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
-		return Status{}, errors.New("current project has no valid private state")
+		return Status{}, errors.New("the deployment has no valid private state")
 	}
 	profile, err := m.nativeProfile()
 	if err != nil {

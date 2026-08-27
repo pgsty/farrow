@@ -588,7 +588,7 @@ func runSSH(commandName string, args []string, stdout, stderr io.Writer) int {
 		return exitConflict
 	}
 	if resolved.Network != "private" {
-		errorf(stderr, "this project predates the fixed-IP redesign; recreate it with `farrow destroy --force && farrow up`")
+		errorf(stderr, "this deployment predates the fixed-IP redesign; recreate it with `farrow destroy --force && farrow up`")
 		return exitConflict
 	}
 	return runPrivateSSH(commandName, args, resolved, stdout, stderr)
@@ -804,7 +804,7 @@ func runProvision(args []string, stdout, stderr io.Writer) int {
 		}
 		recordEvent = manager.RecordEvent
 	} else {
-		fmt.Fprintf(stderr, "unsupported project network %q\n", resolved.Network)
+		fmt.Fprintf(stderr, "unsupported deployment network %q\n", resolved.Network)
 		return exitIntegrity
 	}
 
@@ -853,7 +853,7 @@ func runProvision(args []string, stdout, stderr io.Writer) int {
 		if report.AuditError != "" {
 			report.AuditError += "; "
 		}
-		report.AuditError += "release project lock: " + releaseErr.Error()
+		report.AuditError += "release deployment lock: " + releaseErr.Error()
 	}
 	if structuredOutput(stdout, *jsonOutput) {
 		if code := encodeJSON(stdout, stderr, report); code != exitOK {
@@ -1049,7 +1049,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		if len(nodes) != 0 {
 			action = "private node destroy"
 			if deletePersistent || purge {
-				fmt.Fprintln(stderr, "--delete-persistent and --purge apply to whole-project destroy only")
+				fmt.Fprintln(stderr, "--delete-persistent and --purge apply to whole-deployment destroy only")
 				return exitUsage
 			}
 		}
@@ -1156,7 +1156,7 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 			hasConfig = true
 		}
 	case persistedErr == nil && persisted.Network == "user":
-		return reportCommandFailure(stdout, stderr, false, "conflict", "this project predates the fixed-IP redesign; remove it with `rm -rf .farrow` (plus any pre-redesign binary for running VMs) and run `farrow up` again", "", exitConflict)
+		return reportCommandFailure(stdout, stderr, false, "conflict", "this deployment predates the fixed-IP redesign; remove its state and run `farrow up` again", "", exitConflict)
 	}
 	if !hasConfig {
 		return reportCommandFailure(stdout, stderr, false, "usage", config.ErrNoConfig.Error(), "", exitConflict)
@@ -1176,8 +1176,8 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 
 func runSSHConfig(args []string, stdout, stderr io.Writer) int {
 	flags := newCommandFlagSet("ssh-config", stderr)
-	install := flags.Bool("install", false, "install a marker-owned Include and project fragment")
-	remove := flags.Bool("remove", false, "remove only this project's marker-owned Include and fragment")
+	install := flags.Bool("install", false, "install a marker-owned Include and deployment fragment")
+	remove := flags.Bool("remove", false, "remove the marker-owned Include and fragment")
 	name := flags.String("name", "farrow", "safe SSH Host/file prefix")
 	jsonOutput := flags.Bool("json", false, "emit stable JSON")
 	if err := flags.Parse(args); err != nil || (*install && *remove) {
@@ -1186,7 +1186,7 @@ func runSSHConfig(args []string, stdout, stderr io.Writer) int {
 	}
 	nodes := flags.Args()
 	if *remove && len(nodes) != 0 {
-		fmt.Fprintln(stderr, "ssh-config --remove removes the project fragment and does not accept node selectors")
+		fmt.Fprintln(stderr, "ssh-config --remove removes the deployment fragment and does not accept node selectors")
 		return exitUsage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1404,7 +1404,7 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 	path, err := (privatevm.Manager{FarrowVersion: version.Version}).LogPath(node, *source)
 	if node == "" {
 		if *source == "events" {
-			node = "project"
+			node = "deployment"
 		} else {
 			for _, candidate := range resolved.Nodes {
 				if candidate.Control {

@@ -48,7 +48,7 @@ func (m Manager) integrationSnapshotLocked(projectValue Deployment) (Deployment,
 		return Deployment{}, state.DeploymentState{}, nil, err
 	}
 	if projectState.Resolved.Network != "private" {
-		return Deployment{}, state.DeploymentState{}, nil, errors.New("current project is not private")
+		return Deployment{}, state.DeploymentState{}, nil, errors.New("the deployment state is not private")
 	}
 	selected, err := selectedNodeNames(projectState.Resolved, m.Nodes)
 	if err != nil {

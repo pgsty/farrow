@@ -60,7 +60,7 @@ manager returns.
 
 ## `setup` preserves an existing configuration
 
-With a `pigsty.yml`/`farrow.yaml` present, plain `farrow setup` prepares that
+With a `farrow.yml`/`pigsty.yml` present, plain `farrow setup` prepares that
 exact file, and `farrow setup <template>` is accepted only when the file
 resolves to the same generated template. An invalid or different file is
 never overwritten — prepare it as written with `farrow setup`, or generate
@@ -110,25 +110,9 @@ every candidate is taken, free one of them.
 Distinguish a crashed VM from a stale runtime directory. `stop` escalates to
 SIGTERM and SIGKILL only when QMP is proven unavailable *and* executable,
 start time, argv hash and invocation all still match state. On mismatch it
-refuses rather than signalling something else.
-
-```bash
-farrow repair --dry-run     # read the scoped actions
-farrow repair --force       # only after reading them
-```
-
-Never delete disks or edit state by hand.
-
-A node can also strand in a transitional phase — typically after a stop that
-was interrupted, or a stop and restart issued back to back:
-
-```text
-private node meta-1 phase stopping requires repair before start
-```
-
-`repair` is the intended exit. Its dry run names the exact file and the
-evidence behind each action, for example *"QMP and process identity prove the
-VM is dead"*, and applying it also re-synchronizes the private lease.
+refuses rather than signalling something else. Ambiguous state is preserved
+and reported with the exact evidence that is missing — never delete disks or
+edit state by hand.
 
 If prepare reports an unsafe or overlong runtime path, check
 `XDG_RUNTIME_DIR`: it must be a canonical absolute directory owned by you with
@@ -151,8 +135,8 @@ farrow recreate --force node-1
 
 A host deleted from the configuration is only *reported* (`missing` in
 plan); removing it is always the explicit `farrow destroy node-1 --force`.
-Project-level changes (login user, subnet, defaults) recreate the whole
-project. Restart-class in-place application (`vm_cpu`/`vm_mem` without a
+Deployment-level changes (login user, subnet, defaults) recreate the whole
+deployment. Restart-class in-place application (`vm_cpu`/`vm_mem` without a
 rebuild) is not implemented yet — those report as recreates too.
 
 Persistent disk compatibility is checked before anything is stopped.
@@ -168,37 +152,34 @@ guest-side cause.
 A script must be a non-empty regular local file, not a symlink, and at most
 4 MiB. `--sudo` is non-interactive: a guest that does not allow the resolved
 SSH user to run `sudo -n` fails instead of prompting. Timeouts terminate the
-SSH clients, preserve the VM/project, and report each unfinished node as a
-failure. Script bodies and captured output are not copied into the event log,
-so retain the command's stdout/stderr when diagnosing guest code.
+SSH clients, preserve the VMs and the deployment, and report each unfinished
+node as a failure. Script bodies and captured output are not copied into the
+event log, so retain the command's stdout/stderr when diagnosing guest code.
 
-## Exit 6: the private lease is held
+## The data root holds a pre-simplification layout
 
-One private project per host. Find and release the other one:
-
-```bash
-farrow list --json
+```text
+~/.farrow holds a pre-simplification multi-project layout; farrow now keeps
+exactly one deployment there — remove it with `rm -rf ~/.farrow` (images are
+re-pulled on demand) and run setup/up again
 ```
 
-If the lease is stale — the owning process is gone — `repair --dry-run` shows
-what can be reclaimed. A lease owned by a different UID is not reclaimable
-without that user's cooperation; this is deliberate.
-
-`setup` reuses a healthy matching network without disturbing its lease, but it
-will not replace or uninstall a network while that lease is active. Stop or
-destroy the project named by `farrow list --json`, then rerun setup.
+A data root containing the old `projects/` registry predates the
+one-deployment simplification, and Farrow refuses to interpret it. There is
+no in-place migration: remove the whole directory as the message says —
+images are re-downloaded on demand, and pre-simplification VM state is not
+salvageable by the current binary.
 
 ## Private subnet conflicts
 
 For a newly generated `meta` or `full` profile, setup automatically tries a
 bounded set of free RFC1918 `/24` alternatives. If it still stops, the conflict
 is explicit or unsafe to change: a user-supplied config/CIDR, a foreign owner,
-a partial installation, or an active lease. Inspect the evidence:
+or a partial installation. Inspect the evidence:
 
 ```bash
 farrow setup --dry-run --json
 farrow network status --json
-farrow network preflight -f pigsty.yml --json
 ```
 
 If a foreign route, interface, service, or address owns the subnet, stop that
@@ -208,14 +189,14 @@ generated lab that has not retained data, replace the whole decision:
 ```bash
 farrow destroy --force
 farrow network uninstall --yes
-mv pigsty.yml pigsty.yml.previous
+mv farrow.yml farrow.yml.previous
 farrow setup full --network-cidr 172.31.251.0/24
 farrow up
 ```
 
-Review `pigsty.yml.previous` before deleting it. For a hand-maintained
+Review `farrow.yml.previous` before deleting it. For a hand-maintained
 config, edit every node address together as one `/24` change, then rerun
-`farrow setup`. Changing only the daemon subnet, node IPs, or lease file
+`farrow setup`. Changing only the daemon subnet or only the node IPs
 produces an inconsistent host.
 
 ## `setup` finds a partial or unsafe private installation
@@ -225,13 +206,12 @@ Start with the read-only record:
 
 ```bash
 farrow network status --json
-farrow network preflight -f pigsty.yml --json
 ```
 
 The finding identifies the exact marker, owner, mode, path, service, or
 interface that failed. If it is a provably owned old Farrow installation,
-release any lease and use the explicit `network uninstall` plan. If ownership
-is ambiguous, preserve it and repair the named host component as an
+stop the deployment and use the explicit `network uninstall` plan. If
+ownership is ambiguous, preserve it and repair the named host component as an
 administrator; do not remove paths by glob.
 
 ## macOS: setup cannot fetch socket_vmnet
@@ -256,8 +236,8 @@ Internet Sharing. Stop the conflicting service, or move Farrow to a different
 `/24`.
 
 Farrow will not adopt a foreign interface that happens to hold `.1/24`. Install
-records the exact BSD interface it created, and preflight accepts only that
-one.
+records the exact BSD interface it created, and the readiness probes accept
+only that one.
 
 ## Linux: `doctor` reports the network is not ready
 
@@ -299,15 +279,15 @@ case the dry plan prints the exact prior state it recorded and changes nothing.
 ## Linux: recovering an installed bridge
 
 If install ran and left the host in an unexpected state,
-`network uninstall --yes` restores the recorded prestate. It refuses while a
-lease is active, so destroy the project first.
+`network uninstall --yes` restores the recorded prestate. It refuses while
+any recorded node is live, so stop or destroy the deployment first.
 
 ## A configured host share will not start
 
-Farrow validates 9p shares before it stops an existing VM or changes the
-private lease. The `host` directory must already exist, be owned by your UID,
-contain no symlinked path component, and not be group/world writable. It also
-cannot overlap the project marker, Farrow data root, or managed VM state.
+Farrow validates 9p shares before it stops an existing VM. The `host`
+directory must already exist, be owned by your UID, contain no symlinked path
+component, and not be group/world writable. It also cannot overlap the Farrow
+data root or managed VM state.
 
 If the error says `virtio-9p-pci` is missing, the selected QEMU package was
 built without VirtFS support; install a QEMU build that provides that device.
@@ -321,27 +301,20 @@ There is no global cleanup command, by design. Use scoped tools:
 
 ```bash
 farrow status --json
-farrow repair --dry-run
 farrow destroy --force
 farrow network uninstall --yes
 ```
 
-Ordinary `destroy --force` preserves project keys and every `persistent: true`
-disk; a later compatible `up` reattaches them. Deleting persistent data needs
-the separate `--delete-persistent` confirmation alongside `--force`.
+Ordinary `destroy --force` preserves the deployment keys and every
+`persistent: true` disk; a later compatible `up` reattaches them. Deleting
+persistent data needs the separate `--delete-persistent` confirmation
+alongside `--force`.
 
 `destroy --force --purge` is the terminal one-verb disposal: persistent
-disks, keys, the registration, and the workspace marker. For finer control:
-
-```bash
-farrow project purge-keys --dry-run
-farrow project purge-keys --yes
-```
-
-A project whose directory was deleted without a destroy is still removable:
-`farrow list` flags it as an orphan, and `farrow project rm <id> --force`
-(or `farrow project prune --yes` for the provable ones) destroys and
-deregisters it from anywhere.
+disks, the keys, and the deployment state — only the image cache survives.
+Every destructive command reads the global state, so it works from any
+directory; deleting a lab directory loses nothing but the configuration
+file.
 
 Any unexpected entry, unsafe owner or mode, live process, remaining node
 artifact or retained disk blocks the whole operation before the first
@@ -349,9 +322,8 @@ deletion.
 
 ## Filing a report
 
-```bash
-farrow debug bundle --output ./farrow-debug.tar.gz
-```
-
-The bundle is redacted and excludes seeds, disks, keys and `known_hosts` — but
-review the printed file list before sharing it.
+Attach the failing command's output rerun with `--verbose` (diagnostics go
+to stderr), plus `farrow status --json`, `farrow doctor --json`, and the
+relevant `farrow logs --source events` lines. Events are redacted — remote
+command text, script bodies, and process environment are never recorded —
+but review anything else you paste, especially serial logs, before sharing.

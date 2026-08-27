@@ -148,3 +148,37 @@ func TestStopRunningAcceptsAlreadyStoppedPeer(t *testing.T) {
 		t.Fatalf("running node was not stopped in mixed stop: %#v, %v", meta, err)
 	}
 }
+
+func TestStatusConvergesInterruptedTransitionAndUnblocksDestroy(t *testing.T) {
+	startConfig, nodes := preparedStartFixture(t)
+	projectValue := startConfig.Project
+	t.Setenv("FARROW_HOME", projectValue.Root)
+	store := state.Store{Root: projectValue.Root}
+	// Simulate a CLI killed mid-stop: the node is stranded in a transitional
+	// phase with no live runtime behind it.
+	stranded := nodes[0]
+	stranded.Phase = state.Stopping
+	stranded.Process = state.ProcessIdentity{}
+	stranded.UpdatedAt = stranded.UpdatedAt.Add(1)
+	if err := store.WriteNode(stranded); err != nil {
+		t.Fatal(err)
+	}
+	manager := Manager{FarrowVersion: "test"}
+	status, err := manager.Status(context.Background())
+	if err != nil {
+		t.Fatalf("status over an interrupted transition failed: %v", err)
+	}
+	for _, node := range status.Nodes {
+		if node.Name == stranded.Node && node.State != state.Stopped {
+			t.Fatalf("interrupted node did not converge: %#v", node)
+		}
+	}
+	persisted, err := store.ReadNode(stranded.Node)
+	if err != nil || persisted.Phase != state.Stopped || persisted.Process.PID != 0 {
+		t.Fatalf("converged state = %#v err=%v", persisted, err)
+	}
+	writeDestroyKeyFixtures(t, projectValue.Root)
+	if _, err := (Manager{FarrowVersion: "test"}).Destroy(context.Background()); err != nil {
+		t.Fatalf("destroy after convergence failed: %v", err)
+	}
+}

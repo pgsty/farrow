@@ -9,8 +9,8 @@ offline inspection still work before the public repository address is chosen.
 
 For `farrow image pull u24` or the first `farrow up`, Farrow:
 
-1. resolves the Farrow home (`FARROW_HOME`, `storage.data_root`, then
-   `~/.farrow` on both Linux and macOS);
+1. resolves the Farrow home (`FARROW_HOME`, else `~/.farrow` on both Linux
+   and macOS);
 2. fetches `catalog.json` and `catalog.json.minisig` from `--repo`,
    `FARROW_REPO`, or the release-build default repository, in that order;
 3. verifies the catalog signature and selects the family's explicit `default`
@@ -115,12 +115,15 @@ Downloaded filenames are not replaced by a digest. The native U24 image above
 is stored as:
 
 ```text
-~/.farrow/u24/u24-20260801.0.0-arm64.qcow2
+~/.farrow/images/u24/u24-20260801.0.0-arm64.qcow2
 ```
 
-There is no `cache/images/sha256` hierarchy and no per-image metadata sidecar.
-Farrow's unrelated internal state remains in named directories such as
-`projects/`, `manifests/`, and `locks/` under the same home.
+The image store is the single `images/` directory under the Farrow home:
+one readable family directory per image family, `local/` for imports,
+`local-images.json`, and the catalog manifests under `images/manifests/`.
+There is no content-addressed `sha256` hierarchy and no per-image metadata
+sidecar. Farrow's unrelated deployment state lives beside it in named
+directories such as `nodes/`, `keys/`, and `locks/` under the same home.
 
 A download is accepted only when all of this holds:
 
@@ -137,7 +140,7 @@ created with an explicit `-F qcow2` backing format; the base is never modified.
 
 `prune` lists unreferenced image files and crash-orphaned staging files, prints
 their exact paths, and deletes nothing without `--yes`.
-Images referenced by any project on the host are never candidates.
+Images referenced by the deployment are never candidates.
 
 ## Importing your own image
 
@@ -148,8 +151,9 @@ farrow image import --name local-mybase --boot uefi --source-user ubuntu \
   --sha256 <digest> /path/to/image.qcow2
 ```
 
-The source basename is retained under `~/.farrow/local/`. With `--name` you
-also register a local alias in the single `local-images.json` registry. Local
+The source basename is retained under `~/.farrow/images/local/`. With
+`--name` you also register a local alias in the single
+`~/.farrow/images/local-images.json` registry. Local
 aliases must begin with `local-`; that namespace is forbidden in signed
 catalogs, so a catalog update can never shadow an imported image. `--boot` plus
 `--source-user` become required—Farrow will not guess firmware mode or bootstrap
@@ -184,9 +188,9 @@ then land a release that embeds a fresh standby. A routine update is:
 5. optionally regenerate and sign the combined `SHA256SUMS` attachment;
 6. upload image bytes first, then atomically publish the signature and catalog.
 
-Old versioned files remain addressable until no published catalog/project needs
-them. A new family is the same process plus one new top-level directory and one
-catalog object; aliases remain local to that object.
+Old versioned files remain addressable until no published catalog or deployed
+lab needs them. A new family is the same process plus one new top-level
+directory and one catalog object; aliases remain local to that object.
 
 Manual catalog activation is also available:
 

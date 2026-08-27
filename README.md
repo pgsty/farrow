@@ -5,9 +5,9 @@ sandbox layer under [Pigsty](https://pigsty.io): one Go binary driving QEMU
 directly — no Vagrant, Lima, libvirt, provider plug-in, or hand-written host
 bootstrap.
 
-One file describes the lab. It is a Pigsty-compatible Ansible inventory
-(`pigsty.yml`), so the same document is the VM specification for Farrow and
-the deployment inventory for Pigsty:
+One file describes the lab. It is a Pigsty-compatible Ansible inventory —
+`farrow.yml`, or the `pigsty.yml` Pigsty itself writes — so the same document
+is the VM specification for Farrow and the deployment inventory for Pigsty:
 
 ```yaml
 all:
@@ -34,16 +34,23 @@ cd /path/to/farrow
 make build
 export PATH="$PWD/bin:$PATH"
 
-mkdir -p ~/farrow-labs/dev
-cd ~/farrow-labs/dev
-farrow setup          # prepare host + write pigsty.yml (single node)
+mkdir -p ~/lab && cd ~/lab
+farrow setup          # prepare host + write farrow.yml (single node)
 farrow up             # boot it: ssh dba@10.10.10.10
 ```
 
 `farrow setup meta|dual|trio|full` selects a 1/2/3/4-node template; with an
-existing `pigsty.yml` in the directory, plain `farrow setup` prepares exactly
-that file. Every node gets a fixed, host-reachable IP — you can `ping` it,
-`ssh dba@10.10.10.10` into it, and point Ansible at it.
+existing configuration in the directory (`farrow.yml` first, else
+`pigsty.yml`), plain `farrow setup` prepares exactly that file. Every node
+gets a fixed, host-reachable IP — you can `ping` it, `ssh dba@10.10.10.10`
+into it, and point Ansible at it.
+
+Farrow manages **exactly one deployment per user**: all state lives under
+`~/.farrow` (images in `images/`, per-node artifacts in `nodes/`, one SSH
+key pair in `keys/`), nothing is written into your working directory, and
+`status`/`stop`/`ssh` work from any directory. `up` and `plan` read the
+configuration in front of you and diff it against the deployment,
+node by node.
 
 ## Day-to-day commands
 
@@ -63,7 +70,8 @@ Editing the inventory is the normal workflow: add a host line and `farrow up`
 creates just that node; resize a node and `plan` reports its per-node
 `recreate`; delete a line and Farrow only reports it — removal is always the
 explicit `farrow destroy <node> --force`. Configuration absence never implies
-destruction.
+destruction. `farrow init meta|dual|trio|full` writes a fresh `farrow.yml`
+to edit or to copy into a Pigsty checkout as `pigsty.yml`.
 
 Text is the default output. Use `--json` or `--yaml` for automation and
 `--verbose` for bounded diagnostics on stderr.
@@ -118,8 +126,8 @@ Native acceleration is mandatory. Farrow never silently falls back to TCG.
 - Destructive operations are ownership- and path-bounded. Ambiguous state is
   preserved and reported. Removing a node from the configuration never
   destroys it.
-- One host-global private network and one active lab at a time (address-level
-  multi-lab leasing is on the roadmap).
+- One host-global private network serving the one deployment. There are no
+  projects, registries, or leases to manage.
 
 The project is pre-1.0. See [status.md](docs/status.md) for the current
 evidence and external release gates; [REDESIGN.md](REDESIGN.md) records the

@@ -19,23 +19,23 @@ Each layer has one data format, and they do not mix:
 | Format | Role |
 |---|---|
 | inventory YAML | user configuration: a Pigsty-compatible inventory, strict inside the `vm_*` namespace, opaque outside it |
-| versioned JSON | resolved spec, project and node state, transaction journals, lease, catalog metadata |
+| versioned JSON | resolved spec, deployment and node state, transaction journals, catalog metadata |
 | qcow2 | managed base images, root overlays, data disks |
 | ISO9660 | NoCloud CIDATA seed |
 
 A **desired spec** is what you wrote, narrowed to the Farrow namespace. A
 **resolved spec** is that plus every default, chosen port, image digest and
 generated identifier. Each node additionally carries its own **node hash** —
-the project envelope plus exactly that node's definition — and drift is
+the deployment envelope plus exactly that node's definition — and drift is
 defined per node as a change to that hash. Adding a peer therefore never
 moves an existing node's identity, and editing non-`vm_*` inventory
 variables never causes drift at all.
 
 Explicit post-boot provisioning deliberately sits above the resolved-spec and
 VM lifecycle layers. The CLI takes one bounded script snapshot and uses the
-same verified SSH connection as `exec`, while holding the project lock for the
-operation. It neither changes the spec hash nor creates a second plugin or
-provider model.
+same verified SSH connection as `exec`, while holding the deployment lock for
+the operation. It neither changes the spec hash nor creates a second plugin
+or provider model.
 
 ## Process identity
 
@@ -58,26 +58,25 @@ Node creation is journalled. Each journal entry names an action from a fixed
 allowlist and an absolute resource path, so a crashed CLI can be reconciled
 without guessing.
 
-Recovery follows a strict authority order. Matching QMP plus the project's own
+Recovery follows a strict authority order. Matching QMP plus the node's own
 pidfile can rebuild a missing process tuple. Without state, rollback is limited
 to a valid prepare journal whose action and path pass the allowlist. Runtime
 safety, directory contents, file types, containment and ownership are all
 checked before the first mutation; ambiguity fails the operation.
 
-`up --rollback` on a private project removes only artifacts listed by *this
-invocation's* failed, uncommitted prepare journals. It never rolls back a
-committed node or a pre-existing resource, and successful peers keep running. A
-failure during rollback is reported separately and does not mask the original
-error.
+`up --rollback` removes only artifacts listed by *this invocation's* failed,
+uncommitted prepare journals. It never rolls back a committed node or a
+pre-existing resource, and successful peers keep running. A failure during
+rollback is reported separately and does not mask the original error.
 
 ## Runtime paths
 
-QMP sockets and pidfiles live under
-`$XDG_RUNTIME_DIR/farrow/<project-prefix>/<node-token>` when that root is a
-canonical, owner-only 0700 directory. Otherwise Farrow uses a short
-UID-specific 0700 root under `/private/tmp` (macOS) or `/tmp` (Linux) — short
-because the platform limits Unix socket path length, which is checked before
-prepare rather than discovered at boot.
+QMP sockets and pidfiles live under `$XDG_RUNTIME_DIR/farrow/<node>` when
+that root is a canonical, owner-only 0700 directory. Otherwise Farrow uses a
+short UID-specific 0700 root — `/private/tmp/farrow-<uid>` on macOS,
+`/tmp/farrow-<uid>` on Linux — with the same `farrow/<node>` layout beneath
+it. Short, because the platform limits Unix socket path length, which is
+checked before prepare rather than discovered at boot.
 
 Every managed component is checked for owner, mode and symlinks. Empty Farrow
 parent directories are pruned after stop.
@@ -101,8 +100,9 @@ managed qcow2 storage.
 
 ## Events
 
-Lifecycle and SSH audit events are append-only JSON Lines under each node. One
-CLI operation UUID ties an operation's event lines to its creation journal.
+Lifecycle and SSH audit events are append-only JSON Lines: one deployment log
+at the data root plus one per node. One CLI operation UUID ties an operation's
+event lines to its creation journal.
 Appends are bounded, redacted, mode 0600, symlink-refusing, file-locked and
 fsynced. Remote command text and process environment are never recorded.
 

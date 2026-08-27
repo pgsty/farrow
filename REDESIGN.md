@@ -1,5 +1,12 @@
 # Farrow 重构指令：产品方向重定向
 
+> **后续断代（2026-08-27 晚）：产品负责人裁决"全局有且仅有一套 deployment"，
+> 本文 D5（两层 project 结构）与 D8.2（多项目租约路线）被显式推翻并已执行：
+> project/lease 概念连根删除，状态目录重整为 ~/.farrow/{state.json,images/,
+> keys/,nodes/,disks/,locks/}，配置发现 farrow.yml > pigsty.yml。现状以
+> docs/ 与 git log（quick 火化 → project 消失 → lease 切除 → images/ →
+> farrow.yml → 配置面清理）为准。**
+>
 > **执行记录（2026-08-27）：本指令已在本仓库执行完毕，不要重复执行。**
 > P0（`699440d`）、P1（`34118e5`）、P2（`121b81b`）、P3（`b71aa10`）、
 > P4（`c7375e4`）、P5 文档（`f077da3`）已按阶段提交，全部质量门禁

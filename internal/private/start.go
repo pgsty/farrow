@@ -178,7 +178,7 @@ func writeNodes(store state.Store, nodes []state.NodeState) error {
 
 func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, error) {
 	if config.Project.Root == "" || config.Lifecycle == nil {
-		return nil, errors.New("private start project or lifecycle is incomplete")
+		return nil, errors.New("private start deployment or lifecycle is incomplete")
 	}
 	if config.Concurrency <= 0 {
 		config.Concurrency = 4

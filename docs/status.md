@@ -3,10 +3,19 @@
 Farrow is pre-1.0. This page says plainly what has been exercised on real
 hardware, what has not, and what stands between here and a 1.0 tag.
 
-A compile is not a boot. The tree currently carries **two generations of
+> **2026-08-27 evening simplification.** After this page was written, the
+> tree removed the project concept (one global deployment per user), removed
+> the private-network lease, moved the image store under `~/.farrow/images/`,
+> and made `farrow.yml` the preferred configuration name. Every native-replay
+> claim recorded before that evening was exercised against machinery that no
+> longer exists in that form; the affected capabilities below are **pending
+> re-verification** on the simplified tree, not verified.
+
+A compile is not a boot. The tree currently carries **three generations of
 evidence debt**: the historical M0–M4 native runs under `docs/evidence/`
-predate both the Farrow namespace transition *and* the product redirection
-recorded in [REDESIGN.md](../REDESIGN.md). They establish that the underlying
+predate the Farrow namespace transition *and* the product redirection
+recorded in [REDESIGN.md](../REDESIGN.md), and everything predates the
+2026-08-27 simplification above. They establish that the underlying
 engine (QEMU lifecycle, transactions, identity, recovery, private networking)
 worked end to end; they do not verify the current binary, configuration
 format, or drift model.
@@ -21,8 +30,8 @@ namespace transition:
 | Single-VM lifecycle | zero-config up, SSH, exec, outbound network, stop/start persistence, guarded destroy |
 | Private `full` lab | fixed `.10`–`.13`, host↔VM and VM↔VM traffic, guest internet over the management NIC, NAT SSH fallback, control-only lateral key |
 | Storage | root overlays, data disks, four-node MinIO with 16 disks, persistent-disk preserve/reattach/delete |
-| Concurrency | second private project exits 6, 30-cycle create/destroy soak with no leaks |
-| Recovery | partial failure, crash and repair paths |
+| Concurrency | 30-cycle create/destroy soak with no leaks (the lease arbitration exercised then has since been removed outright) |
+| Recovery | partial failure and crash paths (the `repair` command exercised then has since been removed) |
 | Privilege | unprivileged QEMU, root-owned helper ownership checks |
 | Guest matrix | seven aliases × two native architectures |
 
@@ -34,18 +43,22 @@ replayed on native hardware yet:
 
 - **Inventory-as-config.** The Pigsty-compatible inventory format, the
   `vm_*` namespace, name derivation, defaults, group-conflict rules, and the
-  retirement of the `version:`/`nodes:` format.
+  retirement of the `version:`/`nodes:` format. `farrow.yml` is now the
+  preferred name; `pigsty.yml` remains fully supported.
 - **Node-granular lifecycle.** Per-node hashes, additive `up` for
-  config-added nodes, lease reshaping, per-node recreate guidance,
-  `destroy <node> --force` removal, and the absence-never-destroys rule.
+  config-added nodes, per-node recreate guidance, `destroy <node> --force`
+  removal, and the absence-never-destroys rule.
 - **Single default mode.** `setup` prepares the fixed-IP lab by default;
-  user-mode projects are retired to salvage commands.
+  the user-mode (slirp) lifecycle is deleted entirely.
+- **One global deployment.** The 2026-08-27 simplification: no workspace
+  marker, no project registry, no lease — one deployment per user under
+  `~/.farrow`, arbitrated by state plus a runtime identity audit. The
+  `list`/`repair`/`project *`/`debug bundle`/`network preflight` commands
+  are gone. Unit-tested only; nothing here has run natively.
 - **NetworkManager backend.** The nmcli bridge transaction for the RHEL
   family and NM-owned desktops, firewalld zone assignment, the
-  `/etc/farrow/network.json` public identity, and backend-aware preflight,
-  doctor, and uninstall. **No native EL run has happened yet.**
-- **Orphan governance.** Marker schema 2 (work_dir/name), orphan-aware
-  `list`, `project rm`/`project prune`, `destroy --purge`.
+  `/etc/farrow/network.json` public identity, and backend-aware readiness
+  probes, doctor, and uninstall. **No native EL run has happened yet.**
 - **Verb alignment.** `halt`, `reload`, any-subnet `hosts install`.
 - **Setup UX.** Proxy-aware HTTP clients, the single sudo prompt with a
   background credential keeper, the Homebrew socket_vmnet source with
@@ -58,7 +71,7 @@ replayed on native hardware yet:
 - Any native replay of the current tree: single-node and four-node labs on
   both Tier-1 hosts, using the inventory format end to end.
 - Scale-out against a **running** lab on native hardware (additive up while
-  peers stay up; lease reshape under a live socket_vmnet/bridge).
+  peers stay up, under a live socket_vmnet/bridge).
 - The NetworkManager backend on real EL9/Rocky/Alma hardware, including
   firewalld interaction and `network uninstall` prestate restoration.
 - A full Pigsty bootstrap (`configure` → `farrow up` → `install.yml`)
@@ -91,13 +104,15 @@ created, and development artifacts stay explicitly unsigned.
 - **Restart-class drift is not applied in place.** `vm_cpu`/`vm_mem` changes
   are reported as per-node recreates; the cold-converge path (stop/apply/
   start without rebuilding the root disk) is designed but not implemented.
-  `up --restart` is reserved for it.
 - **Guest `/etc/hosts` staleness on scale-out.** Existing peers' seeds
   predate a newly added node; Pigsty's `node_etc_hosts` management or a
   per-node recreate covers name resolution of new peers.
-- **One active lab at a time.** The host-global lease still binds the whole
-  network to one project; address-level leasing is a roadmap item and will
-  matter more now that fixed-IP labs are the only mode.
+- **Interrupted transitions converge through `farrow status`.** A node left
+  in `stopping`/`starting`/`destroying` by a killed CLI is audited on the
+  next `status`: a provably dead runtime converges to `stopped` (then
+  `start`/`destroy` work); a live one shows as `running` and `farrow stop`
+  finishes the transition. This replaced the removed `repair` command; only
+  an identity-ambiguous live runtime still requires manual inspection.
 - **Every VM start prints a `testing` image warning** until the hosting and
   custody gates close.
 
@@ -108,5 +123,6 @@ The plan for what comes next is in [phase-2.md](phase-2.md).
 - Cross-architecture emulation. Native only, no TCG fallback.
 - Rocky Linux 8 guests (64 KiB-granule arm64 kernel) and EL8 hosts.
 - Live QMP snapshots.
-- Automatic repair or a global destructive cleanup command — `project prune`
-  removes only provable orphans and defaults to a dry run.
+- Automatic repair or a global destructive cleanup command — `image prune`
+  removes only provably unreferenced files and defaults to a dry run, and
+  `destroy` stays ownership- and path-bounded.

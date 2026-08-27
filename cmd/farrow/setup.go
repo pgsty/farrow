@@ -380,7 +380,7 @@ func setupFindingError(report netpreflight.Report) error {
 		line := finding.Code + ": " + finding.Evidence
 		switch finding.Code {
 		case "installation.network_mismatch":
-			line += "; either rebase every project config to the installed network, or stop/destroy private projects, run `farrow network uninstall --yes`, then rerun setup"
+			line += "; either rebase the configuration to the installed network, or stop/destroy the deployment, run `farrow network uninstall --yes`, then rerun setup"
 		case "installation.integrity":
 			line += "; run `farrow network status --verbose` and repair only manifest-owned state; setup will not adopt or delete unknown paths"
 		case "installation.mode_mismatch":

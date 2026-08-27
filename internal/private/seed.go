@@ -92,7 +92,7 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 		if nodeSpec.Control && len(resolved.Nodes) > 1 {
 			privateKey = input.PrivateKey
 			if privateKey == "" {
-				return nil, errors.New("private control seed requires the project private key")
+				return nil, errors.New("private control seed requires the deployment private key")
 			}
 		}
 		files, err := cloudinit.Render(cloudinit.Input{

@@ -14,7 +14,7 @@ func TestCobraRootAndContextualHelp(t *testing.T) {
 	if code := run([]string{"--help"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("root help code=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{"Project Setup:", "Lifecycle:", "Guest Access:", "ss", "Use \"farrow [command] --help\""} {
+	for _, want := range []string{"Setup:", "Lifecycle:", "Guest Access:", "ss", "Use \"farrow [command] --help\""} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("root help missing %q:\n%s", want, stdout.String())
 		}

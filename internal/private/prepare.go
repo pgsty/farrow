@@ -125,7 +125,7 @@ func (config PrepareConfig) now() time.Time {
 
 func validatePrepareConfig(config PrepareConfig) error {
 	if config.ProjectRoot == "" || !filepath.IsAbs(config.ProjectRoot) || config.QEMUBinary == "" || !filepath.IsAbs(config.QEMUBinary) || config.Disks == nil || len(config.Plan.Nodes) != len(config.Resolved.Nodes) || len(config.Seeds) != len(config.Resolved.Nodes) || len(config.SpecHash) != 64 {
-		return errors.New("private prepare project, QEMU, disks, plan, or seeds are incomplete")
+		return errors.New("private prepare deployment, QEMU, disks, plan, or seeds are incomplete")
 	}
 	for _, node := range config.Resolved.Nodes {
 		if len(config.NodeHashes[node.Name]) != 64 {
@@ -134,7 +134,7 @@ func validatePrepareConfig(config PrepareConfig) error {
 	}
 	info, err := os.Lstat(config.ProjectRoot)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return errors.New("private prepare project root must be a real mode-0700 directory")
+		return errors.New("private prepare deployment root must be a real mode-0700 directory")
 	}
 	if (config.UseUEFI || config.Profile.RequiresUEFI) && (config.Firmware.Code == "" || config.Firmware.Vars == "") {
 		return errors.New("private prepare platform requires firmware code/vars")

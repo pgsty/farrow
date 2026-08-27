@@ -31,13 +31,13 @@ with `make build` or an official package, never a bare `go build`.
 rule: print the exact plan — paths, ownership, modes, subnet, rollback — and
 change nothing until `--yes`.
 
-Preflight runs again immediately before mutation, so a host that changed
-between review and apply fails instead of proceeding.
+The readiness preflight probes run again immediately before mutation, so a
+host that changed between review and apply fails instead of proceeding.
 
-Uninstall holds the shared lease lock, re-checks lease, ownership, content
-hashes and override state, removes state last, and uses `rmdir` for owned
-directories so a non-empty one is never blown away. An active private lease
-blocks uninstall with no mutation at all.
+Uninstall re-checks ownership, content hashes and override state, removes
+state last, and uses `rmdir` for owned directories so a non-empty one is
+never blown away. It audits the runtime identity of every recorded node
+first; any live node blocks uninstall with no mutation at all.
 
 Linux staged content is re-hashed before installation, and an unprivileged
 QEMU/QMP attach must succeed before bridge persistence is enabled (via
@@ -66,33 +66,33 @@ installation or download can never trigger a second prompt.
 Directories holding runtime state, QMP sockets, keys and seeds are `0700`;
 private keys and seeds are `0600`.
 
-Before `destroy`, `prune`, a `repair` deletion, or `network uninstall`, Farrow:
+Before `destroy`, `prune`, or `network uninstall`, Farrow:
 
 1. resolves and canonicalizes the exact target;
 2. rejects symlinks, unexpected file types, empty or unresolved paths, and
    broad roots such as your home directory or the working directory;
 3. verifies containment beneath the owned data root and matching ownership;
-4. preserves persistent disks and project keys unless the specific destructive
-   flag is present.
+4. preserves persistent disks and the deployment keys unless the specific
+   destructive flag is present.
 
 There is no global `nuke`. If ownership or process identity cannot be proven,
 the resource is preserved and the command reports exactly what manual evidence
 is missing.
 
-`project purge-keys` is a separate, dry-run-first command. It refuses while any
-node directory or retained disk exists, and accepts only the fixed allowlist
-`id_ed25519`, `id_ed25519.pub`, `known_hosts`, `known_hosts.old`. Applying with
-`--yes` never widens that list.
+Key deletion happens only inside `destroy --force --purge`. It refuses while
+any node artifact or retained disk exists, and removes only the fixed
+allowlist `id_ed25519`, `id_ed25519.pub`, `known_hosts`, `known_hosts.old` —
+never a widened glob.
 
 ## Keys and the guest
 
-Each project has its own Ed25519 key pair and its own `known_hosts`. Host key
-checking is never globally disabled. OpenSSH option values and generated config
-paths are internally double-quoted, so an explicitly configured data root
-containing spaces cannot split a per-project `known_hosts` path into a
+The deployment has one Ed25519 key pair and one `known_hosts`, under
+`~/.farrow/keys/`. Host key checking is never globally disabled. OpenSSH
+option values and generated config paths are internally double-quoted, so a
+`FARROW_HOME` containing spaces cannot split the `known_hosts` path into a
 home-directory file.
 
-Only a multi-node **control** guest receives the project private key, for
+Only a multi-node **control** guest receives the deployment private key, for
 lateral SSH to its peers. Single-node labs never receive a lateral key.
 
 ### Explicit guest provisioning
@@ -105,23 +105,22 @@ to `sudo -n -- /bin/bash -se`; it never elevates the Farrow or QEMU process on
 the host.
 
 Provisioning requires QMP- and process-verified running nodes and reuses the
-project key and strict project `known_hosts`. It holds the project exclusive
-lock for the complete bounded operation, so lifecycle commands cannot stop or
-destroy a VM underneath a running script. Events contain the script SHA-256,
-size, node names, exit codes and durations, but never its host path, body, or
-captured output. Per-node stdout and stderr are returned to the caller with a
-1 MiB cap each and are not added to debug/event logs.
+deployment key and strict deployment `known_hosts`. It holds the exclusive
+deployment lock for the complete bounded operation, so lifecycle commands
+cannot stop or destroy a VM underneath a running script. Events contain the
+script SHA-256, size, node names, exit codes and durations, but never its
+host path, body, or captured output. Per-node stdout and stderr are returned
+to the caller with a 1 MiB cap each and are not added to event logs.
 
 Because cloud-init can run `write_files` before `users-groups`, the control key
 and config are staged `root:root` 0600 and installed by a fail-closed finalizer
 that first resolves the account's numeric UID/GID and canonical home path.
 Cloud-init parses the injected key, requires Ed25519, and compares its derived
-public key against the project public key. Staging paths are removed by both
-the installer and an EXIT trap.
+public key against the deployment public key. Staging paths are removed by
+both the installer and an EXIT trap.
 
 Seed media and retained end-to-end test artifact directories do contain
-generated key material. They are excluded from debug bundles; treat them
-accordingly.
+generated key material; treat them accordingly.
 
 ## Ready marker
 
@@ -132,17 +131,6 @@ mounts, the account's numeric identity, and — for private nodes — that
 Mount paths must be canonical absolute paths and cannot traverse into reserved
 system trees. An already-mounted path must present the expected filesystem
 UUID.
-
-## Debug bundles
-
-`farrow debug bundle` reads through a fixed input allowlist with bounded reads
-and content redaction, publishes mode 0600 atomically, and refuses to
-overwrite. It never collects seed contents, disks, project keys, `known_hosts`,
-process environment, or arbitrary project files. Redaction is verified against
-generated canary secrets.
-
-Redaction is defense in depth, not a guarantee. Review the printed file list
-and manifest before sharing a bundle.
 
 ## Supply chain
 
@@ -169,9 +157,8 @@ a separate trust domain from release signing keys.
 ## Known limitations
 
 - Loopback port forwards block the LAN but not other local users on your host.
-- The private lease serializes Farrow projects, not other hypervisors. Farrow
-  detects a foreign occupant of its subnet and refuses; it cannot stop one from
-  appearing later.
+- Farrow detects a foreign occupant of its subnet and refuses; it cannot stop
+  one from appearing later, and it does not arbitrate with other hypervisors.
 - A guest with root access can do anything a normal process on your host
   network can do. Farrow is not a containment boundary.
 - A configured 9p share intentionally gives the guest access to that host

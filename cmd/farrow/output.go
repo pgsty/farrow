@@ -595,17 +595,17 @@ func (item *progress) Stop(err error) {
 func lifecycleMessage(command string) string {
 	switch command {
 	case "up":
-		return "Preparing and starting the project"
+		return "Preparing and starting the deployment"
 	case "start":
-		return "Starting the project"
+		return "Starting the deployment"
 	case "stop":
-		return "Stopping the project"
+		return "Stopping the deployment"
 	case "restart":
-		return "Restarting the project"
+		return "Restarting the deployment"
 	case "recreate":
-		return "Recreating the project"
+		return "Recreating the deployment"
 	case "destroy":
-		return "Destroying owned project resources"
+		return "Destroying owned deployment resources"
 	default:
 		return "Running " + command
 	}

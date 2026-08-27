@@ -24,8 +24,11 @@ farrow up               # boots the same file's hosts as VMs
 
 Pigsty's conf templates carry the `vm_*` knobs directly (they are inert
 variables for anyone not using Farrow). Outside a Pigsty checkout,
-`farrow init [meta|dual|trio|full]` writes a generic starter inventory you
-can grow into a full Pigsty config later — same file, same format.
+`farrow init [meta|dual|trio|full]` writes a generic starter inventory as
+`farrow.yml` — same format, and ready to copy into a Pigsty checkout as
+`pigsty.yml` or grow into a full Pigsty config later. `pigsty.yml` remains
+fully supported; when a directory contains both, `farrow.yml` wins the
+discovery order (see [config.md](config.md)).
 
 ## Guest identity
 
@@ -43,7 +46,7 @@ Farrow derives each VM's name the way Pigsty derives hostnames: explicit
 convention), then `node-<last octet>`. The two systems therefore agree on
 what every machine is called without repeating anything.
 
-Inside the guests, each node's seed carries the project's names and
+Inside the guests, each node's seed carries the deployment's names and
 `vm_alias` entries; on the host, `farrow hosts install --yes` publishes the
 aliases (any RFC1918 subnet) so `https://i.pigsty` style access works from
 the browser. Note that Pigsty's own `node_etc_hosts` management supersedes

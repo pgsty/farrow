@@ -135,7 +135,7 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 	store := state.Store{Root: projectValue.Root}
 	projectState, err := store.ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
-		return Status{}, errors.New("current project has no valid private state")
+		return Status{}, errors.New("the deployment has no valid private state")
 	}
 	selected, err := selectedNodeNames(projectState.Resolved, m.Nodes)
 	if err != nil {
@@ -143,7 +143,7 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 	}
 	partial := len(selected) != len(projectState.Resolved.Nodes)
 	if partial && !m.allowPartialDestroy {
-		return Status{}, errors.New("private destroy currently requires selecting the complete project")
+		return Status{}, errors.New("private destroy currently requires selecting the complete deployment")
 	}
 	selectedSet := nodeNameSet(selected)
 	needsStop := false
@@ -316,7 +316,7 @@ func (m Manager) Recreate(ctx context.Context) (Status, error) {
 	}
 	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
-		return Status{}, errors.New("current project has no valid private state")
+		return Status{}, errors.New("the deployment has no valid private state")
 	}
 	return m.RecreateResolved(ctx, projectState.Resolved)
 }
@@ -360,7 +360,7 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	}
 	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
 	if err != nil || projectState.Resolved.Network != "private" {
-		return Status{}, errors.New("current project has no valid private state")
+		return Status{}, errors.New("the deployment has no valid private state")
 	}
 	if err := validatePrivateRecreatePersistent(projectValue, projectState.Resolved, requested); err != nil {
 		return Status{}, err

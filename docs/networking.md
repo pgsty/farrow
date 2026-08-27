@@ -31,6 +31,11 @@ Every node has two network interfaces:
 - **private** — deterministic MAC, the fixed inventory address, no default
   route, no DNS, no IPv6 router advertisement.
 
+The MACs encode the node's fixed private IPv4 directly: management
+`02:4d:<ip0>:<ip1>:<ip2>:<ip3>`, private `02:50:<ip0>:<ip1>:<ip2>:<ip3>`
+(`0x4d` 'M', `0x50` 'P'), so `10.10.10.10` gets the private MAC
+`02:50:0a:0a:0a:0a` — a MAC in an ARP table identifies its node at a glance.
+
 This is the classic Vagrant topology (NAT eth0 + host-only eth1), and it
 means guest→internet traffic crosses the user-mode stack. That stack tops out
 around 1–2 Gbit/s per stream and burns a host core while at it — usually
@@ -67,7 +72,6 @@ conservatively:
 | explicit config conflicts with the installed network | preserve both; report how to align |
 | foreign route/interface/service owns the subnet | never adopt or delete it |
 | partial, invalid, or ownership-unsafe installation | preserve it; report the failed invariant |
-| lease held by another project | preserve it; identify the project to stop |
 
 There is deliberately no automatic "delete whatever is there" path.
 
@@ -82,8 +86,9 @@ solves with a kext and OrbStack with a privileged helper).
 Setup obtains the socket_vmnet binaries from the first source that works,
 generates one persistent interface UUID, installs the root service, and
 records the exact BSD interface it created in protected identity markers.
-Preflight accepts only that interface; a foreign VirtualBox, OrbStack,
-Internet Sharing, or VPN interface holding `.1/24` is never adopted.
+The readiness probes accept only that interface; a foreign VirtualBox,
+OrbStack, Internet Sharing, or VPN interface holding `.1/24` is never
+adopted.
 
 The source order is:
 
@@ -100,8 +105,9 @@ The source order is:
 Archive sources are verified against digests embedded in the Farrow binary.
 Homebrew binaries are digested at install time and those digests are recorded
 in the root-owned network state and public identity marker; every later
-verification (doctor, preflight, setup reruns) pins against the recorded
-values, so post-install tampering is detected identically for both sources.
+verification (doctor, `network status`, setup reruns, the internal readiness
+probes) pins against the recorded values, so post-install tampering is
+detected identically for both sources.
 
 The default vmnet mode is `host` — since internet rides the management NIC,
 the private NIC needs no second NAT, and host mode avoids contending with
@@ -117,7 +123,7 @@ The bridge follows whichever network manager owns the host:
   disabled, autoconnect, and `connection.zone trusted` on firewalld hosts. It
   never starts systemd-networkd, so the dormant-networkd wireless hazard does
   not exist on these hosts. A world-readable identity file at
-  `/etc/farrow/network.json` lets read-only preflight verify the install.
+  `/etc/farrow/network.json` lets the read-only probes verify the install.
 - **systemd-networkd active**: the original transaction — owned
   `.netdev`/`.network` units for `farrow0`.
 - **neither active, networkd installable**: Farrow proves that starting the
@@ -126,26 +132,17 @@ The bridge follows whichever network manager owns the host:
 
 Both backends share the rest: the distribution `qemu-bridge-helper` (with
 reversible `dpkg-statoverride` on Debian-family; the packaged setuid helper
-verified on RPM), the marker-owned `/etc/qemu/bridge.conf` block, the lease
-boundary under `/run/farrow`, a root-owned ownership manifest, and a
-non-root QEMU attach smoke before anything persists. Switching backends
-requires an explicit `farrow network uninstall --yes`.
+verified on RPM), the marker-owned `/etc/qemu/bridge.conf` block, a
+root-owned ownership manifest, and a non-root QEMU attach smoke before
+anything persists. Switching backends requires an explicit
+`farrow network uninstall --yes`.
 
 The private bridge runs no DHCP server — node addresses are injected by
 cloud-init, and guest internet comes from the management NIC.
 
-## One lab at a time
-
-The installer owns `/private/var/run/farrow` (macOS) or `/run/farrow`
-(Linux) and stores a strict lease there. One active project may use the
-network at a time; a second exits 6. Growing a running lab reshapes the
-lease (new reservations added, surviving ones untouched); destroying a node
-shrinks it. Address-level leasing for multiple concurrent labs is a roadmap
-item.
-
 ## Publishing names
 
-`farrow hosts install` writes the project's node aliases (`vm_alias`) into
+`farrow hosts install` writes the deployment's node aliases (`vm_alias`) into
 `/etc/hosts` through the root-owned digest-pinned helper, as one marker-owned
 block. It accepts any RFC1918 static address, prints its exact plan, and
 changes nothing without `--yes`. Inside the guests, the same aliases are part
@@ -162,14 +159,16 @@ rather than the user-writable CLI:
 ## Advanced inspection
 
 ```bash
-farrow network preflight -f pigsty.yml --json   # read-only; exact node addresses
-farrow network status --json
+farrow network status --json                     # installation state + readiness findings
 farrow network install --yes                     # manual transaction (review first)
 farrow network uninstall --yes                   # restores recorded prestate
 ```
 
-Preflight runs internally before setup installation and every private
-lifecycle mutation. It detects mismatched installation state, overlapping
-routes/interfaces, static addresses that already answer SSH, partial or
-unsafe ownership, an unready backend, and macOS vmnet error 1009. Uninstall
-refuses while a lease is active and restores the recorded prior host state.
+Read-only preflight probes run internally before install and every lifecycle
+mutation; `network status` reports the installation state plus the same
+readiness findings. The probes detect mismatched installation state,
+overlapping routes/interfaces, static addresses that already answer SSH,
+partial or unsafe ownership, an unready backend, and macOS vmnet error 1009 —
+and skip the deployment's own recorded addresses, so a running lab never
+trips its own probe. Uninstall audits the runtime identity of every recorded
+node, refuses while any is live, and restores the recorded prior host state.

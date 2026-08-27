@@ -6,7 +6,7 @@ bookkeeping record of the lab — one file, no rendering or reconciliation
 between two formats.
 
 ```bash
-farrow init            # write a single-node ./pigsty.yml
+farrow init            # write a single-node ./farrow.yml
 farrow init full       # 4-node template
 farrow validate        # parse, resolve, and print the spec hash
 ```
@@ -14,9 +14,9 @@ farrow validate        # parse, resolve, and print the spec hash
 ## Discovery and format
 
 Commands that accept a configuration look for `-f <file>` first, then
-`farrow.yaml`, `pigsty.yml`, and `pigsty.yaml` in the working directory.
-`farrow.yaml` is a filename convenience only — the content format is the same
-inventory in every case.
+`farrow.yml`, `farrow.yaml`, `pigsty.yml`, and `pigsty.yaml` in the working
+directory. The name is a filename convenience only — the content format is
+the same inventory in every case.
 
 The retired `version:`/`nodes:` document format fails with migration
 guidance; run `farrow init` for a fresh template.
@@ -87,7 +87,7 @@ Whitelisted Pigsty variables Farrow honors:
 | host key | — | the node's fixed private address |
 | `nodename` | derived | VM name; falls back to `<pg_cluster>-<pg_seq>`, then `node-<last octet>` |
 | `admin_ip` | first host | the control node (lateral SSH key, alias publication) |
-| `node_admin_username` | `dba` | the guest login account; one user per project |
+| `node_admin_username` | `dba` | the guest login account; one user per deployment |
 | `node_admin_uid` | `88` | must stay 88 for `dba` — Farrow creates the Pigsty node-admin identity at first boot |
 
 Group-inheritance is deliberately simpler than Ansible's: deeper groups
@@ -135,7 +135,7 @@ template).
 
 ## Drift and the node hash
 
-`up` resolves the file into a per-node **node hash**: the project envelope
+`up` resolves the file into a per-node **node hash**: the deployment envelope
 (network, login user, defaults) plus that node's own definition. Editing
 anything outside the Farrow namespace — `pg_*`, `node_*`, `repo_*` — never
 moves any hash and never causes drift.
@@ -143,7 +143,8 @@ moves any hash and never causes drift.
 - **Added host** → `up` creates it; running peers are untouched.
 - **Changed node** → exit 4; `farrow plan` names it; apply with
   `farrow recreate --force <node>`.
-- **Project-level change** (user, subnet, defaults) → whole-project recreate.
+- **Deployment-level change** (user, subnet, defaults) → whole-deployment
+  recreate.
 - **Removed host** → reported only; `farrow destroy <node> --force` removes it.
 
 Two consequences worth knowing: a scale-out does not update the guest-side
@@ -163,8 +164,9 @@ implemented yet — today those are per-node recreates too.
 | `FARROW_OUTPUT` / `FARROW_VERBOSE` | default presentation settings |
 | `XDG_RUNTIME_DIR` | parent for QMP sockets and pidfiles |
 
-The workspace directory holds only the small `.farrow/project.json` marker
-(plus a generated `.gitignore`); images, disks, seeds, keys, and state live
-under the data root at `projects/<project-id>/`. For an existing project the
-marker's recorded data root is authoritative; changing `FARROW_HOME` does not
-move state.
+Farrow writes nothing into the working directory beyond the configuration
+file itself; images, disks, seeds, keys, and state all live under the data
+root — `images/`, `nodes/<name>/`, `keys/`, `disks/`, and the applied
+`state.json`. The resolved spec carries no data-root path, so pointing
+`FARROW_HOME` elsewhere selects a different (initially empty) deployment
+rather than causing drift; it does not move existing state.

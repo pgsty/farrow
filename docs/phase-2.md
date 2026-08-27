@@ -12,7 +12,8 @@ exist. [Status](status.md) is the authoritative verification record, and
 - node-granular lifecycle: additive up, per-node recreate, explicit removal;
 - an explicit host-global private network with three backends
   (socket_vmnet, systemd-networkd, NetworkManager);
-- orphan-aware project registry with rm/prune/purge;
+- exactly one deployment per user, all state under `~/.farrow`, nothing
+  written into the working directory;
 - strict-inside-the-namespace parsing and versioned JSON state;
 - bounded Bash-over-SSH provisioning and optional per-node 9p shares.
 
@@ -45,17 +46,12 @@ Verification and release ownership, not feature surface:
 
 - **Cold convergence (restart-class drift).** Apply `vm_cpu`/`vm_mem`,
   disk growth, added data disks, and share changes across a stop/start
-  cycle without rebuilding the root disk: regenerate the seed, bump the
-  node generation, and rebind `up --restart` to it. Today these report as
-  per-node recreates.
-- **Address-level leasing.** Replace "one project owns the network" with
-  projects leasing addresses from the shared `/24`, so several labs coexist
-  on one bridge. Needs its own safety review (registry, collision
-  arbitration, per-project teardown).
+  cycle without rebuilding the root disk: regenerate the seed and bump the
+  node generation. Today these report as per-node recreates.
 - **`farrow play`.** The hidden minikube-style playground: one slirp-backed
-  singleton VM per user, no project, no configuration file, port-forward
-  UX, flags only. The slirp machinery already exists as the management NIC;
-  play is porcelain over it (and the natural `pig` integration point).
+  singleton VM per user, no configuration file, port-forward UX, flags
+  only. The slirp machinery already exists as the management NIC; play is
+  porcelain over it (and the natural `pig` integration point).
 - **Declarative provisioning.** A `vm_provision` list (script, sudo,
   run-once/always) executed on first boot and by `farrow provision` — a
   bounded hook, not a provisioner framework.
@@ -71,6 +67,9 @@ Verification and release ownership, not feature surface:
 
 ## Non-goals
 
+- multiple concurrent deployments per user (projects, registries, or
+  address-level leasing) — rejected with the 2026-08-27 simplification, not
+  deferred;
 - live migration, clustering, or multi-host orchestration;
 - a guest agent or general provisioner framework;
 - arbitrary QEMU arguments;

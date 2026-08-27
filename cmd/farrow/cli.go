@@ -227,10 +227,10 @@ func newSSHConfigCommand(stdout, stderr io.Writer) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "ssh-config [node...]",
 		Short: "Print, install, or remove OpenSSH configuration",
-		Long:  "Print a project SSH fragment, or explicitly install/remove its marker-owned global Include.",
+		Long:  "Print the deployment SSH fragment, or explicitly install/remove its marker-owned global Include.",
 	}
-	command.Flags().Bool("install", false, "install a marker-owned Include and project fragment")
-	command.Flags().Bool("remove", false, "remove this project's marker-owned Include and fragment")
+	command.Flags().Bool("install", false, "install a marker-owned Include and deployment fragment")
+	command.Flags().Bool("remove", false, "remove the marker-owned Include and fragment")
 	command.Flags().String("name", "farrow", "SSH Host and fragment prefix")
 	bindOperation(command, stdout, stderr, runSSHConfig)
 	return command
@@ -259,8 +259,8 @@ func newSSHShortcutCommand(stdout, stderr io.Writer) *cobra.Command {
 	var name string
 	command := &cobra.Command{
 		Use:   "ss [node...]",
-		Short: "Install this project's SSH config",
-		Long:  "Shortcut for 'farrow ssh-config --install'. The default prefix is the current project directory name.",
+		Short: "Install the deployment SSH config",
+		Long:  "Shortcut for 'farrow ssh-config --install'. Aliases answer bare node names; the fragment prefix is 'farrow'.",
 		RunE: func(_ *cobra.Command, nodes []string) error {
 			arguments, err := sshShortcutArguments(name, nodes)
 			if err != nil {
@@ -269,12 +269,12 @@ func newSSHShortcutCommand(stdout, stderr io.Writer) *cobra.Command {
 			return commandError(runSSHConfig(arguments, stdout, stderr))
 		},
 	}
-	command.Flags().StringVar(&name, "name", "", "SSH prefix (default: current project directory name)")
+	command.Flags().StringVar(&name, "name", "", "SSH fragment prefix (default: farrow)")
 	return command
 }
 
 func newLogsCommand(stdout, stderr io.Writer) *cobra.Command {
-	command := &cobra.Command{Use: "logs [node]", Short: "Read or follow project logs", Args: cobra.MaximumNArgs(1)}
+	command := &cobra.Command{Use: "logs [node]", Short: "Read or follow deployment logs", Args: cobra.MaximumNArgs(1)}
 	command.Flags().String("source", "serial", "log source: serial, qemu, or events")
 	command.Flags().BoolP("follow", "f", false, "continue streaming appended log data")
 	bindOperation(command, stdout, stderr, runLogs)
@@ -286,12 +286,12 @@ func addApplyFlag(command *cobra.Command) {
 }
 
 func newHostsCommand(stdout, stderr io.Writer) *cobra.Command {
-	parent := subcommandGroup("hosts", "Manage project entries in the host hosts file", stdout, stderr)
+	parent := subcommandGroup("hosts", "Manage deployment entries in the host hosts file", stdout, stderr)
 	for _, action := range []string{"install", "uninstall"} {
 		action := action
-		short := "Install project host entries"
+		short := "Install deployment host entries"
 		if action == "uninstall" {
-			short = "Remove project host entries"
+			short = "Remove deployment host entries"
 		}
 		command := &cobra.Command{Use: action, Short: short, Args: cobra.NoArgs}
 		addApplyFlag(command)
@@ -459,7 +459,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "farrow",
 		Short: "Run reproducible local Linux virtual-machine labs",
-		Long:  "Farrow boots a Pigsty-compatible inventory into fixed-IP QEMU virtual machines, managed from the current project directory.",
+		Long:  "Farrow boots a Pigsty-compatible inventory into fixed-IP QEMU virtual machines: one deployment per user, operable from any directory.",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if structuredOutput(stdout, false) {
@@ -493,7 +493,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	_ = settings.BindPFlag("output.verbose_flag", root.PersistentFlags().Lookup("verbose"))
 
 	root.AddGroup(
-		&cobra.Group{ID: "project", Title: "Project Setup:"},
+		&cobra.Group{ID: "setup", Title: "Setup:"},
 		&cobra.Group{ID: "lifecycle", Title: "Lifecycle:"},
 		&cobra.Group{ID: "access", Title: "Guest Access:"},
 		&cobra.Group{ID: "images", Title: "Images:"},
@@ -502,11 +502,11 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	)
 
 	setup := newSetupCommand(stdout, stderr)
-	setup.GroupID = "project"
+	setup.GroupID = "setup"
 	initCommand := newInitCommand(stdout, stderr)
-	initCommand.GroupID = "project"
+	initCommand.GroupID = "setup"
 	validate := newValidateCommand(stdout, stderr)
-	validate.GroupID = "project"
+	validate.GroupID = "setup"
 	root.AddCommand(setup, initCommand, validate)
 
 	for _, item := range []struct{ name, short string }{
@@ -517,8 +517,8 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		{"restart", "Restart selected virtual machines"},
 		{"reload", "Stop, re-read the configuration, and converge (halt + up)"},
 		{"recreate", "Destroy and recreate selected virtual machines"},
-		{"status", "Show current project state"},
-		{"destroy", "Destroy the project, or remove selected nodes from it"},
+		{"status", "Show deployment state"},
+		{"destroy", "Destroy the deployment, or remove selected nodes from it"},
 	} {
 		command := newLifecycleCommand(item.name, item.short, stdout, stderr)
 		command.GroupID = "lifecycle"

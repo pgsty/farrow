@@ -9,7 +9,7 @@ farrow up
 ```
 
 `setup` installs the supported host dependencies, prepares the private
-network, and writes the lab configuration (`pigsty.yml`) when the directory
+network, and writes the lab configuration (`farrow.yml`) when the directory
 has none. `up` downloads the guest image when needed and boots the VM(s).
 Every node has a fixed, host-reachable IP address.
 
@@ -33,8 +33,12 @@ setup uses APT or DNF and asks for sudo when a package is missing. Setup
 prints its whole plan first and asks for the sudo password at most once per
 run.
 
-Keep each lab in its own directory: the directory plus its configuration file
-is the project.
+Farrow manages exactly one deployment per user. All state lives under
+`~/.farrow` — images, per-node artifacts, one SSH key pair — and nothing is
+written into your working directory beyond the configuration file, so
+`status`, `stop`, and `ssh` work from any directory. The directory in front
+of you only supplies the configuration that `up` and `plan` diff against the
+deployment, node by node.
 
 ## 1. Install Farrow
 
@@ -78,14 +82,15 @@ host:          darwin/arm64
 profile:       meta
 dependencies:  ready
 network:       10.10.10.0/24 (installed)
-config:        ~/farrow-labs/dev/pigsty.yml
+config:        ~/farrow-labs/dev/farrow.yml
 status:        ready
 next:          farrow up
 ```
 
-If the directory already contains a `pigsty.yml` (for example a Pigsty
-checkout after `./configure`), plain `farrow setup` prepares exactly that
-file — the templates are only for empty directories.
+If the directory already contains a configuration — `farrow.yml`, or the
+`pigsty.yml` a Pigsty checkout writes after `./configure` — plain
+`farrow setup` prepares exactly that file; the templates are only for empty
+directories.
 
 ## 3. Use the lab
 
@@ -115,15 +120,14 @@ Shrinking is explicit: deleting a line only makes `plan` report the node as
 farrow stop                  # halt is an alias
 farrow start
 farrow reload                # stop + re-read configuration + converge
-farrow destroy --force                    # keeps persistent disks, keys, marker
+farrow destroy --force                    # keeps persistent disks and keys
 farrow destroy --force --delete-persistent
-farrow destroy --force --purge            # terminal disposal: everything, including the registration
+farrow destroy --force --purge            # terminal disposal: disks, keys, and state; images stay cached
 ```
 
-Deleted a lab directory without destroying it first? The registration is not
-lost: `farrow list` flags it as an orphan, `farrow project prune` lists all
-of them, and `farrow project rm <id> --force` destroys and deregisters it
-from anywhere.
+These read the global state, so they work from any directory — deleting a lab
+directory loses nothing but the configuration file, and `farrow destroy
+--force` still tears the deployment down from anywhere.
 
 ## Next steps
 
