@@ -148,6 +148,7 @@ func newSetupCommand(stdout, stderr io.Writer) *cobra.Command {
 	}
 	command.Flags().StringVarP(&options.FilePath, "file", "f", "", "existing configuration to prepare")
 	command.Flags().StringVar(&options.NetworkCIDR, "network-cidr", "", "generated lab: host-global RFC1918 IPv4 /24")
+	command.Flags().StringVar(&options.Repo, "repo", "", "repository URL or absolute directory mirroring images and socket_vmnet")
 	command.Flags().StringVar(&options.Mode, "mode", options.Mode, "Darwin private network mode: host or shared")
 	command.Flags().BoolVar(&options.DryRun, "dry-run", false, "show the resolved setup plan without changing anything")
 	command.Flags().BoolVar(&options.Yes, "yes", false, "accept the one-time setup plan (required without a terminal)")

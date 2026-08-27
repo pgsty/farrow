@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
@@ -42,7 +43,7 @@ func TestDownloadSocketVMNetReleasePublishesVerifiedCache(t *testing.T) {
 		}
 		return nil
 	}
-	result, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), server.Client(), verify)
+	result, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), server.Client(), Sources{}, verify)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestDownloadSocketVMNetReleasePublishesVerifiedCache(t *testing.T) {
 	}
 	second, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", filepath.Dir(result.Path), doerFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("cache reuse attempted a request")
-	}), verify)
+	}), Sources{}, verify)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +67,91 @@ func TestDownloadSocketVMNetReleaseRejectsPlainHTTP(t *testing.T) {
 		Version: "test", Arch: "arm64", ArchiveName: "fixture.tar.gz",
 		URL: "http://example.invalid/fixture.tar.gz", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	}
-	_, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), nil, func(string, string) error { return nil })
+	_, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), nil, Sources{}, func(string, string) error { return nil })
 	if err == nil {
 		t.Fatal("plain HTTP release accepted")
+	}
+}
+
+func sourcesFixtureRelease(url string) darwinnet.Release {
+	return darwinnet.Release{
+		Version: "test", Arch: "arm64", ArchiveName: "socket_vmnet-test.tar.gz",
+		URL: url, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+}
+
+func contentVerifier(content string) func(string, string) error {
+	return func(path, arch string) error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if string(data) != content {
+			return errors.New("wrong content")
+		}
+		return nil
+	}
+}
+
+func TestDownloadSocketVMNetLocalArchiveSourceSkipsNetwork(t *testing.T) {
+	t.Parallel()
+	const content = "local archive fixture"
+	archive := filepath.Join(t.TempDir(), "socket_vmnet-test.tar.gz")
+	if err := os.WriteFile(archive, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release := sourcesFixtureRelease("https://upstream.invalid/socket_vmnet-test.tar.gz")
+	deny := doerFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("local archive source attempted a network request")
+	})
+	result, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), deny, Sources{Archive: archive}, contentVerifier(content))
+	if err != nil || !result.Downloaded || result.URL != "file://"+archive {
+		t.Fatalf("archive source result = %#v, %v", result, err)
+	}
+	if data, readErr := os.ReadFile(result.Path); readErr != nil || string(data) != content {
+		t.Fatalf("published cache = %q, %v", data, readErr)
+	}
+
+	// A mismatching explicit archive is an error, never a silent fallback.
+	if err := os.WriteFile(archive, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), deny, Sources{Archive: archive}, contentVerifier(content)); err == nil {
+		t.Fatal("tampered explicit archive accepted")
+	}
+}
+
+func TestDownloadSocketVMNetRepositoryDirectoryMirror(t *testing.T) {
+	t.Parallel()
+	const content = "repository mirror fixture"
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "socket_vmnet"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mirrorCopy := filepath.Join(repo, "socket_vmnet", "socket_vmnet-test.tar.gz")
+	if err := os.WriteFile(mirrorCopy, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release := sourcesFixtureRelease("https://upstream.invalid/socket_vmnet-test.tar.gz")
+	deny := doerFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("repository mirror attempted a network request")
+	})
+	result, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), deny, Sources{Repo: repo}, contentVerifier(content))
+	if err != nil || !result.Downloaded || result.URL != "file://"+mirrorCopy {
+		t.Fatalf("repo mirror result = %#v, %v", result, err)
+	}
+
+	// A corrupt mirror copy fails closed rather than falling through upstream.
+	if err := os.WriteFile(mirrorCopy, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), deny, Sources{Repo: repo}, contentVerifier(content)); err == nil {
+		t.Fatal("corrupt repository mirror accepted")
+	}
+
+	// A repository without the file falls through to upstream (denied here).
+	empty := t.TempDir()
+	if _, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), deny, Sources{Repo: empty}, contentVerifier(content)); err == nil || !strings.Contains(err.Error(), "network request") {
+		t.Fatalf("empty repo fall-through error = %v", err)
 	}
 }

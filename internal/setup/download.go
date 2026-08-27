@@ -9,9 +9,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
+	"github.com/pgsty/farrow/internal/fsutil"
 )
 
 const maxSocketVMNetArchive = 4 << 20
@@ -64,36 +67,82 @@ func DefaultCacheDirectory() (string, error) {
 	return filepath.Join(root, "farrow", "downloads"), nil
 }
 
-// DownloadPinnedSocketVMNet fetches only the embedded release URL, bounds the
-// response, verifies the embedded digest and archive structure, then atomically
-// publishes a user-owned cache entry. An already verified entry is reused.
-func DownloadPinnedSocketVMNet(ctx context.Context, arch, cacheDirectory string, client HTTPDoer) (DownloadResult, error) {
+// Sources widens where the pinned socket_vmnet archive may come from. The
+// SHA-256 embedded in the binary is enforced identically for every source,
+// so any mirror — a local file, a private repository, the upstream release —
+// is equally trustworthy. This matters most on networks where GitHub is slow
+// or unreachable.
+type Sources struct {
+	// Archive is an explicit local tarball (FARROW_VMNET_ARCHIVE). When set it
+	// must verify; a mismatch is an error, never a silent fallback.
+	Archive string
+	// Repo is an image-repository URL or absolute local directory
+	// (FARROW_REPO / --repo). The archive is expected under
+	// <repo>/socket_vmnet/<archive-name>. A missing mirror copy falls through
+	// to upstream; a corrupt one is an error.
+	Repo string
+	// Progress receives byte-level download events.
+	Progress activity.Reporter
+}
+
+// SourcesFromEnvironment resolves the standard overrides. An explicit repo
+// argument (from --repo) wins over FARROW_REPO.
+func SourcesFromEnvironment(repo string) Sources {
+	if repo == "" {
+		repo = os.Getenv("FARROW_REPO")
+	}
+	return Sources{Archive: os.Getenv("FARROW_VMNET_ARCHIVE"), Repo: repo}
+}
+
+// SocketVMNetCached reports whether the pinned archive is already present and
+// fully verified in the user cache, so setup plans can say "cached" instead
+// of announcing a download.
+func SocketVMNetCached(arch string) bool {
+	release, err := darwinnet.PinnedRelease(arch)
+	if err != nil {
+		return false
+	}
+	cacheDirectory, err := DefaultCacheDirectory()
+	if err != nil {
+		return false
+	}
+	target := filepath.Join(cacheDirectory, release.SHA256+"-"+release.ArchiveName)
+	_, err = darwinnet.VerifyArchive(target, arch)
+	return err == nil
+}
+
+// DownloadPinnedSocketVMNet obtains the pinned release archive from the first
+// working source — an explicit local archive, the configured repository
+// mirror, then the embedded upstream URL — bounds and digest-verifies it, and
+// atomically publishes a user-owned cache entry. An already verified cache
+// entry is reused without touching the network.
+func DownloadPinnedSocketVMNet(ctx context.Context, arch, cacheDirectory string, client HTTPDoer, sources Sources) (DownloadResult, error) {
 	release, err := darwinnet.PinnedRelease(arch)
 	if err != nil {
 		return DownloadResult{}, err
 	}
-	return downloadSocketVMNetRelease(ctx, release, arch, cacheDirectory, client, func(path, arch string) error {
+	return downloadSocketVMNetRelease(ctx, release, arch, cacheDirectory, client, sources, func(path, arch string) error {
 		_, err := darwinnet.VerifyArchive(path, arch)
 		return err
 	})
 }
 
-func downloadSocketVMNetRelease(ctx context.Context, release darwinnet.Release, arch, cacheDirectory string, client HTTPDoer, verify func(string, string) error) (DownloadResult, error) {
-	parsed, err := url.Parse(release.URL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return DownloadResult{}, errors.New("embedded socket_vmnet URL is invalid")
-	}
+func downloadSocketVMNetRelease(ctx context.Context, release darwinnet.Release, arch, cacheDirectory string, client HTTPDoer, sources Sources, verify func(string, string) error) (DownloadResult, error) {
 	if verify == nil {
 		return DownloadResult{}, errors.New("socket_vmnet verifier is missing")
 	}
 	if release.ArchiveName == "" || filepath.Base(release.ArchiveName) != release.ArchiveName || len(release.SHA256) != 64 {
 		return DownloadResult{}, errors.New("embedded socket_vmnet identity is invalid")
 	}
+	if parsed, parseErr := url.Parse(release.URL); parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return DownloadResult{}, errors.New("embedded socket_vmnet URL is invalid")
+	}
 	if cacheDirectory == "" {
-		cacheDirectory, err = DefaultCacheDirectory()
+		defaultDirectory, err := DefaultCacheDirectory()
 		if err != nil {
 			return DownloadResult{}, err
 		}
+		cacheDirectory = defaultDirectory
 	}
 	if err := ensureCacheDirectory(cacheDirectory); err != nil {
 		return DownloadResult{}, err
@@ -112,24 +161,126 @@ func downloadSocketVMNetRelease(ctx context.Context, release darwinnet.Release, 
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return result, statErr
 	}
+	// 1. Explicit local archive: user intent, so a mismatch is an error.
+	if sources.Archive != "" {
+		if !filepath.IsAbs(sources.Archive) {
+			return result, errors.New("FARROW_VMNET_ARCHIVE must be an absolute path")
+		}
+		if err := verify(sources.Archive, arch); err != nil {
+			return result, fmt.Errorf("FARROW_VMNET_ARCHIVE %s does not match the pinned socket_vmnet v%s archive: %w", sources.Archive, release.Version, err)
+		}
+		if err := publishVerifiedCopy(sources.Archive, cacheDirectory, target, arch, verify); err != nil {
+			return result, err
+		}
+		result.URL = "file://" + sources.Archive
+		result.Downloaded = true
+		return result, nil
+	}
+	// 2. Repository mirror: <repo>/socket_vmnet/<archive-name>. A missing
+	//    mirror copy falls through to upstream; a corrupt one fails closed.
+	if sources.Repo != "" {
+		if filepath.IsAbs(sources.Repo) {
+			candidate := filepath.Join(sources.Repo, "socket_vmnet", release.ArchiveName)
+			if _, statErr := os.Lstat(candidate); statErr == nil {
+				if err := verify(candidate, arch); err != nil {
+					return result, fmt.Errorf("repository copy %s does not match the pinned socket_vmnet v%s archive: %w", candidate, release.Version, err)
+				}
+				if err := publishVerifiedCopy(candidate, cacheDirectory, target, arch, verify); err != nil {
+					return result, err
+				}
+				result.URL = "file://" + candidate
+				result.Downloaded = true
+				return result, nil
+			}
+		} else {
+			mirror := strings.TrimSuffix(sources.Repo, "/") + "/socket_vmnet/" + release.ArchiveName
+			fetched, fetchErr := fetchBoundedArchive(ctx, client, mirror, release, cacheDirectory, target, arch, sources.Progress, verify)
+			if fetchErr == nil {
+				return fetched, nil
+			}
+			// The mirror simply not carrying the file is a fall-through; a
+			// digest mismatch on a present file is not.
+			if strings.Contains(fetchErr.Error(), "does not match the pinned") {
+				return result, fetchErr
+			}
+		}
+	}
+	// 3. The embedded upstream URL.
+	fetched, err := fetchBoundedArchive(ctx, client, release.URL, release, cacheDirectory, target, arch, sources.Progress, verify)
+	if err != nil {
+		return result, fmt.Errorf("%w\nany mirror works — the SHA-256 is pinned in the binary: place %s under <your-repo>/socket_vmnet/ and set FARROW_REPO, or download it once by hand and set FARROW_VMNET_ARCHIVE=/absolute/path/to/%s", err, release.ArchiveName, release.ArchiveName)
+	}
+	return fetched, nil
+}
+
+// publishVerifiedCopy copies an already verified source archive into the
+// cache atomically and re-verifies the published bytes.
+func publishVerifiedCopy(source, cacheDirectory, target, arch string, verify func(string, string) error) error {
+	temporary, _, err := fsutil.CopyToTemp(source, cacheDirectory, ".socket-vmnet-*.partial", 0o600, maxSocketVMNetArchive)
+	if err != nil {
+		return err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.Remove(temporary)
+		}
+	}()
+	if err := verify(temporary, arch); err != nil {
+		return fmt.Errorf("verify staged socket_vmnet copy: %w", err)
+	}
+	if err := os.Rename(temporary, target); err != nil {
+		return err
+	}
+	keep = true
+	return nil
+}
+
+// progressBody reports byte progress while the response body is copied.
+type progressBody struct {
+	reader  io.Reader
+	report  activity.Reporter
+	event   activity.Event
+	written int64
+	last    time.Time
+}
+
+func (body *progressBody) Read(data []byte) (int, error) {
+	read, err := body.reader.Read(data)
+	body.written += int64(read)
+	if now := time.Now(); now.Sub(body.last) >= 100*time.Millisecond || err == io.EOF {
+		body.last = now
+		event := body.event
+		event.CurrentBytes = body.written
+		body.report.Report(event)
+	}
+	return read, err
+}
+
+func fetchBoundedArchive(ctx context.Context, client HTTPDoer, fetchURL string, release darwinnet.Release, cacheDirectory, target, arch string, progress activity.Reporter, verify func(string, string) error) (DownloadResult, error) {
+	result := DownloadResult{Path: target, URL: fetchURL, SHA256: release.SHA256}
+	parsed, err := url.Parse(fetchURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return result, fmt.Errorf("socket_vmnet source URL must be HTTPS: %s", fetchURL)
+	}
 	if client == nil {
 		client = defaultHTTPClient()
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, release.URL, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
 		return result, err
 	}
 	request.Header.Set("User-Agent", "farrow-setup/"+release.Version)
 	response, err := client.Do(request)
 	if err != nil {
-		return result, fmt.Errorf("download socket_vmnet: %w", err)
+		return result, fmt.Errorf("download socket_vmnet from %s: %w", parsed.Host, err)
 	}
 	defer response.Body.Close()
 	if response.Request != nil && response.Request.URL != nil && response.Request.URL.Scheme != "https" {
 		return result, errors.New("socket_vmnet response URL is not HTTPS")
 	}
 	if response.StatusCode != http.StatusOK || response.ContentLength > maxSocketVMNetArchive {
-		return result, fmt.Errorf("socket_vmnet download failed status/size policy: %s", response.Status)
+		return result, fmt.Errorf("download socket_vmnet from %s: %s", parsed.Host, response.Status)
 	}
 	temporary, err := os.CreateTemp(cacheDirectory, ".socket-vmnet-*.partial")
 	if err != nil {
@@ -146,9 +297,17 @@ func downloadSocketVMNetRelease(ctx context.Context, release darwinnet.Release, 
 	if err := temporary.Chmod(0o600); err != nil {
 		return result, err
 	}
-	written, err := io.Copy(temporary, io.LimitReader(response.Body, maxSocketVMNetArchive+1))
+	body := &progressBody{
+		reader: io.LimitReader(response.Body, maxSocketVMNetArchive+1),
+		report: progress,
+		event: activity.Event{
+			Phase: "download", Message: "Downloading socket_vmnet v" + release.Version,
+			Source: parsed.Host, TotalBytes: max(response.ContentLength, 0), StartedAt: time.Now(),
+		},
+	}
+	written, err := io.Copy(temporary, body)
 	if err != nil {
-		return result, fmt.Errorf("download socket_vmnet: %w", err)
+		return result, fmt.Errorf("download socket_vmnet from %s: %w", parsed.Host, err)
 	}
 	if written > maxSocketVMNetArchive || (response.ContentLength >= 0 && written != response.ContentLength) {
 		return result, errors.New("socket_vmnet download size differs from the bounded response")
@@ -160,7 +319,7 @@ func downloadSocketVMNetRelease(ctx context.Context, release darwinnet.Release, 
 		return result, err
 	}
 	if err := verify(temporaryPath, arch); err != nil {
-		return result, fmt.Errorf("verify downloaded socket_vmnet: %w", err)
+		return result, fmt.Errorf("downloaded copy from %s does not match the pinned socket_vmnet v%s archive: %w", parsed.Host, release.Version, err)
 	}
 	if err := os.Rename(temporaryPath, target); err != nil {
 		return result, err
