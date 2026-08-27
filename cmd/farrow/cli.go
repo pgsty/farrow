@@ -185,18 +185,23 @@ func newValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 
 func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Command {
 	command := &cobra.Command{Use: name + " [node...]", Short: short}
+	if name == "stop" {
+		command.Aliases = []string{"halt"}
+	}
 	options := lifecycleOptions{LogLevel: "info"}
 	command.Flags().StringVar(&options.LogLevel, "log-level", options.LogLevel, "QEMU diagnostic level: error, warn, info, or debug")
 	switch name {
 	case "plan":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "declarative configuration file")
 		command.Flags().StringVar(&options.Repository, "repo", "", "image repository URL or absolute local directory")
-	case "up":
+	case "up", "reload":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "declarative configuration file")
 		command.Flags().StringVar(&options.Repository, "repo", "", "image repository URL or absolute local directory")
 		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
 		command.Flags().BoolVar(&options.Rollback, "rollback", false, "remove safe artifacts from nodes that fail to prepare")
-		command.Flags().BoolVar(&options.RestartDrift, "restart", false, "reserved: apply restart-class drift across a stop/start cycle")
+		if name == "up" {
+			command.Flags().BoolVar(&options.RestartDrift, "restart", false, "reserved: apply restart-class drift across a stop/start cycle")
+		}
 	case "start", "restart":
 		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
 	case "recreate":
@@ -587,6 +592,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		{"start", "Start selected stopped virtual machines"},
 		{"stop", "Stop selected running virtual machines"},
 		{"restart", "Restart selected virtual machines"},
+		{"reload", "Stop, re-read the configuration, and converge (halt + up)"},
 		{"recreate", "Destroy and recreate selected virtual machines"},
 		{"status", "Show current project state"},
 		{"destroy", "Destroy the project, or remove selected nodes from it"},

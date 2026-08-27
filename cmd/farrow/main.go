@@ -1146,7 +1146,7 @@ func printQuickStatus(out io.Writer, status quick.Status) {
 }
 
 func loadLifecycleConfig(command, configPath string) (spec.Resolved, bool, error) {
-	if command != "up" && command != "plan" && command != "recreate" {
+	if command != "up" && command != "plan" && command != "recreate" && command != "reload" {
 		return spec.Resolved{}, false, nil
 	}
 	file, _, err := config.Discover("", configPath)
@@ -1463,6 +1463,9 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 			return exitIntegrity
 		}
 	}
+	if command == "up" {
+		suggestHostsPublication(resolved, stderr)
+	}
 	status.OperationID = operationID
 	if command == "up" || command == "start" || command == "restart" || command == "recreate" {
 		seen := make(map[string]struct{})
@@ -1529,6 +1532,15 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 		return reportCommandFailure(stdout, stderr, false, "usage", "--restart drift application is not available yet; review `farrow plan`, then apply reported changes with `farrow recreate --force <node...>`", "", exitUsage)
 	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
+	if command == "reload" {
+		// Vagrant-style reload: a stop/boot cycle that re-reads the
+		// configuration. Additive changes apply on the way up; destructive
+		// ones report their per-node recreate path exactly like plain up.
+		if code := runPrivateCommand("stop", resolvedFile, nodes, options.Repository, options.Force, false, false, options.NoWait, false, false, stdout, stderr); code != exitOK {
+			return code
+		}
+		command = "up"
+	}
 	return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, false, stdout, stderr)
 }
 
@@ -2575,3 +2587,38 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+
+// suggestHostsPublication reminds the user once per up that declared host
+// aliases are reachable by name only after `farrow hosts install`. Best
+// effort: any read problem stays silent.
+func suggestHostsPublication(resolved spec.Resolved, stderr io.Writer) {
+	hasAliases := false
+	for _, node := range resolved.Nodes {
+		if len(node.Aliases) != 0 {
+			hasAliases = true
+		}
+	}
+	if !hasAliases {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	current, err := project.Open(cwd)
+	if err != nil {
+		return
+	}
+	target, err := hostconfig.NativePath()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || len(data) > 1<<20 {
+		return
+	}
+	if strings.Contains(string(data), "# farrow:"+current.Marker.ProjectID+":begin") {
+		return
+	}
+	fmt.Fprintln(stderr, "declared host aliases are not published; run `farrow hosts install --yes` to add them to "+target)
+}

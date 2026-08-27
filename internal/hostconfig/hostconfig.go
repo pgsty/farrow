@@ -174,7 +174,8 @@ func validateEntries(entries []Entry) error {
 	names := make(map[string]string)
 	for _, entry := range entries {
 		ip := net.ParseIP(entry.Address).To4()
-		if ip == nil || ip.String() != entry.Address || ip[0] != 10 || ip[1] != 10 || ip[2] != 10 || ip[3] < 9 || ip[3] == 255 || len(entry.Names) == 0 {
+		rfc1918 := ip != nil && (ip[0] == 10 || (ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31) || (ip[0] == 192 && ip[1] == 168))
+		if ip == nil || ip.String() != entry.Address || !rfc1918 || ip[3] < 9 || ip[3] == 255 || len(entry.Names) == 0 {
 			return fmt.Errorf("hosts entry address or names are invalid: %q", entry.Address)
 		}
 		if _, exists := addresses[entry.Address]; exists {
