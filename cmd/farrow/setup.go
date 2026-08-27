@@ -21,7 +21,6 @@ import (
 	"github.com/pgsty/farrow/internal/fsutil"
 	"github.com/pgsty/farrow/internal/hostconfig"
 	"github.com/pgsty/farrow/internal/identity"
-	"github.com/pgsty/farrow/internal/lease"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	linuxnet "github.com/pgsty/farrow/internal/network/linux"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
@@ -57,17 +56,10 @@ type setupResult struct {
 	NetworkCIDR       string                   `json:"network_cidr,omitempty"`
 	NetworkMode       string                   `json:"network_mode,omitempty"`
 	Checks            []doctor.Check           `json:"checks,omitempty"`
-	Lease             *setupLeaseState         `json:"lease,omitempty"`
 	Steps             []setupStep              `json:"steps"`
 	Next              string                   `json:"next"`
 	NextArgv          []string                 `json:"next_argv"`
 	Resolution        string                   `json:"resolution,omitempty"`
-}
-
-type setupLeaseState struct {
-	ProjectID string `json:"project_id"`
-	OwnerUID  int    `json:"owner_uid"`
-	Blocking  bool   `json:"blocking"`
 }
 
 type setupSelection struct {
@@ -282,10 +274,7 @@ func setupAddresses(selection setupSelection) []string {
 			addresses = append(addresses, node.Address)
 		}
 	}
-	if status, err := (lease.Store{}).Inspect(); err == nil && status.Active {
-		return nil
-	}
-	return addresses
+	return withoutRecordedAddresses(addresses)
 }
 
 func inspectSetupNetwork(ctx context.Context, selection setupSelection, runner execx.Runner) (netpreflight.Report, error) {
@@ -407,25 +396,6 @@ func setupFindingError(report netpreflight.Report) error {
 		lines = append(lines, "private network is not ready")
 	}
 	return errors.New(strings.Join(lines, "\n"))
-}
-
-func inspectSetupLease(cwd string) (*setupLeaseState, error) {
-	status, err := (lease.Store{}).Inspect()
-	if err != nil {
-		return nil, err
-	}
-	if !status.Active || status.Lease == nil {
-		return nil, nil
-	}
-	state := &setupLeaseState{ProjectID: status.Lease.ProjectID, OwnerUID: status.Lease.OwnerUID, Blocking: true}
-	if status.Lease.ProjectID == identity.DeploymentID && status.Lease.OwnerUID == os.Getuid() {
-		state.Blocking = false
-	}
-	return state, nil
-}
-
-func setupLeaseResolution(state *setupLeaseState) string {
-	return fmt.Sprintf("private network is held by project %s (owner UID %d); stop it with `farrow stop`, then rerun setup", state.ProjectID, state.OwnerUID)
 }
 
 func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) error {
@@ -950,9 +920,6 @@ func emitSetupResult(result setupResult, stdout, stderr io.Writer) int {
 		status = "plan"
 	}
 	textField(stdout, 14, "status", statusValue(stdout, status))
-	if result.Lease != nil {
-		textField(stdout, 14, "lease", fmt.Sprintf("project %s (owner UID %d)", result.Lease.ProjectID, result.Lease.OwnerUID))
-	}
 	if result.Resolution != "" {
 		textField(stdout, 14, "resolution", strings.ReplaceAll(result.Resolution, "\n", "; "))
 	}
@@ -1107,30 +1074,16 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		result.Network = networkReport
 		result.NetworkMode = networkMode
 	}
-	var leaseState *setupLeaseState
-	if private {
-		leaseState, err = inspectSetupLease(cwd)
-		if err != nil {
-			return failSetup(&result, exitIntegrity, fmt.Errorf("inspect private lease: %w", err), stdout, stderr)
-		}
-	}
 	printSetupPlan(stderr, dependencyPlan, selection, networkReport, options.DryRun)
 	result.Config = selection.ConfigPath
 	result.Dependencies = dependencyPlan
 	result.Network = networkReport
 	result.NetworkMode = networkMode
-	result.Lease = leaseState
 	if private && selection.Resolved.Private != nil {
 		result.NetworkCIDR = selection.Resolved.Private.CIDR
 	}
 	blockerCode := exitOK
-	if leaseState != nil && (leaseState.Blocking || (networkReport != nil && (!networkReport.Ready || setupNeedsNetworkInstall(*networkReport)))) {
-		result.Blocked = true
-		result.Resolution = setupLeaseResolution(leaseState)
-		result.Next = "farrow list --json"
-		result.NextArgv = []string{"farrow", "list", "--json"}
-		blockerCode = exitLease
-	} else if networkReport != nil && !networkReport.Ready {
+	if networkReport != nil && !networkReport.Ready {
 		result.Blocked = true
 		result.Resolution = setupFindingError(*networkReport).Error()
 		result.Next = "resolve the reported network conflict, then rerun farrow setup"
@@ -1219,18 +1172,6 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		if selection.Resolved.Private != nil {
 			result.NetworkCIDR = selection.Resolved.Private.CIDR
 		}
-		leaseStatus, leaseErr := inspectSetupLease(cwd)
-		if leaseErr != nil {
-			return failSetup(&result, exitIntegrity, fmt.Errorf("inspect private lease: %w", leaseErr), stdout, stderr)
-		}
-		if leaseStatus != nil && (leaseStatus.Blocking || !report.Ready || setupNeedsNetworkInstall(report)) {
-			result.Blocked = true
-			result.Lease = leaseStatus
-			result.Resolution = setupLeaseResolution(leaseStatus)
-			result.Next = "farrow list --json"
-			result.NextArgv = []string{"farrow", "list", "--json"}
-			return failSetup(&result, exitLease, errors.New(result.Resolution), stdout, stderr)
-		}
 		if !report.Ready {
 			failure := setupFindingError(report)
 			code := report.ExitCode
@@ -1248,7 +1189,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 			result.MutationUncertain = result.MutationUncertain || uncertain
 			result.Steps = append(result.Steps, setupStep{Name: "network", Status: "failed"})
 			if errors.Is(installErr, darwinnet.ErrVMNetSharingBusy) {
-				return failSetup(&result, exitLease, installErr, stdout, stderr)
+				return failSetup(&result, exitConflict, installErr, stdout, stderr)
 			}
 			return failSetup(&result, exitIntegrity, installErr, stdout, stderr)
 		}

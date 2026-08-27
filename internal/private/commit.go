@@ -184,12 +184,7 @@ func CommitPrepared(ctx context.Context, projectValue Deployment, config Prepare
 	return result, nil
 }
 
-type LeaseCommitVerifier func(state.NodeState) error
-
-func FinalizePrepared(projectValue Deployment, node string, verifyLease LeaseCommitVerifier) error {
-	if verifyLease == nil {
-		return errors.New("private prepare finalization requires lease verification")
-	}
+func FinalizePrepared(projectValue Deployment, node string) error {
 	nodeDir, err := projectValue.NodeDir(node)
 	if err != nil {
 		return err
@@ -208,9 +203,6 @@ func FinalizePrepared(projectValue Deployment, node string, verifyLease LeaseCom
 	}
 	if nodeState.VMUUID != journal.VMUUID || nodeState.SpecHash != journal.SpecHash || !reflect.DeepEqual(nodeState.Invocation, journal.Invocation) {
 		return errors.New("private prepare journal and node state differ")
-	}
-	if err := verifyLease(nodeState); err != nil {
-		return err
 	}
 	info, err := os.Lstat(journalPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {

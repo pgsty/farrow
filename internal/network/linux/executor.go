@@ -13,7 +13,6 @@ import (
 
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/identity"
-	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/network/subnet"
 	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/process"
@@ -22,6 +21,9 @@ import (
 )
 
 type Executor struct {
+	// InUse, when set, refuses uninstall while the deployment still has
+	// live or recorded VMs.
+	InUse         func(context.Context) error
 	User          execx.Runner
 	Root          execx.Runner
 	LookPath      func(string) (string, error)
@@ -360,11 +362,7 @@ func (e Executor) currentUninstallFacts(ctx context.Context, manifest Manifest) 
 			members = append(members, line)
 		}
 	}
-	status, err := (lease.Store{}).Inspect()
-	if err != nil {
-		return UninstallFacts{}, err
-	}
-	return UninstallFacts{LeaseActive: status.Active, BridgeMembers: members, CurrentFiles: currentFiles, CurrentHelper: currentHelper, CurrentOverride: facts.Helper.Override}, nil
+	return UninstallFacts{BridgeMembers: members, CurrentFiles: currentFiles, CurrentHelper: currentHelper, CurrentOverride: facts.Helper.Override}, nil
 }
 
 func (e Executor) PlanUninstall(ctx context.Context) (UninstallPlan, Manifest, error) {
@@ -401,12 +399,12 @@ func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, e
 	if !apply {
 		return report, nil
 	}
-	releaseGuard, err := (lease.Store{}).Guard(ctx)
-	if err != nil {
-		return report, err
+	if e.InUse != nil {
+		if err := e.InUse(ctx); err != nil {
+			return report, fmt.Errorf("refuse linux network uninstall: %w", err)
+		}
 	}
-	defer releaseGuard()
-	// Re-run all ownership/lease/member/hash checks while the global flock is held.
+	// Re-run all ownership/member/hash checks immediately before mutation.
 	uninstallFacts, err := e.currentUninstallFacts(ctx, manifest)
 	if err != nil {
 		return report, err

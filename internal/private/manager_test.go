@@ -12,7 +12,6 @@ import (
 
 	"github.com/pgsty/farrow/internal/config"
 	"github.com/pgsty/farrow/internal/execx"
-	"github.com/pgsty/farrow/internal/lease"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/spec"
@@ -53,7 +52,6 @@ func planFixtureManager(t *testing.T) Manager {
 		t.Fatal(err)
 	}
 	return Manager{
-		LeaseStore:    &lease.Store{Root: testLeaseRoot(t), OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid(), StaleAfter: -1},
 		NativeProfile: func() (platform.Profile, error) { return profile, nil },
 		DialSSHAddress: func(string, string) (net.Conn, error) {
 			return nil, errors.New("fixture address unused")
@@ -186,7 +184,6 @@ func TestRestartAndRecreatePreflightBeforeLifecycleMutation(t *testing.T) {
 			}
 			preflightCalls := 0
 			manager := Manager{
-				LeaseStore:    &lease.Store{Root: testLeaseRoot(t), OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid(), StaleAfter: -1},
 				NativeProfile: func() (platform.Profile, error) { return profile, nil },
 				NetworkPreflight: func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report {
 					preflightCalls++
@@ -270,7 +267,7 @@ func privateShareCapabilityManager(t *testing.T, fixture StartConfig, runner exe
 		t.Fatal(err)
 	}
 	return Manager{
-		LeaseStore: &fixture.LeaseStore, Runner: runner,
+		Runner:        runner,
 		NativeProfile: func() (platform.Profile, error) { return profile, nil },
 		NetworkPreflight: func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report {
 			return netpreflight.Report{Ready: true}
@@ -282,7 +279,7 @@ func privateShareCapabilityManager(t *testing.T, fixture StartConfig, runner exe
 	}
 }
 
-func assertPrivateShareCapabilityFailurePreservesState(t *testing.T, fixture StartConfig, beforeNode state.NodeState, beforeGeneration uint64, err error) {
+func assertPrivateShareCapabilityFailurePreservesState(t *testing.T, fixture StartConfig, beforeNode state.NodeState, err error) {
 	t.Helper()
 	var capability *CapabilityError
 	if !errors.As(err, &capability) {
@@ -296,10 +293,6 @@ func assertPrivateShareCapabilityFailurePreservesState(t *testing.T, fixture Sta
 	if _, readErr := store.ReadDeployment(); readErr != nil {
 		t.Fatalf("deployment state disappeared after failed share preflight: %v", readErr)
 	}
-	afterLease, readErr := fixture.LeaseStore.Read()
-	if readErr != nil || afterLease.Generation != beforeGeneration {
-		t.Fatalf("lease mutated after failed share preflight: generation=%d err=%v", afterLease.Generation, readErr)
-	}
 }
 
 func TestPrivateRestartShareCapabilityPrecedesStop(t *testing.T) {
@@ -311,13 +304,9 @@ func TestPrivateRestartShareCapabilityPrecedesStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeLease, err := fixture.LeaseStore.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
 	runner := &rejectingPrivateShareRunner{}
 	_, err = privateShareCapabilityManager(t, fixture, runner).Restart(context.Background())
-	assertPrivateShareCapabilityFailurePreservesState(t, fixture, beforeNode, beforeLease.Generation, err)
+	assertPrivateShareCapabilityFailurePreservesState(t, fixture, beforeNode, err)
 	if len(runner.binaries) != 1 || runner.binaries[0] != beforeNode.Invocation.Binary {
 		t.Fatalf("share probes=%v, want persisted binary %q", runner.binaries, beforeNode.Invocation.Binary)
 	}
@@ -355,13 +344,9 @@ func TestPrivateRecreateShareCapabilityPrecedesDestroy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			beforeLease, err := fixture.LeaseStore.Read()
-			if err != nil {
-				t.Fatal(err)
-			}
 			runner := &rejectingPrivateShareRunner{}
 			_, err = privateShareCapabilityManager(t, fixture, runner).RecreateResolved(context.Background(), requested)
-			assertPrivateShareCapabilityFailurePreservesState(t, fixture, beforeNode, beforeLease.Generation, err)
+			assertPrivateShareCapabilityFailurePreservesState(t, fixture, beforeNode, err)
 			wantBinary := test.wantBinary
 			if wantBinary == "" {
 				wantBinary = beforeNode.Invocation.Binary

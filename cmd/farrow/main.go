@@ -24,7 +24,6 @@ import (
 	"github.com/pgsty/farrow/internal/hostconfig"
 	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/image"
-	"github.com/pgsty/farrow/internal/lease"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	linuxnet "github.com/pgsty/farrow/internal/network/linux"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
@@ -47,7 +46,6 @@ const (
 	exitCapability = 3
 	exitConflict   = 4
 	exitPartial    = 5
-	exitLease      = 6
 	exitIntegrity  = 7
 )
 
@@ -247,9 +245,7 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 				addresses = append(addresses, node.Address)
 			}
 		}
-		if leaseStatus, leaseErr := (lease.Store{}).Inspect(); leaseErr == nil && leaseStatus.Active {
-			addresses = nil
-		}
+		addresses = withoutRecordedAddresses(addresses)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		debugf(stderr, "network preflight cidr=%s addresses=%d", layout.CIDR(), len(addresses))
@@ -305,10 +301,7 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		if command == "install" {
-			addresses := layout.StaticAddresses()
-			if leaseStatus, leaseErr := (lease.Store{}).Inspect(); leaseErr == nil && leaseStatus.Active {
-				addresses = nil
-			}
+			addresses := withoutRecordedAddresses(layout.StaticAddresses())
 			preflightProgress := startProgress(ctx, stderr, "Validating the private network plan")
 			preflightReport := netpreflight.Run(ctx, netpreflight.Request{OS: runtime.GOOS, Arch: runtime.GOARCH, Purpose: netpreflight.Install, Layout: layout, Addresses: addresses}, netpreflight.Probe{Runner: baseRunner})
 			preflightProgress.Stop(nil)
@@ -324,7 +317,7 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		if runtime.GOOS == "darwin" {
-			executor := darwinnet.Executor{User: baseRunner, Root: sudoRunner{base: baseRunner}}
+			executor := darwinnet.Executor{User: baseRunner, Root: sudoRunner{base: baseRunner}, InUse: deploymentInUse}
 			if command == "install" {
 				progressItem := startProgress(ctx, stderr, "Installing the Darwin private network")
 				report, err := installDarwinNetwork(ctx, executor, *archive, *interfaceID, runtime.GOARCH, *vmnetMode, layout.CIDR(), *apply)
@@ -332,7 +325,7 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 				if err != nil {
 					errorf(stderr, "%v", err)
 					if errors.Is(err, darwinnet.ErrVMNetSharingBusy) {
-						return exitLease
+						return exitConflict
 					}
 					return exitIntegrity
 				}
@@ -374,7 +367,7 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "--archive and --interface-id are Darwin-only")
 			return exitUsage
 		}
-		executor := linuxnet.Executor{User: baseRunner, Root: sudoRunner{base: baseRunner}}
+		executor := linuxnet.Executor{User: baseRunner, Root: sudoRunner{base: baseRunner}, InUse: deploymentInUse}
 		if command == "install" {
 			linuxConfig, configErr := linuxnet.ConfigForCIDR(layout.CIDR())
 			if configErr != nil {
@@ -476,19 +469,13 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
-	leaseStatus, err := (lease.Store{}).Inspect()
-	progressItem.Stop(err)
-	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitIntegrity
-	}
+	progressItem.Stop(nil)
 	result := struct {
 		OS        string              `json:"os"`
 		Arch      string              `json:"arch"`
 		Preflight netpreflight.Report `json:"preflight"`
 		Checks    []doctor.Check      `json:"checks,omitempty"`
-		Lease     lease.Status        `json:"lease"`
-	}{OS: doctorReport.OS, Arch: doctorReport.Arch, Preflight: preflightReport, Checks: checks, Lease: leaseStatus}
+	}{OS: doctorReport.OS, Arch: doctorReport.Arch, Preflight: preflightReport, Checks: checks}
 	if structuredOutput(stdout, *jsonOutput) {
 		if code := encodeJSON(stdout, stderr, result); code != exitOK {
 			return code
@@ -500,10 +487,6 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 		}
 		for _, check := range checks {
 			fmt.Fprintf(stdout, "[%s] %s: %s\n", check.Status, check.Name, check.Evidence)
-		}
-		fmt.Fprintf(stdout, "lease root: %s available=%t active=%t\n", leaseStatus.Root, leaseStatus.Available, leaseStatus.Active)
-		if leaseStatus.Lease != nil {
-			fmt.Fprintf(stdout, "lease project=%s owner_uid=%d generation=%d\n", leaseStatus.Lease.ProjectID, leaseStatus.Lease.OwnerUID, leaseStatus.Lease.Generation)
 		}
 	}
 	if hasError {
@@ -747,6 +730,64 @@ func purgeDeployment(ctx context.Context, stdout io.Writer) error {
 	}
 	fmt.Fprintln(stdout, "purged deployment keys and state; images remain cached")
 	return nil
+}
+
+// deploymentInUse refuses privileged network teardown while any recorded
+// node of the single deployment is provably (or ambiguously) live.
+func deploymentInUse(ctx context.Context) error {
+	root, err := state.ResolveDataRoot()
+	if err != nil {
+		return nil
+	}
+	store := state.Store{Root: root}
+	entries, err := os.ReadDir(filepath.Join(root, "nodes"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	audit := privatevm.RuntimeIdentityAuditor(execx.OSRunner{Timeout: 15 * time.Second, OutputLimit: 1 << 20}, time.Second)
+	for _, entry := range entries {
+		node, readErr := store.ReadNode(entry.Name())
+		if readErr != nil {
+			continue
+		}
+		observation, auditErr := audit(ctx, node)
+		if auditErr != nil {
+			return fmt.Errorf("node %s runtime audit is inconclusive (%v); stop the deployment first", entry.Name(), auditErr)
+		}
+		if observation.Live {
+			return fmt.Errorf("node %s is running; stop the deployment first", node.Node)
+		}
+	}
+	return nil
+}
+
+// withoutRecordedAddresses drops addresses that belong to this deployment's
+// own recorded nodes, so preflight does not report a running lab as a
+// conflict.
+func withoutRecordedAddresses(addresses []string) []string {
+	root, err := state.ResolveDataRoot()
+	if err != nil {
+		return addresses
+	}
+	deploymentState, err := (state.Store{Root: root}).ReadDeployment()
+	if err != nil {
+		return addresses
+	}
+	recorded := make(map[string]struct{}, len(deploymentState.Resolved.Nodes))
+	for _, node := range deploymentState.Resolved.Nodes {
+		recorded[node.Address] = struct{}{}
+	}
+	filtered := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if _, mine := recorded[address]; mine {
+			continue
+		}
+		filtered = append(filtered, address)
+	}
+	return filtered
 }
 
 func runProvision(args []string, stdout, stderr io.Writer) int {
@@ -1003,10 +1044,6 @@ func reportPrivateLifecycleError(err error, operationID string, jsonOutput bool,
 		}
 		errorf(stderr, "%v", partial)
 		return exitPartial
-	}
-	var leaseConflict *lease.ConflictError
-	if errors.As(err, &leaseConflict) {
-		return reportCommandFailure(stdout, stderr, jsonOutput, "lease_conflict", leaseConflict.Error(), operationID, exitLease)
 	}
 	var deleteErr *persistentDeleteError
 	if errors.As(err, &deleteErr) {
@@ -1523,50 +1560,6 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return exitOK
-}
-
-func runRepair(args []string, stdout, stderr io.Writer) int {
-	flags := newCommandFlagSet("repair", stderr)
-	dryRun := flags.Bool("dry-run", false, "show actions without applying them")
-	force := flags.Bool("force", false, "apply the displayed ownership-bounded actions")
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	if err := flags.Parse(args); err != nil {
-		return exitUsage
-	}
-	nodes := flags.Args()
-	if *dryRun && *force {
-		fmt.Fprintln(stderr, "--dry-run conflicts with --force")
-		return exitUsage
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	if resolved, resolveErr := currentProjectResolved(); resolveErr == nil && resolved.Network == "private" {
-		progressItem := startProgress(ctx, stderr, "Inspecting and repairing the private project")
-		report, err := (privatevm.Manager{FarrowVersion: version.Version, Nodes: append([]string(nil), nodes...)}).Repair(ctx, *force)
-		progressItem.Stop(err)
-		if structuredOutput(stdout, *jsonOutput) {
-			if code := encodeJSON(stdout, stderr, report); code != exitOK {
-				return code
-			}
-		} else if len(report.Actions) == 0 {
-			fmt.Fprintln(stdout, "private project needs no repair")
-		} else {
-			for _, action := range report.Actions {
-				verb := "would"
-				if action.Applied {
-					verb = "applied"
-				}
-				fmt.Fprintf(stdout, "%s %s node=%s path=%s: %s\n", verb, action.Kind, action.Node, action.Path, action.Reason)
-			}
-		}
-		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitIntegrity
-		}
-		return exitOK
-	}
-	errorf(stderr, "no deployment state found; run `farrow up` first")
-	return exitConflict
 }
 
 func runValidate(args []string, stdout, stderr io.Writer) int {

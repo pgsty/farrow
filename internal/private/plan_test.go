@@ -1,11 +1,8 @@
 package private
 
 import (
-	"reflect"
 	"testing"
 
-	"github.com/pgsty/farrow/internal/identity"
-	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/spec"
 )
 
@@ -22,10 +19,9 @@ func privateResolved() spec.Resolved {
 
 func TestBuildPrivateIntentDeterministicAndShort(t *testing.T) {
 	t.Parallel()
-	projectID, _ := identity.NewUUID()
 	uuids := []string{"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"}
 	index := 0
-	plan, err := Build(privateResolved(), projectID, 501, nil, func() (string, error) {
+	plan, err := Build(privateResolved(), 501, nil, func() (string, error) {
 		value := uuids[index]
 		index++
 		return value, nil
@@ -33,7 +29,7 @@ func TestBuildPrivateIntentDeterministicAndShort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Control != "meta" || len(plan.Nodes) != 2 || len(plan.Lease.Nodes) != 2 {
+	if plan.Control != "meta" || len(plan.Nodes) != 2 {
 		t.Fatalf("private plan = %#v", plan)
 	}
 	for _, node := range plan.Nodes {
@@ -41,10 +37,10 @@ func TestBuildPrivateIntentDeterministicAndShort(t *testing.T) {
 			t.Fatalf("node intent = %#v", node)
 		}
 	}
-	if plan.Lease.Nodes[0].Name != "meta" || plan.Lease.Nodes[1].Name != "node-1" {
-		t.Fatalf("lease nodes are not canonical: %#v", plan.Lease.Nodes)
+	if plan.Nodes[0].Name != "meta" || plan.Nodes[1].Name != "node-1" {
+		t.Fatalf("plan nodes are not canonical: %#v", plan.Nodes)
 	}
-	second, err := Build(privateResolved(), projectID, 501, nil, func() (string, error) {
+	second, err := Build(privateResolved(), 501, nil, func() (string, error) {
 		index--
 		return uuids[index], nil
 	})
@@ -56,40 +52,40 @@ func TestBuildPrivateIntentDeterministicAndShort(t *testing.T) {
 	}
 }
 
-func TestBuildPrivateIntentReusesLeaseUUIDs(t *testing.T) {
+func TestBuildPrivateIntentReusesKnownUUIDs(t *testing.T) {
 	t.Parallel()
-	projectID, _ := identity.NewUUID()
-	first, err := Build(privateResolved(), projectID, 501, nil, nil)
+	first, err := Build(privateResolved(), 501, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	existing := first.Lease
-	existing.Schema = lease.Schema
-	existing.Generation = 1
-	existing.OwnerUID = 501
-	second, err := Build(privateResolved(), projectID, 501, &existing, func() (string, error) {
-		t.Fatal("UUID source called during lease reentry")
+	known := make(map[string]string, len(first.Nodes))
+	for _, node := range first.Nodes {
+		known[node.Name] = node.VMUUID
+	}
+	second, err := Build(privateResolved(), 501, known, func() (string, error) {
+		t.Fatal("UUID source called during known-UUID reentry")
 		return "", nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(first.Lease.Nodes, second.Lease.Nodes) {
-		t.Fatalf("reentered UUIDs changed: %#v %#v", first.Lease.Nodes, second.Lease.Nodes)
+	for index, node := range first.Nodes {
+		if second.Nodes[index].Name != node.Name || second.Nodes[index].VMUUID != node.VMUUID {
+			t.Fatalf("reentered UUIDs changed: %#v %#v", first.Nodes, second.Nodes)
+		}
 	}
 }
 
 func TestBuildPrivateIntentRejectsInvalidControlAndDuplicateAddress(t *testing.T) {
 	t.Parallel()
-	projectID, _ := identity.NewUUID()
 	resolved := privateResolved()
 	resolved.Nodes[0].Control = false
-	if _, err := Build(resolved, projectID, 501, nil, nil); err == nil {
+	if _, err := Build(resolved, 501, nil, nil); err == nil {
 		t.Fatal("private plan without control was accepted")
 	}
 	resolved = privateResolved()
 	resolved.Nodes[1].Address = resolved.Nodes[0].Address
-	if _, err := Build(resolved, projectID, 501, nil, nil); err == nil {
+	if _, err := Build(resolved, 501, nil, nil); err == nil {
 		t.Fatal("duplicate private address was accepted")
 	}
 }

@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgsty/farrow/internal/identity"
-	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/runtimepath"
 	"github.com/pgsty/farrow/internal/state"
@@ -27,14 +25,11 @@ func (l NativeLifecycle) Stop(ctx context.Context, node state.NodeState, timeout
 
 type StopConfig struct {
 	Project        Deployment
-	LeaseStore     lease.Store
 	Lifecycle      StopLifecycle
 	Nodes          []string
 	Concurrency    int
 	GuestTimeout   time.Duration
 	CleanupRuntime func(state.NodeState) error
-	ReleaseLease   bool
-	Auditor        lease.RuntimeAuditor
 	Now            func() time.Time
 }
 
@@ -112,9 +107,9 @@ func loadStoppableNodes(store state.Store, names []string) ([]state.NodeState, e
 	return result, nil
 }
 
-func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, *lease.Lease, error) {
+func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, error) {
 	if config.Project.Root == "" || config.Lifecycle == nil {
-		return nil, nil, errors.New("private stop project or lifecycle is incomplete")
+		return nil, errors.New("private stop project or lifecycle is incomplete")
 	}
 	if config.Concurrency <= 0 {
 		config.Concurrency = 4
@@ -131,7 +126,7 @@ func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, *lease.
 	store := state.Store{Root: config.Project.Root}
 	nodes, err := loadStoppableNodes(store, config.Nodes)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	hasRunning := false
 	for index := range nodes {
@@ -145,23 +140,14 @@ func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, *lease.
 		}
 	}
 	if !hasRunning {
-		leaseStatus, err := config.LeaseStore.Inspect()
-		if err != nil {
-			return nil, nil, err
+		outcomes := make([]StopOutcome, len(nodes))
+		for index, node := range nodes {
+			outcomes[index] = StopOutcome{Node: node.Node, Stopped: true}
 		}
-		if !leaseStatus.Active {
-			outcomes := make([]StopOutcome, len(nodes))
-			for index, node := range nodes {
-				outcomes[index] = StopOutcome{Node: node.Node, Stopped: true}
-			}
-			return outcomes, nil, nil
-		}
+		return outcomes, nil
 	}
 	if err := writeNodes(store, nodes); err != nil {
-		return nil, nil, err
-	}
-	if _, err := synchronizeLeaseStore(ctx, config.LeaseStore, nodes); err != nil {
-		return nil, nil, fmt.Errorf("mirror stopping nodes into private lease: %w", err)
+		return nil, err
 	}
 	outcomes := make([]StopOutcome, len(nodes))
 	for index, node := range nodes {
@@ -205,31 +191,5 @@ func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, *lease.
 	}
 	close(jobs)
 	wait.Wait()
-	for index := range nodes {
-		persisted, readErr := store.ReadNode(nodes[index].Node)
-		if readErr != nil {
-			return outcomes, nil, readErr
-		}
-		nodes[index] = persisted
-	}
-	finalLease, err := synchronizeLeaseStore(ctx, config.LeaseStore, nodes)
-	if err != nil {
-		return outcomes, nil, fmt.Errorf("mirror final stop states into private lease: %w", err)
-	}
-	if config.ReleaseLease {
-		allStopped := true
-		for _, outcome := range outcomes {
-			if !outcome.Stopped {
-				allStopped = false
-				break
-			}
-		}
-		if allStopped {
-			if _, err := config.LeaseStore.Release(ctx, identity.DeploymentID, true, config.Auditor); err != nil {
-				return outcomes, &finalLease, err
-			}
-			return outcomes, nil, nil
-		}
-	}
-	return outcomes, &finalLease, nil
+	return outcomes, nil
 }

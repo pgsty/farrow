@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/runtimepath"
 	"github.com/pgsty/farrow/internal/spec"
@@ -101,7 +100,6 @@ func (l NativeLifecycle) WaitReady(ctx context.Context, node state.NodeState, ti
 
 type StartConfig struct {
 	Project      Deployment
-	LeaseStore   lease.Store
 	Lifecycle    NodeLifecycle
 	Nodes        []string
 	Concurrency  int
@@ -178,25 +176,9 @@ func writeNodes(store state.Store, nodes []state.NodeState) error {
 	return nil
 }
 
-func synchronizeLeaseStore(ctx context.Context, store lease.Store, nodes []state.NodeState) (lease.Lease, error) {
-	active, err := store.Read()
-	if err != nil {
-		return lease.Lease{}, err
-	}
-	desired, err := SynchronizeLease(active, nodes)
-	if err != nil {
-		return lease.Lease{}, err
-	}
-	updated, err := store.Update(ctx, desired)
-	if err != nil {
-		return lease.Lease{}, err
-	}
-	return updated.Lease, nil
-}
-
-func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, lease.Lease, error) {
+func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, error) {
 	if config.Project.Root == "" || config.Lifecycle == nil {
-		return nil, lease.Lease{}, errors.New("private start project or lifecycle is incomplete")
+		return nil, errors.New("private start project or lifecycle is incomplete")
 	}
 	if config.Concurrency <= 0 {
 		config.Concurrency = 4
@@ -213,7 +195,7 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, lea
 	store := state.Store{Root: config.Project.Root}
 	nodes, err := loadNodes(store, config.Nodes)
 	if err != nil {
-		return nil, lease.Lease{}, err
+		return nil, err
 	}
 	preflight, hasPreflight := config.Lifecycle.(interface {
 		PreflightStart(state.NodeState) error
@@ -221,12 +203,12 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, lea
 	for _, node := range nodes {
 		if hasPreflight {
 			if err := preflight.PreflightStart(node); err != nil {
-				return nil, lease.Lease{}, fmt.Errorf("preflight private node %s before start: %w", node.Node, err)
+				return nil, fmt.Errorf("preflight private node %s before start: %w", node.Node, err)
 			}
 			continue
 		}
 		if len(node.Invocation.ShareFiles()) != 0 {
-			return nil, lease.Lease{}, fmt.Errorf("private node %s lifecycle cannot preflight host shares", node.Node)
+			return nil, fmt.Errorf("private node %s lifecycle cannot preflight host shares", node.Node)
 		}
 	}
 	for index := range nodes {
@@ -234,13 +216,8 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, lea
 		nodes[index].UpdatedAt = config.now()
 	}
 	if err := writeNodes(store, nodes); err != nil {
-		return nil, lease.Lease{}, err
+		return nil, err
 	}
-	startingLease, err := synchronizeLeaseStore(ctx, config.LeaseStore, nodes)
-	if err != nil {
-		return nil, lease.Lease{}, fmt.Errorf("mirror starting nodes into private lease: %w", err)
-	}
-	_ = startingLease
 	outcomes := make([]StartOutcome, len(nodes))
 	jobs := make(chan int)
 	var wait sync.WaitGroup
@@ -286,16 +263,5 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, lea
 	}
 	close(jobs)
 	wait.Wait()
-	for index := range nodes {
-		persisted, readErr := store.ReadNode(nodes[index].Node)
-		if readErr != nil {
-			return outcomes, lease.Lease{}, readErr
-		}
-		nodes[index] = persisted
-	}
-	finalLease, err := synchronizeLeaseStore(ctx, config.LeaseStore, nodes)
-	if err != nil {
-		return outcomes, lease.Lease{}, fmt.Errorf("mirror final node states into private lease: %w", err)
-	}
-	return outcomes, finalLease, nil
+	return outcomes, nil
 }

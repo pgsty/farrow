@@ -24,7 +24,7 @@ func TestPrivateSSHConfigInstallContainsEveryNodeAndAddress(t *testing.T) {
 		}
 	}
 	home := t.TempDir()
-	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{FarrowVersion: "test"}
 	standalone, err := manager.SSHConfig(context.Background())
 	if err != nil || !strings.Contains(standalone, "Host meta 10.10.10.10 admin.example") {
 		t.Fatalf("standalone SSH config=%q err=%v", standalone, err)
@@ -64,7 +64,7 @@ func TestPrivateSSHConfigInstallContainsEveryNodeAndAddress(t *testing.T) {
 func TestPrivateHostEntriesIncludeDeclaredAliases(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
 	t.Setenv("FARROW_HOME", startConfig.Project.Root)
-	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{FarrowVersion: "test"}
 	entries, err := manager.HostEntries(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestPrivateSSHConfigRejectsSymlinkedKeysDirectory(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(startConfig.Project.Root, "keys")); err != nil {
 		t.Fatal(err)
 	}
-	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{FarrowVersion: "test"}
 	if _, err := manager.InstallSSHConfig(context.Background(), "lab", t.TempDir()); err == nil {
 		t.Fatal("symlinked deployment keys directory was accepted")
 	}
@@ -107,7 +107,7 @@ func TestConnectionsLockedRequiresAndReusesExclusiveDeploymentLock(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	manager := Manager{FarrowVersion: "test", LeaseStore: &startConfig.LeaseStore}
+	manager := Manager{FarrowVersion: "test"}
 	if _, err := manager.ConnectionsLocked(context.Background(), startConfig.Project, nil); err == nil || !strings.Contains(err.Error(), "exclusive deployment lock") {
 		t.Fatalf("missing token error = %v", err)
 	}

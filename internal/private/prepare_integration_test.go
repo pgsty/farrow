@@ -12,7 +12,6 @@ import (
 	"github.com/pgsty/farrow/internal/cloudinit"
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/execx"
-	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/spec"
 )
@@ -51,8 +50,7 @@ func TestIntegrationRealPrivateOfflinePrepare(t *testing.T) {
 		resolved.Nodes[index].RootDisk = 8 * spec.GiB
 	}
 	resolved.Nodes[0].Disks = []spec.Disk{{Name: "data", Size: 4 * spec.GiB, Mount: "/data", Filesystem: "ext4"}}
-	projectID, _ := identity.NewUUID()
-	plan, err := Build(resolved, projectID, os.Getuid(), nil, nil)
+	plan, err := Build(resolved, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,5 +102,5 @@ func TestIntegrationRealPrivateOfflinePrepare(t *testing.T) {
 			t.Fatalf("offline real prepare created runtime %s: %v", outcome.Node, err)
 		}
 	}
-	t.Logf("retained private prepare project=%s output=%s", projectID, filepath.Clean(output))
+	t.Logf("retained private prepare output=%s", filepath.Clean(output))
 }

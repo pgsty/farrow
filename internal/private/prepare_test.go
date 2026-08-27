@@ -12,7 +12,6 @@ import (
 
 	"github.com/pgsty/farrow/internal/cloudinit"
 	"github.com/pgsty/farrow/internal/disk"
-	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/spec"
 )
@@ -76,8 +75,7 @@ func privatePrepareConfig(t *testing.T, root string, disks DiskOps) PrepareConfi
 	resolved.Nodes[0].RootDisk = 8 * spec.GiB
 	resolved.Nodes[1].RootDisk = 8 * spec.GiB
 	resolved.Nodes[0].Disks = []spec.Disk{{Name: "data", Size: 4 * spec.GiB, Mount: "/data", Filesystem: "ext4"}}
-	projectID, _ := identity.NewUUID()
-	plan, err := Build(resolved, projectID, os.Getuid(), nil, nil)
+	plan, err := Build(resolved, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/user"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -19,11 +18,13 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/execx"
-	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/network/subnet"
 )
 
 type Executor struct {
+	// InUse, when set, refuses uninstall while the deployment still has
+	// live or recorded VMs.
+	InUse         func(context.Context) error
 	User          execx.Runner
 	Root          execx.Runner
 	StagingParent string
@@ -157,7 +158,6 @@ func (e Executor) readInstalled(ctx context.Context) (InstallPlan, bool, error) 
 		{InterfaceStatePath, "root", "wheel", "600", "Regular File"},
 		{InterfaceMarkerDir, "root", "wheel", "755", "Directory"},
 		{InterfaceMarkerPath, "root", "wheel", "644", "Regular File"},
-		{LeaseRoot, "root", "wheel", "1777", "Directory"},
 	} {
 		if err := e.rootStat(ctx, target.path, target.owner, target.group, target.mode, target.kind); err != nil {
 			return InstallPlan{}, false, err
@@ -480,14 +480,10 @@ func (e Executor) install(ctx context.Context, origin installOrigin, interfaceID
 	}
 	plistSource := filepath.Join(staging, "launchd.plist")
 	stateSource := filepath.Join(staging, "network.json")
-	lockSource := filepath.Join(staging, "private-lease.lock")
 	if err := os.WriteFile(plistSource, plist, 0o600); err != nil {
 		return report, err
 	}
 	if err := os.WriteFile(stateSource, state, 0o600); err != nil {
-		return report, err
-	}
-	if err := os.WriteFile(lockSource, nil, 0o600); err != nil {
 		return report, err
 	}
 	createdDirs := make([]string, 0, 6)
@@ -507,7 +503,7 @@ func (e Executor) install(ctx context.Context, origin installOrigin, interfaceID
 	}()
 	for _, directory := range []struct{ path, mode string }{
 		{InstallRoot, "0755"}, {filepath.Join(InstallRoot, "libexec"), "0755"},
-		{StateDir, "0700"}, {InterfaceMarkerDir, "0755"}, {LogDir, "0755"}, {LeaseRoot, "1777"},
+		{StateDir, "0700"}, {InterfaceMarkerDir, "0755"}, {LogDir, "0755"},
 	} {
 		_, statErr := os.Lstat(directory.path)
 		wasMissing := errors.Is(statErr, os.ErrNotExist)
@@ -528,7 +524,6 @@ func (e Executor) install(ctx context.Context, origin installOrigin, interfaceID
 		{filepath.Join(staging, "socket_vmnet"), DaemonPath, "0755"},
 		{filepath.Join(staging, "socket_vmnet_client"), ClientPath, "0755"},
 		{plistSource, PlistPath, "0644"}, {stateSource, StatePath, "0600"},
-		{lockSource, filepath.Join(LeaseRoot, "private-lease.lock"), "0666"},
 	} {
 		if _, err := e.Root.Run(ctx, "/usr/bin/install", "-o", "root", "-g", "wheel", "-m", file.mode, file.source, file.target); err != nil {
 			return report, err
@@ -599,7 +594,6 @@ func (e Executor) rollbackFreshInstall(ctx context.Context, bootstrapped bool, c
 	for _, path := range []string{
 		SocketPath, PIDPath, DaemonPath, ClientPath, PlistPath, StatePath, InterfaceStatePath,
 		InterfaceMarkerPath, filepath.Join(LogDir, "stdout.log"), filepath.Join(LogDir, "stderr.log"),
-		filepath.Join(LeaseRoot, "private-lease.lock"),
 	} {
 		if _, err := e.Root.Run(ctx, "/bin/rm", "-f", path); err != nil {
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("remove %s: %w", path, err))
@@ -656,14 +650,21 @@ func (e Executor) PlanUninstall(ctx context.Context) (UninstallReport, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return UninstallReport{}, err
 	}
-	for directory, allowed := range map[string]map[string]struct{}{
+	residueChecks := map[string]map[string]struct{}{
 		InstallRoot:                           {"libexec": {}},
 		filepath.Join(InstallRoot, "libexec"): {"socket_vmnet": {}, "socket_vmnet_client": {}, "farrow-hosts-helper": {}},
 		StateDir:                              {"network.json": {}, "network-interface.json": {}},
 		InterfaceMarkerDir:                    {"network-interface.json": {}},
 		LogDir:                                {"stdout.log": {}, "stderr.log": {}},
-		LeaseRoot:                             {"private-lease.lock": {}},
-	} {
+	}
+	// A pre-simplification install still holds the retired lease directory;
+	// keep removing it when present.
+	leaseRootPresent := false
+	if _, err := os.Lstat(LeaseRoot); err == nil {
+		leaseRootPresent = true
+		residueChecks[LeaseRoot] = map[string]struct{}{"private-lease.lock": {}}
+	}
+	for directory, allowed := range residueChecks {
 		entries, err := e.listRootDir(ctx, directory)
 		if err != nil {
 			return UninstallReport{}, err
@@ -679,24 +680,15 @@ func (e Executor) PlanUninstall(ctx context.Context) (UninstallReport, error) {
 			return UninstallReport{}, err
 		}
 	}
-	currentUser, err := user.Current()
-	if err != nil {
-		return UninstallReport{}, err
-	}
-	lockStat, err := e.Root.Run(ctx, "/usr/bin/stat", "-f", "%Su:%Sg:%Lp:%HT", filepath.Join(LeaseRoot, "private-lease.lock"))
-	if err != nil {
-		return UninstallReport{}, err
-	}
-	lockParts := strings.Split(strings.TrimSpace(string(lockStat.Stdout)), ":")
-	if len(lockParts) != 4 || (lockParts[0] != "root" && lockParts[0] != currentUser.Username) || lockParts[1] != "wheel" || lockParts[2] != "666" || lockParts[3] != "Regular File" {
-		return UninstallReport{}, errors.New("darwin private lease lock metadata is unsafe")
-	}
 	files := []string{
 		DaemonPath, ClientPath, PlistPath, StatePath, InterfaceStatePath, InterfaceMarkerPath,
 		filepath.Join(LogDir, "stdout.log"), filepath.Join(LogDir, "stderr.log"),
-		filepath.Join(LeaseRoot, "private-lease.lock"),
 	}
-	dirs := []string{StateDir, InterfaceMarkerDir, LogDir, LeaseRoot}
+	dirs := []string{StateDir, InterfaceMarkerDir, LogDir}
+	if leaseRootPresent {
+		files = append(files, filepath.Join(LeaseRoot, "private-lease.lock"))
+		dirs = append(dirs, LeaseRoot)
+	}
 	if !hostsHelperPresent {
 		dirs = append([]string{filepath.Join(InstallRoot, "libexec"), InstallRoot}, dirs...)
 	}
@@ -718,14 +710,10 @@ func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, e
 	if err != nil || !apply {
 		return report, err
 	}
-	releaseGuard, err := (lease.Store{}).Guard(ctx)
-	if err != nil {
-		return report, err
-	}
-	defer releaseGuard()
-	status, err := (lease.Store{}).Inspect()
-	if err != nil || status.Active {
-		return report, errors.New("refuse darwin network uninstall while a private lease is active")
+	if e.InUse != nil {
+		if err := e.InUse(ctx); err != nil {
+			return report, fmt.Errorf("refuse darwin network uninstall: %w", err)
+		}
 	}
 	if _, err := e.PlanUninstall(ctx); err != nil {
 		return report, err

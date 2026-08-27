@@ -1,0 +1,104 @@
+package private
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/process"
+	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/state"
+)
+
+// Observation is one liveness verdict about a node's recorded runtime.
+type Observation struct {
+	Node      string `json:"node"`
+	Live      bool   `json:"live"`
+	Authority string `json:"authority"`
+	Evidence  string `json:"evidence"`
+}
+
+// RuntimeAuditor proves whether a node's recorded runtime is live or dead.
+// Ambiguity is an error, never a guess.
+type RuntimeAuditor func(context.Context, state.NodeState) (Observation, error)
+
+func completeProcess(value state.ProcessIdentity) bool {
+	return value.PID > 0 && value.Executable != "" && value.Started != "" && value.ArgvHash != ""
+}
+
+// RuntimeIdentityAuditor audits by authority order: matching QMP name+UUID,
+// then the full process identity tuple, then the pidfile. A live-but-unproven
+// runtime is an error.
+func RuntimeIdentityAuditor(runner execx.Runner, timeout time.Duration) RuntimeAuditor {
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	return func(ctx context.Context, node state.NodeState) (Observation, error) {
+		if runner == nil {
+			return Observation{}, errors.New("runtime identity auditor requires a command runner")
+		}
+		if node.Runtime.QMP == "" {
+			return Observation{Node: node.Node, Authority: "dead", Evidence: "node has no runtime paths"}, nil
+		}
+		qmpExists := false
+		if info, err := os.Lstat(node.Runtime.QMP); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 {
+				return Observation{}, fmt.Errorf("node %s QMP path is not an owned Unix socket", node.Node)
+			}
+			qmpExists = true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Observation{}, err
+		}
+		if qmpExists {
+			client := &qmp.Client{Timeout: timeout}
+			actualName, nameErr := client.QueryName(ctx, node.Runtime.QMP)
+			if nameErr == nil {
+				actualUUID, uuidErr := client.QueryUUID(ctx, node.Runtime.QMP)
+				if uuidErr != nil {
+					return Observation{}, fmt.Errorf("node %s QMP name responded but UUID failed: %w", node.Node, uuidErr)
+				}
+				if actualName.Name != node.Node || !strings.EqualFold(actualUUID.UUID, node.VMUUID) {
+					return Observation{}, fmt.Errorf("node %s QMP identity mismatch: name=%q uuid=%q", node.Node, actualName.Name, actualUUID.UUID)
+				}
+				return Observation{Node: node.Node, Live: true, Authority: "qmp", Evidence: "matching QMP name and VM UUID"}, nil
+			}
+		}
+		recorded := process.Identity{PID: node.Process.PID, Executable: node.Process.Executable, Started: node.Process.Started, ArgvHash: node.Process.ArgvHash}
+		if completeProcess(node.Process) && process.MatchesLive(ctx, runner, recorded, node.Invocation) {
+			return Observation{Node: node.Node, Live: true, Authority: "process", Evidence: "matching executable, start time, and argv identity"}, nil
+		}
+		if node.Process.PID > 0 && process.Alive(node.Process.PID) {
+			return Observation{}, fmt.Errorf("node %s recorded PID %d is alive but identity does not match", node.Node, node.Process.PID)
+		}
+		pidEvidence := "pidfile absent"
+		if info, err := os.Lstat(node.Runtime.PIDFile); err == nil {
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 32 {
+				return Observation{}, fmt.Errorf("node %s pidfile is unsafe", node.Node)
+			}
+			data, err := os.ReadFile(node.Runtime.PIDFile)
+			if err != nil {
+				return Observation{}, err
+			}
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if parseErr != nil || pid <= 0 {
+				return Observation{}, fmt.Errorf("node %s pidfile is malformed", node.Node)
+			}
+			if process.Alive(pid) {
+				return Observation{}, fmt.Errorf("node %s pidfile references unverified live PID %d", node.Node, pid)
+			}
+			pidEvidence = fmt.Sprintf("pidfile PID %d is dead", pid)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Observation{}, err
+		}
+		qmpEvidence := "QMP socket absent"
+		if qmpExists {
+			qmpEvidence = "QMP socket stale/unresponsive"
+		}
+		return Observation{Node: node.Node, Authority: "dead", Evidence: qmpEvidence + "; " + pidEvidence + "; recorded process identity is dead"}, nil
+	}
+}

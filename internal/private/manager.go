@@ -16,9 +16,7 @@ import (
 	"github.com/pgsty/farrow/internal/diagnostics"
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/execx"
-	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/image"
-	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/lock"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/network/subnet"
@@ -113,7 +111,6 @@ type Manager struct {
 	FarrowVersion       string
 	OperationID         string
 	Runner              execx.Runner
-	LeaseStore          *lease.Store
 	ReadyTimeout        time.Duration
 	ConfiguredDataRoot  string
 	Repository          string
@@ -147,7 +144,6 @@ type NodeStatus struct {
 }
 
 type Status struct {
-	ProjectID   string       `json:"project_id"`
 	OperationID string       `json:"operation_id,omitempty"`
 	SpecHash    string       `json:"spec_hash"`
 	Nodes       []NodeStatus `json:"nodes"`
@@ -168,7 +164,6 @@ type LifecyclePlan struct {
 	Action      string   `json:"action"`
 	SpecHash    string   `json:"spec_hash"`
 	Nodes       []string `json:"nodes"`
-	LeaseActive bool     `json:"lease_active"`
 	Destructive bool     `json:"destructive"`
 	Create      []string `json:"create,omitempty"`
 	Recreate    []string `json:"recreate,omitempty"`
@@ -180,13 +175,6 @@ func (m Manager) runner() execx.Runner {
 		return m.Runner
 	}
 	return execx.OSRunner{Timeout: 15 * time.Second, OutputLimit: 1 << 20}
-}
-
-func (m Manager) leaseStore() lease.Store {
-	if m.LeaseStore != nil {
-		return *m.LeaseStore
-	}
-	return lease.Store{}
 }
 
 func (m Manager) nativeProfile() (platform.Profile, error) {
@@ -211,6 +199,25 @@ func (m Manager) readyTimeout(resolved spec.Resolved) (time.Duration, error) {
 		return m.ReadyTimeout, nil
 	}
 	return resolved.SSHWaitTimeout()
+}
+
+// nodesWithoutCommittedState filters to the nodes that have no committed
+// state yet — the only ones whose fixed addresses must still be silent. A
+// node this deployment already runs would otherwise probe as a conflict.
+func nodesWithoutCommittedState(nodes []spec.Node) []spec.Node {
+	root, err := state.ResolveDataRoot()
+	if err != nil {
+		return nodes
+	}
+	store := state.Store{Root: root}
+	result := make([]spec.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if _, readErr := store.ReadNode(node.Name); readErr == nil {
+			continue
+		}
+		result = append(result, node)
+	}
+	return result
 }
 
 func boundedConcurrency(nodes int) int {
@@ -267,11 +274,8 @@ func (m Manager) preflight(ctx context.Context, profile platform.Profile, resolv
 		return Backend{}, &CapabilityError{Reason: layoutErr.Error()}
 	}
 	addresses := make([]string, 0, len(resolved.Nodes))
-	for _, node := range resolved.Nodes {
+	for _, node := range nodesWithoutCommittedState(resolved.Nodes) {
 		addresses = append(addresses, node.Address)
-	}
-	if leaseStatus, leaseErr := m.leaseStore().Inspect(); leaseErr == nil && leaseStatus.Active {
-		addresses = nil
 	}
 	request := netpreflight.Request{OS: profile.OS, Arch: profile.Arch, Purpose: netpreflight.Use, Layout: layout, Addresses: addresses}
 	var report netpreflight.Report
@@ -560,11 +564,10 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 		return Status{}, err
 	}
 	selectedSet := nodeNameSet(selected)
-	result := Status{ProjectID: identity.DeploymentID, OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message, Nodes: make([]NodeStatus, 0, len(projectState.Resolved.Nodes))}
+	result := Status{OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message, Nodes: make([]NodeStatus, 0, len(projectState.Resolved.Nodes))}
 	lifecycle := vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}
 	nodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
 	convergenceCandidates := make([]state.NodeState, 0)
-	needsLeaseSync := false
 	for _, definition := range projectState.Resolved.Nodes {
 		node, err := store.ReadNode(definition.Name)
 		if err != nil {
@@ -590,10 +593,10 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 				return Status{}, fmt.Errorf("private node %s has mismatched QMP identity; repair is required: %w", node.Node, qmpErr)
 			case processMatches:
 				return Status{}, fmt.Errorf("private node %s process identity matches but QMP is unavailable; repair is required", node.Node)
-			case !completePrivateRuntimeIdentity(node):
-				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete runtime identity; repair is required", node.Node)
-			case !completePrivateProcessIdentity(node):
-				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete process identity; repair is required", node.Node)
+			case node.Runtime.Directory == "" || node.Runtime.QMP == "" || node.Runtime.PIDFile == "":
+				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete runtime identity; recreate is required", node.Node)
+			case !completeProcess(node.Process):
+				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete process identity; recreate is required", node.Node)
 			case process.Alive(node.Process.PID):
 				return Status{}, fmt.Errorf("private node %s recorded PID %d is alive but full process identity does not match; repair is required", node.Node, node.Process.PID)
 			default:
@@ -601,12 +604,12 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 				// socket from a live endpoint whose name responded but UUID query
 				// failed. Require the stricter runtime auditor to prove the whole
 				// QMP/process/pidfile identity dead before converging.
-				observation, auditErr := lease.RuntimeIdentityAuditor(m.runner(), time.Second)(ctx, privateLeaseNode(node))
+				observation, auditErr := RuntimeIdentityAuditor(m.runner(), time.Second)(ctx, node)
 				if auditErr != nil {
-					return Status{}, fmt.Errorf("private node %s runtime death audit is inconclusive; repair is required: %w", node.Node, auditErr)
+					return Status{}, fmt.Errorf("private node %s runtime death audit is inconclusive: %w", node.Node, auditErr)
 				}
 				if observation.Live || observation.Authority != "dead" {
-					return Status{}, fmt.Errorf("private node %s runtime became live during death audit; repair is required: %s", node.Node, observation.Evidence)
+					return Status{}, fmt.Errorf("private node %s runtime became live during death audit: %s", node.Node, observation.Evidence)
 				}
 				// This is the safe self-halt case. Converge durable state without
 				// touching stale runtime files.
@@ -614,20 +617,11 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 				node.Process = state.ProcessIdentity{}
 				node.UpdatedAt = time.Now().UTC()
 				convergenceCandidates = append(convergenceCandidates, node)
-				needsLeaseSync = true
 			}
 		}
-		needsLeaseSync = needsLeaseSync || node.Phase == state.Stopped
 		nodes = append(nodes, node)
 		if _, include := selectedSet[node.Node]; include {
 			result.Nodes = append(result.Nodes, NodeStatus{Name: node.Node, Address: definition.Address, State: node.Phase, Runtime: runtimeState, SSHHost: "127.0.0.1", SSHPort: node.SSHPort, ProcessID: node.Process.PID})
-		}
-	}
-	var leasePlan statusLeaseSyncPlan
-	if needsLeaseSync {
-		leasePlan, err = m.planStatusLeaseSyncLocked(ctx, projectValue, nodes)
-		if err != nil {
-			return Status{}, err
 		}
 	}
 	for _, node := range convergenceCandidates {
@@ -635,11 +629,7 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 			return Status{}, err
 		}
 	}
-	if needsLeaseSync {
-		if err := applyStatusLeaseSyncLocked(ctx, identity.DeploymentID, leasePlan); err != nil {
-			return Status{}, err
-		}
-	}
+	_ = nodes
 	return result, nil
 }
 
@@ -916,14 +906,8 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	} else if !missingPath(openErr) {
 		return Status{}, openErr
 	}
-	preLease, err := m.leaseStore().Inspect()
-	if err != nil {
+	if err := m.ensureSSHAddressesUnused(nodesWithoutCommittedState(requested.Nodes)); err != nil {
 		return Status{}, err
-	}
-	if !preLease.Active {
-		if err := m.ensureSSHAddressesUnused(requested.Nodes); err != nil {
-			return Status{}, err
-		}
 	}
 	m.report("image-resolve", fmt.Sprintf("Resolving images for %d private node(s)", len(selected)))
 	bases, boot, err := m.resolveBases(ctx, profile, requested)
@@ -989,15 +973,8 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err != nil {
 		return Status{}, err
 	}
-	leaseStatus, err := m.leaseStore().Inspect()
-	if err != nil {
-		return Status{}, err
-	}
-	var existingLease *lease.Lease
-	if leaseStatus.Active && leaseStatus.Lease.ProjectID == identity.DeploymentID {
-		existingLease = leaseStatus.Lease
-	} else if hadExistingState {
-		existingLease = &lease.Lease{ProjectID: identity.DeploymentID, OwnerUID: os.Getuid()}
+	knownUUIDs := make(map[string]string)
+	if hadExistingState {
 		createSet := nodeNameSet(createNodes)
 		store := state.Store{Root: projectValue.Root}
 		for _, definition := range resolved.Nodes {
@@ -1008,17 +985,12 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 			if readErr != nil {
 				return Status{}, readErr
 			}
-			existingLease.Nodes = append(existingLease.Nodes, lease.Node{Name: node.Node, VMUUID: node.VMUUID})
+			knownUUIDs[node.Node] = node.VMUUID
 		}
 	}
-	plan, err := Build(resolved, identity.DeploymentID, os.Getuid(), existingLease, nil)
+	plan, err := Build(resolved, os.Getuid(), knownUUIDs, nil)
 	if err != nil {
 		return Status{}, err
-	}
-	if len(createNodes) != 0 && leaseStatus.Active && leaseStatus.Lease.ProjectID == identity.DeploymentID && len(leaseStatus.Lease.Nodes) != len(plan.Lease.Nodes) {
-		if _, err := m.leaseStore().Reshape(ctx, plan.Lease); err != nil {
-			return Status{}, err
-		}
 	}
 	generations := make(map[string]uint64, len(resolved.Nodes))
 	for _, node := range resolved.Nodes {
@@ -1046,7 +1018,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if len(createNodes) != 0 {
 		startNodes = append([]string(nil), createNodes...)
 	}
-	controller := Controller{Project: projectValue, LeaseStore: m.leaseStore(), Prepare: prepare, Lifecycle: lifecycle, Concurrency: boundedConcurrency(len(resolved.Nodes)), ReadyTimeout: readyTimeout, NoWait: m.NoWait, CreateNodes: createNodes, StartNodes: startNodes, Version: m.FarrowVersion, Progress: m.Progress}
+	controller := Controller{Project: projectValue, Prepare: prepare, Lifecycle: lifecycle, Concurrency: boundedConcurrency(len(resolved.Nodes)), ReadyTimeout: readyTimeout, NoWait: m.NoWait, CreateNodes: createNodes, StartNodes: startNodes, Version: m.FarrowVersion, Progress: m.Progress}
 	createResult, err := controller.CreateAndStart(ctx)
 	if err != nil {
 		if m.RollbackFailed {
@@ -1059,42 +1031,9 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		if err != nil {
 			return Status{}, err
 		}
-		leaseStatus, err := m.leaseStore().Inspect()
-		if err != nil || !leaseStatus.Active || leaseStatus.Lease.ProjectID != identity.DeploymentID {
-			return Status{}, errors.New("partial recreate completed but its private lease is absent or mismatched")
-		}
-		allStates := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
-		store := state.Store{Root: projectValue.Root}
-		for _, definition := range projectState.Resolved.Nodes {
-			node, readErr := store.ReadNode(definition.Name)
-			if readErr != nil {
-				return Status{}, readErr
-			}
-			allStates = append(allStates, node)
-		}
-		desiredLease, err := SynchronizeLease(*leaseStatus.Lease, allStates)
-		if err != nil {
-			return Status{}, err
-		}
-		if _, err := m.leaseStore().Update(ctx, desiredLease); err != nil {
-			return Status{}, err
-		}
 		return m.startExisting(ctx, projectValue, projectState, profile, backend)
 	}
 	return m.statusFor(ctx, projectValue, "created and started private project")
-}
-
-func leaseIntentFromState(projectValue Deployment, projectState state.DeploymentState) (Plan, error) {
-	store := state.Store{Root: projectValue.Root}
-	existing := &lease.Lease{ProjectID: identity.DeploymentID, OwnerUID: os.Getuid()}
-	for _, definition := range projectState.Resolved.Nodes {
-		node, err := store.ReadNode(definition.Name)
-		if err != nil {
-			return Plan{}, err
-		}
-		existing.Nodes = append(existing.Nodes, lease.Node{Name: node.Node, VMUUID: node.VMUUID})
-	}
-	return Build(projectState.Resolved, identity.DeploymentID, os.Getuid(), existing, nil)
 }
 
 func (m Manager) startExisting(ctx context.Context, projectValue Deployment, projectState state.DeploymentState, profile platform.Profile, backend Backend) (Status, error) {
@@ -1139,43 +1078,10 @@ func (m Manager) startExisting(ctx context.Context, projectValue Deployment, pro
 	if err := m.ensureSSHAddressesUnused(startableDefinitions); err != nil {
 		return Status{}, err
 	}
-	plan, err := leaseIntentFromState(projectValue, projectState)
-	if err != nil {
-		return Status{}, err
-	}
-	allocatorContext, cancelAllocator := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelAllocator()
-	allocator, err := lock.Acquire(allocatorContext, filepath.Join(projectValue.DataRoot, "locks", "allocator.lock"), false)
-	if err != nil {
-		return Status{}, err
-	}
-	defer allocator.Release()
-	acquired, err := m.leaseStore().Acquire(ctx, plan.Lease)
-	if err != nil {
-		return Status{}, err
-	}
-	allNodeStates := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
-	for _, definition := range projectState.Resolved.Nodes {
-		node, err := preStartStore.ReadNode(definition.Name)
-		if err != nil {
-			return Status{}, err
-		}
-		allNodeStates = append(allNodeStates, node)
-	}
-	synchronized, err := SynchronizeLease(acquired.Lease, allNodeStates)
-	if err != nil {
-		return Status{}, err
-	}
-	updatedLease, err := m.leaseStore().Update(ctx, synchronized)
-	if err != nil {
-		return Status{}, err
-	}
-	acquired.Lease = updatedLease.Lease
 	lockContext, cancelLock := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLock()
 	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
-		_, _ = m.leaseStore().Abort(ctx, acquired.Lease.ProjectID, true, reservedRuntimeAuditor)
 		return Status{}, err
 	}
 	defer projectLock.Release()
@@ -1217,7 +1123,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue Deployment, pro
 		startMessage = fmt.Sprintf("Starting %d private node(s) without waiting for guest readiness", len(names))
 	}
 	m.report("guest-ready", startMessage)
-	outcomes, _, err := StartPrepared(ctx, StartConfig{Project: projectValue, LeaseStore: m.leaseStore(), Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait})
+	outcomes, err := StartPrepared(ctx, StartConfig{Project: projectValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait})
 	if err != nil {
 		return Status{}, err
 	}
@@ -1230,6 +1136,15 @@ func (m Manager) startExisting(ctx context.Context, projectValue Deployment, pro
 	}
 	m.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
 	return m.statusForLocked(ctx, projectValue, "started private project")
+}
+
+func statusNodesRunning(status Status) bool {
+	for _, node := range status.Nodes {
+		if node.State != state.Running || node.Runtime != "running" {
+			return false
+		}
+	}
+	return len(status.Nodes) > 0
 }
 
 func failedStartNames(outcomes []StartOutcome) []string {
@@ -1282,23 +1197,8 @@ func (m Manager) Stop(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	selectedSet := nodeNameSet(names)
-	releaseLease := true
-	store := state.Store{Root: projectValue.Root}
-	for _, definition := range projectState.Resolved.Nodes {
-		if _, selected := selectedSet[definition.Name]; selected {
-			continue
-		}
-		node, err := store.ReadNode(definition.Name)
-		if err != nil {
-			return Status{}, err
-		}
-		if node.Phase != state.Stopped {
-			releaseLease = false
-		}
-	}
 	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}}
-	outcomes, _, err := StopRunning(ctx, StopConfig{Project: projectValue, LeaseStore: m.leaseStore(), Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReleaseLease: releaseLease, Auditor: lease.RuntimeIdentityAuditor(m.runner(), time.Second)})
+	outcomes, err := StopRunning(ctx, StopConfig{Project: projectValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names))})
 	if err != nil {
 		return Status{}, err
 	}
@@ -1311,11 +1211,7 @@ func (m Manager) Stop(ctx context.Context) (Status, error) {
 	if len(failed) > 0 {
 		return Status{}, &PartialError{Nodes: failed}
 	}
-	message := "stopped selected private nodes; host-global lease retained for running peers"
-	if releaseLease {
-		message = "stopped private project and released lease"
-	}
-	return m.statusForLocked(ctx, projectValue, message)
+	return m.statusForLocked(ctx, projectValue, "stopped selected private nodes")
 }
 
 func (m Manager) Restart(ctx context.Context) (Status, error) {
@@ -1381,16 +1277,9 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	}
 	selectedSet := nodeNameSet(selected)
 	result := LifecyclePlan{Schema: 1, Action: "create", SpecHash: hash, Nodes: append([]string(nil), selected...)}
-	leaseStatus, err := m.leaseStore().Inspect()
-	if err != nil {
+	if err := m.ensureSSHAddressesUnused(nodesWithoutCommittedState(requested.Nodes)); err != nil {
 		return LifecyclePlan{}, err
 	}
-	if !leaseStatus.Active {
-		if err := m.ensureSSHAddressesUnused(requested.Nodes); err != nil {
-			return LifecyclePlan{}, err
-		}
-	}
-	result.LeaseActive = leaseStatus.Active
 	projectValue, err := m.openProject(false)
 	if missingPath(err) {
 		return result, nil

@@ -66,7 +66,3 @@ func NewUUID() (string, error) {
 
 // ValidUUID reports whether value is a canonical version-4 UUID.
 func ValidUUID(value string) bool { return uuidPattern.MatchString(value) }
-
-// DeploymentID is the fixed identity of the single global deployment,
-// carried transitionally by documents that still require a UUID field.
-const DeploymentID = "00000000-0000-4000-8000-000000000000"

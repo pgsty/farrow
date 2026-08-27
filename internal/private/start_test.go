@@ -3,12 +3,10 @@ package private
 import (
 	"context"
 	"errors"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/state"
 )
@@ -60,9 +58,9 @@ func TestStartPreparedNoWaitStopsAtVerifiedProcessStart(t *testing.T) {
 	config.NoWait = true
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{"meta": true, "node-1": true}}
 	config.Lifecycle = fake
-	outcomes, active, err := StartPrepared(context.Background(), config)
+	outcomes, err := StartPrepared(context.Background(), config)
 	if err != nil || len(readyNames(outcomes)) != 2 || len(runningNames(outcomes)) != 2 {
-		t.Fatalf("no-wait outcomes=%#v lease=%#v err=%v", outcomes, active, err)
+		t.Fatalf("no-wait outcomes=%#v err=%v", outcomes, err)
 	}
 	fake.mu.Lock()
 	waitCalls := fake.waitCalls
@@ -79,37 +77,24 @@ func preparedStartFixture(t *testing.T) (StartConfig, []state.NodeState) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	leaseStore := lease.Store{Root: testLeaseRoot(t), OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid(), StaleAfter: -1}
-	acquired, err := leaseStore.Acquire(context.Background(), prepareConfig.Plan.Lease)
-	if err != nil {
-		t.Fatal(err)
-	}
-	desired, err := SynchronizeLease(acquired.Lease, committed.Nodes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated, err := leaseStore.Update(context.Background(), desired)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, node := range committed.Nodes {
-		if err := FinalizePrepared(projectValue, node.Node, LeaseNodeVerifier(updated.Lease, lease.Prepared)); err != nil {
+		if err := FinalizePrepared(projectValue, node.Node); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return StartConfig{
-		Project: projectValue, LeaseStore: leaseStore, Nodes: []string{"meta", "node-1"},
+		Project: projectValue, Nodes: []string{"meta", "node-1"},
 		Concurrency: 2, ReadyTimeout: time.Second, SetupRuntime: func(string) error { return nil },
 	}, committed.Nodes
 }
 
-func TestStartPreparedParallelSuccessAndLeasePhases(t *testing.T) {
+func TestStartPreparedParallelSuccess(t *testing.T) {
 	config, _ := preparedStartFixture(t)
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
 	config.Lifecycle = fake
-	outcomes, active, err := StartPrepared(context.Background(), config)
-	if err != nil || len(readyNames(outcomes)) != 2 || len(runningNames(outcomes)) != 2 || active.Generation != 4 {
-		t.Fatalf("start outcomes=%#v lease=%#v err=%v", outcomes, active, err)
+	outcomes, err := StartPrepared(context.Background(), config)
+	if err != nil || len(readyNames(outcomes)) != 2 || len(runningNames(outcomes)) != 2 {
+		t.Fatalf("start outcomes=%#v err=%v", outcomes, err)
 	}
 	if fake.maxActive < 2 {
 		t.Fatalf("nodes did not start concurrently: max=%d", fake.maxActive)
@@ -121,42 +106,40 @@ func TestStartPreparedParallelSuccessAndLeasePhases(t *testing.T) {
 			t.Fatalf("running state %s = %#v, %v", name, node, err)
 		}
 	}
-	for _, node := range active.Nodes {
-		if node.Phase != lease.Running || node.Process.PID == 0 {
-			t.Fatalf("running lease node = %#v", node)
-		}
-	}
 }
 
 func TestStartPreparedPreservesRunningPeerOnReadinessFailure(t *testing.T) {
 	config, _ := preparedStartFixture(t)
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{"node-1": true}}
 	config.Lifecycle = fake
-	outcomes, active, err := StartPrepared(context.Background(), config)
+	outcomes, err := StartPrepared(context.Background(), config)
 	if err != nil || len(runningNames(outcomes)) != 2 || len(readyNames(outcomes)) != 1 || outcomes[1].Error == "" {
-		t.Fatalf("partial readiness outcomes=%#v lease=%#v err=%v", outcomes, active, err)
+		t.Fatalf("partial readiness outcomes=%#v err=%v", outcomes, err)
 	}
-	for _, node := range active.Nodes {
-		if node.Phase != lease.Running {
-			t.Fatalf("readiness failure incorrectly stopped peer/node: %#v", node)
+	store := state.Store{Root: config.Project.Root}
+	for _, name := range config.Nodes {
+		node, err := store.ReadNode(name)
+		if err != nil || node.Phase != state.Running {
+			t.Fatalf("readiness failure incorrectly stopped peer/node %s: %#v, %v", name, node, err)
 		}
 	}
 }
 
-func TestStartPreparedLeavesFailedStartForRepair(t *testing.T) {
+func TestStartPreparedLeavesFailedStartRecorded(t *testing.T) {
 	config, _ := preparedStartFixture(t)
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{"node-1": true}, failReady: map[string]bool{}}
 	config.Lifecycle = fake
-	outcomes, active, err := StartPrepared(context.Background(), config)
+	outcomes, err := StartPrepared(context.Background(), config)
 	if err != nil || len(runningNames(outcomes)) != 1 || outcomes[1].Error == "" {
-		t.Fatalf("partial start outcomes=%#v lease=%#v err=%v", outcomes, active, err)
+		t.Fatalf("partial start outcomes=%#v err=%v", outcomes, err)
 	}
-	for _, node := range active.Nodes {
-		if node.Name == "meta" && node.Phase != lease.Running {
-			t.Fatalf("successful peer not running: %#v", node)
-		}
-		if node.Name == "node-1" && node.Phase != lease.Starting {
-			t.Fatalf("failed start not left for repair: %#v", node)
-		}
+	store := state.Store{Root: config.Project.Root}
+	meta, metaErr := store.ReadNode("meta")
+	if metaErr != nil || meta.Phase != state.Running {
+		t.Fatalf("successful peer not running: %#v, %v", meta, metaErr)
+	}
+	failed, failedErr := store.ReadNode("node-1")
+	if failedErr != nil || failed.Phase != state.Starting || failed.Process != (state.ProcessIdentity{}) {
+		t.Fatalf("failed start not left in starting phase: %#v, %v", failed, failedErr)
 	}
 }

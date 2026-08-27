@@ -150,13 +150,6 @@ func (m Manager) DeletePersistent(ctx context.Context) ([]persistent.Record, err
 		return nil, err
 	}
 	defer projectLock.Release()
-	leaseStatus, err := m.leaseStore().Inspect()
-	if err != nil {
-		return nil, err
-	}
-	if leaseStatus.Active {
-		return nil, errors.New("refuse persistent disk deletion while a private lease is active")
-	}
 	nodesDir := filepath.Join(projectValue.Root, "nodes")
 	entries, err := os.ReadDir(nodesDir)
 	if err == nil && len(entries) != 0 {

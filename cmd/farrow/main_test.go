@@ -308,11 +308,6 @@ func TestPrivateDeploymentDestroyNeverFallsThroughToQuick(t *testing.T) {
 	if !strings.Contains(stderr.String(), "private destroy requires --force") {
 		t.Fatalf("private destroy dispatch was ambiguous: %s", stderr.String())
 	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"repair", "--dry-run"}, &stdout, &stderr); code != exitIntegrity || !strings.Contains(stderr.String(), "private repair blocked") {
-		t.Errorf("private repair dispatch code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
 }
 
 func TestSSHConfigRemoveRemainsAvailableAfterResolvedStateIsGone(t *testing.T) {

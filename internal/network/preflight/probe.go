@@ -334,8 +334,6 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 		{darwinnet.InterfaceMarkerDir, 0o755, "directory", 0, false},
 		{darwinnet.InterfaceMarkerPath, 0o644, "file", 0, false},
 		{darwinnet.LogDir, 0o755, "directory", 0, false},
-		{darwinnet.LeaseRoot, 0o777, "directory", 0, true},
-		{darwinnet.LeaseRoot + "/private-lease.lock", 0o666, "file", 0, false},
 	}
 	present := 0
 	for _, target := range required {

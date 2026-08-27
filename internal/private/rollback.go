@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/pgsty/farrow/internal/fsutil"
-	"github.com/pgsty/farrow/internal/identity"
 )
 
 type RollbackAction struct {
@@ -18,10 +17,9 @@ type RollbackAction struct {
 }
 
 type RollbackResult struct {
-	ProjectID string           `json:"project_id"`
-	Node      string           `json:"node"`
-	Apply     bool             `json:"apply"`
-	Actions   []RollbackAction `json:"actions"`
+	Node    string           `json:"node"`
+	Apply   bool             `json:"apply"`
+	Actions []RollbackAction `json:"actions"`
 }
 
 func invocationRuntime(journal PrepareJournal) (string, string, error) {
@@ -52,7 +50,7 @@ func RollbackPrepared(projectValue Deployment, node string, apply bool) (Rollbac
 	if err != nil {
 		return RollbackResult{}, err
 	}
-	result := RollbackResult{ProjectID: identity.DeploymentID, Node: node, Apply: apply, Actions: []RollbackAction{}}
+	result := RollbackResult{Node: node, Apply: apply, Actions: []RollbackAction{}}
 	journalPath := filepath.Join(nodeDir, "private-prepare.json")
 	journal, err := ReadPrepareJournal(journalPath)
 	if err != nil {

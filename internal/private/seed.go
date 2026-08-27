@@ -61,7 +61,7 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 	if err := validateResolved(resolved); err != nil {
 		return nil, err
 	}
-	if plan.ProjectID == "" || len(plan.Nodes) != len(resolved.Nodes) || strings.TrimSpace(input.PublicKey) == "" {
+	if len(plan.Nodes) != len(resolved.Nodes) || strings.TrimSpace(input.PublicKey) == "" {
 		return nil, errors.New("private seed plan or public key is incomplete")
 	}
 	for _, nodeSpec := range resolved.Nodes {

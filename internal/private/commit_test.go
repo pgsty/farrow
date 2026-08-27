@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pgsty/farrow/internal/identity"
 	"github.com/pgsty/farrow/internal/state"
 )
 
@@ -16,10 +15,10 @@ func commitFixture(t *testing.T, disks DiskOps) (Deployment, PrepareConfig, []Pr
 	root := t.TempDir()
 	projectValue := Deployment{Root: root, DataRoot: root}
 	config := privatePrepareConfig(t, projectValue.Root, disks)
-	// privatePrepareConfig creates a fresh intent; bind it to the fixed global
-	// deployment identity before preparing or committing state.
+	// privatePrepareConfig creates a fresh intent; rebuild it for the current
+	// owner before preparing or committing state.
 	var err error
-	config.Plan, err = Build(config.Resolved, identity.DeploymentID, os.Getuid(), nil, nil)
+	config.Plan, err = Build(config.Resolved, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +35,7 @@ func commitFixture(t *testing.T, disks DiskOps) (Deployment, PrepareConfig, []Pr
 	return projectValue, config, outcomes
 }
 
-func TestCommitPreparedStateAndLeaseVerifiedFinalization(t *testing.T) {
+func TestCommitPreparedStateAndFinalization(t *testing.T) {
 	projectValue, config, outcomes := commitFixture(t, &fakePrivateDisks{})
 	result, err := CommitPrepared(context.Background(), projectValue, config, outcomes, "test-version")
 	if err != nil || len(result.Nodes) != 2 || len(result.Failed) != 0 || result.Project.Resolved.Network != "private" {
@@ -54,19 +53,13 @@ func TestCommitPreparedStateAndLeaseVerifiedFinalization(t *testing.T) {
 			t.Fatalf("committed journal %s = %#v, %v", node.Node, journal, err)
 		}
 	}
-	// State commit is idempotent before the lease acknowledgement/finalizer.
+	// State commit is idempotent before the finalizer removes the journal.
 	second, err := CommitPrepared(context.Background(), projectValue, config, outcomes, "test-version")
 	if err != nil || len(second.Nodes) != 2 {
 		t.Fatalf("idempotent commit = %#v, %v", second, err)
 	}
 	for _, node := range result.Nodes {
-		err := FinalizePrepared(projectValue, node.Node, func(candidate state.NodeState) error {
-			if candidate.Phase != state.Prepared || candidate.VMUUID != node.VMUUID {
-				return errors.New("lease did not acknowledge the prepared node identity")
-			}
-			return nil
-		})
-		if err != nil {
+		if err := FinalizePrepared(projectValue, node.Node); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Lstat(filepath.Join(filepath.Dir(node.RootDisk), "private-prepare.json")); !os.IsNotExist(err) {

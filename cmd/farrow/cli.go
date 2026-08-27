@@ -281,14 +281,6 @@ func newLogsCommand(stdout, stderr io.Writer) *cobra.Command {
 	return command
 }
 
-func newRepairCommand(stdout, stderr io.Writer) *cobra.Command {
-	command := &cobra.Command{Use: "repair [node...]", Short: "Inspect or repair ownership-bounded project state"}
-	command.Flags().Bool("dry-run", false, "show actions without applying them")
-	command.Flags().Bool("force", false, "apply the displayed ownership-bounded actions")
-	bindOperation(command, stdout, stderr, runRepair)
-	return command
-}
-
 func addApplyFlag(command *cobra.Command) {
 	command.Flags().Bool("yes", false, "apply the displayed privileged plan")
 }
@@ -540,9 +532,6 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		command.GroupID = "lifecycle"
 		root.AddCommand(command)
 	}
-	repair := newRepairCommand(stdout, stderr)
-	repair.GroupID = "lifecycle"
-	root.AddCommand(repair)
 
 	ssh := rawOperation("ssh [node] [-- command [args...]]", "Open SSH or run a command in a guest", stdout, stderr, func(arguments []string, stdout, stderr io.Writer) int {
 		return runSSH("ssh", arguments, stdout, stderr)

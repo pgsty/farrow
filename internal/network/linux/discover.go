@@ -76,10 +76,6 @@ func discoverUnitStateMode(ctx context.Context, runner execx.Runner, name string
 	return state, nil
 }
 
-func discoverUnitState(ctx context.Context, runner execx.Runner, name string) (UnitState, error) {
-	return discoverUnitStateMode(ctx, runner, name, false)
-}
-
 func discoverOptionalUnitState(ctx context.Context, runner execx.Runner, name string) (UnitState, error) {
 	return discoverUnitStateMode(ctx, runner, name, true)
 }

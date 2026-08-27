@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/farrow/internal/identity"
-	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/state"
 )
 
@@ -19,7 +17,7 @@ func controllerFixture(t *testing.T, disks DiskOps, lifecycle NodeLifecycle) Con
 	projectValue := Deployment{Root: root, DataRoot: root}
 	prepare := privatePrepareConfig(t, projectValue.Root, disks)
 	var err error
-	prepare.Plan, err = Build(prepare.Resolved, identity.DeploymentID, os.Getuid(), nil, nil)
+	prepare.Plan, err = Build(prepare.Resolved, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +31,7 @@ func controllerFixture(t *testing.T, disks DiskOps, lifecycle NodeLifecycle) Con
 		t.Fatal(err)
 	}
 	return Controller{
-		Project: projectValue, LeaseStore: lease.Store{Root: testLeaseRoot(t), OwnerUID: os.Getuid(), ExpectedRootUID: os.Getuid(), StaleAfter: -1},
+		Project: projectValue,
 		Prepare: prepare, Lifecycle: lifecycle, Concurrency: 2, ReadyTimeout: time.Second,
 		SetupRuntime: func(string) error { return nil }, Version: "test-version",
 	}
@@ -46,9 +44,11 @@ func TestControllerCreateAndStartFullSuccess(t *testing.T) {
 	if err != nil || len(result.Commit.Nodes) != 2 || len(readyNames(result.Start)) != 2 {
 		t.Fatalf("controller result=%#v err=%v", result, err)
 	}
-	for _, node := range result.Lease.Nodes {
-		if node.Phase != lease.Running {
-			t.Fatalf("controller lease node not running: %#v", node)
+	store := state.Store{Root: controller.Project.Root}
+	for _, node := range result.Commit.Nodes {
+		persisted, err := store.ReadNode(node.Node)
+		if err != nil || persisted.Phase != state.Running || persisted.Process.PID == 0 {
+			t.Fatalf("controller node %s state=%#v err=%v", node.Node, persisted, err)
 		}
 	}
 }
@@ -66,14 +66,6 @@ func TestControllerCreatesAllButStartsSelectedNode(t *testing.T) {
 	worker, workerErr := store.ReadNode("node-1")
 	if metaErr != nil || workerErr != nil || meta.Phase != state.Prepared || worker.Phase != state.Running {
 		t.Fatalf("selected phases meta=%#v/%v worker=%#v/%v", meta, metaErr, worker, workerErr)
-	}
-	for _, node := range result.Lease.Nodes {
-		if node.Name == "meta" && node.Phase != lease.Prepared {
-			t.Fatalf("unselected lease node=%#v", node)
-		}
-		if node.Name == "node-1" && node.Phase != lease.Running {
-			t.Fatalf("selected lease node=%#v", node)
-		}
 	}
 }
 
@@ -146,7 +138,7 @@ func TestControllerFailedSelectedStartDoesNotStartUnselectedPeer(t *testing.T) {
 	}
 }
 
-func TestControllerTotalPrepareFailureReleasesPreStartLease(t *testing.T) {
+func TestControllerTotalPrepareFailureReturnsTypedPartial(t *testing.T) {
 	t.Parallel()
 	controller := controllerFixture(t, &fakePrivateDisks{failSubstring: "root.qcow2"}, &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}})
 	_, err := controller.CreateAndStart(context.Background())
@@ -154,8 +146,9 @@ func TestControllerTotalPrepareFailureReleasesPreStartLease(t *testing.T) {
 	if !errors.As(err, &partial) || len(partial.Nodes) != 2 {
 		t.Fatalf("total prepare failure = %#v, %v", partial, err)
 	}
-	status, inspectErr := controller.LeaseStore.Inspect()
-	if inspectErr != nil || !status.Available || status.Active {
-		t.Fatalf("pre-start lease was not released: %#v, inspect=%v operation=%v", status, inspectErr, err)
+	for _, name := range []string{"meta", "node-1"} {
+		if _, readErr := (state.Store{Root: controller.Project.Root}).ReadNode(name); !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatalf("total prepare failure committed state for %s: %v", name, readErr)
+		}
 	}
 }

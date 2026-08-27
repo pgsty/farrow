@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
-	"github.com/pgsty/farrow/internal/identity"
-	"github.com/pgsty/farrow/internal/lease"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/process"
@@ -176,23 +174,6 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	defer projectLock.Release()
-	leaseStatus, err := m.leaseStore().Inspect()
-	if err != nil {
-		return Status{}, err
-	}
-	if leaseStatus.Active {
-		if !partial {
-			return Status{}, errors.New("refuse private destroy while a host-global lease is active")
-		}
-		if leaseStatus.Lease.ProjectID != identity.DeploymentID || leaseStatus.Lease.OwnerUID != os.Getuid() {
-			return Status{}, errors.New("refuse partial recreate while another project or UID owns the private lease")
-		}
-		for _, leased := range leaseStatus.Lease.Nodes {
-			if _, include := selectedSet[leased.Name]; include && leased.Phase != lease.Stopped {
-				return Status{}, fmt.Errorf("refuse partial recreate while selected lease node %s phase is %s", leased.Name, leased.Phase)
-			}
-		}
-	}
 	nodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
 	allNodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
 	targets := make(map[string][]string)
@@ -298,27 +279,15 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 		if err := store.WriteDeployment(updated); err != nil {
 			return Status{}, err
 		}
-		if leaseStatus.Active && leaseStatus.Lease.ProjectID == identity.DeploymentID {
-			desiredLease := *leaseStatus.Lease
-			desiredLease.Nodes = nil
-			for _, leased := range leaseStatus.Lease.Nodes {
-				if _, removed := selectedSet[leased.Name]; !removed {
-					desiredLease.Nodes = append(desiredLease.Nodes, leased)
-				}
-			}
-			if _, err := m.leaseStore().Reshape(ctx, desiredLease); err != nil {
-				return Status{}, err
-			}
-		}
 	}
-	message := "destroyed private node artifacts; image cache, project marker, keys, and persistent data disks preserved"
+	message := "destroyed private node artifacts; image cache, keys, and persistent data disks preserved"
 	switch {
 	case partial && m.dropFromSpec:
-		message = "destroyed and removed the selected node(s) from the project; peers, lease, keys, and persistent data disks preserved"
+		message = "destroyed and removed the selected node(s); peers, keys, and persistent data disks preserved"
 	case partial:
-		message = "destroyed selected private node artifacts for immediate recreate; project state, peer nodes, lease, keys, and persistent data disks preserved"
+		message = "destroyed selected private node artifacts for immediate recreate; deployment state, peer nodes, keys, and persistent data disks preserved"
 	}
-	result := Status{ProjectID: identity.DeploymentID, OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message}
+	result := Status{OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message}
 	for _, definition := range projectState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
 			continue

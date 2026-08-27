@@ -19,7 +19,7 @@ func TestOptionalNetworkManagerMayBeAbsent(t *testing.T) {
 	if err != nil || state.LoadState != "not-found" || state.ActiveState != "inactive" {
 		t.Fatalf("optional state=%#v err=%v", state, err)
 	}
-	if _, err := discoverUnitState(context.Background(), unitStateRunner{output: output}, "systemd-networkd.service"); err == nil {
+	if _, err := discoverUnitStateMode(context.Background(), unitStateRunner{output: output}, "systemd-networkd.service", false); err == nil {
 		t.Fatal("required systemd unit accepted a not-found state")
 	}
 }

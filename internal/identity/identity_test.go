@@ -64,9 +64,6 @@ func TestUUIDHelpers(t *testing.T) {
 	if !ValidUUID(value) {
 		t.Fatalf("NewUUID produced invalid UUID %q", value)
 	}
-	if !ValidUUID(DeploymentID) {
-		t.Fatalf("DeploymentID %q is not a valid UUID", DeploymentID)
-	}
 	if ValidUUID("not-a-uuid") {
 		t.Fatal("invalid UUID unexpectedly accepted")
 	}

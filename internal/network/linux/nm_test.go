@@ -39,29 +39,28 @@ func TestNetworkManagerBackendPlan(t *testing.T) {
 		"ipv6.method disabled",
 		"connection.autoconnect yes",
 		"nmcli connection up farrow0",
-		"systemd-tmpfiles --create",
 	} {
 		if !strings.Contains(commands, want) {
 			t.Errorf("NM plan missing %q:\n%s", want, commands)
 		}
 	}
-	for _, forbidden := range []string{"networkctl", "systemd-networkd", "unmanaged-devices"} {
+	for _, forbidden := range []string{"networkctl", "systemd-networkd", "unmanaged-devices", "systemd-tmpfiles"} {
 		if strings.Contains(commands, forbidden) {
-			t.Errorf("NM plan must not touch networkd: %q in\n%s", forbidden, commands)
+			t.Errorf("NM plan must not touch networkd or retired lease runtime: %q in\n%s", forbidden, commands)
 		}
 	}
 	paths := make(map[string]struct{}, len(plan.Files))
 	for _, file := range plan.Files {
 		paths[file.Path] = struct{}{}
 	}
-	for _, want := range []string{BridgeConfPath, TmpfilesPath, LeaseLockPath, PublicStatePath, StatePath} {
+	for _, want := range []string{BridgeConfPath, PublicStatePath, StatePath} {
 		if _, ok := paths[want]; !ok {
 			t.Errorf("NM plan missing owned file %s: %v", want, paths)
 		}
 	}
-	for _, forbidden := range []string{NetDevPath, NetworkPath, NetworkManagerPath} {
+	for _, forbidden := range []string{NetDevPath, NetworkPath, NetworkManagerPath, TmpfilesPath, LeaseLockPath} {
 		if _, ok := paths[forbidden]; ok {
-			t.Errorf("NM plan must not write networkd file %s", forbidden)
+			t.Errorf("NM plan must not write networkd or retired lease file %s", forbidden)
 		}
 	}
 	// No sudo firewalld: zone argument absent.
@@ -122,7 +121,7 @@ func TestNetworkManagerManifestRoundTripAndUninstall(t *testing.T) {
 		t.Fatalf("NM uninstall commands = %q", commands)
 	}
 	removed := strings.Join(uninstall.RemoveFiles, "\n")
-	for _, want := range []string{PublicStatePath, TmpfilesPath, LeaseLockPath, StatePath, BridgeConfPath} {
+	for _, want := range []string{PublicStatePath, StatePath, BridgeConfPath} {
 		if !strings.Contains(removed, want) {
 			t.Errorf("NM uninstall must remove %s: %v", want, uninstall.RemoveFiles)
 		}

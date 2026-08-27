@@ -48,8 +48,13 @@ func TestDebianInstallPlanIsTypedAndMarkerPreserving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Manifest.AppliedOverride == nil || plan.Manifest.AppliedOverride.Mode != "4750" || len(plan.Files) != 6 || len(plan.Directories) != 2 || plan.Manifest.LeaseRoot != "/run/farrow" {
+	if plan.Manifest.AppliedOverride == nil || plan.Manifest.AppliedOverride.Mode != "4750" || len(plan.Files) != 4 || len(plan.Directories) != 1 {
 		t.Fatalf("plan = %#v", plan)
+	}
+	for _, file := range plan.Files {
+		if file.Path == LeaseLockPath || file.Path == TmpfilesPath {
+			t.Fatalf("install plan still creates retired lease artifact %s", file.Path)
+		}
 	}
 	foundOverride := false
 	for _, command := range plan.Commands {
@@ -260,7 +265,7 @@ func TestStrictManifestAndOwnershipBoundedUninstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(uninstall.RestoreFiles) != 1 || uninstall.RestoreFiles[0].Content != debianFacts().BridgeConf || len(uninstall.RemoveFiles) < 4 {
+	if len(uninstall.RestoreFiles) != 1 || uninstall.RestoreFiles[0].Content != debianFacts().BridgeConf || len(uninstall.RemoveFiles) < 3 {
 		t.Fatalf("uninstall plan = %#v", uninstall)
 	}
 	commands := ""
@@ -279,9 +284,6 @@ func TestStrictManifestAndOwnershipBoundedUninstall(t *testing.T) {
 	altered[NetDevPath] += "# changed\n"
 	if _, err := NewUninstallPlan(manifest, UninstallFacts{CurrentFiles: altered, CurrentHelper: applied, CurrentOverride: &applied}); err == nil {
 		t.Fatal("changed owned file did not block uninstall")
-	}
-	if _, err := NewUninstallPlan(manifest, UninstallFacts{LeaseActive: true, CurrentFiles: currentFiles, CurrentHelper: applied, CurrentOverride: &applied}); err == nil {
-		t.Fatal("active lease did not block uninstall")
 	}
 	if _, err := NewUninstallPlan(manifest, UninstallFacts{BridgeMembers: []string{"tap0"}, CurrentFiles: currentFiles, CurrentHelper: applied, CurrentOverride: &applied}); err == nil {
 		t.Fatal("bridge member did not block uninstall")

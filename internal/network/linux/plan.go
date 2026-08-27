@@ -493,8 +493,6 @@ func newNetworkManagerInstallPlan(facts Facts, config Config) (Plan, error) {
 	}
 	files := []File{
 		{Path: BridgeConfPath, Owner: "root:root", Mode: "0644", Content: bridgeConf},
-		{Path: TmpfilesPath, Owner: "root:root", Mode: "0644", Content: "d /run/farrow 1777 root root -\n"},
-		{Path: LeaseLockPath, Owner: "root:root", Mode: "0666", Content: ""},
 		{Path: PublicStatePath, Owner: "root:root", Mode: "0644", Content: publicState},
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
@@ -543,13 +541,12 @@ func newNetworkManagerInstallPlan(facts Facts, config Config) (Plan, error) {
 	create = append(create, Command{Binary: NMCLIPath, Args: []string{"connection", "up", BridgeName}})
 	phases := []CommandPhase{{Name: "create-bridge-connection", Commands: create}}
 	privilege := append([]Command(nil), helperCommands...)
-	privilege = append(privilege, Command{Binary: "/usr/bin/systemd-tmpfiles", Args: []string{"--create", TmpfilesPath}})
 	phases = append(phases, CommandPhase{Name: "helper-and-runtime-boundary", Commands: privilege})
 	commands := make([]Command, 0)
 	for _, phase := range phases {
 		commands = append(commands, phase.Commands...)
 	}
-	directories := []Directory{{Path: "/var/lib/farrow", Owner: "root:root", Mode: "0700"}, {Path: LeaseRoot, Owner: "root:root", Mode: "1777"}}
+	directories := []Directory{{Path: "/var/lib/farrow", Owner: "root:root", Mode: "0700"}}
 	if !facts.PublicDirExisted {
 		directories = append([]Directory{{Path: PublicStateDir, Owner: "root:root", Mode: "0755"}}, directories...)
 	}
@@ -598,8 +595,6 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 		{Path: BridgeConfPath, Owner: "root:root", Mode: "0644", Content: bridgeConf},
 		{Path: NetDevPath, Owner: "root:root", Mode: "0644", Content: netdev},
 		{Path: NetworkPath, Owner: "root:root", Mode: "0644", Content: network},
-		{Path: TmpfilesPath, Owner: "root:root", Mode: "0644", Content: "d /run/farrow 1777 root root -\n"},
-		{Path: LeaseLockPath, Owner: "root:root", Mode: "0666", Content: ""},
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	originalHelper := Override{Owner: "root", Group: facts.Helper.Group, Mode: fmt.Sprintf("%04o", facts.Helper.Mode)}
@@ -649,7 +644,6 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 	activate = append(activate, Command{Binary: "/usr/bin/networkctl", Args: []string{"reload"}}, Command{Binary: "/usr/bin/networkctl", Args: []string{"reconfigure", BridgeName}})
 	phases = append(phases, CommandPhase{Name: "activate-bridge", Commands: activate})
 	privilege := append([]Command(nil), helperCommands...)
-	privilege = append(privilege, Command{Binary: "/usr/bin/systemd-tmpfiles", Args: []string{"--create", TmpfilesPath}})
 	phases = append(phases, CommandPhase{Name: "helper-and-runtime-boundary", Commands: privilege})
 	if serviceState.UnitFileState != "enabled" {
 		phases = append(phases, CommandPhase{Name: "persist-after-attach-verification", Commands: []Command{{Binary: "/usr/bin/systemctl", Args: []string{"enable", "systemd-networkd.service"}}}})
@@ -658,7 +652,7 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 	for _, phase := range phases {
 		commands = append(commands, phase.Commands...)
 	}
-	directories := []Directory{{Path: "/var/lib/farrow", Owner: "root:root", Mode: "0700"}, {Path: LeaseRoot, Owner: "root:root", Mode: "1777"}}
+	directories := []Directory{{Path: "/var/lib/farrow", Owner: "root:root", Mode: "0700"}}
 	if !facts.QEMUConfigDirExisted {
 		directories = append([]Directory{{Path: QEMUConfigDir, Owner: "root:root", Mode: "0755"}}, directories...)
 	}
@@ -667,7 +661,7 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 
 func validateManifest(manifest Manifest) error {
 	backend := ManifestBackend(manifest)
-	if manifest.Schema != 1 || manifest.Bridge != BridgeName || manifest.LeaseRoot != LeaseRoot || (manifest.Family != Debian && manifest.Family != RPM) || (manifest.HelperPath != "/usr/lib/qemu/qemu-bridge-helper" && manifest.HelperPath != "/usr/libexec/qemu-bridge-helper") {
+	if manifest.Schema != 1 || manifest.Bridge != BridgeName || (manifest.LeaseRoot != "" && manifest.LeaseRoot != LeaseRoot) || (manifest.Family != Debian && manifest.Family != RPM) || (manifest.HelperPath != "/usr/lib/qemu/qemu-bridge-helper" && manifest.HelperPath != "/usr/libexec/qemu-bridge-helper") {
 		return errors.New("linux network ownership manifest identity is invalid")
 	}
 	if backend != BackendNetworkd && backend != BackendNetworkManager {
@@ -683,6 +677,7 @@ func validateManifest(manifest Manifest) error {
 		return err
 	}
 	var allowed map[string]struct{}
+	var required []string
 	if backend == BackendNetworkManager {
 		if !manifest.NetworkManager {
 			return errors.New("NetworkManager-backend manifest must record NetworkManager ownership")
@@ -690,7 +685,10 @@ func validateManifest(manifest Manifest) error {
 		if len(manifest.NetworkdUnits) != 0 {
 			return errors.New("NetworkManager-backend manifest must not carry networkd prestate")
 		}
+		// TmpfilesPath and LeaseLockPath survive only in pre-simplification
+		// manifests; new installs no longer write them.
 		allowed = map[string]struct{}{BridgeConfPath: {}, TmpfilesPath: {}, LeaseLockPath: {}, PublicStatePath: {}}
+		required = []string{BridgeConfPath, PublicStatePath}
 	} else {
 		if err := validateNetworkdUnits(manifest.NetworkdUnits); err != nil {
 			return err
@@ -699,9 +697,12 @@ func validateManifest(manifest Manifest) error {
 		if manifest.NetworkManager {
 			allowed[NetworkManagerPath] = struct{}{}
 		}
+		required = []string{BridgeConfPath, NetDevPath, NetworkPath}
 	}
-	if len(manifest.Files) != len(allowed) {
-		return errors.New("linux network manifest file allowlist size is invalid")
+	for _, pathname := range required {
+		if _, ok := manifest.Files[pathname]; !ok {
+			return errors.New("linux network manifest lacks a required managed file")
+		}
 	}
 	for pathname, digest := range manifest.Files {
 		if _, ok := allowed[pathname]; !ok || len(digest) != 64 {
@@ -735,7 +736,6 @@ func StrictManifest(data []byte) (Manifest, error) {
 }
 
 type UninstallFacts struct {
-	LeaseActive     bool
 	BridgeMembers   []string
 	CurrentFiles    map[string]string
 	CurrentHelper   Override
@@ -775,9 +775,6 @@ func restoreNetworkdCommands(units map[string]UnitState) []Command {
 func NewUninstallPlan(manifest Manifest, facts UninstallFacts) (UninstallPlan, error) {
 	if err := validateManifest(manifest); err != nil {
 		return UninstallPlan{}, err
-	}
-	if facts.LeaseActive {
-		return UninstallPlan{}, errors.New("refuse Linux network uninstall while a private lease is active")
 	}
 	if len(facts.BridgeMembers) > 0 {
 		return UninstallPlan{}, fmt.Errorf("refuse Linux network uninstall while farrow0 has members: %v", facts.BridgeMembers)

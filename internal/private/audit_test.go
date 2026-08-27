@@ -1,4 +1,4 @@
-package lease
+package private
 
 import (
 	"context"
@@ -12,12 +12,17 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/state"
 )
 
-type rejectingRunner struct{}
+type rejectingAuditRunner struct{}
 
-func (rejectingRunner) Run(context.Context, string, ...string) (execx.Result, error) {
+func (rejectingAuditRunner) Run(context.Context, string, ...string) (execx.Result, error) {
 	return execx.Result{}, errors.New("runner should not be called")
+}
+
+func auditNodeFixture() state.NodeState {
+	return state.NodeState{Node: "meta", VMUUID: "11111111-1111-4111-8111-111111111111"}
 }
 
 func serveQMPIdentity(t *testing.T, socket, name, uuid string) {
@@ -58,7 +63,8 @@ func serveQMPIdentity(t *testing.T, socket, name, uuid string) {
 
 func TestRuntimeIdentityAuditorQMPFirstAuthority(t *testing.T) {
 	t.Parallel()
-	directory, err := os.MkdirTemp("/tmp", "farrow-lease-qmp-")
+	// Unix socket paths are length-bounded; t.TempDir can exceed the limit.
+	directory, err := os.MkdirTemp("/tmp", "farrow-private-qmp-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,13 +72,10 @@ func TestRuntimeIdentityAuditorQMPFirstAuthority(t *testing.T) {
 		_ = os.Remove(filepath.Join(directory, "qmp.sock"))
 		_ = os.Remove(directory)
 	})
-	node := newLease(t, 10).Nodes[0]
-	node = preparedNode(node)
-	node.Runtime.Directory = directory
-	node.Runtime.QMP = filepath.Join(directory, "qmp.sock")
-	node.Runtime.PIDFile = filepath.Join(directory, "qemu.pid")
-	serveQMPIdentity(t, node.Runtime.QMP, node.Name, node.VMUUID)
-	observation, err := RuntimeIdentityAuditor(rejectingRunner{}, time.Second)(context.Background(), node)
+	node := auditNodeFixture()
+	node.Runtime = state.RuntimePaths{Directory: directory, QMP: filepath.Join(directory, "qmp.sock"), PIDFile: filepath.Join(directory, "qemu.pid")}
+	serveQMPIdentity(t, node.Runtime.QMP, node.Node, node.VMUUID)
+	observation, err := RuntimeIdentityAuditor(rejectingAuditRunner{}, time.Second)(context.Background(), node)
 	if err != nil || !observation.Live || observation.Authority != "qmp" {
 		t.Fatalf("QMP observation = %#v, %v", observation, err)
 	}
@@ -81,15 +84,12 @@ func TestRuntimeIdentityAuditorQMPFirstAuthority(t *testing.T) {
 func TestRuntimeIdentityAuditorDeadAndUnverifiedPID(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
-	node := newLease(t, 10).Nodes[0]
-	node = preparedNode(node)
-	node.Runtime.Directory = directory
-	node.Runtime.QMP = filepath.Join(directory, "qmp.sock")
-	node.Runtime.PIDFile = filepath.Join(directory, "qemu.pid")
+	node := auditNodeFixture()
+	node.Runtime = state.RuntimePaths{Directory: directory, QMP: filepath.Join(directory, "qmp.sock"), PIDFile: filepath.Join(directory, "qemu.pid")}
 	if err := os.WriteFile(node.Runtime.PIDFile, []byte("999999\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	auditor := RuntimeIdentityAuditor(rejectingRunner{}, 100*time.Millisecond)
+	auditor := RuntimeIdentityAuditor(rejectingAuditRunner{}, 100*time.Millisecond)
 	observation, err := auditor(context.Background(), node)
 	if err != nil || observation.Live || observation.Authority != "dead" {
 		t.Fatalf("dead observation = %#v, %v", observation, err)
@@ -102,11 +102,10 @@ func TestRuntimeIdentityAuditorDeadAndUnverifiedPID(t *testing.T) {
 	}
 }
 
-func TestRuntimeIdentityAuditorReservedNodeIsDeadAfterGrace(t *testing.T) {
+func TestRuntimeIdentityAuditorNodeWithoutRuntimeIsDead(t *testing.T) {
 	t.Parallel()
-	node := newLease(t, 10).Nodes[0]
-	observation, err := RuntimeIdentityAuditor(rejectingRunner{}, time.Second)(context.Background(), node)
+	observation, err := RuntimeIdentityAuditor(rejectingAuditRunner{}, time.Second)(context.Background(), auditNodeFixture())
 	if err != nil || observation.Live || observation.Authority != "dead" {
-		t.Fatalf("reserved observation = %#v, %v", observation, err)
+		t.Fatalf("runtime-less observation = %#v, %v", observation, err)
 	}
 }
