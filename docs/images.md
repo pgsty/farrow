@@ -154,7 +154,20 @@ Imports go through the same qcow2 safety checks as downloads.
 
 ## Catalog updates and new images
 
-The catalog is versioned and signed with minisign. A routine update is:
+The catalog is versioned and signed with minisign. The verifier embeds the
+active and standby production public keys (`internal/image/keys.go`); the
+private keys live on the repository build host under
+`/data/repo/keys/farrow/`, and `tools/catalogsign` performs key generation,
+signing, and verification with the exact implementation the CLI verifies
+with:
+
+```bash
+CATALOGSIGN_PASSWORD=... go run ./tools/catalogsign sign \
+  /data/repo/keys/farrow/farrow-catalog-active.key catalog.json SHA256SUMS
+```
+
+Rotation: sign with the standby key (already trusted by shipped binaries),
+then land a release that embeds a fresh standby. A routine update is:
 
 1. place the new qcow2 in its existing family directory using
    `<family>-<release>-<arch>.qcow2`;

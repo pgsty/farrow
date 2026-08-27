@@ -50,10 +50,14 @@ type ManifestManager struct {
 var manifestFilename = regexp.MustCompile(`^v[0-9]+-[0-9a-f]{64}\.json$`)
 
 func (m ManifestManager) keys() ([]minisign.PublicKey, error) {
-	if len(m.Keys) < 2 {
+	keys := m.Keys
+	if len(keys) == 0 {
+		keys = productionManifestKeys
+	}
+	if len(keys) < 2 {
 		return nil, errors.New("manifest verifier has no active and standby production public keys")
 	}
-	return append([]minisign.PublicKey(nil), m.Keys...), nil
+	return append([]minisign.PublicKey(nil), keys...), nil
 }
 
 func (m ManifestManager) root() string      { return filepath.Join(m.DataRoot, "manifests") }

@@ -78,15 +78,15 @@ func TestManifestManagerFailsClosedWithoutProductionRoots(t *testing.T) {
 		t.Fatalf("embedded catalog without external roots = %#v %#v %v", catalog, state, err)
 	}
 	path := signedCatalog(t, t.TempDir(), EmbeddedManifestVersion+1, privateKey(t, developmentPrivateRoot1), nil)
-	if _, err := untrusted.Sync(context.Background(), path, false); err == nil || !strings.Contains(err.Error(), "production public keys") {
-		t.Fatalf("unsigned production trust fallback remained available: %v", err)
+	if _, err := untrusted.Sync(context.Background(), path, false); err == nil || !strings.Contains(err.Error(), "unknown key ID") {
+		t.Fatalf("test-signed catalog was accepted by the embedded production verifier: %v", err)
 	}
 	trusted := ManifestManager{DataRoot: dataRoot, Keys: testManifestRoots(t)}
 	if _, err := trusted.Sync(context.Background(), path, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := untrusted.Current(); err == nil || !strings.Contains(err.Error(), "production public keys") {
-		t.Fatalf("active external manifest was accepted without its roots: %v", err)
+	if _, _, err := untrusted.Current(); err == nil || !strings.Contains(err.Error(), "unknown key ID") {
+		t.Fatalf("active external manifest was accepted without its signing roots: %v", err)
 	}
 	if _, err := untrusted.Reset(context.Background()); err != nil {
 		t.Fatal(err)
