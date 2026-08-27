@@ -206,6 +206,7 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 	case "destroy":
 		command.Flags().BoolVar(&options.Force, "force", false, "confirm destruction")
 		command.Flags().BoolVar(&options.DeletePersistent, "delete-persistent", false, "also delete owned persistent data disks")
+		command.Flags().BoolVar(&options.Purge, "purge", false, "terminal disposal: also delete persistent disks, keys, the registration, and the workspace marker")
 	}
 	command.RunE = func(_ *cobra.Command, nodes []string) error {
 		return commandError(runLifecycleCommand(name, options, nodes, stdout, stderr))
@@ -380,7 +381,20 @@ func newImageCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func newProjectCommand(stdout, stderr io.Writer) *cobra.Command {
-	parent := subcommandGroup("project", "Maintain current-project state", stdout, stderr)
+	parent := subcommandGroup("project", "Maintain project registrations and state", stdout, stderr)
+	remove := &cobra.Command{Use: "rm <project-id>", Short: "Destroy and deregister a project by ID (orphan removal)", Args: cobra.ExactArgs(1)}
+	remove.Flags().Bool("force", false, "confirm complete removal, including persistent disks and keys")
+	bindOperation(remove, stdout, stderr, func(arguments []string, stdout, stderr io.Writer) int {
+		return runProject(append([]string{"rm"}, arguments...), stdout, stderr)
+	})
+	parent.AddCommand(remove)
+	prune := &cobra.Command{Use: "prune", Short: "List or remove projects whose workspace directory is gone", Args: cobra.NoArgs}
+	prune.Flags().Bool("dry-run", false, "list orphaned projects without removing them (the default)")
+	prune.Flags().Bool("yes", false, "remove the listed orphaned projects")
+	bindOperation(prune, stdout, stderr, func(arguments []string, stdout, stderr io.Writer) int {
+		return runProject(append([]string{"prune"}, arguments...), stdout, stderr)
+	})
+	parent.AddCommand(prune)
 	for _, action := range []string{"purge-keys", "upgrade-state"} {
 		action := action
 		short := "Remove retained project SSH keys"

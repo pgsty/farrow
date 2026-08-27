@@ -318,6 +318,11 @@ func Create(cwd, dataRoot string) (Project, error) {
 	if err := fsutil.AtomicWrite(markerPath, data, 0o600); err != nil {
 		return Project{}, err
 	}
+	// The marker records the machine-local data root; the workspace directory
+	// is often a git checkout, so keep the whole .farrow directory out of it.
+	if err := fsutil.AtomicWrite(filepath.Join(markerDir, ".gitignore"), []byte("*\n"), 0o600); err != nil {
+		return Project{}, err
+	}
 	return project, nil
 }
 

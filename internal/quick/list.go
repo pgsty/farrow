@@ -1,7 +1,9 @@
 package quick
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/project"
 	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
 
@@ -31,11 +34,40 @@ type ListedProject struct {
 	Name      string       `json:"name,omitempty"`
 	CreatedAt time.Time    `json:"created_at"`
 	Root      string       `json:"root"`
+	WorkDir   string       `json:"work_dir,omitempty"`
 	Current   bool         `json:"current"`
+	// Orphan explains a broken project↔workspace link: "workdir-missing"
+	// (directory deleted), "workdir-mismatch" (directory reused by another
+	// project), or "unknown-workdir" (schema-1 marker predating work_dir).
+	Orphan    string       `json:"orphan,omitempty"`
 	Network   string       `json:"network,omitempty"`
 	SpecHash  string       `json:"spec_hash,omitempty"`
 	Nodes     []ListedNode `json:"nodes"`
 	Integrity string       `json:"integrity,omitempty"`
+}
+
+// OrphanState classifies one registered project against its recorded
+// workspace. The current project (opened from this cwd) is never an orphan.
+func OrphanState(marker project.Marker, current bool) string {
+	if current {
+		return ""
+	}
+	if marker.WorkDir == "" {
+		return "unknown-workdir"
+	}
+	workspaceMarker := filepath.Join(marker.WorkDir, ".farrow", "project.json")
+	data, err := os.ReadFile(workspaceMarker)
+	if errors.Is(err, os.ErrNotExist) {
+		return "workdir-missing"
+	}
+	if err != nil {
+		return "workdir-mismatch"
+	}
+	var decoded project.Marker
+	if decodeErr := jsonDecodeMarker(data, &decoded); decodeErr != nil || !decoded.SameIdentity(marker) {
+		return "workdir-mismatch"
+	}
+	return ""
 }
 
 type ListReport struct {
@@ -82,9 +114,11 @@ func (m Manager) List(ctx context.Context) (ListReport, error) {
 	for _, projectValue := range discovery.Projects {
 		listed := ListedProject{
 			ProjectID: projectValue.Marker.ProjectID, CreatedAt: projectValue.Marker.CreatedAt,
-			Root: projectValue.Root, Current: projectValue.Marker.ProjectID == currentID,
-			Nodes: []ListedNode{},
+			Root: projectValue.Root, WorkDir: projectValue.Marker.WorkDir,
+			Current: projectValue.Marker.ProjectID == currentID,
+			Nodes:   []ListedNode{},
 		}
+		listed.Orphan = OrphanState(projectValue.Marker, listed.Current)
 		store := state.Store{Project: projectValue}
 		projectState, projectErr := store.ReadProject()
 		if projectErr == nil {
@@ -102,8 +136,9 @@ func (m Manager) List(ctx context.Context) (ListReport, error) {
 					continue
 				}
 				listedNode := ListedNode{Name: node.Node, Persisted: node.Phase, Actual: "unknown", Image: node.Image.Alias, SSHPort: node.SSHPort, PID: node.Process.PID, UpdatedAt: node.UpdatedAt}
-				if node.ProjectID != projectState.ProjectID || node.SpecHash != projectState.SpecHash {
-					listed.Integrity = strings.TrimSpace(strings.Join([]string{listed.Integrity, "private node/project identity or spec hash mismatch"}, "; "))
+				expectedHash, hashErr := spec.NodeHash(projectState.Resolved, definition.Name)
+				if hashErr != nil || node.ProjectID != projectState.ProjectID || node.SpecHash != expectedHash {
+					listed.Integrity = strings.TrimSpace(strings.Join([]string{listed.Integrity, "private node/project identity or node hash mismatch"}, "; "))
 				}
 				qmpClient := &qmp.Client{Timeout: 500 * time.Millisecond}
 				actualName, nameErr := qmpClient.QueryName(ctx, node.Runtime.QMP)
@@ -188,4 +223,10 @@ func (report ListReport) CurrentRoot() string {
 		}
 	}
 	return ""
+}
+
+func jsonDecodeMarker(data []byte, destination *project.Marker) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(destination)
 }

@@ -55,6 +55,7 @@ const (
 type lifecycleOptions struct {
 	Force            bool
 	DeletePersistent bool
+	Purge            bool
 	NoWait           bool
 	Rollback         bool
 	RestartDrift     bool
@@ -519,8 +520,14 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 
 func runProject(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: farrow project purge-keys|upgrade-state [options]")
+		fmt.Fprintln(stderr, "usage: farrow project purge-keys|upgrade-state|rm|prune [options]")
 		return exitUsage
+	}
+	if args[0] == "rm" {
+		return runProjectRemove(args[1:], stdout, stderr)
+	}
+	if args[0] == "prune" {
+		return runProjectPrune(args[1:], stdout, stderr)
 	}
 	if args[0] == "upgrade-state" {
 		flags := newCommandFlagSet("project upgrade-state", stderr)
@@ -576,7 +583,7 @@ func runProject(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	if args[0] != "purge-keys" {
-		fmt.Fprintln(stderr, "usage: farrow project purge-keys|upgrade-state [options]")
+		fmt.Fprintln(stderr, "usage: farrow project purge-keys|upgrade-state|rm|prune [options]")
 		return exitUsage
 	}
 	flags := newCommandFlagSet("project purge-keys", stderr)
@@ -1335,7 +1342,7 @@ func selectLegacyQuickOperation(command string, options lifecycleOptions, manage
 	return timeout, operation, nil
 }
 
-func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, noWait, rollback, jsonOutput bool, stdout, stderr io.Writer) int {
+func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, purge, noWait, rollback, jsonOutput bool, stdout, stderr io.Writer) int {
 	operationID := ""
 	if command != "status" && command != "plan" {
 		var err error
@@ -1398,8 +1405,8 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		action := "private destroy"
 		if len(nodes) != 0 {
 			action = "private node destroy"
-			if deletePersistent {
-				fmt.Fprintln(stderr, "--delete-persistent applies to whole-project destroy only; delete a removed node's persistent disks afterwards with `farrow destroy --force --delete-persistent`")
+			if deletePersistent || purge {
+				fmt.Fprintln(stderr, "--delete-persistent and --purge apply to whole-project destroy only")
 				return exitUsage
 			}
 		}
@@ -1450,6 +1457,12 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	if err != nil {
 		return reportPrivateLifecycleError(err, operationID, jsonOutput, stdout, stderr)
 	}
+	if command == "destroy" && purge {
+		if purgeErr := purgeCurrentProject(ctx, stdout, stderr); purgeErr != nil {
+			errorf(stderr, "destroy succeeded but purge failed: %v", purgeErr)
+			return exitIntegrity
+		}
+	}
 	status.OperationID = operationID
 	if command == "up" || command == "start" || command == "restart" || command == "recreate" {
 		seen := make(map[string]struct{})
@@ -1475,8 +1488,13 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 }
 
 func runLifecycleCommand(command string, options lifecycleOptions, nodes []string, stdout, stderr io.Writer) int {
-	if options.DeletePersistent && !options.Force {
-		return reportCommandFailure(stdout, stderr, false, "usage", "--delete-persistent requires the separate --force destroy confirmation", "", exitUsage)
+	if (options.DeletePersistent || options.Purge) && !options.Force {
+		return reportCommandFailure(stdout, stderr, false, "usage", "--delete-persistent and --purge require the separate --force destroy confirmation", "", exitUsage)
+	}
+	if options.Purge {
+		// A purge is a terminal disposal; retained persistent disks make no
+		// sense past it.
+		options.DeletePersistent = true
 	}
 	if !quick.ValidLogLevel(options.LogLevel) {
 		return reportCommandFailure(stdout, stderr, false, "usage", fmt.Sprintf("invalid --log-level %q", options.LogLevel), "", exitUsage)
@@ -1511,7 +1529,7 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 		return reportCommandFailure(stdout, stderr, false, "usage", "--restart drift application is not available yet; review `farrow plan`, then apply reported changes with `farrow recreate --force <node...>`", "", exitUsage)
 	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
-	return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.NoWait, options.Rollback, false, stdout, stderr)
+	return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, false, stdout, stderr)
 }
 
 func runLegacyQuickCommand(command string, options lifecycleOptions, nodes []string, persisted spec.Resolved, stdout, stderr io.Writer) int {
@@ -1564,6 +1582,12 @@ func runLegacyQuickCommand(command string, options lifecycleOptions, nodes []str
 	progressItem.Stop(err)
 	if err != nil {
 		return reportQuickLifecycleError(err, operationID, stdout, stderr)
+	}
+	if command == "destroy" && options.Purge {
+		if purgeErr := purgeCurrentProject(ctx, stdout, stderr); purgeErr != nil {
+			errorf(stderr, "destroy succeeded but purge failed: %v", purgeErr)
+			return exitIntegrity
+		}
 	}
 	if structuredOutput(stdout, false) {
 		if code := encodeJSON(stdout, stderr, status); code != exitOK {
@@ -2128,6 +2152,12 @@ func runList(args []string, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintf(stdout, "%s %s %s\n", marker, projectValue.ProjectID, name)
 			fmt.Fprintf(stdout, "  root: %s\n", projectValue.Root)
+			if projectValue.WorkDir != "" {
+				fmt.Fprintf(stdout, "  workdir: %s\n", projectValue.WorkDir)
+			}
+			if projectValue.Orphan != "" {
+				fmt.Fprintf(stdout, "  orphan: %s (remove with `farrow project rm %s --force`)\n", projectValue.Orphan, projectValue.ProjectID)
+			}
 			for _, node := range projectValue.Nodes {
 				fmt.Fprintf(stdout, "  %s: %s (persisted %s)", node.Name, node.Actual, node.Persisted)
 				if node.SSHPort != 0 {
