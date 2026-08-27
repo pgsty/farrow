@@ -13,6 +13,7 @@ import (
 	"github.com/pgsty/farrow/internal/execx"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	setuphost "github.com/pgsty/farrow/internal/setup"
+	"golang.org/x/term"
 )
 
 type setupSequenceRunner struct {
@@ -232,6 +233,43 @@ func TestRunSetupTreatsSingleDashModeAsExplicit(t *testing.T) {
 	}
 }
 
+type recordingSetupRunner struct{ calls []string }
+
+func (r *recordingSetupRunner) Run(_ context.Context, binary string, args ...string) (execx.Result, error) {
+	r.calls = append(r.calls, strings.Join(append([]string{binary}, args...), " "))
+	return execx.Result{}, nil
+}
+
+func TestSetupSudoSessionAsksAtMostOnce(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; sudo session is a no-op")
+	}
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		t.Skip("interactive stdin would open a real sudo prompt")
+	}
+	runner := &recordingSetupRunner{}
+	var stderr bytes.Buffer
+	session := &setupSudoSession{base: runner, stderr: &stderr}
+	defer session.close()
+	ctx := context.Background()
+	if err := session.ensure(ctx, "install the network"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.ensure(ctx, "install the hosts helper"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != "/usr/bin/sudo -n -v" {
+		t.Fatalf("sudo credential calls = %v", runner.calls)
+	}
+	output := stderr.String()
+	if !strings.Contains(output, "install the network") || !strings.Contains(output, "one password prompt") {
+		t.Fatalf("first privileged step was not announced: %q", output)
+	}
+	if strings.Contains(output, "install the hosts helper") {
+		t.Fatalf("later privileged steps must not re-prompt or re-announce: %q", output)
+	}
+}
+
 func TestSetupCommandFailureSeparatesChangedFromUncertain(t *testing.T) {
 	commands := []setuphost.Command{
 		{Name: "first", Binary: "/usr/bin/true"},
@@ -247,7 +285,8 @@ func TestSetupCommandFailureSeparatesChangedFromUncertain(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &setupSequenceRunner{failAt: test.failAt}
-			changed, uncertain, err := runSetupCommands(context.Background(), commands, runner, &bytes.Buffer{})
+			sudo := &setupSudoSession{base: runner, stderr: &bytes.Buffer{}}
+			changed, uncertain, err := runSetupCommands(context.Background(), commands, runner, sudo, &bytes.Buffer{})
 			if err == nil || changed != test.wantChanged || !uncertain {
 				t.Fatalf("changed=%t uncertain=%t err=%v", changed, uncertain, err)
 			}

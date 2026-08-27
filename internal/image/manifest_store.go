@@ -20,6 +20,7 @@ import (
 
 	"aead.dev/minisign"
 	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/webclient"
 	"github.com/pgsty/farrow/internal/lock"
 )
 
@@ -224,7 +225,7 @@ func readLimitedFile(path string, limit int64) ([]byte, error) {
 }
 
 func (m ManifestManager) httpClient() *http.Client {
-	client := http.Client{Timeout: 30 * time.Second}
+	client := *webclient.New(30 * time.Second)
 	if m.HTTPClient != nil {
 		client = *m.HTTPClient
 		if client.Timeout == 0 {

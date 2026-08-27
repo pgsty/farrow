@@ -118,6 +118,9 @@ func (e Executor) readInstalled(ctx context.Context) (InstallPlan, bool, error) 
 		return InstallPlan{}, false, err
 	}
 	plan, err := NewInstallPlanModeNetwork(state.Arch, state.InterfaceID, state.Mode, state.CIDR)
+	if err == nil {
+		plan, err = plan.WithRecordedBinaries(state.Source, state.SocketSHA256, state.ClientSHA256)
+	}
 	if err != nil || plan.State != state {
 		return InstallPlan{}, false, errors.New("installed Darwin network state does not reproduce the pinned plan")
 	}
@@ -138,11 +141,11 @@ func (e Executor) readInstalled(ctx context.Context) (InstallPlan, bool, error) 
 		return InstallPlan{}, false, errors.New("installed Darwin network state bytes differ from the pinned plan")
 	}
 	daemonDigest, err := digestFile(DaemonPath)
-	if err != nil || daemonDigest != plan.Release.SocketSHA256 {
+	if err != nil || daemonDigest != plan.SocketDigest() {
 		return InstallPlan{}, false, errors.New("installed socket_vmnet digest mismatch")
 	}
 	clientDigest, err := digestFile(ClientPath)
-	if err != nil || clientDigest != plan.Release.ClientSHA256 {
+	if err != nil || clientDigest != plan.ClientDigest() {
 		return InstallPlan{}, false, errors.New("installed socket_vmnet_client digest mismatch")
 	}
 	for _, target := range []struct{ path, owner, group, mode, kind string }{
@@ -171,7 +174,29 @@ func (e Executor) PlanInstallMode(ctx context.Context, archive, interfaceID, arc
 	return e.PlanInstallModeNetwork(ctx, archive, interfaceID, arch, mode, subnet.DefaultCIDR)
 }
 
+// installOrigin selects where the socket_vmnet bytes come from: exactly one
+// of the pinned release archive or prebuilt local (Homebrew) binaries.
+type installOrigin struct {
+	archive  string
+	binaries *LocalBinaries
+}
+
+func (o installOrigin) provided() bool {
+	return o.archive != "" || o.binaries != nil
+}
+
 func (e Executor) PlanInstallModeNetwork(ctx context.Context, archive, interfaceID, arch, mode, cidr string) (InstallReport, error) {
+	return e.planInstall(ctx, installOrigin{archive: archive}, interfaceID, arch, mode, cidr)
+}
+
+// PlanInstallFromHomebrew plans an installation whose binaries are copied
+// from a version-matched Homebrew keg; their digests are recorded in the
+// network state and public marker for all later verification.
+func (e Executor) PlanInstallFromHomebrew(ctx context.Context, binaries LocalBinaries, interfaceID, arch, mode, cidr string) (InstallReport, error) {
+	return e.planInstall(ctx, installOrigin{binaries: &binaries}, interfaceID, arch, mode, cidr)
+}
+
+func (e Executor) planInstall(ctx context.Context, origin installOrigin, interfaceID, arch, mode, cidr string) (InstallReport, error) {
 	if err := e.validate(); err != nil {
 		return InstallReport{}, err
 	}
@@ -197,22 +222,35 @@ func (e Executor) PlanInstallModeNetwork(ctx context.Context, archive, interface
 		if interfaceID != "" && interfaceID != installedPlan.State.InterfaceID {
 			return InstallReport{}, errors.New("requested interface ID differs from installed Darwin network state")
 		}
-		if archive != "" {
-			if _, err := VerifyArchive(archive, installedPlan.State.Arch); err != nil {
+		if origin.archive != "" {
+			if _, err := VerifyArchive(origin.archive, installedPlan.State.Arch); err != nil {
 				return InstallReport{}, err
 			}
 		}
 		return InstallReport{Action: "none", Plan: installedPlan, Targets: darwinTargets(), Checks: map[string]string{"installed": "exact pinned bytes and metadata verified"}, Warnings: warnings}, nil
 	}
-	if archive == "" || interfaceID == "" {
+	if !origin.provided() || interfaceID == "" {
 		return InstallReport{}, errors.New("fresh Darwin network install requires --archive and --interface-id")
 	}
-	if _, err := VerifyArchive(archive, arch); err != nil {
+	recordedSocketSHA, recordedClientSHA := "", ""
+	if origin.binaries != nil {
+		var verifyErr error
+		recordedSocketSHA, recordedClientSHA, verifyErr = VerifyLocalBinaries(*origin.binaries)
+		if verifyErr != nil {
+			return InstallReport{}, verifyErr
+		}
+	} else if _, err := VerifyArchive(origin.archive, arch); err != nil {
 		return InstallReport{}, err
 	}
 	plan, err := NewInstallPlanModeNetwork(arch, interfaceID, mode, layout.CIDR())
 	if err != nil {
 		return InstallReport{}, err
+	}
+	if origin.binaries != nil {
+		plan, err = plan.WithRecordedBinaries(SourceHomebrew, recordedSocketSHA, recordedClientSHA)
+		if err != nil {
+			return InstallReport{}, err
+		}
 	}
 	if err := e.validateSharedInstallRoot(ctx); err != nil {
 		return InstallReport{}, err
@@ -392,8 +430,20 @@ func (e Executor) InstallMode(ctx context.Context, archive, interfaceID, arch, m
 	return e.InstallModeNetwork(ctx, archive, interfaceID, arch, mode, subnet.DefaultCIDR, apply)
 }
 
-func (e Executor) InstallModeNetwork(ctx context.Context, archive, interfaceID, arch, mode, cidr string, apply bool) (report InstallReport, retErr error) {
-	report, retErr = e.PlanInstallModeNetwork(ctx, archive, interfaceID, arch, mode, cidr)
+func (e Executor) InstallModeNetwork(ctx context.Context, archive, interfaceID, arch, mode, cidr string, apply bool) (InstallReport, error) {
+	return e.install(ctx, installOrigin{archive: archive}, interfaceID, arch, mode, cidr, apply)
+}
+
+// InstallFromHomebrew copies the formula's binaries into the root-owned
+// install root instead of extracting the pinned release archive. Root never
+// executes the user-writable brew keg itself: the bytes are staged, digested,
+// installed under root ownership, and re-verified before launchd starts them.
+func (e Executor) InstallFromHomebrew(ctx context.Context, binaries LocalBinaries, interfaceID, arch, mode, cidr string, apply bool) (InstallReport, error) {
+	return e.install(ctx, installOrigin{binaries: &binaries}, interfaceID, arch, mode, cidr, apply)
+}
+
+func (e Executor) install(ctx context.Context, origin installOrigin, interfaceID, arch, mode, cidr string, apply bool) (report InstallReport, retErr error) {
+	report, retErr = e.planInstall(ctx, origin, interfaceID, arch, mode, cidr)
 	if retErr != nil || !apply || report.Action == "none" {
 		return report, retErr
 	}
@@ -413,7 +463,11 @@ func (e Executor) InstallModeNetwork(ctx context.Context, archive, interfaceID, 
 	if err := os.Chmod(staging, 0o700); err != nil {
 		return report, err
 	}
-	if err := ExtractVerifiedBinaries(archive, arch, staging); err != nil {
+	if origin.binaries != nil {
+		if err := StageVerifiedLocalBinaries(*origin.binaries, staging, report.Plan.State.SocketSHA256, report.Plan.State.ClientSHA256); err != nil {
+			return report, err
+		}
+	} else if err := ExtractVerifiedBinaries(origin.archive, arch, staging); err != nil {
 		return report, err
 	}
 	plist, err := report.Plan.Plist()

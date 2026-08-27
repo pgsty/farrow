@@ -47,6 +47,11 @@ replayed on native hardware yet:
 - **Orphan governance.** Marker schema 2 (work_dir/name), orphan-aware
   `list`, `project rm`/`project prune`, `destroy --purge`.
 - **Verb alignment.** `halt`, `reload`, any-subnet `hosts install`.
+- **Setup UX.** Proxy-aware HTTP clients, the single sudo prompt with a
+  background credential keeper, the Homebrew socket_vmnet source with
+  recorded-digest provenance, and the checklist-style progress output.
+  **The Homebrew install path and the sudo keeper have not run against a
+  real `brew install` + password prompt end to end.**
 
 ## Not verified
 

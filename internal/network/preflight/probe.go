@@ -407,7 +407,12 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 				if interfaceReadErr != nil || interfaceParseErr != nil {
 					invalidate(&snapshot.Installation, darwinnet.InterfaceMarkerPath+": public interface identity is unreadable or invalid")
 				} else {
-					plan, planErr = plan.WithBSDInterface(interfaceMarker.BSDName)
+					// The root-owned public marker records the binary provenance;
+					// overlay it so the plan expects the recorded digests.
+					plan, planErr = plan.WithRecordedBinaries(interfaceMarker.Source, interfaceMarker.SocketSHA256, interfaceMarker.ClientSHA256)
+					if planErr == nil {
+						plan, planErr = plan.WithBSDInterface(interfaceMarker.BSDName)
+					}
 					if planErr != nil || plan.Interface != interfaceMarker {
 						invalidate(&snapshot.Installation, darwinnet.InterfaceMarkerPath+": interface identity differs from the pinned network plan")
 					} else if expectedInterface, markerErr := plan.InterfaceJSON(); markerErr != nil || !bytes.Equal(expectedInterface, interfaceData) {
@@ -415,10 +420,14 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 					}
 				}
 				release, releaseErr := darwinnet.PinnedRelease(request.Arch)
-				for _, binary := range []struct{ path, digest string }{{darwinnet.DaemonPath, release.SocketSHA256}, {darwinnet.ClientPath, release.ClientSHA256}} {
+				expectedSocketSHA, expectedClientSHA := release.SocketSHA256, release.ClientSHA256
+				if interfaceReadErr == nil && interfaceParseErr == nil && interfaceMarker.Source != "" {
+					expectedSocketSHA, expectedClientSHA = interfaceMarker.SocketSHA256, interfaceMarker.ClientSHA256
+				}
+				for _, binary := range []struct{ path, digest string }{{darwinnet.DaemonPath, expectedSocketSHA}, {darwinnet.ClientPath, expectedClientSHA}} {
 					data, readErr := p.readFile(binary.path)
 					if releaseErr != nil || readErr != nil || len(data) == 0 || len(data) > 64<<20 || digestBytes(data) != binary.digest {
-						invalidate(&snapshot.Installation, binary.path+": installed digest differs from the pinned release")
+						invalidate(&snapshot.Installation, binary.path+": installed digest differs from the recorded provenance")
 					}
 				}
 				if stateInfo, stateErr := p.lstat(darwinnet.StatePath); stateErr == nil {

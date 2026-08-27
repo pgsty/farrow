@@ -493,11 +493,28 @@ func (item *progress) Report(event activity.Event) {
 	if event.Done {
 		marker = styled(item.stderr, ansiGreen, "✓")
 	}
-	if item.tty {
-		fmt.Fprintf(item.stderr, "\r\x1b[2K%s %s", marker, message)
-	} else {
+	if !item.tty {
 		fmt.Fprintf(item.stderr, "%s %s\n", marker, message)
+		return
 	}
+	if event.Done {
+		// A completed phase persists as a checklist row; the live line
+		// falls back to the overall command summary until the next phase.
+		fmt.Fprintf(item.stderr, "\r\x1b[2K%s %s\n", marker, message)
+		item.message = item.summary
+		return
+	}
+	fmt.Fprintf(item.stderr, "\r\x1b[2K%s %s", marker, message)
+}
+
+// tickf persists an already-satisfied step as a completed checklist row, so a
+// healthy repeat run still renders the full checklist.
+func tickf(stderr io.Writer, format string, arguments ...any) {
+	state := outputContextFrom(stderr)
+	if state == nil || (!state.stderrFile && !state.verbose) {
+		return
+	}
+	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiGreen, "✓"), fmt.Sprintf(format, arguments...))
 }
 
 func deferredProgressReporter(item **progress) activity.Reporter {

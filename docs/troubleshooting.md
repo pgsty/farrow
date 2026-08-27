@@ -234,6 +234,17 @@ release any lease and use the explicit `network uninstall` plan. If ownership
 is ambiguous, preserve it and repair the named host component as an
 administrator; do not remove paths by glob.
 
+## macOS: setup cannot fetch socket_vmnet
+
+Setup prefers the Homebrew formula (`brew install socket_vmnet`), which
+follows your brew mirror and proxy configuration. The release download is
+only the fallback, and it honors `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`. When
+github.com is unreachable, either install the formula through your brew
+mirror, point `FARROW_REPO` at a mirror that serves
+`<repo>/socket_vmnet/<archive>`, or drop the release tarball anywhere and
+pass `FARROW_VMNET_ARCHIVE=/path/to.tar.gz` — every source is SHA-256
+verified, so mirrors need not be trusted.
+
 ## macOS: the socket exists but `10.10.10.1` does not
 
 socket_vmnet can create its Unix socket before `vmnet.framework` succeeds. If

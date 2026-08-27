@@ -62,9 +62,15 @@ preserved and reported.
 Setup installs missing QEMU/image/firmware/SSH/network dependencies through
 Homebrew, APT, or DNF, verifies native acceleration, installs or reuses the
 host-global private network, and digest-verifies the companion hosts helper.
-`--mode` is macOS-only (`host` default). `--network-cidr` applies only to a
-newly generated template. The full decision table is in
-[networking.md](networking.md).
+On macOS the socket_vmnet backend comes from the version-matched Homebrew
+formula by default (installed as the user when absent, then copied into
+root-owned `/opt/farrow`); the digest-pinned release download —
+`FARROW_VMNET_ARCHIVE`, a `FARROW_REPO` mirror, or github.com — is the
+fallback. Setup prints one plan, then asks for the sudo password at most
+once per run; all downloads honor the standard `HTTPS_PROXY`/`HTTP_PROXY`/
+`NO_PROXY` environment variables. `--mode` is macOS-only (`host` default).
+`--network-cidr` applies only to a newly generated template. The full
+decision table is in [networking.md](networking.md).
 
 ## Lifecycle
 

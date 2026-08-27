@@ -236,13 +236,45 @@ func extractOne(archivePath, targetName, targetPath, expectedDigest string) erro
 	}
 }
 
-// ExtractVerifiedBinaries writes only the two executables into a new or empty
-// user-owned staging directory. Privileged code must install and re-verify the
-// bytes in a root-owned destination before launching them.
-func ExtractVerifiedBinaries(archivePath, arch, stagingDir string) error {
-	if _, err := VerifyArchive(archivePath, arch); err != nil {
-		return err
+// LocalBinaries names prebuilt socket_vmnet executables already on this host,
+// such as the keg of a version-matched Homebrew formula.
+type LocalBinaries struct {
+	Socket string `json:"socket"`
+	Client string `json:"client"`
+}
+
+func localBinaryDigest(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
 	}
+	if !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > 4<<20 {
+		return "", fmt.Errorf("socket_vmnet binary must be a regular non-empty file under 4 MiB: %s", path)
+	}
+	digest, err := fileDigest(path)
+	if err != nil {
+		return "", fmt.Errorf("digest %s: %w", path, err)
+	}
+	return digest, nil
+}
+
+// VerifyLocalBinaries digests prebuilt executables so the install plan can
+// record them (trust-on-first-use at the moment root copies them; every later
+// verification pins against the recorded digests).
+func VerifyLocalBinaries(binaries LocalBinaries) (socketSHA, clientSHA string, err error) {
+	if !filepath.IsAbs(binaries.Socket) || !filepath.IsAbs(binaries.Client) {
+		return "", "", errors.New("socket_vmnet local binary paths must be absolute")
+	}
+	if socketSHA, err = localBinaryDigest(binaries.Socket); err != nil {
+		return "", "", err
+	}
+	if clientSHA, err = localBinaryDigest(binaries.Client); err != nil {
+		return "", "", err
+	}
+	return socketSHA, clientSHA, nil
+}
+
+func emptyStagingDir(stagingDir string) error {
 	if stagingDir == "" || !filepath.IsAbs(stagingDir) {
 		return errors.New("socket_vmnet staging directory must be absolute")
 	}
@@ -259,6 +291,71 @@ func ExtractVerifiedBinaries(archivePath, arch, stagingDir string) error {
 	}
 	if len(entries) != 0 {
 		return errors.New("socket_vmnet staging directory must be empty")
+	}
+	return nil
+}
+
+func stageOne(sourcePath, targetPath, expectedDigest string) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	output, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err != nil {
+		return err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.Remove(targetPath)
+		}
+	}()
+	hash := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(output, hash), io.LimitReader(source, 4<<20))
+	if copyErr == nil {
+		copyErr = output.Sync()
+	}
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if digest := hex.EncodeToString(hash.Sum(nil)); digest != expectedDigest {
+		return fmt.Errorf("staged %s digest %s does not match recorded %s", filepath.Base(targetPath), digest, expectedDigest)
+	}
+	keep = true
+	return nil
+}
+
+// StageVerifiedLocalBinaries copies prebuilt executables into a new or empty
+// user-owned staging directory and requires the staged bytes to match the
+// digests already recorded in the install plan, guarding against the source
+// files changing between planning and staging.
+func StageVerifiedLocalBinaries(binaries LocalBinaries, stagingDir, socketSHA, clientSHA string) error {
+	if !hexDigestPattern.MatchString(socketSHA) || !hexDigestPattern.MatchString(clientSHA) {
+		return errors.New("socket_vmnet staging requires recorded binary digests")
+	}
+	if err := emptyStagingDir(stagingDir); err != nil {
+		return err
+	}
+	if err := stageOne(binaries.Socket, filepath.Join(stagingDir, "socket_vmnet"), socketSHA); err != nil {
+		return err
+	}
+	return stageOne(binaries.Client, filepath.Join(stagingDir, "socket_vmnet_client"), clientSHA)
+}
+
+// ExtractVerifiedBinaries writes only the two executables into a new or empty
+// user-owned staging directory. Privileged code must install and re-verify the
+// bytes in a root-owned destination before launching them.
+func ExtractVerifiedBinaries(archivePath, arch, stagingDir string) error {
+	if _, err := VerifyArchive(archivePath, arch); err != nil {
+		return err
+	}
+	if err := emptyStagingDir(stagingDir); err != nil {
+		return err
 	}
 	release, _ := PinnedRelease(arch)
 	if err := extractOne(archivePath, "opt/socket_vmnet/bin/socket_vmnet", filepath.Join(stagingDir, "socket_vmnet"), release.SocketSHA256); err != nil {

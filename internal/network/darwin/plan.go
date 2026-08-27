@@ -31,6 +31,13 @@ const (
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 var bsdInterfacePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,14}$`)
+var hexDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// SourceHomebrew marks an installation whose binaries were copied from the
+// version-matched Homebrew formula instead of the pinned release archive. The
+// per-binary digests are recorded at install time and every later
+// verification pins against those recorded values.
+const SourceHomebrew = "homebrew"
 
 type NetworkState struct {
 	Schema      int    `json:"schema"`
@@ -42,17 +49,38 @@ type NetworkState struct {
 	HostAddress string `json:"host_address"`
 	DHCPEnd     string `json:"dhcp_end"`
 	InterfaceID string `json:"interface_id"`
+	// Provenance of the installed binaries. Empty Source means the pinned
+	// release archive (ArchiveSHA present, embedded per-binary digests apply).
+	Source       string `json:"source,omitempty"`
+	SocketSHA256 string `json:"socket_sha256,omitempty"`
+	ClientSHA256 string `json:"client_sha256,omitempty"`
 }
 
 // InterfaceMarker is deliberately public and non-secret. Its protected twin
 // at InterfaceStatePath prevents a merely plausible pre-existing BSD
-// interface from being treated as Farrow-owned.
+// interface from being treated as Farrow-owned. It also carries the binary
+// provenance so the unprivileged preflight can verify the installed
+// executables without reading the root-only network state.
 type InterfaceMarker struct {
-	Schema      int    `json:"schema"`
-	InterfaceID string `json:"interface_id"`
-	CIDR        string `json:"cidr"`
-	HostAddress string `json:"host_address"`
-	BSDName     string `json:"bsd_name"`
+	Schema       int    `json:"schema"`
+	InterfaceID  string `json:"interface_id"`
+	CIDR         string `json:"cidr"`
+	HostAddress  string `json:"host_address"`
+	BSDName      string `json:"bsd_name"`
+	Source       string `json:"source,omitempty"`
+	SocketSHA256 string `json:"socket_sha256,omitempty"`
+	ClientSHA256 string `json:"client_sha256,omitempty"`
+}
+
+func validProvenance(source, socketSHA, clientSHA string) bool {
+	switch source {
+	case "":
+		return socketSHA == "" && clientSHA == ""
+	case SourceHomebrew:
+		return hexDigestPattern.MatchString(socketSHA) && hexDigestPattern.MatchString(clientSHA)
+	default:
+		return false
+	}
 }
 
 type InstallPlan struct {
@@ -79,7 +107,8 @@ func StrictInterfaceMarker(data []byte) (InterfaceMarker, error) {
 	layout, layoutErr := subnet.Parse(marker.CIDR)
 	if marker.Schema != 1 || !uuidPattern.MatchString(marker.InterfaceID) ||
 		layoutErr != nil || marker.HostAddress != layout.HostAddress() ||
-		!bsdInterfacePattern.MatchString(marker.BSDName) {
+		!bsdInterfacePattern.MatchString(marker.BSDName) ||
+		!validProvenance(marker.Source, marker.SocketSHA256, marker.ClientSHA256) {
 		return InterfaceMarker{}, errors.New("darwin interface marker contract is invalid")
 	}
 	canonical, err := marshalInterfaceMarker(marker)
@@ -107,9 +136,19 @@ func StrictNetworkState(data []byte) (NetworkState, error) {
 	if state.Schema != 1 || state.Release != ReleaseVersion || (state.Arch != "arm64" && state.Arch != "amd64") || (state.Mode != "host" && state.Mode != "shared") || layoutErr != nil || state.HostAddress != layout.HostAddress() || state.DHCPEnd != layout.DHCPEnd() || !uuidPattern.MatchString(state.InterfaceID) {
 		return NetworkState{}, errors.New("darwin network state contract is invalid")
 	}
-	release, err := PinnedRelease(state.Arch)
-	if err != nil || state.ArchiveSHA != release.SHA256 {
-		return NetworkState{}, errors.New("darwin network state release digest is invalid")
+	if !validProvenance(state.Source, state.SocketSHA256, state.ClientSHA256) {
+		return NetworkState{}, errors.New("darwin network state binary provenance is invalid")
+	}
+	switch state.Source {
+	case "":
+		release, err := PinnedRelease(state.Arch)
+		if err != nil || state.ArchiveSHA != release.SHA256 {
+			return NetworkState{}, errors.New("darwin network state release digest is invalid")
+		}
+	case SourceHomebrew:
+		if state.ArchiveSHA != "" {
+			return NetworkState{}, errors.New("darwin network state mixes archive and Homebrew provenance")
+		}
 	}
 	return state, nil
 }
@@ -156,10 +195,41 @@ func NewInstallPlanModeNetwork(arch, interfaceID, mode, cidr string) (InstallPla
 	return InstallPlan{Release: release, State: state, Args: args}, nil
 }
 
+// WithRecordedBinaries overlays recorded binary provenance onto the pinned
+// plan. Empty source restates the archive default; SourceHomebrew pins every
+// later verification to the digests recorded at install time.
+func (p InstallPlan) WithRecordedBinaries(source, socketSHA, clientSHA string) (InstallPlan, error) {
+	if !validProvenance(source, socketSHA, clientSHA) {
+		return InstallPlan{}, errors.New("darwin binary provenance is invalid")
+	}
+	p.State.Source, p.State.SocketSHA256, p.State.ClientSHA256 = source, socketSHA, clientSHA
+	if source == SourceHomebrew {
+		p.State.ArchiveSHA = ""
+	}
+	return p, nil
+}
+
+// SocketDigest is the digest the installed daemon must have: recorded at
+// install time when present, the embedded pinned-release digest otherwise.
+func (p InstallPlan) SocketDigest() string {
+	if p.State.SocketSHA256 != "" {
+		return p.State.SocketSHA256
+	}
+	return p.Release.SocketSHA256
+}
+
+func (p InstallPlan) ClientDigest() string {
+	if p.State.ClientSHA256 != "" {
+		return p.State.ClientSHA256
+	}
+	return p.Release.ClientSHA256
+}
+
 func (p InstallPlan) WithBSDInterface(name string) (InstallPlan, error) {
 	marker := InterfaceMarker{
 		Schema: 1, InterfaceID: p.State.InterfaceID, CIDR: p.State.CIDR,
 		HostAddress: p.State.HostAddress, BSDName: name,
+		Source: p.State.Source, SocketSHA256: p.State.SocketSHA256, ClientSHA256: p.State.ClientSHA256,
 	}
 	data, err := marshalInterfaceMarker(marker)
 	if err != nil {
@@ -183,7 +253,8 @@ func marshalInterfaceMarker(marker InterfaceMarker) ([]byte, error) {
 
 func (p InstallPlan) InterfaceJSON() ([]byte, error) {
 	if p.Interface.InterfaceID != p.State.InterfaceID || p.Interface.CIDR != p.State.CIDR ||
-		p.Interface.HostAddress != p.State.HostAddress {
+		p.Interface.HostAddress != p.State.HostAddress || p.Interface.Source != p.State.Source ||
+		p.Interface.SocketSHA256 != p.State.SocketSHA256 || p.Interface.ClientSHA256 != p.State.ClientSHA256 {
 		return nil, errors.New("darwin interface marker differs from the protected network plan")
 	}
 	data, err := marshalInterfaceMarker(p.Interface)

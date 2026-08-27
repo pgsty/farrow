@@ -20,6 +20,7 @@ import (
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/webclient"
 	"github.com/pgsty/farrow/internal/lock"
 )
 
@@ -334,7 +335,7 @@ func (s Store) Import(ctx context.Context, source, expectedDigest string) (strin
 }
 
 func (s Store) httpClient() *http.Client {
-	client := http.Client{Timeout: 30 * time.Minute}
+	client := *webclient.New(30 * time.Minute)
 	if s.HTTPClient != nil {
 		client = *s.HTTPClient
 		if client.Timeout == 0 {

@@ -79,12 +79,29 @@ requires root or a restricted entitlement, so *some* root component is
 physically unavoidable on macOS — this is the same constraint VirtualBox
 solves with a kext and OrbStack with a privileged helper).
 
-Setup downloads the release pinned in the binary, verifies its SHA-256 and
-archive structure, generates one persistent interface UUID, installs the root
-service, and records the exact BSD interface it created in protected identity
-markers. Preflight accepts only that interface; a foreign VirtualBox,
-OrbStack, Internet Sharing, or VPN interface holding `.1/24` is never
-adopted.
+Setup obtains the socket_vmnet binaries from the first source that works,
+generates one persistent interface UUID, installs the root service, and
+records the exact BSD interface it created in protected identity markers.
+Preflight accepts only that interface; a foreign VirtualBox, OrbStack,
+Internet Sharing, or VPN interface holding `.1/24` is never adopted.
+
+The source order is:
+
+1. a previously verified archive in the download cache;
+2. `FARROW_VMNET_ARCHIVE=/path/to.tar.gz` (a digest mismatch is an error);
+3. the Homebrew formula: setup runs `brew install socket_vmnet` (as the
+   user) when the formula is absent, requires its keg version to match the
+   pinned release, and copies the binaries into root-owned `/opt/farrow` —
+   brew honors the user's mirror and proxy configuration, so the default
+   path never has to reach github.com;
+4. the release archive pinned in the binary, downloaded from a
+   `FARROW_REPO` mirror or github.com/lima-vm, SHA-256 verified either way.
+
+Archive sources are verified against digests embedded in the Farrow binary.
+Homebrew binaries are digested at install time and those digests are recorded
+in the root-owned network state and public identity marker; every later
+verification (doctor, preflight, setup reruns) pins against the recorded
+values, so post-install tampering is detected identically for both sources.
 
 The default vmnet mode is `host` — since internet rides the management NIC,
 the private NIC needs no second NAT, and host mode avoids contending with

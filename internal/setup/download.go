@@ -15,6 +15,7 @@ import (
 	"github.com/pgsty/farrow/internal/activity"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/webclient"
 )
 
 const maxSocketVMNetArchive = 4 << 20
@@ -31,18 +32,15 @@ type DownloadResult struct {
 }
 
 func defaultHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 2 * time.Minute,
-		CheckRedirect: func(request *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("too many socket_vmnet redirects")
-			}
-			if request.URL.Scheme != "https" {
-				return errors.New("socket_vmnet redirect is not HTTPS")
-			}
-			return nil
-		},
-	}
+	return webclient.NewWithRedirectPolicy(2*time.Minute, func(request *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many socket_vmnet redirects")
+		}
+		if request.URL.Scheme != "https" {
+			return errors.New("socket_vmnet redirect is not HTTPS")
+		}
+		return nil
+	})
 }
 
 func ensureCacheDirectory(path string) error {

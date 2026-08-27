@@ -158,6 +158,8 @@ implemented yet — today those are per-node recreates too.
 |---|---|
 | `FARROW_HOME` | data root override; default `~/.farrow` on both platforms |
 | `FARROW_REPO` | image repository URL or absolute local directory; overridden by `--repo` |
+| `FARROW_VMNET_ARCHIVE` | local socket_vmnet release tarball for macOS setup (digest-verified) |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | honored by every Farrow download |
 | `FARROW_OUTPUT` / `FARROW_VERBOSE` | default presentation settings |
 | `XDG_RUNTIME_DIR` | parent for QMP sockets and pidfiles |
 

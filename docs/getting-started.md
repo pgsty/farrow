@@ -26,11 +26,12 @@ software emulation.
 | RHEL/Rocky/AlmaLinux/Oracle 9 (KVM) | NetworkManager backend implemented; native replay pending |
 | macOS amd64, Linux arm64 | built and unit-tested |
 
-On macOS, install Homebrew first — Farrow uses it to install QEMU but
+On macOS, install Homebrew first — Farrow uses it to install QEMU and the
+socket_vmnet network backend (through your configured brew mirror), but
 deliberately does not run Homebrew's own remote installer for you. On Linux,
-setup uses APT or DNF and asks for sudo when a package is missing. Preparing
-the private network crosses the root boundary once, with the transaction
-printed first.
+setup uses APT or DNF and asks for sudo when a package is missing. Setup
+prints its whole plan first and asks for the sudo password at most once per
+run.
 
 Keep each lab in its own directory: the directory plus its configuration file
 is the project.

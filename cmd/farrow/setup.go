@@ -449,29 +449,63 @@ func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) er
 	}
 }
 
-func acquireSetupSudo(ctx context.Context, base execx.Runner, stderr io.Writer, reason string) error {
+// setupSudoSession asks for the user's password at most once per setup run.
+// The first privileged step announces its reason and prompts; a background
+// keeper then refreshes the cached credential every minute until setup
+// finishes, so no later step prompts again — even when a slow download or
+// package installation outlives sudo's timestamp window.
+type setupSudoSession struct {
+	base     execx.Runner
+	stderr   io.Writer
+	acquired bool
+	stop     context.CancelFunc
+}
+
+func (session *setupSudoSession) ensure(ctx context.Context, reason string) error {
 	if os.Geteuid() == 0 {
 		return nil
 	}
+	if session.acquired {
+		return nil
+	}
 	if reason != "" {
-		fmt.Fprintf(stderr, "%s sudo needed: %s\n", styled(stderr, ansiCyan, "→"), reason)
+		fmt.Fprintf(session.stderr, "%s sudo needed: %s\n", styled(session.stderr, ansiCyan, "→"), reason)
+		fmt.Fprintln(session.stderr, "  one password prompt covers this whole setup run")
 	}
 	const sudo = "/usr/bin/sudo"
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		command := exec.CommandContext(ctx, sudo, "-v")
 		command.Stdin = os.Stdin
-		command.Stdout = rawWriter(stderr)
-		command.Stderr = rawWriter(stderr)
+		command.Stdout = rawWriter(session.stderr)
+		command.Stderr = rawWriter(session.stderr)
 		if err := command.Run(); err != nil {
 			return fmt.Errorf("acquire sudo credential: %w", err)
 		}
-		return nil
-	}
-	_, err := base.Run(ctx, sudo, "-n", "-v")
-	if err != nil {
+	} else if _, err := session.base.Run(ctx, sudo, "-n", "-v"); err != nil {
 		return errors.New("setup requires an existing non-interactive sudo credential; run sudo -v or use a terminal")
 	}
+	keeperContext, cancel := context.WithCancel(ctx)
+	session.stop = cancel
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keeperContext.Done():
+				return
+			case <-ticker.C:
+				_, _ = session.base.Run(keeperContext, sudo, "-n", "-v")
+			}
+		}
+	}()
+	session.acquired = true
 	return nil
+}
+
+func (session *setupSudoSession) close() {
+	if session.stop != nil {
+		session.stop()
+	}
 }
 
 func setupRootRunner(base execx.Runner) execx.Runner {
@@ -481,13 +515,13 @@ func setupRootRunner(base execx.Runner) execx.Runner {
 	return sudoRunner{base: base}
 }
 
-func runSetupCommands(ctx context.Context, commands []setuphost.Command, base execx.Runner, stderr io.Writer) (changed, mutationUncertain bool, err error) {
+func runSetupCommands(ctx context.Context, commands []setuphost.Command, base execx.Runner, sudo *setupSudoSession, stderr io.Writer) (changed, mutationUncertain bool, err error) {
 	for _, command := range commands {
 		if err := command.Validate(); err != nil {
 			return changed, false, err
 		}
 		if command.Root {
-			if err := acquireSetupSudo(ctx, base, stderr, command.Name+" (system package manager)"); err != nil {
+			if err := sudo.ensure(ctx, command.Name+" (system package manager)"); err != nil {
 				return changed, false, err
 			}
 		}
@@ -512,8 +546,9 @@ func setupNeedsNetworkInstall(report netpreflight.Report) bool {
 	return report.Installation.Status == "" || report.Installation.Status == "absent"
 }
 
-func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo string, report netpreflight.Report, base execx.Runner, stderr io.Writer) (setupStep, bool, error) {
+func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo string, report netpreflight.Report, base execx.Runner, sudo *setupSudoSession, stderr io.Writer) (setupStep, bool, error) {
 	if !setupNeedsNetworkInstall(report) {
+		tickf(stderr, "Network %s is already installed", report.CIDR)
 		return setupStep{Name: "network", Status: "ready", Detail: report.CIDR}, false, nil
 	}
 	// Refresh immediately before the network transaction. Package installation
@@ -522,11 +557,30 @@ func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo
 	if runtime.GOOS != "darwin" {
 		networkReason = "install the host-global " + report.CIDR + " network (root-owned farrow0 bridge)"
 	}
-	if err := acquireSetupSudo(ctx, base, stderr, networkReason); err != nil {
+	if err := sudo.ensure(ctx, networkReason); err != nil {
 		return setupStep{}, false, err
 	}
 	if runtime.GOOS == "darwin" {
+		interfaceID, err := project.NewUUID()
+		if err != nil {
+			return setupStep{}, false, err
+		}
+		executor := darwinnet.Executor{User: base, Root: setupRootRunner(base)}
 		sources := setuphost.SourcesFromEnvironment(repo)
+		// Prefer the version-matched Homebrew formula when no pinned archive
+		// is already local: brew honors the user's mirror and proxy
+		// configuration, so nothing has to reach github.com.
+		if sources.Archive == "" && !setuphost.SocketVMNetCached(runtime.GOARCH) {
+			if binaries, ok := setupHomebrewSocketVMNet(ctx, base, stderr); ok {
+				progressItem := startProgress(ctx, stderr, "Installing the private network (socket_vmnet from Homebrew, root-owned copy)")
+				installReport, err := executor.InstallFromHomebrew(ctx, binaries, interfaceID, runtime.GOARCH, mode, report.CIDR, true)
+				progressItem.Stop(err)
+				if err != nil {
+					return setupStep{}, true, err
+				}
+				return setupStep{Name: "network", Status: "installed", Detail: installReport.Plan.State.CIDR, Changed: installReport.Applied}, false, nil
+			}
+		}
 		var downloadProgress *progress
 		sources.Progress = deferredProgressReporter(&downloadProgress)
 		downloadProgress = startProgress(ctx, stderr, "Fetching socket_vmnet "+darwinnet.ReleaseVersion+" (digest-pinned; sources: cache, FARROW_VMNET_ARCHIVE, FARROW_REPO, github.com)")
@@ -536,11 +590,6 @@ func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo
 			return setupStep{}, false, err
 		}
 		debugf(stderr, "socket_vmnet source=%s downloaded=%t", download.URL, download.Downloaded)
-		interfaceID, err := project.NewUUID()
-		if err != nil {
-			return setupStep{}, false, err
-		}
-		executor := darwinnet.Executor{User: base, Root: setupRootRunner(base)}
 		progressItem := startProgress(ctx, stderr, "Installing the private network")
 		installReport, err := executor.InstallModeNetwork(ctx, download.Path, interfaceID, runtime.GOARCH, mode, report.CIDR, true)
 		progressItem.Stop(err)
@@ -561,6 +610,44 @@ func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo
 		return setupStep{}, true, err
 	}
 	return setupStep{Name: "network", Status: "installed", Detail: report.CIDR, Changed: installReport.Applied}, false, nil
+}
+
+// setupHomebrewSocketVMNet resolves version-matched socket_vmnet binaries via
+// Homebrew, installing the formula (always as the user, never root) when it
+// is absent. false means the Homebrew source does not apply and the caller
+// falls back to the digest-pinned release download.
+func setupHomebrewSocketVMNet(ctx context.Context, base execx.Runner, stderr io.Writer) (darwinnet.LocalBinaries, bool) {
+	probe := darwinnet.HomebrewProbe{Runner: base}
+	discovery, err := probe.Discover(ctx)
+	if err != nil {
+		debugf(stderr, "homebrew socket_vmnet discovery failed: %v", err)
+		return darwinnet.LocalBinaries{}, false
+	}
+	if discovery.Status == darwinnet.HomebrewFormulaMissing {
+		brew, ok := probe.Brew()
+		if !ok {
+			return darwinnet.LocalBinaries{}, false
+		}
+		progressItem := startProgress(ctx, stderr, "Installing socket_vmnet "+darwinnet.ReleaseVersion+" (brew install "+darwinnet.SocketVMNetFormula+")")
+		_, installErr := base.Run(ctx, brew, "install", darwinnet.SocketVMNetFormula)
+		progressItem.Stop(installErr)
+		if installErr != nil {
+			fmt.Fprintf(stderr, "%s brew install %s failed; falling back to the digest-pinned release download\n", styled(stderr, ansiYellow, "!"), darwinnet.SocketVMNetFormula)
+			return darwinnet.LocalBinaries{}, false
+		}
+		discovery, err = probe.Discover(ctx)
+		if err != nil {
+			debugf(stderr, "homebrew socket_vmnet discovery failed: %v", err)
+			return darwinnet.LocalBinaries{}, false
+		}
+	}
+	if discovery.Status != darwinnet.HomebrewFound {
+		if discovery.Reason != "" {
+			debugf(stderr, "homebrew socket_vmnet unavailable: %s", discovery.Reason)
+		}
+		return darwinnet.LocalBinaries{}, false
+	}
+	return discovery.Binaries, true
 }
 
 func companionHostsHelper() (string, error) {
@@ -589,8 +676,9 @@ func companionHostsHelper() (string, error) {
 	return "", errors.New("matching farrow-hosts-helper was not found beside the CLI or in its package libexec directory")
 }
 
-func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, stderr io.Writer) (setupStep, bool, error) {
+func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, sudo *setupSudoSession, stderr io.Writer) (setupStep, bool, error) {
 	if digest, err := hostconfig.InstalledHelperDigest(); err == nil {
+		tickf(stderr, "Hosts helper is already installed")
 		return setupStep{Name: "hosts-helper", Status: "ready", Detail: digest}, false, nil
 	}
 	targetExists := false
@@ -610,7 +698,7 @@ func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, stderr io.Wr
 	if err != nil {
 		return setupStep{}, false, err
 	}
-	if err := acquireSetupSudo(ctx, base, stderr, "install the /etc/hosts helper at "+hostconfig.InstalledHelperPath+" (root-owned; lets `farrow hosts install` publish node names)"); err != nil {
+	if err := sudo.ensure(ctx, "install the /etc/hosts helper at "+hostconfig.InstalledHelperPath+" (root-owned; lets `farrow hosts install` publish node names)"); err != nil {
 		return setupStep{}, false, err
 	}
 	for _, directory := range []string{"/opt", "/opt/farrow", "/opt/farrow/libexec"} {
@@ -734,6 +822,10 @@ func setupNodesSummary(resolved spec.Resolved) string {
 	}
 }
 
+func planRow(stderr io.Writer, label, format string, arguments ...any) {
+	fmt.Fprintf(stderr, "  %s %s\n", styled(stderr, ansiDim, fmt.Sprintf("%-13s", label)), fmt.Sprintf(format, arguments...))
+}
+
 // printSetupPlan tells the user exactly what will happen, which parts need
 // root and why, and where any download would come from — before the single
 // confirmation prompt.
@@ -747,15 +839,15 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 
 	// config: which file defines the lab, and what it resolves to.
 	if selection.Publish {
-		fmt.Fprintf(stderr, "  config        create %s (%s template: %s)\n", selection.ConfigPath, selection.Profile, setupNodesSummary(selection.Resolved))
+		planRow(stderr, "config", "create %s (%s template: %s)", selection.ConfigPath, selection.Profile, setupNodesSummary(selection.Resolved))
 	} else if selection.ConfigPath != "" {
-		fmt.Fprintf(stderr, "  config        use %s (%s)\n", selection.ConfigPath, setupNodesSummary(selection.Resolved))
+		planRow(stderr, "config", "use %s (%s)", selection.ConfigPath, setupNodesSummary(selection.Resolved))
 	}
 
 	if len(plan.Commands) == 0 {
-		fmt.Fprintln(stderr, "  dependencies  ready (QEMU, qemu-img, UEFI firmware, OpenSSH)")
+		planRow(stderr, "dependencies", "ready (QEMU, qemu-img, UEFI firmware, OpenSSH)")
 	} else {
-		fmt.Fprintf(stderr, "  dependencies  install via %s: %s\n", plan.Manager, strings.Join(plan.Missing, ", "))
+		planRow(stderr, "dependencies", "install via %s: %s", plan.Manager, strings.Join(plan.Missing, ", "))
 		sudoFor = append(sudoFor, "package installation ("+plan.Manager+")")
 	}
 
@@ -772,18 +864,26 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 		if report.Installation.Mode != "" {
 			mode = " (vmnet " + report.Installation.Mode + " mode)"
 		}
-		fmt.Fprintf(stderr, "  network       %s %s%s — fixed guest IPs, host-reachable\n", action, report.CIDR, mode)
+		planRow(stderr, "network", "%s %s%s — fixed guest IPs, host-reachable", action, report.CIDR, mode)
 	} else {
-		fmt.Fprintf(stderr, "  network       install %s after dependencies — fixed guest IPs, host-reachable\n", selection.Resolved.Private.CIDR)
+		planRow(stderr, "network", "install %s after dependencies — fixed guest IPs, host-reachable", selection.Resolved.Private.CIDR)
 		networkInstall = true
 	}
 	if networkInstall {
 		if runtime.GOOS == "darwin" {
-			if setuphost.SocketVMNetCached(runtime.GOARCH) {
+			switch {
+			case os.Getenv("FARROW_VMNET_ARCHIVE") != "":
+				fmt.Fprintf(stderr, "                backend socket_vmnet %s from FARROW_VMNET_ARCHIVE (digest-verified)\n", darwinnet.ReleaseVersion)
+			case setuphost.SocketVMNetCached(runtime.GOARCH):
 				fmt.Fprintf(stderr, "                backend socket_vmnet %s already cached and verified; no download\n", darwinnet.ReleaseVersion)
-			} else {
-				fmt.Fprintf(stderr, "                downloads socket_vmnet %s (<4 MiB, SHA-256 pinned) from github.com/lima-vm\n", darwinnet.ReleaseVersion)
-				fmt.Fprintln(stderr, "                mirrors: FARROW_REPO/<repo>/socket_vmnet/ or FARROW_VMNET_ARCHIVE=/path/to.tar.gz")
+			default:
+				if _, ok := (darwinnet.HomebrewProbe{}).Brew(); ok {
+					fmt.Fprintf(stderr, "                backend socket_vmnet %s via Homebrew (brew install %s), copied into root-owned /opt/farrow\n", darwinnet.ReleaseVersion, darwinnet.SocketVMNetFormula)
+					fmt.Fprintln(stderr, "                fallback: digest-pinned download (FARROW_REPO mirror, github.com/lima-vm)")
+				} else {
+					fmt.Fprintf(stderr, "                downloads socket_vmnet %s (<4 MiB, SHA-256 pinned) from github.com/lima-vm\n", darwinnet.ReleaseVersion)
+					fmt.Fprintln(stderr, "                mirrors: FARROW_REPO/<repo>/socket_vmnet/ or FARROW_VMNET_ARCHIVE=/path/to.tar.gz")
+				}
 			}
 			sudoFor = append(sudoFor, "network service installation (socket_vmnet under /opt/farrow, root-owned)")
 		} else {
@@ -793,17 +893,17 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 	}
 
 	if _, err := hostconfig.InstalledHelperDigest(); err == nil {
-		fmt.Fprintln(stderr, "  hosts helper  ready")
+		planRow(stderr, "hosts helper", "ready")
 	} else {
-		fmt.Fprintf(stderr, "  hosts helper  install %s — the narrow root-owned publisher behind `farrow hosts install`\n", hostconfig.InstalledHelperPath)
+		planRow(stderr, "hosts helper", "install %s — the narrow root-owned publisher behind `farrow hosts install`", hostconfig.InstalledHelperPath)
 		sudoFor = append(sudoFor, "hosts-helper installation")
 	}
 
 	if len(sudoFor) == 0 {
-		fmt.Fprintln(stderr, "  privileges    none; no root action in this plan")
+		planRow(stderr, "privileges", "none; no root action in this plan")
 	} else {
-		fmt.Fprintf(stderr, "  privileges    sudo will be requested for: %s\n", strings.Join(sudoFor, "; "))
-		fmt.Fprintln(stderr, "                each request is announced with its reason before the password prompt")
+		planRow(stderr, "privileges", "sudo used for: %s", strings.Join(sudoFor, "; "))
+		fmt.Fprintln(stderr, "                at most one password prompt; the first privileged step explains itself")
 	}
 }
 
@@ -987,6 +1087,8 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 	base := execx.OSRunner{Timeout: 20 * time.Minute, OutputLimit: 64 << 10}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
+	sudoSession := &setupSudoSession{base: base, stderr: stderr}
+	defer sudoSession.close()
 	networkMode := ""
 	if private {
 		networkMode = "bridge"
@@ -1077,7 +1179,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		return failSetup(&result, exitConflict, err, stdout, stderr)
 	}
 	if len(dependencyPlan.Commands) > 0 {
-		changed, uncertain, err := runSetupCommands(ctx, dependencyPlan.Commands, base, stderr)
+		changed, uncertain, err := runSetupCommands(ctx, dependencyPlan.Commands, base, sudoSession, stderr)
 		result.Changed = result.Changed || changed
 		result.MutationUncertain = result.MutationUncertain || uncertain
 		if err != nil {
@@ -1086,6 +1188,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		}
 		result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "installed", Changed: changed})
 	} else {
+		tickf(stderr, "Dependencies ready (QEMU, qemu-img, UEFI firmware, OpenSSH)")
 		result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "ready"})
 	}
 	verifiedDependencies, err := setuphost.PlanDependencies(setuphost.DependencyProbe{}, private)
@@ -1140,7 +1243,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 			result.NextArgv = nil
 			return failSetup(&result, code, failure, stdout, stderr)
 		}
-		step, uncertain, installErr := applySetupNetwork(ctx, selection, networkMode, options.Repo, report, base, stderr)
+		step, uncertain, installErr := applySetupNetwork(ctx, selection, networkMode, options.Repo, report, base, sudoSession, stderr)
 		if installErr != nil {
 			result.MutationUncertain = result.MutationUncertain || uncertain
 			result.Steps = append(result.Steps, setupStep{Name: "network", Status: "failed"})
@@ -1160,7 +1263,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 			return failSetup(&result, exitIntegrity, fmt.Errorf("private network verification failed: %w", finalErr), stdout, stderr)
 		}
 		result.Network = &finalReport
-		helperStep, uncertain, helperErr := ensureSetupHostsHelper(ctx, base, stderr)
+		helperStep, uncertain, helperErr := ensureSetupHostsHelper(ctx, base, sudoSession, stderr)
 		result.Changed = result.Changed || helperStep.Changed
 		result.MutationUncertain = result.MutationUncertain || uncertain
 		if helperErr != nil {
@@ -1199,9 +1302,11 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		}
 		result.Config = selection.ConfigPath
 		result.Changed = true
+		tickf(stderr, "Wrote %s", selection.ConfigPath)
 		result.Steps = append(result.Steps, setupStep{Name: "config", Status: "created", Detail: selection.ConfigPath, Changed: true})
 	} else if selection.ConfigPath != "" {
 		result.Config = selection.ConfigPath
+		tickf(stderr, "Using %s", selection.ConfigPath)
 		result.Steps = append(result.Steps, setupStep{Name: "config", Status: "ready", Detail: selection.ConfigPath})
 	}
 	result.Applicable = true

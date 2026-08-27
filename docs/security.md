@@ -46,6 +46,21 @@ manager owns the host). macOS
 verifies the socket_vmnet archive and both extracted binary digests before any
 privileged step, and uninstall boots out only the pinned launchd label.
 
+When macOS setup sources socket_vmnet from the version-matched Homebrew
+formula instead of the release archive, the per-binary digests are computed
+at install time and recorded in the root-owned network state and the public
+identity marker; staging re-hashes the copies against those recorded values,
+and every later verification pins against them. This is trust-on-first-use
+for the initial bytes — the same trust already extended to Homebrew for QEMU
+itself, which runs the guests — while preserving the invariant that root only
+ever executes binaries from root-owned paths, never the user-writable brew
+keg. `brew` itself is always run as the invoking user.
+
+`farrow setup` asks for the sudo password at most once per run: the first
+privileged step explains itself and prompts, then a background keeper
+refreshes the cached credential until setup finishes, so a slow package
+installation or download can never trigger a second prompt.
+
 ## Deletion
 
 Directories holding runtime state, QMP sockets, keys and seeds are `0700`;
