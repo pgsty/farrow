@@ -6,6 +6,7 @@
 /farrow-net-stage
 /farrow-linux-net-stage
 /pigsty-vm
+/catalogsign
 /bin/
 /dist/
 /.goreleaser-companion/
@@ -14,7 +15,6 @@
 /.goreleaser-*/
 /.farrow-goreleaser.*/
 /.farrow-linux-packages.*/
-/.farrow/
 *.test
 *.out
 *.log

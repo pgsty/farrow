@@ -200,7 +200,7 @@ func discoverSetupConfig(cwd string) (string, error) {
 }
 
 func resolveSetupSelection(profileName, filePath, networkCIDR, cwd string) (setupSelection, error) {
-	target := filepath.Join(cwd, "pigsty.yml")
+	target := filepath.Join(cwd, "farrow.yml")
 	if filePath != "" && profileName != "" {
 		return setupSelection{}, errors.New("setup accepts either a lab template or -f, not both")
 	}

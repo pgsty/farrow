@@ -39,7 +39,7 @@ func TestResolveSetupSelectionDefaultsToMeta(t *testing.T) {
 	if selection.Mode != "private" || selection.Profile != "meta" || !selection.Publish || !selection.Generated {
 		t.Fatalf("default selection = %#v", selection)
 	}
-	if selection.ConfigPath != filepath.Join(directory, "pigsty.yml") {
+	if selection.ConfigPath != filepath.Join(directory, "farrow.yml") {
 		t.Fatalf("config path = %s", selection.ConfigPath)
 	}
 	if len(selection.Resolved.Nodes) != 1 || selection.Resolved.Nodes[0].Name != "meta" || selection.Resolved.Nodes[0].Address != "10.10.10.10" {
@@ -57,7 +57,7 @@ func TestResolveSetupSelectionGeneratesPrivateProfileOnce(t *testing.T) {
 	if selection.Mode != "private" || selection.Profile != "meta" || !selection.Publish || !selection.Generated || len(selection.ConfigData) == 0 {
 		t.Fatalf("generated selection = %#v", selection)
 	}
-	if selection.ConfigPath != filepath.Join(directory, "pigsty.yml") {
+	if selection.ConfigPath != filepath.Join(directory, "farrow.yml") {
 		t.Fatalf("config path = %s", selection.ConfigPath)
 	}
 	if err := os.WriteFile(selection.ConfigPath, selection.ConfigData, 0o600); err != nil {

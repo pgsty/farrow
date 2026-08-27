@@ -302,6 +302,16 @@ func TestDiscoverPigstyYML(t *testing.T) {
 	}
 }
 
+func TestDiscoverPrefersFarrowYMLOverPigstyYML(t *testing.T) {
+	directory := t.TempDir()
+	writeTestFile(t, directory, "pigsty.yml", fullInventory)
+	writeTestFile(t, directory, "farrow.yml", "all:\n  vars: {admin_ip: 10.10.10.10}\n  children:\n    nodes:\n      hosts:\n        10.10.10.10: {nodename: meta}\n")
+	file, path, err := Discover(directory, "")
+	if err != nil || !strings.HasSuffix(path, "farrow.yml") || len(file.Nodes) != 1 {
+		t.Fatalf("farrow.yml priority: path=%q nodes=%d err=%v", path, len(file.Nodes), err)
+	}
+}
+
 func TestDiscoverMissingConfig(t *testing.T) {
 	_, _, err := Discover(t.TempDir(), "")
 	if !errors.Is(err, ErrNoConfig) {

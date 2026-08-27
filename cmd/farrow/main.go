@@ -1617,7 +1617,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	flags := newCommandFlagSet("init", stderr)
 	jsonOutput := flags.Bool("json", false, "emit stable JSON")
 	networkCIDR := flags.String("network-cidr", "", "rebase the template to one RFC1918 IPv4 /24")
-	output := flags.String("output", "", "write to this path instead of ./pigsty.yml; '-' writes to stdout")
+	output := flags.String("output", "", "write to this path instead of ./farrow.yml; '-' writes to stdout")
 	force := flags.Bool("force", false, "overwrite an existing configuration file")
 	if err := flags.Parse(args); err != nil || flags.NArg() > 1 {
 		fmt.Fprintf(stderr, "usage: farrow init [%s] [--network-cidr RFC1918/24] [-o path|-] [--force]\n", strings.Join(config.TemplateNames(), "|"))
@@ -1656,7 +1656,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 			errorf(stderr, "%v", cwdErr)
 			return exitRuntime
 		}
-		target = filepath.Join(cwd, "pigsty.yml")
+		target = filepath.Join(cwd, "farrow.yml")
 	}
 	target, err = filepath.Abs(target)
 	if err != nil {

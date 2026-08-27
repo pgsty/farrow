@@ -15,9 +15,10 @@ var ErrLegacyConfig = errors.New("the version:/nodes: farrow.yaml format was ret
 var ErrNoConfig = errors.New("no configuration found; run `farrow setup` to create one, or pass -f")
 
 // DiscoveryNames are the configuration filenames probed in the working
-// directory, in order. farrow.yaml is a filename convenience only — the
-// content format is the same inventory in every case.
-var DiscoveryNames = []string{"farrow.yaml", "pigsty.yml", "pigsty.yaml"}
+// directory, in order: an explicit farrow.yml wins over the Pigsty inventory
+// it would otherwise share. The .yaml spellings are filename conveniences —
+// the content format is the same inventory in every case.
+var DiscoveryNames = []string{"farrow.yml", "farrow.yaml", "pigsty.yml", "pigsty.yaml"}
 
 func readBounded(path string) ([]byte, error) {
 	info, err := os.Lstat(path)

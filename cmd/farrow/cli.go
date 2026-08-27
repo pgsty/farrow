@@ -168,7 +168,7 @@ func newInitCommand(stdout, stderr io.Writer) *cobra.Command {
 		ValidArgsFunction: templateCompletion,
 	}
 	command.Flags().String("network-cidr", "", "rebase the template to an RFC1918 IPv4 /24")
-	command.Flags().StringP("output", "o", "", "write to this path instead of ./pigsty.yml; '-' writes to stdout")
+	command.Flags().StringP("output", "o", "", "write to this path instead of ./farrow.yml; '-' writes to stdout")
 	command.Flags().Bool("force", false, "overwrite an existing configuration file")
 	bindOperation(command, stdout, stderr, runInit)
 	return command
