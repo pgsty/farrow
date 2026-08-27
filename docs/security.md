@@ -129,14 +129,6 @@ generated canary secrets.
 Redaction is defense in depth, not a guarantee. Review the printed file list
 and manifest before sharing a bundle.
 
-## Inventory output
-
-Rendered Pigsty inventory is secret-bearing configuration. It is written mode
-0600 beside a strict JSON sidecar holding source and output digests,
-scale, subnet and mode. Replacement requires `--force` and a current file whose
-digest still matches its sidecar. Unmanaged, hand-edited, symlinked, cross-user
-or multiply-linked files are never adopted.
-
 ## Supply chain
 
 Remote images require a pinned digest and exact byte count from the signed

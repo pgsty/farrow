@@ -73,7 +73,7 @@ func materializeRescueWorkspace(registered project.Project) (string, error) {
 // preserved and reported.
 func removeProjectHusk(root string) error {
 	allowedFiles := map[string]struct{}{"project.json": {}, "project.lock": {}, "events.jsonl": {}}
-	allowedDirs := map[string]struct{}{"nodes": {}, "keys": {}, "persistent": {}}
+	allowedDirs := map[string]struct{}{"nodes": {}, "keys": {}, "persistent-disks": {}}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return err

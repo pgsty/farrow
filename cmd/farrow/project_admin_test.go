@@ -56,6 +56,14 @@ func TestProjectPruneAndRemoveOrphanRegistration(t *testing.T) {
 		t.Fatalf("list orphan code=%d stdout=%q", code, stdout.String())
 	}
 
+	// Empty post-destroy residue directories (retained-disk store, keys) must
+	// not block removal; the directory names must match the real stores.
+	for _, name := range []string{"persistent-disks", "keys", "nodes"} {
+		if err := os.Mkdir(filepath.Join(created.Root, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// Remove it by ID; the registration directory disappears entirely.
 	stdout.Reset()
 	stderr.Reset()

@@ -9,7 +9,7 @@ QEMU.
 ```text
 CLI -> desired spec -> resolved spec -> plan -> node transaction
                                                  |-> image / disks / seed
-                                                 |-> user or private network
+                                                 |-> management (slirp) + private NIC
                                                  |-> QEMU process -> QMP
                                                  `-> SSH + ready marker / explicit provision
 ```
