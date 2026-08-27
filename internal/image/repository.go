@@ -10,10 +10,11 @@ import (
 
 const CatalogFilename = "catalog.json"
 
-// DefaultRepositoryURL is intentionally empty until the public image host is
-// chosen. Release builds may set it with -ldflags -X. FARROW_REPO and --repo
-// remain runtime overrides.
-var DefaultRepositoryURL = ""
+// DefaultRepositoryURL is the development repository until the public image
+// host goes live (a failed default sync falls back to the embedded catalog,
+// so hosts that cannot reach it lose nothing). Release builds may override it
+// with -ldflags -X. FARROW_REPO and --repo remain runtime overrides.
+var DefaultRepositoryURL = "https://m0/farrow"
 
 func NormalizeRepository(value string) (string, error) {
 	value = strings.TrimSpace(value)

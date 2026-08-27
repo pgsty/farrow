@@ -26,20 +26,22 @@ rate, and ETA. The following checksum pass reports its own byte progress, so a
 large local verification is distinguishable from a stalled download. URL
 credentials, query strings, and fragments are not printed.
 
-The public repository variable `image.DefaultRepositoryURL` is intentionally
-empty for now and can be injected by the release build with Go `-ldflags -X`
-once the final domain is chosen. The disposable development repository is:
+The default repository (`image.DefaultRepositoryURL`) is the development
+host `https://m0/farrow` until the public image host goes live; the release
+build will override it with Go `-ldflags -X`. A failed default sync falls
+back to the embedded catalog, so machines that cannot reach it lose nothing.
+Overrides:
 
 ```bash
-farrow image pull --repo http://m0/repos/farrow u24
+farrow image pull --repo https://m0/farrow u24
 # The same override is accepted by the lifecycle path:
-farrow up --repo http://m0/repos/farrow
-# Or keep the development override for the current shell:
-export FARROW_REPO=http://m0/repos/farrow
+farrow up --repo https://m0/farrow
+# Or keep the override for the current shell:
+export FARROW_REPO=https://m0/farrow
 ```
 
-HTTP is useful for a signed catalog and digest-verified image on the local M0
-network. A public repository must use HTTPS.
+The signed catalog and digest-verified artifacts make plain HTTP acceptable
+on a trusted LAN; a public repository must use HTTPS.
 
 ## Available aliases
 
@@ -82,6 +84,9 @@ catalog.json
 catalog.json.minisig
 SHA256SUMS                 # optional operator/human attachment
 SHA256SUMS.minisig         # optional
+socket_vmnet/              # macOS network backend mirror (see networking.md)
+  socket_vmnet-1.2.2-arm64.tar.gz
+  socket_vmnet-1.2.2-x86_64.tar.gz
 u24/
   u24-20260801.0.0-amd64.qcow2
   u24-20260801.0.0-arm64.qcow2
