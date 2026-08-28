@@ -37,6 +37,110 @@ func hostGroupName(gid uint32) (string, error) {
 	return group.Name, nil
 }
 
+func selectAccessGroup(primary string, memberships []string) (string, error) {
+	if !accessGroupPattern.MatchString(primary) {
+		return "", fmt.Errorf("unsafe primary group name %q", primary)
+	}
+	for _, name := range memberships {
+		if name == "kvm" {
+			return name, nil
+		}
+	}
+	return primary, nil
+}
+
+type groupIdentity struct {
+	Primary uint32
+	Groups  []uint32
+}
+
+func parseUnixID(label, value string) (uint32, error) {
+	parsed, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q", label, value)
+	}
+	return uint32(parsed), nil
+}
+
+func sudoGroupIdentity(rawUID, rawGID string, account *user.User, rawGroups []string) (groupIdentity, error) {
+	uid, err := parseUnixID("SUDO_UID", rawUID)
+	if err != nil || uid == 0 {
+		return groupIdentity{}, errors.New("debian network install as root requires a non-root SUDO_UID/SUDO_GID; invoke farrow as the target user")
+	}
+	gid, err := parseUnixID("SUDO_GID", rawGID)
+	if err != nil {
+		return groupIdentity{}, err
+	}
+	if account == nil {
+		return groupIdentity{}, errors.New("sudo invoking-user identity is unavailable")
+	}
+	accountUID, uidErr := parseUnixID("sudo account uid", account.Uid)
+	accountGID, gidErr := parseUnixID("sudo account gid", account.Gid)
+	if uidErr != nil || gidErr != nil || accountUID != uid || accountGID != gid {
+		return groupIdentity{}, errors.New("SUDO_UID/SUDO_GID do not match the invoking-user account")
+	}
+	groups := []uint32{gid}
+	for _, raw := range rawGroups {
+		groupID, parseErr := parseUnixID("supplementary group id", raw)
+		if parseErr == nil {
+			groups = append(groups, groupID)
+		}
+	}
+	return groupIdentity{Primary: gid, Groups: groups}, nil
+}
+
+func invokingGroupIdentity() (groupIdentity, error) {
+	if os.Geteuid() != 0 {
+		groupIDs, err := os.Getgroups()
+		if err != nil {
+			return groupIdentity{}, err
+		}
+		groups := make([]uint32, 0, len(groupIDs)+1)
+		groups = append(groups, uint32(os.Getgid()))
+		for _, gid := range groupIDs {
+			if gid >= 0 {
+				groups = append(groups, uint32(gid))
+			}
+		}
+		return groupIdentity{Primary: uint32(os.Getgid()), Groups: groups}, nil
+	}
+	rawUID := os.Getenv("SUDO_UID")
+	account, err := user.LookupId(rawUID)
+	if err != nil {
+		return groupIdentity{}, errors.New("cannot resolve the non-root SUDO_UID account for Debian network install")
+	}
+	rawGroups, err := account.GroupIds()
+	if err != nil {
+		// The primary group is still a valid, least-privilege access boundary.
+		rawGroups = nil
+	}
+	return sudoGroupIdentity(rawUID, os.Getenv("SUDO_GID"), account, rawGroups)
+}
+
+func accessGroupForIdentity(identity groupIdentity, lookup func(uint32) (string, error)) (string, error) {
+	primary, err := lookup(identity.Primary)
+	if err != nil {
+		return "", err
+	}
+	memberships := make([]string, 0, len(identity.Groups)+1)
+	memberships = append(memberships, primary)
+	for _, gid := range identity.Groups {
+		name, lookupErr := lookup(gid)
+		if lookupErr == nil {
+			memberships = append(memberships, name)
+		}
+	}
+	return selectAccessGroup(primary, memberships)
+}
+
+func discoverAccessGroup() (string, error) {
+	identity, err := invokingGroupIdentity()
+	if err != nil {
+		return "", err
+	}
+	return accessGroupForIdentity(identity, hostGroupName)
+}
+
 func safeRootParents(path string) bool {
 	clean := filepath.Clean(path)
 	for parent := filepath.Dir(clean); ; parent = filepath.Dir(parent) {
@@ -182,6 +286,10 @@ func discoverManifest(ctx context.Context, privileged execx.Runner) (*Manifest, 
 }
 
 func DiscoverFacts(ctx context.Context, runner, privileged execx.Runner) (Facts, error) {
+	return discoverFacts(ctx, runner, privileged, true)
+}
+
+func discoverFacts(ctx context.Context, runner, privileged execx.Runner, needAccessGroup bool) (Facts, error) {
 	if runner == nil || privileged == nil {
 		return Facts{}, errors.New("linux network discovery requires user and privileged runners")
 	}
@@ -207,6 +315,13 @@ func DiscoverFacts(ctx context.Context, runner, privileged execx.Runner) (Facts,
 	helper, err := discoverHelper(ctx, runner, family)
 	if err != nil {
 		return Facts{}, err
+	}
+	accessGroup := ""
+	if family == Debian && needAccessGroup {
+		accessGroup, err = discoverAccessGroup()
+		if err != nil {
+			return Facts{}, err
+		}
 	}
 	manifest, err := discoverManifest(ctx, privileged)
 	if err != nil {
@@ -283,6 +398,6 @@ func DiscoverFacts(ctx context.Context, runner, privileged execx.Runner) (Facts,
 		Family: family, Systemd: true, NetworkdActive: networkdActive, NetworkdUnits: units, NetworkdActivation: networkdActivation,
 		NetworkManagerActive: nmActive, NMConnectionExists: nmConnectionExists, FirewalldActive: firewalldActive,
 		PublicDirExisted: publicDirExists, BridgeExists: bridgeExists, BridgeOwned: bridgeExists && manifest != nil,
-		BridgeConf: bridgeConf, BridgeConfState: bridgeState, QEMUConfigDirExisted: qemuDirExists, Helper: helper, ExistingManifest: manifest,
+		BridgeConf: bridgeConf, BridgeConfState: bridgeState, QEMUConfigDirExisted: qemuDirExists, Helper: helper, AccessGroup: accessGroup, ExistingManifest: manifest,
 	}, nil
 }

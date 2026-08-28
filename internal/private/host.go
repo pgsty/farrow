@@ -56,17 +56,6 @@ func rootOwned(path string, mode os.FileMode, kind string) (os.FileInfo, error) 
 	return info, nil
 }
 
-func rootSticky(path string) error {
-	info, err := rootOwned(path, 0o777, "directory")
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSticky == 0 {
-		return fmt.Errorf("%s lacks the sticky bit", path)
-	}
-	return nil
-}
-
 func expectedPrivateLayout(expected *spec.PrivateNetwork) (subnet.Layout, error) {
 	if expected == nil {
 		return subnet.Layout{}, errors.New("private host preflight requires an expected network")
@@ -115,9 +104,6 @@ func darwinHostPreflight(ctx context.Context, profile platform.Profile, expected
 		return Backend{}, err
 	}
 	if _, err := rootOwned(darwinnet.SocketPath, 0o770, "socket"); err != nil {
-		return Backend{}, err
-	}
-	if err := rootSticky(darwinnet.LeaseRoot); err != nil {
 		return Backend{}, err
 	}
 	result, err := runner.Run(ctx, "/usr/bin/plutil", "-extract", "ProgramArguments", "json", "-o", "-", darwinnet.PlistPath)
@@ -196,8 +182,8 @@ func linuxHostFamily(data []byte) (linuxnet.Family, error) {
 func validateLinuxHelperPolicy(family linuxnet.Family, mode uint32, group string) error {
 	switch family {
 	case linuxnet.Debian:
-		if mode != 0o4750 || group != "kvm" {
-			return errors.New("debian qemu-bridge-helper must be root:kvm mode-4750")
+		if mode != 0o4750 || group == "" {
+			return errors.New("debian qemu-bridge-helper must be setuid root and group-executable (mode 4750)")
 		}
 	case linuxnet.RPM:
 		if mode != 0o4755 || group != "root" {
@@ -278,12 +264,15 @@ func linuxHostPreflight(ctx context.Context, expected *spec.PrivateNetwork, runn
 		return Backend{}, err
 	}
 	if family == linuxnet.Debian {
+		if !platform.CurrentProcessInGroup(statistics.Gid) {
+			return Backend{}, fmt.Errorf("qemu-bridge-helper group %s does not include the invoking user", group.Name)
+		}
 		packageOwner, packageErr := runner.Run(ctx, "/usr/bin/dpkg-query", "-S", helper)
 		if packageErr != nil || !strings.Contains(string(packageOwner.Stdout), ": "+helper) {
 			return Backend{}, errors.New("qemu-bridge-helper is not owned by a Debian package")
 		}
 		override, overrideErr := runner.Run(ctx, "/usr/bin/dpkg-statoverride", "--list", helper)
-		if overrideErr != nil || strings.TrimSpace(string(override.Stdout)) != "root kvm 4750 "+helper {
+		if overrideErr != nil || strings.TrimSpace(string(override.Stdout)) != "root "+group.Name+" 4750 "+helper {
 			return Backend{}, errors.New("qemu-bridge-helper dpkg override does not match Farrow policy")
 		}
 	} else {
@@ -292,12 +281,44 @@ func linuxHostPreflight(ctx context.Context, expected *spec.PrivateNetwork, runn
 			return Backend{}, errors.New("qemu-bridge-helper is not owned by an RPM package")
 		}
 	}
-	if err := requireExactRootFile(linuxnet.NetDevPath, "[NetDev]\nName=farrow0\nKind=bridge\n", 0o644); err != nil {
-		return Backend{}, err
+	backend := linuxnet.BackendNetworkd
+	if publicInfo, publicErr := os.Lstat(linuxnet.PublicStatePath); publicErr == nil {
+		backend = linuxnet.BackendNetworkManager
+		if !publicInfo.Mode().IsRegular() || publicInfo.Mode()&os.ModeSymlink != 0 {
+			return Backend{}, errors.New("NetworkManager public state is not a regular non-symlink file")
+		}
+		if _, err := rootOwned(linuxnet.PublicStateDir, 0o755, "directory"); err != nil {
+			return Backend{}, err
+		}
+		if _, err := rootOwned(linuxnet.PublicStatePath, 0o644, "file"); err != nil {
+			return Backend{}, err
+		}
+		publicData, err := os.ReadFile(linuxnet.PublicStatePath)
+		if err != nil {
+			return Backend{}, err
+		}
+		publicState, err := linuxnet.ParsePublicState(publicData)
+		if err != nil || publicState.CIDR != layout.CIDR() || publicState.HostAddress != layout.HostAddress() || publicState.DHCPEnd != layout.DHCPEnd() {
+			return Backend{}, errors.New("NetworkManager public state does not match the requested network")
+		}
+		for _, stale := range []string{linuxnet.NetDevPath, linuxnet.NetworkPath, linuxnet.NetworkManagerPath} {
+			if _, err := os.Lstat(stale); err == nil {
+				return Backend{}, fmt.Errorf("NetworkManager backend has stale networkd path: %s", stale)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return Backend{}, err
+			}
+		}
+	} else if !errors.Is(publicErr, os.ErrNotExist) {
+		return Backend{}, publicErr
 	}
-	wantNetwork := fmt.Sprintf("[Match]\nName=farrow0\n\n[Network]\nAddress=%s/24\nConfigureWithoutCarrier=yes\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Link]\nRequiredForOnline=no\n", layout.HostAddress())
-	if err := requireExactRootFile(linuxnet.NetworkPath, wantNetwork, 0o644); err != nil {
-		return Backend{}, err
+	if backend == linuxnet.BackendNetworkd {
+		if err := requireExactRootFile(linuxnet.NetDevPath, "[NetDev]\nName=farrow0\nKind=bridge\n", 0o644); err != nil {
+			return Backend{}, err
+		}
+		wantNetwork := fmt.Sprintf("[Match]\nName=farrow0\n\n[Network]\nAddress=%s/24\nConfigureWithoutCarrier=yes\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Link]\nRequiredForOnline=no\n", layout.HostAddress())
+		if err := requireExactRootFile(linuxnet.NetworkPath, wantNetwork, 0o644); err != nil {
+			return Backend{}, err
+		}
 	}
 	if _, err := rootOwned(linuxnet.BridgeConfPath, 0o644, "file"); err != nil {
 		return Backend{}, err
@@ -309,15 +330,26 @@ func linuxHostPreflight(ctx context.Context, expected *spec.PrivateNetwork, runn
 	if _, err := rootOwned("/var/lib/farrow", 0o700, "directory"); err != nil {
 		return Backend{}, err
 	}
-	if err := rootSticky(linuxnet.LeaseRoot); err != nil {
-		return Backend{}, err
+	service := "systemd-networkd.service"
+	if backend == linuxnet.BackendNetworkManager {
+		service = "NetworkManager.service"
 	}
-	if _, err := rootOwned(linuxnet.LeaseLockPath, 0o666, "file"); err != nil {
-		return Backend{}, err
-	}
-	active, err := runner.Run(ctx, "/usr/bin/systemctl", "is-active", "systemd-networkd.service")
+	active, err := runner.Run(ctx, "/usr/bin/systemctl", "is-active", service)
 	if err != nil || strings.TrimSpace(string(active.Stdout)) != "active" {
-		return Backend{}, errors.New("systemd-networkd is not active")
+		return Backend{}, fmt.Errorf("%s is not active", service)
+	}
+	if backend == linuxnet.BackendNetworkManager {
+		connections, err := runner.Run(ctx, linuxnet.NMCLIPath, "-t", "-f", "NAME", "connection", "show")
+		if err != nil {
+			return Backend{}, err
+		}
+		found := false
+		for _, name := range strings.Split(strings.TrimSpace(string(connections.Stdout)), "\n") {
+			found = found || name == linuxnet.BridgeName
+		}
+		if !found {
+			return Backend{}, errors.New("NetworkManager has no farrow0 connection")
+		}
 	}
 	link, err := runner.Run(ctx, "/usr/sbin/ip", "-d", "link", "show", "dev", linuxnet.BridgeName)
 	if err != nil || !strings.Contains(string(link.Stdout), "bridge") {

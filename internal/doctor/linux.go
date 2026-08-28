@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	linuxnet "github.com/pgsty/farrow/internal/network/linux"
+	"github.com/pgsty/farrow/internal/platform"
 )
 
 func parseLinuxFamily(content string) linuxnet.Family {
@@ -51,10 +52,17 @@ func helperCheck(pathname string, family linuxnet.Family) Check {
 	}
 	switch family {
 	case linuxnet.Debian:
-		if mode == 0o4750 && groupName == "kvm" {
-			return Check{Name: "bridge-helper", Status: OK, Evidence: fmt.Sprintf("%s root:%s mode=%04o", pathname, groupName, mode)}
+		if mode == 0o4750 {
+			if platform.CurrentProcessInGroup(statistics.Gid) {
+				return Check{Name: "bridge-helper", Status: OK, Evidence: fmt.Sprintf("%s root:%s mode=%04o and executable by the invoking user", pathname, groupName, mode)}
+			}
+			return Check{Name: "bridge-helper", Status: Error, Evidence: fmt.Sprintf("%s is root:%s mode=4750 but the invoking user is not in group %s", pathname, groupName, groupName), Fix: "uninstall the Farrow network as its owner, then reinstall it for this user"}
 		}
-		return Check{Name: "bridge-helper", Status: Warn, Evidence: fmt.Sprintf("%s root:%s mode=%04o requires reversible dpkg-statoverride", pathname, groupName, mode), Fix: "network install must prove no non-Farrow dpkg-statoverride before applying root:kvm 4750"}
+		primaryGroup := strconv.FormatInt(int64(os.Getgid()), 10)
+		if group, lookupErr := user.LookupGroupId(primaryGroup); lookupErr == nil {
+			primaryGroup = group.Name
+		}
+		return Check{Name: "bridge-helper", Status: Warn, Evidence: fmt.Sprintf("%s root:%s mode=%04o requires reversible dpkg-statoverride", pathname, groupName, mode), Fix: fmt.Sprintf("network install must prove no non-Farrow override before applying root:%s 4750", primaryGroup)}
 	case linuxnet.RPM:
 		if mode == 0o4755 {
 			return Check{Name: "bridge-helper", Status: Warn, Evidence: fmt.Sprintf("%s root:%s mode=4755 permits every local user to request an allowed bridge attach", pathname, groupName)}

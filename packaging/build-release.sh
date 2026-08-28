@@ -85,8 +85,7 @@ for target in "${targets[@]}"; do
   goarch=${target#*/}
   root_name="farrow_${version}_${goos}_${goarch}"
   stage="${temporary}/${root_name}"
-  install -d -m 0755 "${stage}/bin" "${stage}/docs" \
-    "${stage}/tests/e2e" "${stage}/third_party/licenses"
+  install -d -m 0755 "${stage}/bin" "${stage}/third_party/licenses"
   (
     cd "${repo}"
     CGO_ENABLED=0 GOOS=${goos} GOARCH=${goarch} GOFLAGS=-mod=readonly \
@@ -101,20 +100,6 @@ for target in "${targets[@]}"; do
   chmod 0755 "${stage}/bin/farrow" "${stage}/bin/farrow-hosts-helper"
   farrow_sha=$(shasum -a 256 "${stage}/bin/farrow" | awk '{print $1}')
   install -m 0644 "${repo}/LICENSE" "${repo}/README.md" "${repo}/THIRD_PARTY_LICENSES.md" "${stage}/"
-  install -m 0644 "${repo}/docs/architecture.md" \
-    "${repo}/docs/cli.md" \
-    "${repo}/docs/config.md" \
-    "${repo}/docs/development.md" \
-    "${repo}/docs/getting-started.md" \
-    "${repo}/docs/images.md" \
-    "${repo}/docs/networking.md" \
-    "${repo}/docs/phase-2.md" \
-    "${repo}/docs/pigsty.md" \
-    "${repo}/docs/security.md" \
-    "${repo}/docs/status.md" \
-    "${repo}/docs/troubleshooting.md" \
-    "${stage}/docs/"
-  install -m 0644 "${repo}/tests/e2e/README.md" "${stage}/tests/e2e/"
   install -m 0644 "${repo}"/third_party/licenses/* "${stage}/third_party/licenses/"
   cat >"${stage}/BUILD_INFO.json" <<EOF
 {

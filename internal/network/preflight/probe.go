@@ -24,6 +24,7 @@ import (
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	linuxnet "github.com/pgsty/farrow/internal/network/linux"
 	"github.com/pgsty/farrow/internal/network/subnet"
+	"github.com/pgsty/farrow/internal/platform"
 )
 
 type DialFunc func(network, address string, timeout time.Duration) (net.Conn, error)
@@ -601,9 +602,16 @@ func validateLinuxHelper(info os.FileInfo, family linuxnet.Family) error {
 	mode := fullLinuxMode(info)
 	switch family {
 	case linuxnet.Debian:
-		group, err := user.LookupGroupId(strconv.FormatUint(uint64(statistics.Gid), 10))
-		if err != nil || group.Name != "kvm" || mode != 0o4750 {
-			return errors.New("debian helper must be root:kvm mode-4750")
+		if mode != 0o4750 {
+			return errors.New("debian helper must be setuid root and group-executable (mode 4750)")
+		}
+		if !platform.CurrentProcessInGroup(statistics.Gid) {
+			group, _ := user.LookupGroupId(strconv.FormatUint(uint64(statistics.Gid), 10))
+			name := strconv.FormatUint(uint64(statistics.Gid), 10)
+			if group != nil {
+				name = group.Name
+			}
+			return fmt.Errorf("debian helper group %s does not include the invoking user", name)
 		}
 	case linuxnet.RPM:
 		group, err := user.LookupGroupId(strconv.FormatUint(uint64(statistics.Gid), 10))
@@ -638,6 +646,29 @@ func exactLinuxNetwork(layout subnet.Layout) string {
 
 const linuxBridgeMarker = "# BEGIN FARROW MANAGED: farrow0\nallow farrow0\n# END FARROW MANAGED: farrow0\n"
 
+type linuxPublicTarget struct {
+	path   string
+	mode   os.FileMode
+	kind   string
+	sticky bool
+}
+
+func linuxRequiredTargets(networkManager bool, stateDir string) []linuxPublicTarget {
+	if networkManager {
+		return []linuxPublicTarget{
+			{linuxnet.PublicStatePath, 0o644, "file", false},
+			{linuxnet.BridgeConfPath, 0o644, "file", false},
+			{stateDir, 0o700, "directory", false},
+		}
+	}
+	return []linuxPublicTarget{
+		{linuxnet.NetDevPath, 0o644, "file", false},
+		{linuxnet.NetworkPath, 0o644, "file", false},
+		{linuxnet.BridgeConfPath, 0o644, "file", false},
+		{stateDir, 0o700, "directory", false},
+	}
+}
+
 func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 	snapshot := Snapshot{Addresses: make(map[string]string), Installation: Installation{Status: "absent"}}
 	stateDir := filepath.Dir(linuxnet.StatePath)
@@ -666,35 +697,7 @@ func (p Probe) collectLinux(ctx context.Context, request Request) Snapshot {
 	if networkdShape && nmShape {
 		invalidate(&snapshot.Installation, "mixed systemd-networkd and NetworkManager installation shapes")
 	}
-	required := []struct {
-		path   string
-		mode   os.FileMode
-		kind   string
-		sticky bool
-	}{
-		{linuxnet.NetDevPath, 0o644, "file", false},
-		{linuxnet.NetworkPath, 0o644, "file", false},
-		{linuxnet.BridgeConfPath, 0o644, "file", false},
-		{linuxnet.TmpfilesPath, 0o644, "file", false},
-		{stateDir, 0o700, "directory", false},
-		{linuxnet.LeaseRoot, 0o777, "directory", true},
-		{linuxnet.LeaseLockPath, 0o666, "file", false},
-	}
-	if nmShape && !networkdShape {
-		required = []struct {
-			path   string
-			mode   os.FileMode
-			kind   string
-			sticky bool
-		}{
-			{linuxnet.PublicStatePath, 0o644, "file", false},
-			{linuxnet.BridgeConfPath, 0o644, "file", false},
-			{linuxnet.TmpfilesPath, 0o644, "file", false},
-			{stateDir, 0o700, "directory", false},
-			{linuxnet.LeaseRoot, 0o777, "directory", true},
-			{linuxnet.LeaseLockPath, 0o666, "file", false},
-		}
-	}
+	required := linuxRequiredTargets(nmShape && !networkdShape, stateDir)
 	present := 0
 	if anchors > 0 || snapshot.Installation.Status == "invalid" {
 		for _, target := range required {
@@ -770,7 +773,14 @@ func (p Probe) verifyLinuxOwnedCommon(ctx context.Context, snapshot *Snapshot, l
 			if family == linuxnet.Debian {
 				packageOwner, packageErr := p.Runner.Run(ctx, "/usr/bin/dpkg-query", "-S", helper)
 				override, overrideErr := p.Runner.Run(ctx, "/usr/bin/dpkg-statoverride", "--list", helper)
-				ownershipOK = packageErr == nil && strings.Contains(string(packageOwner.Stdout), ": "+helper) && overrideErr == nil && strings.TrimSpace(string(override.Stdout)) == "root kvm 4750 "+helper
+				groupName := ""
+				if statistics, ok := helperInfo.Sys().(*syscall.Stat_t); ok {
+					if group, groupErr := user.LookupGroupId(strconv.FormatUint(uint64(statistics.Gid), 10)); groupErr == nil {
+						groupName = group.Name
+					}
+				}
+				expectedOverride := "root " + groupName + " 4750 " + helper
+				ownershipOK = groupName != "" && packageErr == nil && strings.Contains(string(packageOwner.Stdout), ": "+helper) && overrideErr == nil && strings.TrimSpace(string(override.Stdout)) == expectedOverride
 			} else {
 				packageOwner, packageErr := p.Runner.Run(ctx, "/usr/bin/rpm", "-qf", helper)
 				ownershipOK = packageErr == nil && strings.TrimSpace(string(packageOwner.Stdout)) != ""
@@ -824,8 +834,6 @@ func (p Probe) verifyLinuxNetworkdInstallation(ctx context.Context, snapshot *Sn
 	}{
 		{linuxnet.NetDevPath, "[NetDev]\nName=farrow0\nKind=bridge\n"},
 		{linuxnet.NetworkPath, exactLinuxNetwork(layout)},
-		{linuxnet.TmpfilesPath, "d /run/farrow 1777 root root -\n"},
-		{linuxnet.LeaseLockPath, ""},
 	} {
 		if fileErr := p.exactPublicFile(exact.path, []byte(exact.content), 1<<20); fileErr != nil {
 			invalidate(&snapshot.Installation, exact.path+": "+fileErr.Error())
@@ -882,17 +890,6 @@ func (p Probe) verifyLinuxNMInstallation(ctx context.Context, snapshot *Snapshot
 	snapshot.Installation.CIDR = layout.CIDR()
 	snapshot.Installation.HostAddress = layout.HostAddress()
 	snapshot.Installation.Interface = linuxnet.BridgeName
-	for _, exact := range []struct {
-		path    string
-		content string
-	}{
-		{linuxnet.TmpfilesPath, "d /run/farrow 1777 root root -\n"},
-		{linuxnet.LeaseLockPath, ""},
-	} {
-		if fileErr := p.exactPublicFile(exact.path, []byte(exact.content), 1<<20); fileErr != nil {
-			invalidate(&snapshot.Installation, exact.path+": "+fileErr.Error())
-		}
-	}
 	// The unmanaged drop-in belongs to the networkd backend; its presence under
 	// the NetworkManager backend is stale foreign state.
 	if _, managerErr := p.lstat(linuxnet.NetworkManagerPath); managerErr == nil {

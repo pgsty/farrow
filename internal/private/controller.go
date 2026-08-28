@@ -86,10 +86,10 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 	if err != nil {
 		return result, err
 	}
-	controller.Progress.Report(activity.Event{Phase: "prepare", Message: fmt.Sprintf("Preparing disks and cloud-init for %d private node(s)", len(createNames))})
+	controller.Progress.Report(activity.Event{Phase: "prepare", Message: fmt.Sprintf("Preparing disks and cloud-init for %d node(s)", len(createNames))})
 	result.Prepare = PrepareSelected(ctx, controller.Prepare, createNames, controller.Concurrency)
-	controller.Progress.Report(activity.Event{Phase: "prepare", Message: fmt.Sprintf("Prepared %d of %d private node(s)", len(PreparedNames(result.Prepare)), len(createNames)), Done: true})
-	controller.Progress.Report(activity.Event{Phase: "commit", Message: "Committing prepared private-node state"})
+	controller.Progress.Report(activity.Event{Phase: "prepare", Message: fmt.Sprintf("Prepared %d of %d node(s)", len(PreparedNames(result.Prepare)), len(createNames)), Done: true})
+	controller.Progress.Report(activity.Event{Phase: "commit", Message: "Committing prepared node state"})
 	result.Commit, err = CommitPrepared(ctx, controller.Project, controller.Prepare, result.Prepare, controller.Version)
 	if err != nil {
 		return result, err
@@ -126,9 +126,9 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 		return result, fmt.Errorf("private controller start selection contains nodes outside the committed deployment")
 	}
 	if len(startNames) != 0 {
-		startMessage := fmt.Sprintf("Starting %d private node(s) and waiting up to %s for guest readiness", len(startNames), controller.ReadyTimeout)
+		startMessage := fmt.Sprintf("Starting %d node(s) and waiting up to %s for guest readiness", len(startNames), controller.ReadyTimeout)
 		if controller.NoWait {
-			startMessage = fmt.Sprintf("Starting %d private node(s) without waiting for guest readiness", len(startNames))
+			startMessage = fmt.Sprintf("Starting %d node(s) without waiting for guest readiness", len(startNames))
 		}
 		controller.Progress.Report(activity.Event{Phase: "guest-ready", Message: startMessage})
 		result.Start, err = StartPrepared(ctx, StartConfig{
@@ -139,9 +139,9 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 		if err != nil {
 			return result, err
 		}
-		readyMessage := fmt.Sprintf("All %d private node(s) are ready", len(startNames))
+		readyMessage := fmt.Sprintf("All %d node(s) are ready", len(startNames))
 		if controller.NoWait {
-			readyMessage = fmt.Sprintf("QEMU is running for %d private node(s); guest readiness was skipped", len(startNames))
+			readyMessage = fmt.Sprintf("QEMU is running for %d node(s); guest readiness was skipped", len(startNames))
 		}
 		controller.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
 	}

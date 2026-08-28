@@ -587,7 +587,7 @@ func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo
 	installReport, err := executor.InstallConfig(ctx, linuxConfig, true)
 	progressItem.Stop(err)
 	if err != nil {
-		return setupStep{}, true, err
+		return setupStep{}, !errors.Is(err, linuxnet.ErrInstallRolledBack), err
 	}
 	return setupStep{Name: "network", Status: "installed", Detail: report.CIDR, Changed: installReport.Applied}, false, nil
 }

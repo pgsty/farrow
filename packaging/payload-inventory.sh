@@ -15,20 +15,7 @@ farrow_common_payload_paths() {
   printf '%s\n' \
     LICENSE \
     README.md \
-    THIRD_PARTY_LICENSES.md \
-    docs/architecture.md \
-    docs/cli.md \
-    docs/config.md \
-    docs/development.md \
-    docs/getting-started.md \
-    docs/images.md \
-    docs/networking.md \
-    docs/phase-2.md \
-    docs/pigsty.md \
-    docs/security.md \
-    docs/status.md \
-    docs/troubleshooting.md \
-    tests/e2e/README.md
+    THIRD_PARTY_LICENSES.md
   if [[ -n ${licenses} ]]; then
     while IFS= read -r license; do
       printf 'third_party/licenses/%s\n' "${license##*/}"
@@ -56,7 +43,7 @@ farrow_linux_package_payload_paths() {
   common=$(farrow_common_payload_paths "${repo}") || return
   while IFS= read -r path; do
     case ${path} in
-      LICENSE|README.md|THIRD_PARTY_LICENSES.md|docs/*|tests/*)
+      LICENSE|README.md|THIRD_PARTY_LICENSES.md)
         printf 'usr/share/doc/farrow/%s\n' "${path}"
         ;;
       third_party/licenses/*)

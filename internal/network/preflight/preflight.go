@@ -118,7 +118,7 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 		Findings:     make([]Finding, 0),
 	}
 	if warning := request.Layout.Warning(); warning != "" {
-		add(&report, Finding{Code: "network.non_default", Severity: Warning, Evidence: warning, Fix: "keep the installed network, every project spec, and every node on this same /24"})
+		add(&report, Finding{Code: "network.non_default", Severity: Warning, Evidence: warning, Fix: "keep the installed network, the deployment inventory, and every node on this same /24"})
 	}
 	for _, problem := range snapshot.Problems {
 		add(&report, Finding{Code: "probe.incomplete", Severity: Error, Class: Capability, Evidence: problem, Fix: "restore the required route/interface inspection tools and retry"})
@@ -132,15 +132,15 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 		add(&report, Finding{Code: "installation.integrity", Severity: Error, Class: Integrity, Evidence: snapshot.Installation.Problem, Fix: "inspect the exact Farrow ownership manifest; do not adopt or broadly delete unknown paths"})
 	} else if installed {
 		if snapshot.Installation.CIDR != request.Layout.CIDR() {
-			add(&report, Finding{Code: "installation.network_mismatch", Severity: Error, Class: State, Evidence: fmt.Sprintf("installed=%s requested=%s", snapshot.Installation.CIDR, request.Layout.CIDR()), Fix: "stop all private projects, uninstall the owned network, then install the requested global /24"})
+			add(&report, Finding{Code: "installation.network_mismatch", Severity: Error, Class: State, Evidence: fmt.Sprintf("installed=%s requested=%s", snapshot.Installation.CIDR, request.Layout.CIDR()), Fix: "stop the deployment, uninstall the owned network, then install the requested global /24"})
 		}
 		if snapshot.Installation.CIDR == request.Layout.CIDR() && !snapshot.Installation.Healthy {
 			add(&report, Finding{Code: "installation.not_ready", Severity: Error, Class: Capability, Evidence: snapshot.Installation.Problem, Fix: "repair or reinstall the owned backend; a listening socket without the host address/route is not ready"})
 		}
 	} else if request.Purpose == Use {
-		add(&report, Finding{Code: "installation.absent", Severity: Error, Class: Capability, Evidence: "private network backend is not installed", Fix: "run farrow network preflight, then network install after reviewing its privileged plan"})
+		add(&report, Finding{Code: "installation.absent", Severity: Error, Class: Capability, Evidence: "fixed-IP network backend is not installed", Fix: "run farrow setup after reviewing its privileged plan"})
 	} else if request.Purpose == Inspect {
-		add(&report, Finding{Code: "installation.absent", Severity: Warning, Evidence: "private network backend is not installed; the requested subnet can still be checked for eligibility"})
+		add(&report, Finding{Code: "installation.absent", Severity: Warning, Evidence: "fixed-IP network backend is not installed; the requested subnet can still be checked for eligibility"})
 	}
 
 	exactOwnedRoute := false
@@ -180,7 +180,7 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 	}
 	for _, address := range request.Addresses {
 		if evidence := snapshot.Addresses[address]; evidence != "" {
-			add(&report, Finding{Code: "address.in_use", Severity: Error, Class: Resource, Subject: address, Evidence: evidence, Fix: "stop the conflicting VM/service or select another static suffix before creating project state"})
+			add(&report, Finding{Code: "address.in_use", Severity: Error, Class: Resource, Subject: address, Evidence: evidence, Fix: "stop the conflicting VM/service or select another static suffix before creating deployment state"})
 		}
 	}
 

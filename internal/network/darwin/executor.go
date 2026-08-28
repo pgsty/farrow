@@ -2,6 +2,7 @@ package darwin
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +49,7 @@ type UninstallReport struct {
 	RemoveFiles []string          `json:"remove_files"`
 	RemoveDirs  []string          `json:"remove_dirs"`
 	Applied     bool              `json:"applied"`
+	Recovered   bool              `json:"recovered_from_public_evidence,omitempty"`
 	Checks      map[string]string `json:"checks,omitempty"`
 }
 
@@ -164,6 +167,75 @@ func (e Executor) readInstalled(ctx context.Context) (InstallPlan, bool, error) 
 		}
 	}
 	return plan, true, nil
+}
+
+// recoverPlanFromInterfaceEvidence reconstructs only the ownership plan needed
+// for uninstall when network.json is missing or unreadable. Recovery remains
+// fail-closed: the public marker and root-only twin must be byte-identical,
+// the launchd plist must equal one current pinned plan, and both installed
+// binaries must match that plan's digests.
+func recoverPlanFromInterfaceEvidence(arch string, protectedMarker, publicMarker, actualPlist []byte, socketDigest, clientDigest string) (InstallPlan, error) {
+	if !bytes.Equal(protectedMarker, publicMarker) {
+		return InstallPlan{}, errors.New("darwin recovery interface evidence differs between protected and public copies")
+	}
+	marker, err := StrictInterfaceMarker(publicMarker)
+	if err != nil {
+		return InstallPlan{}, err
+	}
+	for _, mode := range []string{"host", "shared"} {
+		plan, planErr := NewInstallPlanModeNetwork(arch, marker.InterfaceID, mode, marker.CIDR)
+		if planErr == nil {
+			plan, planErr = plan.WithRecordedBinaries(marker.Source, marker.SocketSHA256, marker.ClientSHA256)
+		}
+		if planErr == nil {
+			plan, planErr = plan.WithBSDInterface(marker.BSDName)
+		}
+		if planErr != nil || plan.Interface != marker {
+			continue
+		}
+		expectedPlist, plistErr := plan.Plist()
+		if plistErr == nil && bytes.Equal(actualPlist, expectedPlist) && socketDigest == plan.SocketDigest() && clientDigest == plan.ClientDigest() {
+			return plan, nil
+		}
+	}
+	return InstallPlan{}, errors.New("darwin partial network state does not reproduce a current pinned ownership plan")
+}
+
+func (e Executor) recoverInstalledForUninstall(ctx context.Context) (InstallPlan, error) {
+	for _, target := range []struct{ path, owner, group, mode, kind string }{
+		{DaemonPath, "root", "wheel", "755", "Regular File"},
+		{ClientPath, "root", "wheel", "755", "Regular File"},
+		{PlistPath, "root", "wheel", "644", "Regular File"},
+		{StateDir, "root", "wheel", "700", "Directory"},
+		{InterfaceStatePath, "root", "wheel", "600", "Regular File"},
+		{InterfaceMarkerDir, "root", "wheel", "755", "Directory"},
+		{InterfaceMarkerPath, "root", "wheel", "644", "Regular File"},
+	} {
+		if err := e.rootStat(ctx, target.path, target.owner, target.group, target.mode, target.kind); err != nil {
+			return InstallPlan{}, err
+		}
+	}
+	protected, err := e.Root.Run(ctx, "/bin/cat", InterfaceStatePath)
+	if err != nil {
+		return InstallPlan{}, err
+	}
+	public, err := os.ReadFile(InterfaceMarkerPath)
+	if err != nil {
+		return InstallPlan{}, err
+	}
+	plist, err := os.ReadFile(PlistPath)
+	if err != nil {
+		return InstallPlan{}, err
+	}
+	socketDigest, err := digestFile(DaemonPath)
+	if err != nil {
+		return InstallPlan{}, err
+	}
+	clientDigest, err := digestFile(ClientPath)
+	if err != nil {
+		return InstallPlan{}, err
+	}
+	return recoverPlanFromInterfaceEvidence(runtime.GOARCH, protected.Stdout, public, plist, socketDigest, clientDigest)
 }
 
 func (e Executor) PlanInstall(ctx context.Context, archive, interfaceID, arch string) (InstallReport, error) {
@@ -300,9 +372,7 @@ func darwinTargets() map[string]string {
 		DaemonPath: "root:wheel 0755", ClientPath: "root:wheel 0755",
 		PlistPath: "root:wheel 0644", StatePath: "root:wheel 0600",
 		InterfaceStatePath: "root:wheel 0600", InterfaceMarkerPath: "root:wheel 0644",
-		StateDir: "root:wheel 0700", InterfaceMarkerDir: "root:wheel 0755",
-		LogDir: "root:wheel 0755", LeaseRoot: "root:wheel 1777",
-		filepath.Join(LeaseRoot, "private-lease.lock"): "root:wheel 0666",
+		StateDir: "root:wheel 0700", InterfaceMarkerDir: "root:wheel 0755", LogDir: "root:wheel 0755",
 	}
 }
 
@@ -626,8 +696,15 @@ func (e Executor) PlanUninstall(ctx context.Context) (UninstallReport, error) {
 		return UninstallReport{}, err
 	}
 	plan, installed, err := e.readInstalled(ctx)
+	recovered := false
 	if err != nil {
-		return UninstallReport{}, err
+		var recoveryErr error
+		plan, recoveryErr = e.recoverInstalledForUninstall(ctx)
+		if recoveryErr != nil {
+			return UninstallReport{}, fmt.Errorf("read installed Darwin network state: %w; recover from interface evidence: %v", err, recoveryErr)
+		}
+		installed = true
+		recovered = true
 	}
 	if !installed {
 		return UninstallReport{}, errors.New("darwin private network is not installed")
@@ -692,16 +769,14 @@ func (e Executor) PlanUninstall(ctx context.Context) (UninstallReport, error) {
 	if !hostsHelperPresent {
 		dirs = append([]string{filepath.Join(InstallRoot, "libexec"), InstallRoot}, dirs...)
 	}
-	return UninstallReport{State: plan.State, Interface: plan.Interface, RemoveFiles: files, RemoveDirs: dirs}, nil
+	return UninstallReport{State: plan.State, Interface: plan.Interface, RemoveFiles: files, RemoveDirs: dirs, Recovered: recovered}, nil
 }
 
 func (e Executor) rootUnlinkIfExists(ctx context.Context, path string) error {
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil && !errors.Is(err, os.ErrPermission) {
-		return err
-	}
-	_, err := e.Root.Run(ctx, "/bin/unlink", path)
+	// The caller cannot distinguish absent from inaccessible below a mode-0700
+	// root directory. rm -f on one exact validated path is non-recursive and
+	// makes partial-state cleanup idempotent without broadening the target.
+	_, err := e.Root.Run(ctx, "/bin/rm", "-f", "--", path)
 	return err
 }
 

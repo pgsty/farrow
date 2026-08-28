@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -148,7 +149,11 @@ type Facts struct {
 	BridgeConfState      PathState
 	QEMUConfigDirExisted bool
 	Helper               HelperFacts
-	ExistingManifest     *Manifest
+	// AccessGroup is the invoking user's preferred group for the Debian
+	// qemu-bridge-helper setuid boundary. It is kvm when the user is already a
+	// member, otherwise the user's primary group.
+	AccessGroup      string
+	ExistingManifest *Manifest
 }
 
 type Config struct {
@@ -371,6 +376,8 @@ func fileDigest(content string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+var accessGroupPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,63}$`)
+
 func validateHelper(facts Facts) (*Override, []Command, []string, error) {
 	helper := facts.Helper
 	if (helper.Path != "/usr/lib/qemu/qemu-bridge-helper" && helper.Path != "/usr/libexec/qemu-bridge-helper") || !filepath.IsAbs(helper.Path) || helper.OwnerUID != 0 || !helper.Regular || helper.Symlink || !helper.ParentSafe || !helper.PackageOwned {
@@ -378,17 +385,23 @@ func validateHelper(facts Facts) (*Override, []Command, []string, error) {
 	}
 	switch facts.Family {
 	case Debian:
-		desired := &Override{Owner: "root", Group: "kvm", Mode: "4750"}
+		if !accessGroupPattern.MatchString(facts.AccessGroup) {
+			return nil, nil, nil, errors.New("cannot select a safe invoking-user group for qemu-bridge-helper")
+		}
+		desired := &Override{Owner: "root", Group: facts.AccessGroup, Mode: "4750"}
 		if helper.Override != nil {
 			if facts.ExistingManifest == nil || facts.ExistingManifest.AppliedOverride == nil || *helper.Override != *facts.ExistingManifest.AppliedOverride {
 				return nil, nil, nil, errors.New("refuse Debian helper mutation with a non-Farrow dpkg-statoverride")
 			}
-			return desired, nil, nil, nil
+			if helper.Override.Group != facts.AccessGroup {
+				return nil, nil, nil, fmt.Errorf("qemu-bridge-helper is scoped to group %s, but this user requires group %s; uninstall the Farrow network as its owner before switching users", helper.Override.Group, facts.AccessGroup)
+			}
+			return helper.Override, nil, nil, nil
 		}
-		if helper.Group == "kvm" && helper.Mode == 0o4750 {
+		if helper.Group == facts.AccessGroup && helper.Mode == 0o4750 {
 			return nil, nil, nil, nil
 		}
-		command := Command{Binary: "/usr/bin/dpkg-statoverride", Args: []string{"--update", "--add", "root", "kvm", "4750", helper.Path}}
+		command := Command{Binary: "/usr/bin/dpkg-statoverride", Args: []string{"--update", "--add", "root", facts.AccessGroup, "4750", helper.Path}}
 		return desired, []Command{command}, nil, nil
 	case RPM:
 		if helper.Mode != 0o4755 {
@@ -524,7 +537,7 @@ func newNetworkManagerInstallPlan(facts Facts, config Config) (Plan, error) {
 		HostAddress: config.HostAddress, DHCPEnd: config.DHCPEnd, HelperPath: facts.Helper.Path,
 		OriginalHelper: originalHelper, OriginalBridgeConf: originalBridgeConf, OriginalBridgePath: originalBridgePath,
 		QEMUConfigCreated: qemuConfigCreated, PublicDirCreated: publicDirCreated, NetworkdUnits: map[string]UnitState{},
-		AppliedOverride: appliedOverride, Files: make(map[string]string), NetworkManager: true, LeaseRoot: LeaseRoot,
+		AppliedOverride: appliedOverride, Files: make(map[string]string), NetworkManager: true,
 	}
 	for _, file := range files {
 		manifest.Files[file.Path] = fileDigest(file.Content)
@@ -625,7 +638,7 @@ func NewInstallPlan(facts Facts, config Config) (Plan, error) {
 		HostAddress: config.HostAddress, DHCPEnd: config.DHCPEnd, HelperPath: facts.Helper.Path,
 		OriginalHelper: originalHelper, OriginalBridgeConf: originalBridgeConf, OriginalBridgePath: originalBridgePath,
 		QEMUConfigCreated: qemuConfigCreated, NetworkdUnits: originalUnits,
-		AppliedOverride: appliedOverride, Files: make(map[string]string), NetworkManager: false, LeaseRoot: LeaseRoot,
+		AppliedOverride: appliedOverride, Files: make(map[string]string), NetworkManager: false,
 	}
 	for _, file := range files {
 		manifest.Files[file.Path] = fileDigest(file.Content)
@@ -821,7 +834,10 @@ func NewUninstallPlan(manifest Manifest, facts UninstallFacts) (UninstallPlan, e
 		removeFiles = append(removeFiles, BridgeConfPath)
 	}
 	removeFiles = append(removeFiles, StatePath)
-	removeDirectories := []string{LeaseRoot, "/var/lib/farrow"}
+	removeDirectories := []string{"/var/lib/farrow"}
+	if manifest.LeaseRoot != "" {
+		removeDirectories = append([]string{manifest.LeaseRoot}, removeDirectories...)
+	}
 	if manifest.QEMUConfigCreated {
 		removeDirectories = append(removeDirectories, QEMUConfigDir)
 	}
@@ -870,7 +886,10 @@ func newNetworkManagerUninstallPlan(manifest Manifest, facts UninstallFacts) (Un
 		removeFiles = append(removeFiles, BridgeConfPath)
 	}
 	removeFiles = append(removeFiles, StatePath)
-	removeDirectories := []string{LeaseRoot, "/var/lib/farrow"}
+	removeDirectories := []string{"/var/lib/farrow"}
+	if manifest.LeaseRoot != "" {
+		removeDirectories = append([]string{manifest.LeaseRoot}, removeDirectories...)
+	}
 	if manifest.PublicDirCreated {
 		removeDirectories = append(removeDirectories, PublicStateDir)
 	}

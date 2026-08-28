@@ -67,8 +67,7 @@ for arch in amd64 arm64; do
   install -d -m 0700 "${stage}"
   payload=${stage}/payload
   install -d -m 0755 "${payload}/usr/bin" "${payload}/opt/farrow/libexec" \
-    "${payload}/usr/share/doc/farrow/docs" "${payload}/usr/share/doc/farrow/licenses" \
-    "${payload}/usr/share/doc/farrow/tests/e2e"
+    "${payload}/usr/share/doc/farrow/licenses"
   helper=${payload}/opt/farrow/libexec/farrow-hosts-helper
   binary=${payload}/usr/bin/farrow
   (
@@ -95,20 +94,6 @@ for arch in amd64 arm64; do
   chmod 0644 "${build_info}"
   install -m 0644 "${repo}/LICENSE" "${repo}/README.md" "${repo}/THIRD_PARTY_LICENSES.md" \
     "${payload}/usr/share/doc/farrow/"
-  install -m 0644 "${repo}/docs/architecture.md" \
-    "${repo}/docs/cli.md" \
-    "${repo}/docs/config.md" \
-    "${repo}/docs/development.md" \
-    "${repo}/docs/getting-started.md" \
-    "${repo}/docs/images.md" \
-    "${repo}/docs/networking.md" \
-    "${repo}/docs/phase-2.md" \
-    "${repo}/docs/pigsty.md" \
-    "${repo}/docs/security.md" \
-    "${repo}/docs/status.md" \
-    "${repo}/docs/troubleshooting.md" \
-    "${payload}/usr/share/doc/farrow/docs/"
-  install -m 0644 "${repo}/tests/e2e/README.md" "${payload}/usr/share/doc/farrow/tests/e2e/"
   install -m 0644 "${repo}"/third_party/licenses/* "${payload}/usr/share/doc/farrow/licenses/"
 
   for format in deb rpm; do

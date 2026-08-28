@@ -259,7 +259,7 @@ for arch in amd64 arm64; do
       any(.packages[]?; .name == "stdlib" and .versionInfo == $go_version and .licenseDeclared == "BSD-3-Clause") and
       any(.files[]?; .fileName == "usr/bin/farrow") and
       any(.files[]?; .fileName == "opt/farrow/libexec/farrow-hosts-helper") and
-      ((.packages | length) >= 10) and ((.files | length) >= 3)
+      ((.packages | length) >= 10) and ((.files | length) >= 2)
     ' "${sbom}" >/dev/null
 
     root=${temporary}/${arch}-${format}

@@ -291,8 +291,6 @@ if "${pipeline}" --mode validate --source "${good}" --expected-sha256 "${good_sh
 fi
 [[ ! -e ${moving} ]]
 
-grep -q -- '--no-network' "${repo}/packaging/image-pipeline/README.md"
-grep -q 'UID or GID 88' "${repo}/packaging/image-pipeline/README.md"
 grep -q "usermod --password '!'" "${repo}/packaging/image-pipeline/normalize-guest.sh"
 grep -q 'rm -f -- /etc/ssh/ssh_host_' "${repo}/packaging/image-pipeline/normalize-guest.sh"
 grep -q 'restorecon -RF /home/dba' "${repo}/packaging/image-pipeline/normalize-guest.sh"

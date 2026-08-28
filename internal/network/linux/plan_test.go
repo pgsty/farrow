@@ -11,10 +11,46 @@ func debianFacts() Facts {
 	return Facts{
 		Family: Debian, Systemd: true, NetworkdActive: true,
 		Helper:               HelperFacts{Path: "/usr/lib/qemu/qemu-bridge-helper", OwnerUID: 0, Group: "root", Mode: 0o755, Regular: true, ParentSafe: true, PackageOwned: true},
+		AccessGroup:          "kvm",
 		BridgeConf:           "allow virbr0\n",
 		BridgeConfState:      PathState{Existed: true, Owner: "root", Group: "root", Mode: "0644"},
 		QEMUConfigDirExisted: true,
 		NetworkdUnits:        networkdFixture("enabled", "active"),
+	}
+}
+
+func TestDebianHelperUsesInvokingUsersAccessGroup(t *testing.T) {
+	t.Parallel()
+	facts := debianFacts()
+	facts.AccessGroup = "vonng"
+	plan, err := NewInstallPlan(facts, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Manifest.AppliedOverride == nil || plan.Manifest.AppliedOverride.Group != "vonng" {
+		t.Fatalf("applied override = %#v", plan.Manifest.AppliedOverride)
+	}
+	found := false
+	for _, command := range plan.Commands {
+		if command.Binary == "/usr/bin/dpkg-statoverride" {
+			found = strings.Join(command.Args, " ") == "--update --add root vonng 4750 /usr/lib/qemu/qemu-bridge-helper"
+		}
+	}
+	if !found {
+		t.Fatalf("invoking-user helper override missing: %#v", plan.Commands)
+	}
+}
+
+func TestSelectAccessGroupPrefersKVMThenPrimary(t *testing.T) {
+	t.Parallel()
+	if got, err := selectAccessGroup("vonng", []string{"sudo", "kvm", "vonng"}); err != nil || got != "kvm" {
+		t.Fatalf("kvm selection = %q, %v", got, err)
+	}
+	if got, err := selectAccessGroup("vonng", []string{"sudo", "vonng"}); err != nil || got != "vonng" {
+		t.Fatalf("primary selection = %q, %v", got, err)
+	}
+	if _, err := selectAccessGroup("bad group", nil); err == nil {
+		t.Fatal("unsafe primary group was accepted")
 	}
 }
 

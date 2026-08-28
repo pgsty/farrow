@@ -89,10 +89,14 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 			return nil, err
 		}
 		privateKey := ""
-		if nodeSpec.Control && len(resolved.Nodes) > 1 {
+		// Seed the deployment key into the control node from its first boot.
+		// A single-node deployment can later grow without rewriting or restarting
+		// that node; withholding the key until a peer exists would make the new
+		// peers unreachable from the Pigsty admin node after additive scale-out.
+		if nodeSpec.Control {
 			privateKey = input.PrivateKey
 			if privateKey == "" {
-				return nil, errors.New("private control seed requires the deployment private key")
+				return nil, errors.New("control seed requires the deployment private key")
 			}
 		}
 		files, err := cloudinit.Render(cloudinit.Input{

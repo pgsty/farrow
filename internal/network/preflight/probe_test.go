@@ -9,6 +9,7 @@ import (
 
 	"github.com/pgsty/farrow/internal/execx"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
+	linuxnet "github.com/pgsty/farrow/internal/network/linux"
 	"github.com/pgsty/farrow/internal/network/subnet"
 )
 
@@ -79,6 +80,20 @@ func TestParseLinuxInterfacesAndRoutes(t *testing.T) {
 	routes := parseLinuxRoutes("default via 192.168.0.1 dev eth0\n172.31.251.0/24 dev farrow0 proto kernel scope link src 172.31.251.1\nlocal 172.31.251.1 dev farrow0 table local proto kernel scope host\nblackhole 172.31.251.128/25 metric 10\nunreachable 172.31.251.64/26 metric 20\nbroadcast 172.31.251.255 dev farrow0 table local\n")
 	if len(routes) != 4 || routes[0].Prefix.String() != "172.31.251.0/24" || routes[1].Prefix.String() != "172.31.251.1/32" || routes[1].Kind != "local" || routes[2].Kind != "blackhole" || routes[2].Prefix.String() != "172.31.251.128/25" || routes[3].Kind != "unreachable" {
 		t.Fatalf("routes=%#v", routes)
+	}
+}
+
+func TestSimplifiedLinuxInstallShapesDoNotRequireRetiredLeaseFiles(t *testing.T) {
+	t.Parallel()
+	for name, targets := range map[string][]linuxPublicTarget{
+		"networkmanager": linuxRequiredTargets(true, "/var/lib/farrow"),
+		"networkd":       linuxRequiredTargets(false, "/var/lib/farrow"),
+	} {
+		for _, target := range targets {
+			if target.path == linuxnet.TmpfilesPath || target.path == linuxnet.LeaseRoot || target.path == linuxnet.LeaseLockPath {
+				t.Fatalf("%s still requires retired lease target %s", name, target.path)
+			}
+		}
 	}
 }
 

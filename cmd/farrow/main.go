@@ -303,6 +303,9 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 			for _, path := range report.RemoveDirs {
 				fmt.Fprintf(stdout, "rmdir %s\n", path)
 			}
+			if report.Recovered {
+				warningf(stderr, "protected network.json was unavailable; uninstall ownership was recovered from byte-identical interface evidence, the exact launchd plist, and installed binary digests")
+			}
 			fmt.Fprintf(stdout, "applied: %t\n", report.Applied)
 			return exitOK
 		}

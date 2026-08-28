@@ -142,4 +142,4 @@ jobs:
           fi
           gh release create "${GITHUB_REF_NAME}" release-assets/* \
             --verify-tag --draft --title "Farrow ${FARROW_VERSION}" \
-            --notes "Draft generated from ${GITHUB_SHA}; publish only after the external gates in docs/status.md are closed."
+            --notes "Draft generated from ${GITHUB_SHA}; publish only after the external gates at https://farrow.pgsty.com/docs/about/status/ are closed."

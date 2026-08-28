@@ -142,6 +142,7 @@ func TestBackendSwitchRequiresUninstall(t *testing.T) {
 	nmHost := nmFacts()
 	nmHost.Family = Debian
 	nmHost.Helper = debianFacts().Helper
+	nmHost.AccessGroup = debianFacts().AccessGroup
 	nmHost.ExistingManifest = &networkdPlan.Manifest
 	if _, err := NewInstallPlan(nmHost, testConfig()); err == nil || !strings.Contains(err.Error(), "systemd-networkd backend") {
 		t.Fatalf("backend switch error = %v", err)

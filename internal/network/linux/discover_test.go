@@ -2,6 +2,8 @@ package linux
 
 import (
 	"context"
+	"errors"
+	"os/user"
 	"testing"
 
 	"github.com/pgsty/farrow/internal/execx"
@@ -11,6 +13,41 @@ type unitStateRunner struct{ output string }
 
 func (runner unitStateRunner) Run(context.Context, string, ...string) (execx.Result, error) {
 	return execx.Result{Stdout: []byte(runner.output)}, nil
+}
+
+func TestAccessGroupResolutionSkipsUnknownSupplementaryGroups(t *testing.T) {
+	t.Parallel()
+	names := map[uint32]string{1000: "vonng", 999: "kvm"}
+	lookup := func(gid uint32) (string, error) {
+		if name, ok := names[gid]; ok {
+			return name, nil
+		}
+		return "", errors.New("unresolvable fixture gid")
+	}
+	identity := groupIdentity{Primary: 1000, Groups: []uint32{1000, 424242, 999}}
+	if got, err := accessGroupForIdentity(identity, lookup); err != nil || got != "kvm" {
+		t.Fatalf("access group = %q, %v", got, err)
+	}
+	delete(names, 999)
+	if got, err := accessGroupForIdentity(identity, lookup); err != nil || got != "vonng" {
+		t.Fatalf("primary fallback = %q, %v", got, err)
+	}
+}
+
+func TestSudoGroupIdentityUsesTheNonRootInvokingUser(t *testing.T) {
+	t.Parallel()
+	account := &user.User{Uid: "1000", Gid: "100", Username: "alice"}
+	identity, err := sudoGroupIdentity("1000", "100", account, []string{"100", "999", "unresolvable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Primary != 100 || len(identity.Groups) != 3 || identity.Groups[2] != 999 {
+		t.Fatalf("sudo identity = %#v", identity)
+	}
+	root := &user.User{Uid: "0", Gid: "0", Username: "root"}
+	if _, err := sudoGroupIdentity("0", "0", root, []string{"0"}); err == nil {
+		t.Fatal("root was accepted as the Debian helper access identity")
+	}
 }
 
 func TestOptionalNetworkManagerMayBeAbsent(t *testing.T) {

@@ -68,7 +68,7 @@ func TestRenderSeedsRequiresControlPrivateKeyAndEveryGeneration(t *testing.T) {
 	}
 }
 
-func TestSingleNodePrivateDoesNotReceiveLateralKey(t *testing.T) {
+func TestSingleNodeControlReceivesLateralKeyForFutureScaleOut(t *testing.T) {
 	t.Parallel()
 	resolved := privateResolved()
 	resolved.Nodes = resolved.Nodes[:1]
@@ -76,12 +76,12 @@ func TestSingleNodePrivateDoesNotReceiveLateralKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publicKey, _ := testSSHKeyPair(t)
-	files, err := RenderSeeds(resolved, plan, SeedInput{PublicKey: publicKey, SpecHashes: map[string]string{"meta": strings.Repeat("a", 64)}, Generation: map[string]uint64{"meta": 1}})
+	publicKey, privateKey := testSSHKeyPair(t)
+	files, err := RenderSeeds(resolved, plan, SeedInput{PublicKey: publicKey, PrivateKey: privateKey, SpecHashes: map[string]string{"meta": strings.Repeat("a", 64)}, Generation: map[string]uint64{"meta": 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(files["meta"].UserData, []byte("PRIVATE KEY")) || bytes.Contains(files["meta"].UserData, []byte("farrow-install-control-ssh")) {
-		t.Fatal("single-node private guest received a lateral private key")
+	if !bytes.Contains(files["meta"].UserData, []byte("PRIVATE KEY")) || !bytes.Contains(files["meta"].UserData, []byte("farrow-install-control-ssh")) {
+		t.Fatal("single-node control guest lacks the key required for additive scale-out")
 	}
 }

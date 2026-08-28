@@ -122,45 +122,6 @@ archives:
         info: *archive_file_info
       - src: THIRD_PARTY_LICENSES.md
         info: *archive_file_info
-      - src: docs/architecture.md
-        dst: docs/architecture.md
-        info: *archive_file_info
-      - src: docs/cli.md
-        dst: docs/cli.md
-        info: *archive_file_info
-      - src: docs/config.md
-        dst: docs/config.md
-        info: *archive_file_info
-      - src: docs/development.md
-        dst: docs/development.md
-        info: *archive_file_info
-      - src: docs/getting-started.md
-        dst: docs/getting-started.md
-        info: *archive_file_info
-      - src: docs/images.md
-        dst: docs/images.md
-        info: *archive_file_info
-      - src: docs/networking.md
-        dst: docs/networking.md
-        info: *archive_file_info
-      - src: docs/phase-2.md
-        dst: docs/phase-2.md
-        info: *archive_file_info
-      - src: docs/pigsty.md
-        dst: docs/pigsty.md
-        info: *archive_file_info
-      - src: docs/security.md
-        dst: docs/security.md
-        info: *archive_file_info
-      - src: docs/status.md
-        dst: docs/status.md
-        info: *archive_file_info
-      - src: docs/troubleshooting.md
-        dst: docs/troubleshooting.md
-        info: *archive_file_info
-      - src: tests/e2e/README.md
-        dst: tests/e2e/README.md
-        info: *archive_file_info
       - src: third_party/licenses/*
         dst: third_party/licenses
         info: *archive_file_info
@@ -177,8 +138,7 @@ nfpms:
     maintainer: Pigsty <repo@pigsty.cc>
     description: |-
       Native Go/QEMU runtime for Pigsty development virtual machines.
-      Farrow provides unprivileged quick VMs and an explicitly installed
-      private network for fixed-IP multi-node labs.
+      Farrow boots one Pigsty-compatible inventory as one fixed-IP deployment.
     license: Apache-2.0
     release: "1"
     section: utils
@@ -213,8 +173,7 @@ nfpms:
     maintainer: Pigsty <repo@pigsty.cc>
     description: |-
       Native Go/QEMU runtime for Pigsty development virtual machines.
-      Farrow provides unprivileged quick VMs and an explicitly installed
-      private network for fixed-IP multi-node labs.
+      Farrow boots one Pigsty-compatible inventory as one fixed-IP deployment.
     license: Apache-2.0
     release: "1"
     section: utils

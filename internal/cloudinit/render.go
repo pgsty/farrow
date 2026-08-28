@@ -207,8 +207,8 @@ func validateInput(input Input) error {
 		seenGuests[share.Guest] = struct{}{}
 	}
 	if input.PrivateKey != "" {
-		if !input.Control || len(input.Hosts) < 2 {
-			return errors.New("private key may only be injected into a multi-node control guest")
+		if !input.Control {
+			return errors.New("private key may only be injected into the control guest")
 		}
 		if strings.ContainsRune(input.PrivateKey, '\x00') {
 			return errors.New("private key contains NUL")

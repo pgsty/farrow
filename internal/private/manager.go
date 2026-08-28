@@ -991,7 +991,7 @@ func (m Manager) RecordEvent(ctx context.Context, action, level, message string)
 }
 
 func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error) {
-	m.report("preflight", "Checking the private-network and native QEMU capabilities")
+	m.report("preflight", "Checking the fixed-IP network and QEMU capabilities")
 	var err error
 	if err := validateResolved(requested); err != nil {
 		return Status{}, err
@@ -1004,7 +1004,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err != nil {
 		return Status{}, err
 	}
-	m.Progress.Report(activity.Event{Phase: "preflight", Message: "Private-network and QEMU preflight passed", Done: true})
+	m.Progress.Report(activity.Event{Phase: "preflight", Message: "Network and QEMU preflight passed", Done: true})
 	selected, err := selectedNodeNames(requested, m.Nodes)
 	if err != nil {
 		return Status{}, err
@@ -1013,6 +1013,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	var reusableProject *Deployment
 	createNodes := []string(nil)
 	hadExistingState := false
+	startExistingAfterCreate := false
 	if existing, openErr := m.openProject(false); openErr == nil {
 		persisted, err := (state.Store{Root: existing.Root}).ReadDeployment()
 		if missingPath(err) {
@@ -1051,6 +1052,9 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 				if err != nil {
 					return Status{}, err
 				}
+				if node.Phase != state.Running {
+					startExistingAfterCreate = true
+				}
 				allRunning = allRunning && node.Phase == state.Running
 				allRunnable = allRunnable && (node.Phase == state.Running || node.Phase == state.Stopped || node.Phase == state.Prepared)
 			}
@@ -1062,7 +1066,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 					return Status{}, err
 				}
 				if statusNodesRunning(status) {
-					m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected private nodes are already running", Done: true})
+					m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected nodes are already running", Done: true})
 					return status, nil
 				}
 				return m.startExisting(ctx, existing, persisted, hostProfile, backend)
@@ -1216,7 +1220,15 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		if err != nil {
 			return Status{}, err
 		}
-		return m.startExisting(ctx, projectValue, projectState, hostProfile, backend)
+		if startExistingAfterCreate {
+			status, err := m.startExisting(ctx, projectValue, projectState, hostProfile, backend)
+			if err != nil {
+				return Status{}, err
+			}
+			status.Message = fmt.Sprintf("converged the deployment: created %d node(s) and started selected existing nodes", len(createNodes))
+			return status, nil
+		}
+		return m.statusFor(ctx, projectValue, fmt.Sprintf("created and started %d node(s)", len(createNodes)))
 	}
 	return m.statusFor(ctx, projectValue, "created and started the deployment")
 }
@@ -1296,16 +1308,16 @@ func (m Manager) startExisting(ctx context.Context, projectValue Deployment, pro
 		}
 	}
 	if len(names) == 0 {
-		m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected private nodes are already running", Done: true})
+		m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected nodes are already running", Done: true})
 		return m.statusForLocked(ctx, projectValue, "already running")
 	}
 	readyTimeout, err := m.readyTimeout(projectState.Resolved)
 	if err != nil {
 		return Status{}, err
 	}
-	startMessage := fmt.Sprintf("Starting %d private node(s) and waiting up to %s for guest readiness", len(names), readyTimeout)
+	startMessage := fmt.Sprintf("Starting %d node(s) and waiting up to %s for guest readiness", len(names), readyTimeout)
 	if m.NoWait {
-		startMessage = fmt.Sprintf("Starting %d private node(s) without waiting for guest readiness", len(names))
+		startMessage = fmt.Sprintf("Starting %d node(s) without waiting for guest readiness", len(names))
 	}
 	m.report("guest-ready", startMessage)
 	outcomes, err := StartPrepared(ctx, StartConfig{Project: projectValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait})
@@ -1315,9 +1327,9 @@ func (m Manager) startExisting(ctx context.Context, projectValue Deployment, pro
 	if failed := failedStartNames(outcomes); len(failed) > 0 {
 		return Status{}, &PartialError{Nodes: failed}
 	}
-	readyMessage := fmt.Sprintf("All %d private node(s) are ready", len(names))
+	readyMessage := fmt.Sprintf("All %d node(s) are ready", len(names))
 	if m.NoWait {
-		readyMessage = fmt.Sprintf("QEMU is running for %d private node(s); guest readiness was skipped", len(names))
+		readyMessage = fmt.Sprintf("QEMU is running for %d node(s); guest readiness was skipped", len(names))
 	}
 	m.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
 	return m.statusForLocked(ctx, projectValue, "started the deployment")
@@ -1396,7 +1408,7 @@ func (m Manager) Stop(ctx context.Context) (Status, error) {
 	if len(failed) > 0 {
 		return Status{}, &PartialError{Nodes: failed}
 	}
-	return m.statusForLocked(ctx, projectValue, "stopped selected private nodes")
+	return m.statusForLocked(ctx, projectValue, "stopped selected nodes")
 }
 
 func (m Manager) Restart(ctx context.Context) (Status, error) {

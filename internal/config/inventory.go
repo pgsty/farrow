@@ -656,7 +656,7 @@ func ParseInventory(data []byte) (File, error) {
 		if sshUser == "" {
 			sshUser, sshUserOwner = user, host.address
 		} else if sshUser != user {
-			return File{}, fmt.Errorf("hosts %s and %s declare different node_admin_username values; farrow v1 uses one login user per project", sshUserOwner, host.address)
+			return File{}, fmt.Errorf("hosts %s and %s declare different node_admin_username values; farrow v1 uses one login user per deployment", sshUserOwner, host.address)
 		}
 		if value, found, err := host.lookupInt("node_admin_uid"); err != nil {
 			return File{}, err

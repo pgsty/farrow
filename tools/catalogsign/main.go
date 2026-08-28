@@ -1,8 +1,8 @@
 // Command catalogsign generates the Farrow catalog signing keypair and signs
 // catalog files with it, using the same minisign implementation the CLI
 // verifies with. The repository layout and rotation policy live in
-// docs/images.md; the verifier embeds the active and standby PUBLIC keys in
-// internal/image/keys.go.
+// https://farrow.pgsty.com/docs/reference/images/; the verifier embeds the
+// active and standby PUBLIC keys in internal/image/keys.go.
 //
 // The private-key password is read from CATALOGSIGN_PASSWORD (empty allowed).
 //

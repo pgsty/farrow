@@ -279,12 +279,12 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 			return Status{}, err
 		}
 	}
-	message := "destroyed private node artifacts; image cache, keys, and persistent data disks preserved"
+	message := "destroyed node artifacts; image cache, keys, and persistent data disks preserved"
 	switch {
 	case partial && m.dropFromSpec:
 		message = "destroyed and removed the selected node(s); peers, keys, and persistent data disks preserved"
 	case partial:
-		message = "destroyed selected private node artifacts for immediate recreate; deployment state, peer nodes, keys, and persistent data disks preserved"
+		message = "destroyed selected node artifacts for immediate recreate; deployment state, peer nodes, keys, and persistent data disks preserved"
 	}
 	result := Status{OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message}
 	for _, definition := range projectState.Resolved.Nodes {

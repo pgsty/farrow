@@ -11,8 +11,7 @@ homepage: https://github.com/pgsty/farrow
 license: Apache-2.0
 description: |-
   Native Go/QEMU runtime for Pigsty development virtual machines.
-  Farrow provides unprivileged quick VMs and an explicitly installed private
-  network for fixed-IP multi-node labs.
+  Farrow boots one Pigsty-compatible inventory as one fixed-IP deployment.
 
 overrides:
   deb:
@@ -73,13 +72,6 @@ contents:
       owner: root
       group: root
       mode: 0755
-  - src: ${FARROW_PAYLOAD}/usr/bin/pigsty-vm
-    dst: /usr/bin/pigsty-vm
-    expand: true
-    file_info:
-      owner: root
-      group: root
-      mode: 0755
   - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/BUILD_INFO.json
     dst: /usr/share/doc/farrow/BUILD_INFO.json
     expand: true
@@ -96,48 +88,9 @@ contents:
   - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/THIRD_PARTY_LICENSES.md
     expand: true
     dst: /usr/share/doc/farrow/THIRD_PARTY_LICENSES.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/architecture.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/architecture.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/cli.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/cli.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/config.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/config.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/development.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/development.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/getting-started.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/getting-started.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/images.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/images.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/networking.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/networking.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/phase-2.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/phase-2.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/pigsty.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/pigsty.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/security.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/security.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/status.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/status.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/docs/troubleshooting.md
-    expand: true
-    dst: /usr/share/doc/farrow/docs/troubleshooting.md
   - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/licenses/*
     expand: true
     dst: /usr/share/doc/farrow/licenses/
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/tests/e2e/README.md
-    expand: true
-    dst: /usr/share/doc/farrow/tests/e2e/README.md
 
 rpm:
   summary: Native Go/QEMU runtime for Pigsty development VMs

@@ -34,13 +34,9 @@ class Farrow < Formula
 
   def install
     bin.install "bin/farrow"
-    bin.install "bin/pigsty-vm"
     libexec.install "bin/farrow-hosts-helper"
     doc.install "README.md", "THIRD_PARTY_LICENSES.md"
-    doc.install "docs"
-    doc.install "tests"
     doc.install "third_party/licenses"
-    pkgshare.install "schemas"
   end
 
   def caveats

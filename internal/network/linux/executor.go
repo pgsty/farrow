@@ -43,6 +43,10 @@ type UninstallReport struct {
 	Checks  map[string]string `json:"checks,omitempty"`
 }
 
+// ErrInstallRolledBack means installation failed after mutation began, but
+// the executor verified that its owned host changes were removed/restored.
+var ErrInstallRolledBack = errors.New("linux network installation failed and was rolled back")
+
 func (e Executor) validate() error {
 	if e.User == nil || e.Root == nil {
 		return errors.New("linux network executor requires user and privileged runners")
@@ -319,16 +323,16 @@ func (e Executor) InstallConfig(ctx context.Context, config Config, apply bool) 
 		}
 	}
 	if err := e.runInstallPhases(ctx, plan.Phases, false, config); err != nil {
-		return report, err
+		return e.rollbackInstall(report, err)
 	}
 	if err := e.waitBridge(ctx, config); err != nil {
-		return report, err
+		return e.rollbackInstall(report, err)
 	}
 	if err := e.helperAttachSmoke(ctx, plan.Manifest.HelperPath); err != nil {
-		return report, err
+		return e.rollbackInstall(report, err)
 	}
 	if err := e.runInstallPhases(ctx, plan.Phases, true, config); err != nil {
-		return report, err
+		return e.rollbackInstall(report, err)
 	}
 	// The non-persistence phases are intentionally idempotent and ran twice;
 	// this also exercises repeated reload/reconfigure without recapturing state.
@@ -336,6 +340,19 @@ func (e Executor) InstallConfig(ctx context.Context, config Config, apply bool) 
 	report.Checks["bridge"] = "farrow0 " + config.HostAddress + "/24"
 	report.Checks["helper-attach"] = "non-root QEMU QMP smoke passed"
 	return report, nil
+}
+
+func (e Executor) rollbackInstall(report InstallReport, installErr error) (InstallReport, error) {
+	rollbackContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	rollback, rollbackErr := e.Uninstall(rollbackContext, true)
+	if rollbackErr != nil || !rollback.Applied {
+		if rollbackErr == nil {
+			rollbackErr = errors.New("rollback did not report an applied uninstall")
+		}
+		return report, fmt.Errorf("%w; automatic rollback failed: %v", installErr, rollbackErr)
+	}
+	return report, fmt.Errorf("%w: %v", ErrInstallRolledBack, installErr)
 }
 
 func (e Executor) currentUninstallFacts(ctx context.Context, manifest Manifest) (UninstallFacts, error) {
@@ -347,7 +364,7 @@ func (e Executor) currentUninstallFacts(ctx context.Context, manifest Manifest) 
 		}
 		currentFiles[path] = string(data)
 	}
-	facts, err := DiscoverFacts(ctx, e.User, e.Root)
+	facts, err := discoverFacts(ctx, e.User, e.Root, false)
 	if err != nil {
 		return UninstallFacts{}, err
 	}
@@ -369,7 +386,7 @@ func (e Executor) PlanUninstall(ctx context.Context) (UninstallPlan, Manifest, e
 	if err := e.validate(); err != nil {
 		return UninstallPlan{}, Manifest{}, err
 	}
-	facts, err := DiscoverFacts(ctx, e.User, e.Root)
+	facts, err := discoverFacts(ctx, e.User, e.Root, false)
 	if err != nil {
 		return UninstallPlan{}, Manifest{}, err
 	}
@@ -388,6 +405,25 @@ func (e Executor) PlanUninstall(ctx context.Context) (UninstallPlan, Manifest, e
 func (e Executor) rootUnlink(ctx context.Context, path string) error {
 	_, err := e.Root.Run(ctx, "/usr/bin/unlink", path)
 	return err
+}
+
+func (e Executor) rootUnlinkIfPlanned(ctx context.Context, plan UninstallPlan, path string) error {
+	for _, planned := range plan.RemoveFiles {
+		if planned == path {
+			return e.rootUnlink(ctx, path)
+		}
+	}
+	return nil
+}
+
+func (e Executor) rootRmdir(ctx context.Context, path string) error {
+	if _, err := e.Root.Run(ctx, "/usr/bin/rmdir", path); err != nil {
+		if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, error) {
@@ -467,7 +503,7 @@ func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, e
 			return report, err
 		}
 	}
-	if err := e.rootUnlink(ctx, TmpfilesPath); err != nil {
+	if err := e.rootUnlinkIfPlanned(ctx, plan, TmpfilesPath); err != nil {
 		return report, err
 	}
 	for _, command := range restoreNetworkdCommands(manifest.NetworkdUnits) {
@@ -475,14 +511,14 @@ func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, e
 			return report, err
 		}
 	}
-	if err := e.rootUnlink(ctx, LeaseLockPath); err != nil {
+	if err := e.rootUnlinkIfPlanned(ctx, plan, LeaseLockPath); err != nil {
 		return report, err
 	}
 	if err := e.rootUnlink(ctx, StatePath); err != nil {
 		return report, err
 	}
 	for _, directory := range plan.RemoveDirectories {
-		if _, err := e.Root.Run(ctx, "/usr/bin/rmdir", directory); err != nil {
+		if err := e.rootRmdir(ctx, directory); err != nil {
 			return report, err
 		}
 	}
@@ -529,7 +565,7 @@ func (e Executor) applyNetworkManagerUninstall(ctx context.Context, report Unins
 		}
 	}
 	for _, directory := range plan.RemoveDirectories {
-		if _, err := e.Root.Run(ctx, "/usr/bin/rmdir", directory); err != nil {
+		if err := e.rootRmdir(ctx, directory); err != nil {
 			return report, err
 		}
 	}

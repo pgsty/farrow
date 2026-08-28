@@ -57,6 +57,7 @@ func TestLinuxHelperPolicySupportsDebianAndRPMContracts(t *testing.T) {
 		ok     bool
 	}{
 		{linuxnet.Debian, 0o4750, "kvm", true},
+		{linuxnet.Debian, 0o4750, "vonng", true},
 		{linuxnet.Debian, 0o4755, "root", false},
 		{linuxnet.RPM, 0o4755, "root", true},
 		{linuxnet.RPM, 0o4755, "kvm", false},

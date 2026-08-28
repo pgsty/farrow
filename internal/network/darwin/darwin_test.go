@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -199,6 +200,39 @@ func TestInterfaceMarkerStrictContractAndPinnedBytes(t *testing.T) {
 	}
 }
 
+func TestRecoverPlanFromExactInterfaceEvidence(t *testing.T) {
+	t.Parallel()
+	plan, err := NewInstallPlanModeNetwork("arm64", "018f4b8e-1234-7abc-9def-0123456789ab", "host", subnet.DefaultCIDR)
+	if err == nil {
+		plan, err = plan.WithBSDInterface("bridge100")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, err := plan.InterfaceJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist, err := plan.Plist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := recoverPlanFromInterfaceEvidence("arm64", marker, marker, plist, plan.SocketDigest(), plan.ClientDigest())
+	if err != nil || !reflect.DeepEqual(recovered, plan) {
+		t.Fatalf("recovered=%#v err=%v want=%#v", recovered, err, plan)
+	}
+	if _, err := recoverPlanFromInterfaceEvidence("arm64", append([]byte(" "), marker...), marker, plist, plan.SocketDigest(), plan.ClientDigest()); err == nil {
+		t.Fatal("different protected/public evidence was accepted")
+	}
+	modifiedPlist := bytes.Replace(plist, []byte("--vmnet-gateway=10.10.10.1"), []byte("--vmnet-gateway=10.10.10.99"), 1)
+	if _, err := recoverPlanFromInterfaceEvidence("arm64", marker, marker, modifiedPlist, plan.SocketDigest(), plan.ClientDigest()); err == nil {
+		t.Fatal("modified launchd plist was accepted")
+	}
+	if _, err := recoverPlanFromInterfaceEvidence("arm64", marker, marker, plist, strings.Repeat("0", 64), plan.ClientDigest()); err == nil {
+		t.Fatal("wrong installed binary digest was accepted")
+	}
+}
+
 func TestExactHostInterfaceDeltaDoesNotAdoptForeignVBox(t *testing.T) {
 	t.Parallel()
 	layout := subnet.Default()
@@ -288,5 +322,8 @@ func TestInterfaceEvidencePathsArePublicProtectedAndTargeted(t *testing.T) {
 	if targets[InterfaceMarkerDir] != "root:wheel 0755" || targets[InterfaceMarkerPath] != "root:wheel 0644" ||
 		targets[InterfaceStatePath] != "root:wheel 0600" {
 		t.Fatalf("interface evidence metadata targets = %#v", targets)
+	}
+	if _, exists := targets[LeaseRoot]; exists {
+		t.Fatalf("current install contract still creates retired lease root: %#v", targets)
 	}
 }
