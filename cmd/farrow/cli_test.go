@@ -74,13 +74,8 @@ func TestRootHelpUsesWorkflowOrder(t *testing.T) {
 	}
 }
 
-func TestLifecycleAliasAndInterspersedFlagContracts(t *testing.T) {
+func TestLifecycleInterspersedFlagContracts(t *testing.T) {
 	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
-	halt, _, err := root.Find([]string{"halt"})
-	if err != nil || halt == nil || halt.Name() != "stop" {
-		t.Fatalf("halt resolved to %v, %v", halt, err)
-	}
-
 	for _, test := range []struct {
 		arguments []string
 		command   string
@@ -104,6 +99,211 @@ func TestLifecycleAliasAndInterspersedFlagContracts(t *testing.T) {
 		value, valueErr := command.Flags().GetBool(test.flag)
 		if valueErr != nil || !value {
 			t.Errorf("%v --%s=%t err=%v", test.arguments, test.flag, value, valueErr)
+		}
+	}
+}
+
+func TestCommandAliasesResolveToCanonicalCommands(t *testing.T) {
+	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	for _, test := range []struct {
+		arguments []string
+		path      string
+	}{
+		{arguments: []string{"s"}, path: "farrow setup"},
+		{arguments: []string{"i"}, path: "farrow init"},
+		{arguments: []string{"v"}, path: "farrow validate"},
+		{arguments: []string{"pl"}, path: "farrow plan"},
+		{arguments: []string{"rc"}, path: "farrow recreate"},
+		{arguments: []string{"st"}, path: "farrow status"},
+		{arguments: []string{"de"}, path: "farrow destroy"},
+		{arguments: []string{"ex"}, path: "farrow exec"},
+		{arguments: []string{"l"}, path: "farrow logs"},
+		{arguments: []string{"p"}, path: "farrow provision"},
+		{arguments: []string{"sc"}, path: "farrow ssh-config"},
+		{arguments: []string{"h"}, path: "farrow hosts"},
+		{arguments: []string{"im"}, path: "farrow image"},
+		{arguments: []string{"images"}, path: "farrow image"},
+		{arguments: []string{"dt"}, path: "farrow doctor"},
+		{arguments: []string{"n"}, path: "farrow network"},
+		{arguments: []string{"net"}, path: "farrow network"},
+		{arguments: []string{"ver"}, path: "farrow version"},
+		{arguments: []string{"cp"}, path: "farrow completion"},
+		{arguments: []string{"h", "i"}, path: "farrow hosts install"},
+		{arguments: []string{"h", "u"}, path: "farrow hosts uninstall"},
+		{arguments: []string{"im", "ls"}, path: "farrow image list"},
+		{arguments: []string{"im", "in"}, path: "farrow image info"},
+		{arguments: []string{"im", "p"}, path: "farrow image pull"},
+		{arguments: []string{"im", "pr"}, path: "farrow image prune"},
+		{arguments: []string{"im", "sy"}, path: "farrow image sync"},
+		{arguments: []string{"im", "i"}, path: "farrow image import"},
+		{arguments: []string{"n", "st"}, path: "farrow network status"},
+		{arguments: []string{"n", "i"}, path: "farrow network install"},
+		{arguments: []string{"n", "u"}, path: "farrow network uninstall"},
+	} {
+		command, remaining, err := root.Find(test.arguments)
+		if err != nil || command == nil || command.CommandPath() != test.path || len(remaining) != 0 {
+			t.Errorf("find %v: command=%v remaining=%v err=%v, want %s", test.arguments, command, remaining, err, test.path)
+		}
+	}
+}
+
+func TestCommandAliasesAreUniqueWithinEachScope(t *testing.T) {
+	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	var walk func(*cobra.Command)
+	walk = func(parent *cobra.Command) {
+		seen := make(map[string]string)
+		for _, child := range parent.Commands() {
+			for _, name := range append([]string{child.Name()}, child.Aliases...) {
+				if previous, duplicate := seen[name]; duplicate {
+					t.Errorf("%s name/alias %q is shared by %s and %s", parent.CommandPath(), name, previous, child.CommandPath())
+				} else {
+					seen[name] = child.CommandPath()
+				}
+			}
+			walk(child)
+		}
+	}
+	walk(root)
+}
+
+func TestMisleadingAliasesAreRejected(t *testing.T) {
+	for _, arguments := range [][]string{{"clean"}, {"image", "rm"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(arguments, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "unknown command") {
+			t.Errorf("run %v code=%d stdout=%q stderr=%q", arguments, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestHaltIsHiddenDeprecatedCompatibilityCommand(t *testing.T) {
+	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	halt, remaining, err := root.Find([]string{"halt"})
+	if err != nil || halt == nil || halt.Name() != "halt" || len(remaining) != 0 {
+		t.Fatalf("halt command=%v remaining=%v err=%v", halt, remaining, err)
+	}
+	if !halt.Hidden || halt.Deprecated == "" {
+		t.Fatalf("halt hidden=%t deprecated=%q", halt.Hidden, halt.Deprecated)
+	}
+}
+
+func TestShortCanonicalAndLifecycleCommandsHaveNoExtraAliases(t *testing.T) {
+	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	for _, name := range []string{"up", "ssh", "ss", "start", "stop", "restart", "reload"} {
+		command, _, err := root.Find([]string{name})
+		if err != nil || command == nil {
+			t.Fatalf("find %s: command=%v err=%v", name, command, err)
+		}
+		if len(command.Aliases) != 0 {
+			t.Errorf("%s aliases=%v, want none", command.CommandPath(), command.Aliases)
+		}
+	}
+}
+
+func TestOperationalFlagsExposeScopedShorthands(t *testing.T) {
+	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	for _, test := range []struct {
+		path      []string
+		flag      string
+		shorthand string
+	}{
+		{path: nil, flag: "verbose", shorthand: "v"},
+		{path: []string{"setup"}, flag: "yes", shorthand: "y"},
+		{path: []string{"setup"}, flag: "dry-run", shorthand: "d"},
+		{path: []string{"setup"}, flag: "mode", shorthand: "m"},
+		{path: []string{"up"}, flag: "repo", shorthand: "r"},
+		{path: []string{"up"}, flag: "no-wait", shorthand: "n"},
+		{path: []string{"up"}, flag: "rollback", shorthand: "b"},
+		{path: []string{"destroy"}, flag: "force", shorthand: "f"},
+		{path: []string{"provision"}, flag: "script", shorthand: "s"},
+		{path: []string{"provision"}, flag: "parallel", shorthand: "p"},
+		{path: []string{"provision"}, flag: "timeout", shorthand: "t"},
+		{path: []string{"ssh-config"}, flag: "install", shorthand: "i"},
+		{path: []string{"ssh-config"}, flag: "remove", shorthand: "r"},
+		{path: []string{"ssh-config"}, flag: "name", shorthand: "n"},
+		{path: []string{"logs"}, flag: "source", shorthand: "s"},
+		{path: []string{"hosts", "install"}, flag: "yes", shorthand: "y"},
+		{path: []string{"image", "prune"}, flag: "yes", shorthand: "y"},
+		{path: []string{"image", "import"}, flag: "sha256", shorthand: "s"},
+		{path: []string{"image", "import"}, flag: "source-user", shorthand: "u"},
+		{path: []string{"network", "install"}, flag: "archive", shorthand: "a"},
+		{path: []string{"network", "install"}, flag: "interface-id", shorthand: "i"},
+		{path: []string{"network", "install"}, flag: "yes", shorthand: "y"},
+	} {
+		command := root
+		var err error
+		if len(test.path) != 0 {
+			command, _, err = root.Find(test.path)
+		}
+		if err != nil || command == nil {
+			t.Fatalf("find %v: command=%v err=%v", test.path, command, err)
+		}
+		flag := command.LocalNonPersistentFlags().Lookup(test.flag)
+		if test.path == nil {
+			flag = command.PersistentFlags().Lookup(test.flag)
+		}
+		if flag == nil {
+			t.Errorf("%s has no --%s flag", command.CommandPath(), test.flag)
+			continue
+		}
+		if flag.Shorthand != test.shorthand {
+			t.Errorf("%s --%s shorthand=%q, want %q", command.CommandPath(), test.flag, flag.Shorthand, test.shorthand)
+		}
+	}
+
+	if root.PersistentFlags().Lookup("json").Shorthand != "" || root.PersistentFlags().Lookup("yaml").Shorthand != "" {
+		t.Fatal("JSON and YAML presentation flags unexpectedly gained shorthands")
+	}
+}
+
+func TestSafetySensitiveFlagsRemainLongOnly(t *testing.T) {
+	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	for _, test := range []struct {
+		path []string
+		flag string
+	}{
+		{path: []string{"recreate"}, flag: "force"},
+		{path: []string{"destroy"}, flag: "delete-persistent"},
+		{path: []string{"destroy"}, flag: "purge"},
+		{path: []string{"provision"}, flag: "sudo"},
+		{path: []string{"image", "sync"}, flag: "allow-downgrade"},
+	} {
+		command, _, err := root.Find(test.path)
+		if err != nil {
+			t.Fatalf("find %v: %v", test.path, err)
+		}
+		flag := command.LocalNonPersistentFlags().Lookup(test.flag)
+		if flag == nil {
+			t.Errorf("%s has no --%s flag", command.CommandPath(), test.flag)
+			continue
+		}
+		if flag.Shorthand != "" {
+			t.Errorf("%s --%s shorthand=%q, want none", command.CommandPath(), test.flag, flag.Shorthand)
+		}
+	}
+}
+
+func TestAliasesAreDiscoverableInHelpAndCompletion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--help"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("root help code=%d stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Command aliases:", "s=setup", "sc=ssh-config", "dt=doctor", "im=image"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("root help missing %q:\n%s", want, stdout.String())
+		}
+	}
+	for _, test := range []struct {
+		arguments []string
+		want      string
+	}{
+		{arguments: []string{"__complete", "sc"}, want: "sc\tAlias for ssh-config"},
+		{arguments: []string{"__complete", "dt"}, want: "dt\tAlias for doctor"},
+		{arguments: []string{"__complete", "im", "pr"}, want: "pr\tAlias for prune"},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := run(test.arguments, &stdout, &stderr); code != exitOK || !strings.Contains(stdout.String(), test.want) {
+			t.Errorf("completion %v code=%d stdout=%q stderr=%q want=%q", test.arguments, code, stdout.String(), stderr.String(), test.want)
 		}
 	}
 }

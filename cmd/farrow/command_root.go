@@ -22,7 +22,7 @@ farrow.yaml, pigsty.yml, or pigsty.yaml in the working directory. Once a
 deployment exists, lifecycle commands can fall back to its applied resolved
 specification; validate always requires an inventory.`,
 		Example: `  farrow setup                 # prepare the host and create/reuse an inventory
-  farrow up                    # create additions and start selected stopped nodes
+  farrow up                    # create/start nodes and install SSH configuration
   farrow status                # inspect the deployment from any directory
   farrow ssh meta              # open the control node
   farrow plan -f pigsty.yml    # compare another desired inventory
@@ -41,7 +41,7 @@ specification; validate always requires an inventory.`,
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return err })
 	root.PersistentFlags().Bool("json", false, "emit JSON output")
 	root.PersistentFlags().Bool("yaml", false, "emit YAML output")
-	root.PersistentFlags().Bool("verbose", false, "emit detailed diagnostics to stderr")
+	root.PersistentFlags().BoolP("verbose", "v", false, "emit detailed diagnostics to stderr")
 
 	root.AddGroup(
 		&cobra.Group{ID: "setup", Title: "Setup:"},
@@ -53,20 +53,23 @@ specification; validate always requires an inventory.`,
 	)
 
 	setup := newSetupCommand(stdout, stderr)
+	setup.Aliases = []string{"s"}
 	setup.GroupID = "setup"
 	initCommand := newInitCommand(stdout, stderr)
+	initCommand.Aliases = []string{"i"}
 	initCommand.GroupID = "setup"
 	validate := newValidateCommand(stdout, stderr)
+	validate.Aliases = []string{"v"}
 	validate.GroupID = "setup"
 	root.AddCommand(setup, initCommand, validate)
 
 	for _, item := range []struct{ name, short string }{
 		{"plan", "Show the changes required to reach desired state"},
-		{"up", "Create or converge selected virtual machines"},
+		{"up", "Create, start, and configure SSH for selected virtual machines"},
 		{"start", "Start selected stopped virtual machines"},
 		{"stop", "Stop selected running virtual machines"},
 		{"restart", "Restart selected virtual machines"},
-		{"reload", "Stop, re-read the configuration, and converge (halt + up)"},
+		{"reload", "Stop, re-read the configuration, and converge (stop + up)"},
 		{"recreate", "Destroy and recreate selected virtual machines"},
 		{"status", "Show deployment state"},
 		{"destroy", "Destroy the deployment, or remove selected nodes from it"},
@@ -75,6 +78,11 @@ specification; validate always requires an inventory.`,
 		command.GroupID = "lifecycle"
 		root.AddCommand(command)
 	}
+	halt := newLifecycleCommand("stop", "Deprecated compatibility command for stop", stdout, stderr)
+	halt.Use = "halt [node...]"
+	halt.Hidden = true
+	halt.Deprecated = "use 'farrow stop'"
+	root.AddCommand(halt)
 
 	ssh := rawOperation(
 		"ssh [node] [--] [command [args...]]",
@@ -104,6 +112,7 @@ could be mistaken for Farrow presentation flags.`,
 			return runSSH("exec", arguments, stdout, stderr)
 		})
 	execCommand.ValidArgsFunction = nodeCompletion(false, true)
+	execCommand.Aliases = []string{"ex"}
 	execCommand.GroupID = "access"
 	provision := newProvisionCommand(stdout, stderr)
 	provision.GroupID = "access"
@@ -122,8 +131,9 @@ could be mistaken for Farrow presentation flags.`,
 	root.AddCommand(images)
 
 	doctor := &cobra.Command{
-		Use:   "doctor",
-		Short: "Check host capabilities",
+		Use:     "doctor",
+		Aliases: []string{"dt"},
+		Short:   "Check host capabilities",
 		Long: `Probe QEMU, native acceleration, firmware, OpenSSH, an accelerated boot
 smoke, and host-network readiness. Missing network setup is informational;
 missing compute capability exits 3.`,
@@ -141,8 +151,9 @@ missing compute capability exits 3.`,
 	root.AddCommand(doctor, network)
 
 	versionCommand := &cobra.Command{
-		Use:   "version",
-		Short: "Print build version",
+		Use:     "version",
+		Aliases: []string{"ver"},
+		Short:   "Print build version",
 		Long: `Print the Farrow version, source commit, build time, operating system, and
 architecture.`,
 		Example: `  farrow version
@@ -154,8 +165,10 @@ architecture.`,
 		},
 	}
 	completion := newCompletionCommand(root, stdout, stderr)
+	completion.Aliases = []string{"cp"}
 	completion.GroupID = "advanced"
 	root.AddCommand(versionCommand, completion)
+	configureAliasDiscovery(root)
 	return root
 }
 

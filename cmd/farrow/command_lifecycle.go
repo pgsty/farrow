@@ -21,10 +21,13 @@ It uses -f first, then local discovery, then the applied specification.`,
   farrow --json plan meta        # inspect one node as structured data`,
 	},
 	"up": {
-		long: `Converge safe additions and starts without disrupting running peers.
+		long: `Converge safe additions and starts without disrupting running peers, then
+synchronize the default marker-owned SSH configuration from the complete
+applied deployment so plain ssh can reach every materialized node.
 
 Up creates missing selected nodes and starts selected nodes that already exist
-but are stopped. Definition changes and removed inventory nodes are reported,
+but are stopped. Start only performs that power-on step and does not refresh SSH
+configuration. Definition changes and removed inventory nodes are reported,
 never applied implicitly; use recreate or destroy for those transitions.`,
 		example: `  farrow up                      # converge the discovered or applied specification
   farrow up meta                 # converge only the meta node
@@ -32,16 +35,15 @@ never applied implicitly; use recreate or destroy for those transitions.`,
 	},
 	"start": {
 		long: `Start already-created nodes from the applied deployment state.
-Start does not discover or re-read an inventory; use up to apply additions.`,
+Start does not discover or re-read an inventory, create nodes, or refresh the
+SSH client configuration; use up for the complete converge-and-configure path.`,
 		example: `  farrow start                   # start every stopped node
   farrow start meta --no-wait    # return after process and QMP identity`,
 	},
 	"stop": {
-		long: `Stop running nodes recorded in the applied deployment state.
-The halt alias is retained for Vagrant-style muscle memory.`,
+		long: `Stop running nodes recorded in the applied deployment state.`,
 		example: `  farrow stop                    # stop the deployment
-  farrow stop meta               # stop one node
-  farrow halt                    # alias for stop`,
+  farrow stop meta               # stop one node`,
 	},
 	"restart": {
 		long: `Stop and start existing nodes from applied state without re-reading an inventory.
@@ -62,7 +64,8 @@ an explicit recreate and removed nodes still require an explicit destroy.`,
 
 This is the explicit path for node-definition drift. On a terminal Farrow asks
 you to type recreate; automation must pass --force. Persistent disks follow
-their declared lifecycle policy.`,
+their declared lifecycle policy. A successful recreate also refreshes the
+complete default SSH configuration.`,
 		example: `  farrow recreate meta           # review and confirm one changed node
   farrow recreate --force meta   # non-interactive recreation
   farrow recreate -f pigsty.yml meta`,
@@ -79,7 +82,9 @@ Status reads applied state only, so it works outside the inventory directory.`,
 
 Destroy never infers deletion from a missing inventory entry. On a terminal it
 asks you to type destroy; automation must pass --force. Persistent disks and
-keys are preserved unless their wider deletion flags are explicit.`,
+keys are preserved unless their wider deletion flags are explicit. Node destroy
+refreshes the default SSH configuration for the remaining deployment; whole
+destroy removes that default marker-owned integration.`,
 		example: `  farrow destroy meta            # review and confirm removal of one node
   farrow destroy --force         # remove the deployment, preserving persistent data
   farrow destroy --force --purge # terminal disposal; image cache remains`,
@@ -96,27 +101,34 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: nodeCompletion(name == "plan" || name == "up" || name == "reload" || name == "recreate", false),
 	}
-	if name == "stop" {
-		command.Aliases = []string{"halt"}
+	switch name {
+	case "plan":
+		command.Aliases = []string{"pl"}
+	case "recreate":
+		command.Aliases = []string{"rc"}
+	case "status":
+		command.Aliases = []string{"st"}
+	case "destroy":
+		command.Aliases = []string{"de"}
 	}
 	options := lifecycleOptions{}
 	switch name {
 	case "plan":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "desired inventory (default: discover locally, then use applied state)")
-		command.Flags().StringVar(&options.Repository, "repo", "", repositoryFlagHelp)
+		command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
 	case "up", "reload":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "desired inventory (default: discover locally, then use applied state)")
-		command.Flags().StringVar(&options.Repository, "repo", "", repositoryFlagHelp)
-		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
-		command.Flags().BoolVar(&options.Rollback, "rollback", false, "remove safe artifacts from nodes that fail to prepare")
+		command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
+		command.Flags().BoolVarP(&options.NoWait, "no-wait", "n", false, "return after QMP/process identity without waiting for guest readiness")
+		command.Flags().BoolVarP(&options.Rollback, "rollback", "b", false, "remove safe artifacts from nodes that fail to prepare")
 	case "start", "restart":
-		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
+		command.Flags().BoolVarP(&options.NoWait, "no-wait", "n", false, "return after QMP/process identity without waiting for guest readiness")
 	case "recreate":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "desired inventory (default: discover locally, then use applied state)")
 		command.Flags().BoolVar(&options.Force, "force", false, "recreate without the interactive confirmation (required without a terminal)")
-		command.Flags().BoolVar(&options.NoWait, "no-wait", false, "return after QMP/process identity without waiting for guest readiness")
+		command.Flags().BoolVarP(&options.NoWait, "no-wait", "n", false, "return after QMP/process identity without waiting for guest readiness")
 	case "destroy":
-		command.Flags().BoolVar(&options.Force, "force", false, "destroy without the interactive confirmation (required without a terminal)")
+		command.Flags().BoolVarP(&options.Force, "force", "f", false, "destroy without the interactive confirmation (required without a terminal)")
 		command.Flags().BoolVar(&options.DeletePersistent, "delete-persistent", false, "also delete owned persistent data disks")
 		command.Flags().BoolVar(&options.Purge, "purge", false, "terminal disposal: also delete persistent disks, keys, and deployment state")
 	}

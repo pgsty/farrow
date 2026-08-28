@@ -30,6 +30,18 @@ func TestPrepareOutputDefaultsToTextAndExtractsGlobalFlags(t *testing.T) {
 	}
 }
 
+func TestPrepareOutputAcceptsVerboseShorthand(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args, _, errOut, err := prepareOutput([]string{"status", "-v"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(args, " ") != "status" || !verboseOutput(errOut) {
+		t.Fatalf("prepared args=%v verbose=%t", args, verboseOutput(errOut))
+	}
+}
+
 func TestPrepareOutputDoesNotConsumeRemoteArguments(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -116,6 +128,9 @@ func TestCommandHelpShowsOnlyDocumentedPresentationFlags(t *testing.T) {
 				if strings.Contains(help, alias) {
 					t.Fatalf("help exposes unsupported alias %q:\n%s", alias, help)
 				}
+			}
+			if !strings.Contains(help, "-v, --verbose") {
+				t.Fatalf("help missing verbose shorthand:\n%s", help)
 			}
 		})
 	}

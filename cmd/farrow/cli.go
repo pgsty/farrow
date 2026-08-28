@@ -248,3 +248,38 @@ func subcommandGroup(use, short, long, example string, stdout, stderr io.Writer)
 	configureHelpOnly(command, fmt.Sprintf("farrow %s requires a subcommand", use), stdout, stderr)
 	return command
 }
+
+func configureAliasDiscovery(command *cobra.Command) {
+	mappings := make([]string, 0)
+	for _, child := range command.Commands() {
+		configureAliasDiscovery(child)
+		if child.Hidden {
+			continue
+		}
+		for _, alias := range child.Aliases {
+			mappings = append(mappings, alias+"="+child.Name())
+			command.ValidArgs = append(command.ValidArgs, alias+"\tAlias for "+child.Name())
+		}
+	}
+	if len(mappings) != 0 {
+		var summary strings.Builder
+		summary.WriteString("\n\nCommand aliases:\n  ")
+		lineWidth := 2
+		for index, mapping := range mappings {
+			separator := ""
+			if index != 0 {
+				separator = ", "
+			}
+			if lineWidth+len(separator)+len(mapping) > 88 {
+				summary.WriteString(",\n  ")
+				lineWidth = 2
+				separator = ""
+			}
+			summary.WriteString(separator)
+			summary.WriteString(mapping)
+			lineWidth += len(separator) + len(mapping)
+		}
+		summary.WriteByte('.')
+		command.Long = strings.TrimSpace(command.Long) + summary.String()
+	}
+}

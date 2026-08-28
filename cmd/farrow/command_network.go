@@ -22,11 +22,13 @@ Farrow deployment. Mutating commands print their privileged plan and require
   farrow network uninstall --yes`,
 		stdout, stderr,
 	)
+	parent.Aliases = []string{"n", "net"}
 
 	statusOptions := networkOptions{Action: "status"}
 	status := &cobra.Command{
-		Use:   "status",
-		Short: "Inspect installed network state and readiness",
+		Use:     "status",
+		Aliases: []string{"st"},
+		Short:   "Inspect installed network state and readiness",
 		Long: `Inspect the platform backend, installed CIDR, ownership, health, and the
 read-only preflight findings used before lifecycle mutation.`,
 		Example: `  farrow network status
@@ -42,8 +44,9 @@ read-only preflight findings used before lifecycle mutation.`,
 
 	installOptions := networkOptions{Action: "install", CIDR: subnet.DefaultCIDR, Mode: "host"}
 	install := &cobra.Command{
-		Use:   "install",
-		Short: "Install the host-global fixed-IP network",
+		Use:     "install",
+		Aliases: []string{"i"},
+		Short:   "Install the host-global fixed-IP network",
 		Long: `Plan or install the platform-native fixed-IP backend. On macOS this is
 socket_vmnet in host or shared mode; on Linux it is the selected bridge/network
 manager backend. Without --yes the command is a read-only plan.`,
@@ -68,17 +71,18 @@ manager backend. Without --yes the command is a read-only plan.`,
 		},
 	}
 	install.Flags().StringVarP(&installOptions.CIDR, "cidr", "c", installOptions.CIDR, "host-global RFC1918 IPv4 /24")
-	install.Flags().StringVar(&installOptions.Mode, "mode", installOptions.Mode, "macOS vmnet mode: host or shared")
-	install.Flags().StringVar(&installOptions.Archive, "archive", "", "macOS: pinned socket_vmnet archive")
-	install.Flags().StringVar(&installOptions.InterfaceID, "interface-id", "", "macOS: persistent vmnet UUID")
-	install.Flags().BoolVar(&installOptions.Apply, "yes", false, "apply the displayed privileged plan without prompting")
+	install.Flags().StringVarP(&installOptions.Mode, "mode", "m", installOptions.Mode, "macOS vmnet mode: host or shared")
+	install.Flags().StringVarP(&installOptions.Archive, "archive", "a", "", "macOS: pinned socket_vmnet archive")
+	install.Flags().StringVarP(&installOptions.InterfaceID, "interface-id", "i", "", "macOS: persistent vmnet UUID")
+	install.Flags().BoolVarP(&installOptions.Apply, "yes", "y", false, "apply the displayed privileged plan without prompting")
 	_ = install.RegisterFlagCompletionFunc("mode", enumFlagCompletion("host", "shared"))
 	parent.AddCommand(install)
 
 	uninstallOptions := networkOptions{Action: "uninstall"}
 	uninstall := &cobra.Command{
-		Use:   "uninstall",
-		Short: "Remove Farrow-owned host networking",
+		Use:     "uninstall",
+		Aliases: []string{"u"},
+		Short:   "Remove Farrow-owned host networking",
 		Long: `Plan or remove only Farrow-owned network state and restore recorded host
 settings. The operation refuses while any deployment node is live and changes
 nothing without --yes.`,
@@ -89,7 +93,7 @@ nothing without --yes.`,
 			return commandError(runNetwork(uninstallOptions, stdout, stderr))
 		},
 	}
-	uninstall.Flags().BoolVar(&uninstallOptions.Apply, "yes", false, "apply the displayed privileged plan without prompting")
+	uninstall.Flags().BoolVarP(&uninstallOptions.Apply, "yes", "y", false, "apply the displayed privileged plan without prompting")
 	parent.AddCommand(uninstall)
 	return parent
 }

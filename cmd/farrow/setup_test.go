@@ -223,12 +223,12 @@ func TestRunSetupHelpIsSuccessful(t *testing.T) {
 func TestRunSetupTreatsSingleDashModeAsExplicit(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := run([]string{"setup", "quick", "-mode=host", "--dry-run", "--json"}, &stdout, &stderr)
+	code := run([]string{"setup", "-mode=host", "--dry-run", "--json"}, &stdout, &stderr)
 	if code != exitUsage {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	var failure commandFailure
-	if err := json.Unmarshal(stdout.Bytes(), &failure); err != nil || failure.Error != "usage" || !strings.Contains(failure.Message, "unknown shorthand flag") || !strings.Contains(stderr.String(), "unknown shorthand flag") {
+	if err := json.Unmarshal(stdout.Bytes(), &failure); err != nil || failure.Error != "usage" || !strings.Contains(failure.Message, "--mode must be one of") || !strings.Contains(stderr.String(), "--mode must be one of") {
 		t.Fatalf("non-standard single-dash long flag was accepted: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }

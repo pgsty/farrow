@@ -12,8 +12,9 @@ import (
 func newProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
 	options := provisionOptions{Parallelism: 1, Timeout: time.Hour}
 	command := &cobra.Command{
-		Use:   "provision [node...]",
-		Short: "Run a local Bash script in selected guests",
+		Use:     "provision [node...]",
+		Aliases: []string{"p"},
+		Short:   "Run a local Bash script in selected guests",
 		Long: `Stream one bounded local Bash script to selected running guests over the
 verified deployment SSH connection. Execution is serial by default, audited by
 script digest, and never uploads the script as a persistent guest file.`,
@@ -35,10 +36,10 @@ script digest, and never uploads the script as a persistent guest file.`,
 			return commandError(runProvision(options, nodes, stdout, stderr))
 		},
 	}
-	command.Flags().StringVar(&options.ScriptPath, "script", "", "local Bash script to stream to each selected guest")
+	command.Flags().StringVarP(&options.ScriptPath, "script", "s", "", "local Bash script to stream to each selected guest")
 	command.Flags().BoolVar(&options.Sudo, "sudo", false, "run the guest script through sudo -n")
-	command.Flags().IntVar(&options.Parallelism, "parallel", options.Parallelism, "bounded node concurrency, 1..4")
-	command.Flags().DurationVar(&options.Timeout, "timeout", options.Timeout, "hard deadline for the operation, maximum 24h")
+	command.Flags().IntVarP(&options.Parallelism, "parallel", "p", options.Parallelism, "bounded node concurrency, 1..4")
+	command.Flags().DurationVarP(&options.Timeout, "timeout", "t", options.Timeout, "hard deadline for the operation, maximum 24h")
 	_ = command.MarkFlagRequired("script")
 	return command
 }
@@ -46,8 +47,9 @@ script digest, and never uploads the script as a persistent guest file.`,
 func newSSHConfigCommand(stdout, stderr io.Writer) *cobra.Command {
 	options := sshConfigOptions{Name: "farrow"}
 	command := &cobra.Command{
-		Use:   "ssh-config [node...]",
-		Short: "Print, install, or remove OpenSSH configuration",
+		Use:     "ssh-config [node...]",
+		Aliases: []string{"sc"},
+		Short:   "Print, install, or remove OpenSSH configuration",
 		Long: `Print the deployment OpenSSH fragment, install it through one marker-owned
 Include, or remove only that owned fragment. Printing and installation can be
 limited to selected nodes; removal is state-independent and accepts no nodes.`,
@@ -72,9 +74,9 @@ limited to selected nodes; removal is state-independent and accepts no nodes.`,
 			return commandError(runSSHConfig(options, nodes, stdout, stderr))
 		},
 	}
-	command.Flags().BoolVar(&options.Install, "install", false, "install a marker-owned Include and deployment fragment")
-	command.Flags().BoolVar(&options.Remove, "remove", false, "remove the marker-owned Include and fragment")
-	command.Flags().StringVar(&options.Name, "name", options.Name, "SSH Host and fragment prefix")
+	command.Flags().BoolVarP(&options.Install, "install", "i", false, "install a marker-owned Include and deployment fragment")
+	command.Flags().BoolVarP(&options.Remove, "remove", "r", false, "remove the marker-owned Include and fragment")
+	command.Flags().StringVarP(&options.Name, "name", "n", options.Name, "SSH Host and fragment prefix")
 	command.MarkFlagsMutuallyExclusive("install", "remove")
 	return command
 }
@@ -109,15 +111,16 @@ names, and the installed fragment prefix defaults to 'farrow'.`,
 			return commandError(runSSHConfig(options, nodes, stdout, stderr))
 		},
 	}
-	command.Flags().StringVar(&name, "name", "", "SSH fragment prefix (default: farrow)")
+	command.Flags().StringVarP(&name, "name", "n", "", "SSH fragment prefix (default: farrow)")
 	return command
 }
 
 func newLogsCommand(stdout, stderr io.Writer) *cobra.Command {
 	options := logOptions{Source: "serial"}
 	command := &cobra.Command{
-		Use:   "logs [node]",
-		Short: "Read or follow deployment logs",
+		Use:     "logs [node]",
+		Aliases: []string{"l"},
+		Short:   "Read or follow deployment logs",
 		Long: `Read the selected node's serial, QEMU, or Farrow event log. With --follow,
 text mode streams bytes and structured modes emit a record stream (NDJSON for
 JSON) so stdout remains machine-readable.`,
@@ -138,7 +141,7 @@ JSON) so stdout remains machine-readable.`,
 			return commandError(runLogs(options, node, stdout, stderr))
 		},
 	}
-	command.Flags().StringVar(&options.Source, "source", options.Source, "log source: serial, qemu, or events")
+	command.Flags().StringVarP(&options.Source, "source", "s", options.Source, "log source: serial, qemu, or events")
 	command.Flags().BoolVarP(&options.Follow, "follow", "f", false, "continue streaming appended log data")
 	_ = command.RegisterFlagCompletionFunc("source", enumFlagCompletion("serial", "qemu", "events"))
 	return command
@@ -156,6 +159,7 @@ before applying it.`,
   farrow hosts uninstall --yes # remove only the Farrow-owned block`,
 		stdout, stderr,
 	)
+	parent.Aliases = []string{"h"}
 	for _, action := range []string{"install", "uninstall"} {
 		action := action
 		apply := false
@@ -174,7 +178,12 @@ before applying it.`,
 				return commandError(runHosts(action, apply, stdout, stderr))
 			},
 		}
-		command.Flags().BoolVar(&apply, "yes", false, "apply the displayed privileged plan without prompting")
+		if action == "install" {
+			command.Aliases = []string{"i"}
+		} else {
+			command.Aliases = []string{"u"}
+		}
+		command.Flags().BoolVarP(&apply, "yes", "y", false, "apply the displayed privileged plan without prompting")
 		parent.AddCommand(command)
 	}
 	return parent

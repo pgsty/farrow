@@ -259,6 +259,13 @@ func prepareOutput(args []string, stdout, stderr io.Writer) ([]string, io.Writer
 			verbose = enabled
 			continue
 		}
+		if matched, enabled, err := parseBooleanOption(argument, "-v"); matched {
+			if err != nil {
+				return nil, stdout, stderr, err
+			}
+			verbose = enabled
+			continue
+		}
 		clean = append(clean, argument)
 	}
 	settings.Set("output.format", string(format))
@@ -701,7 +708,7 @@ func (item *progress) Stop(err error) {
 func lifecycleMessage(command string) string {
 	switch command {
 	case "up":
-		return "Preparing and starting the deployment"
+		return "Preparing, starting, and configuring SSH for the deployment"
 	case "start":
 		return "Starting the deployment"
 	case "stop":

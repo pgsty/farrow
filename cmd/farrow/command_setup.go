@@ -30,10 +30,10 @@ before any mutation and requests privilege only at the first privileged step.`,
 	}
 	command.Flags().StringVarP(&options.FilePath, "file", "f", "", "inventory to prepare (cannot be combined with a template)")
 	command.Flags().StringVarP(&options.CIDR, "cidr", "c", "", "generated template network as a canonical RFC1918 IPv4 /24")
-	command.Flags().StringVar(&options.Repo, "repo", "", "artifact mirror URL or absolute directory for images and socket_vmnet (default: $FARROW_REPO)")
-	command.Flags().StringVar(&options.Mode, "mode", options.Mode, "macOS fixed-IP network backend: host or shared")
-	command.Flags().BoolVar(&options.DryRun, "dry-run", false, "show the resolved setup plan without changing anything")
-	command.Flags().BoolVar(&options.Yes, "yes", false, "accept the one-time setup plan (required without a terminal)")
+	command.Flags().StringVarP(&options.Repo, "repo", "r", "", "artifact mirror URL or absolute directory for images and socket_vmnet (default: $FARROW_REPO)")
+	command.Flags().StringVarP(&options.Mode, "mode", "m", options.Mode, "macOS fixed-IP network backend: host or shared")
+	command.Flags().BoolVarP(&options.DryRun, "dry-run", "d", false, "show the resolved setup plan without changing anything")
+	command.Flags().BoolVarP(&options.Yes, "yes", "y", false, "accept the one-time setup plan (required without a terminal)")
 	command.MarkFlagsMutuallyExclusive("dry-run", "yes")
 	_ = command.RegisterFlagCompletionFunc("mode", enumFlagCompletion("host", "shared"))
 	command.RunE = func(command *cobra.Command, arguments []string) error {
