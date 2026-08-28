@@ -1,0 +1,97 @@
+package main
+
+import (
+	"io"
+
+	"github.com/spf13/cobra"
+)
+
+func newSetupCommand(stdout, stderr io.Writer) *cobra.Command {
+	options := setupCLIOptions{Mode: "host"}
+	command := &cobra.Command{
+		Use:   "setup [meta|dual|trio|full]",
+		Short: "Prepare the host and lab for first use",
+		Long: `Prepare the local host for Farrow and select the desired inventory.
+
+With no argument, setup reuses the first discovered inventory (farrow.yml,
+farrow.yaml, pigsty.yml, or pigsty.yaml); if none exists it writes the meta
+template to ./farrow.yml. A template argument creates or reuses that template.
+Use -f to prepare one explicit inventory instead. Setup prints one transaction
+before any mutation and requests privilege only at the first privileged step.`,
+		Example: `  farrow setup --dry-run       # inspect dependencies, downloads, and privilege steps
+  farrow setup                 # reuse a local inventory, or create the meta template
+  farrow setup full --yes      # prepare a generated four-node lab non-interactively
+  farrow setup -f pigsty.yml   # prepare an existing Pigsty inventory`,
+		Args:              templateArgs,
+		ValidArgsFunction: templateCompletion,
+		PreRunE: func(_ *cobra.Command, _ []string) error {
+			return validateChoice("--mode", options.Mode, "host", "shared")
+		},
+	}
+	command.Flags().StringVarP(&options.FilePath, "file", "f", "", "inventory to prepare (cannot be combined with a template)")
+	command.Flags().StringVar(&options.NetworkCIDR, "network-cidr", "", "generated template network as a canonical RFC1918 IPv4 /24")
+	command.Flags().StringVar(&options.Repo, "repo", "", "artifact mirror URL or absolute directory for images and socket_vmnet (default: $FARROW_REPO)")
+	command.Flags().StringVar(&options.Mode, "mode", options.Mode, "macOS fixed-IP network backend: host or shared")
+	command.Flags().BoolVar(&options.DryRun, "dry-run", false, "show the resolved setup plan without changing anything")
+	command.Flags().BoolVar(&options.Yes, "yes", false, "accept the one-time setup plan (required without a terminal)")
+	command.MarkFlagsMutuallyExclusive("dry-run", "yes")
+	_ = command.RegisterFlagCompletionFunc("mode", enumFlagCompletion("host", "shared"))
+	command.RunE = func(command *cobra.Command, arguments []string) error {
+		profileName := ""
+		if len(arguments) == 1 {
+			profileName = arguments[0]
+		}
+		options.ModeExplicit = command.Flags().Changed("mode")
+		return commandError(runSetupCommand(profileName, options, stdout, stderr))
+	}
+	return command
+}
+
+func newInitCommand(stdout, stderr io.Writer) *cobra.Command {
+	options := initOptions{Template: "meta"}
+	command := &cobra.Command{
+		Use:   "init [meta|dual|trio|full]",
+		Short: "Write a lab configuration (Pigsty-compatible inventory)",
+		Long: `Render an editable Pigsty-compatible inventory without touching host state.
+
+The default template is meta and the default destination is ./farrow.yml.
+Existing files are preserved unless --force is explicit. Use -o - to send the
+inventory to stdout for inspection or composition.`,
+		Example: `  farrow init                    # write ./farrow.yml with one meta node
+  farrow init full -o lab.yml    # write a four-node inventory elsewhere
+  farrow init dual -o -          # print the two-node inventory to stdout
+  farrow init --force            # replace ./farrow.yml explicitly`,
+		Args:              templateArgs,
+		ValidArgsFunction: templateCompletion,
+		RunE: func(_ *cobra.Command, arguments []string) error {
+			if len(arguments) == 1 {
+				options.Template = arguments[0]
+			}
+			return commandError(runInit(options, stdout, stderr))
+		},
+	}
+	command.Flags().StringVar(&options.NetworkCIDR, "network-cidr", "", "rebase the generated template to a canonical RFC1918 IPv4 /24")
+	command.Flags().StringVarP(&options.Output, "output", "o", "", "write to this path instead of ./farrow.yml; '-' writes to stdout")
+	command.Flags().BoolVar(&options.Force, "force", false, "overwrite an existing configuration file")
+	return command
+}
+
+func newValidateCommand(stdout, stderr io.Writer) *cobra.Command {
+	filePath := ""
+	command := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate and resolve a Farrow configuration",
+		Long: `Parse a Pigsty-compatible inventory, validate every consumed Farrow field,
+and print its source and resolved specification hash. Unlike lifecycle commands,
+validate never falls back to the already-applied deployment state.`,
+		Example: `  farrow validate                 # discover ` + configDiscoverySummary + `
+  farrow validate -f pigsty.yml  # validate one explicit inventory
+  farrow --json validate         # emit the resolved specification as JSON`,
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return commandError(runValidate(filePath, stdout, stderr))
+		},
+	}
+	command.Flags().StringVarP(&filePath, "file", "f", "", "inventory to validate (default: discover "+configDiscoverySummary+")")
+	return command
+}

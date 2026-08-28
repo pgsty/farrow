@@ -184,3 +184,22 @@ func (s Store) LocalEntries() ([]LocalAlias, error) {
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result, nil
 }
+
+// LocalAliasNames reads the private local-image registry without creating
+// cache directories or validating image bytes. It is intended for shell
+// completion, where discovery must remain fast and side-effect free.
+func LocalAliasNames(dataRoot string) ([]string, error) {
+	if dataRoot == "" || !filepath.IsAbs(dataRoot) {
+		return nil, errors.New("local image data root must be absolute")
+	}
+	registry, err := (Store{DataRoot: dataRoot}).readLocalAliases()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(registry.Aliases))
+	for name := range registry.Aliases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}

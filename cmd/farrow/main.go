@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -46,7 +46,10 @@ const (
 	exitCapability = 3
 	exitConflict   = 4
 	exitPartial    = 5
+	exitResource   = 6
 	exitIntegrity  = 7
+
+	legacyDeploymentMessage = "this deployment predates the fixed-IP redesign; preserve any needed disks, then move or remove the selected FARROW_HOME and run `farrow setup && farrow up`"
 )
 
 type lifecycleOptions struct {
@@ -143,41 +146,6 @@ func loadPrivatePreflightConfig(path string) (spec.Resolved, error) {
 	return resolved, nil
 }
 
-type commandFlagSet struct {
-	*flag.FlagSet
-	stderr io.Writer
-}
-
-func newCommandFlagSet(name string, stderr io.Writer) *commandFlagSet {
-	set := flag.NewFlagSet(name, flag.ContinueOnError)
-	set.SetOutput(stderr)
-	set.Usage = func() {
-		fmt.Fprintf(stderr, "usage: farrow %s [options]\n\noptions:\n", name)
-		fmt.Fprintln(stderr, "  --json                   emit JSON output")
-		fmt.Fprintln(stderr, "  --yaml                   emit YAML output")
-		fmt.Fprintln(stderr, "  --verbose                emit detailed diagnostics to stderr")
-		set.VisitAll(func(option *flag.Flag) {
-			if option.Name == "json" {
-				return
-			}
-			value, description := flag.UnquoteUsage(option)
-			name := "--" + option.Name
-			if len(option.Name) == 1 {
-				name = "-" + option.Name
-			}
-			if value != "" {
-				name += " " + value
-			}
-			fmt.Fprintf(stderr, "  %-24s %s\n", name, description)
-		})
-	}
-	return &commandFlagSet{FlagSet: set, stderr: stderr}
-}
-
-func (set *commandFlagSet) Parse(arguments []string) error {
-	return set.FlagSet.Parse(arguments)
-}
-
 type sudoRunner struct{ base execx.Runner }
 
 func (r sudoRunner) Run(ctx context.Context, binary string, args ...string) (execx.Result, error) {
@@ -196,50 +164,71 @@ func installDarwinNetwork(ctx context.Context, installer darwinNetworkInstaller,
 	return installer.InstallModeNetwork(ctx, archive, interfaceID, arch, mode, cidr, apply)
 }
 
-func runNetwork(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: farrow network status|install|uninstall [--json|--yaml] [--verbose] [--yes]")
-		return exitUsage
+type networkOptions struct {
+	Action      string
+	CIDR        string
+	Mode        string
+	Archive     string
+	InterfaceID string
+	Apply       bool
+}
+
+func sortedMapKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
 	}
-	command := args[0]
+	sort.Strings(keys)
+	return keys
+}
+
+func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
+	command := options.Action
 	if command == "install" || command == "uninstall" {
-		flags := newCommandFlagSet("network "+command, stderr)
-		jsonOutput := flags.Bool("json", false, "emit stable JSON")
-		apply := flags.Bool("yes", false, "apply the displayed privileged plan")
-		archive := flags.String("archive", "", "Darwin: absolute pinned socket_vmnet archive")
-		interfaceID := flags.String("interface-id", "", "Darwin fresh install: persistent vmnet UUID")
-		vmnetMode := flags.String("mode", "host", "Darwin vmnet mode: host or shared")
-		networkCIDR := flags.String("cidr", subnet.DefaultCIDR, "host-global canonical RFC1918 IPv4 /24")
-		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
-			return exitUsage
-		}
 		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-			fmt.Fprintln(stderr, "product network install/uninstall supports native Linux and Darwin")
+			fmt.Fprintln(stderr, "product network install/uninstall supports native Linux and macOS")
 			return exitCapability
 		}
-		if runtime.GOOS == "linux" && *vmnetMode != "host" {
-			fmt.Fprintln(stderr, "--mode is a Darwin socket_vmnet option; Linux uses farrow0")
-			return exitUsage
-		}
-		layout, layoutErr := subnet.Parse(*networkCIDR)
-		if layoutErr != nil {
-			errorf(stderr, "%v", layoutErr)
-			return exitUsage
-		}
-		if command == "uninstall" && !layout.IsDefault() {
-			fmt.Fprintln(stderr, "--cidr is only valid with network install/preflight; uninstall reads the installed ownership manifest")
-			return exitUsage
+		var layout subnet.Layout
+		vmnetMode := "host"
+		if command == "install" {
+			vmnetMode = options.Mode
+			if vmnetMode == "" {
+				vmnetMode = "host"
+			}
+			if vmnetMode != "host" && vmnetMode != "shared" {
+				fmt.Fprintf(stderr, "--mode must be host or shared, got %q\n", vmnetMode)
+				return exitUsage
+			}
+			if runtime.GOOS == "linux" && vmnetMode != "host" {
+				fmt.Fprintln(stderr, "--mode is a macOS socket_vmnet option; Linux uses farrow0")
+				return exitUsage
+			}
+			if runtime.GOOS != "darwin" && (options.Archive != "" || options.InterfaceID != "") {
+				fmt.Fprintln(stderr, "--archive and --interface-id are macOS-only")
+				return exitUsage
+			}
+			networkCIDR := options.CIDR
+			if networkCIDR == "" {
+				networkCIDR = subnet.DefaultCIDR
+			}
+			var layoutErr error
+			layout, layoutErr = subnet.Parse(networkCIDR)
+			if layoutErr != nil {
+				errorf(stderr, "%v", layoutErr)
+				return exitUsage
+			}
 		}
 		baseRunner := execx.OSRunner{Timeout: 2 * time.Minute, OutputLimit: 1 << 20}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		if command == "install" {
 			addresses := withoutRecordedAddresses(layout.StaticAddresses())
-			preflightProgress := startProgress(ctx, stderr, "Validating the private network plan")
+			preflightProgress := startProgress(ctx, stderr, "Validating the fixed-IP network plan")
 			preflightReport := netpreflight.Run(ctx, netpreflight.Request{OS: runtime.GOOS, Arch: runtime.GOARCH, Purpose: netpreflight.Install, Layout: layout, Addresses: addresses}, netpreflight.Probe{Runner: baseRunner})
 			preflightProgress.Stop(nil)
 			if !preflightReport.Ready {
-				if structuredOutput(stdout, *jsonOutput) {
+				if structuredOutput(stdout) {
 					_ = encodeJSON(stdout, stderr, preflightReport)
 				} else {
 					for _, finding := range preflightReport.Findings {
@@ -249,11 +238,22 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 				return preflightReport.ExitCode
 			}
 		}
+		privilege := &sudoSession{base: baseRunner, stderr: stderr, scope: "network command"}
+		defer privilege.close()
+		reason := "read the protected host-network ownership state for the plan"
+		if options.Apply {
+			reason = "apply the reviewed host-network plan"
+		}
+		if err := privilege.ensure(ctx, reason); err != nil {
+			errorf(stderr, "%v", err)
+			return exitCapability
+		}
+		rootRunner := setupRootRunner(baseRunner)
 		if runtime.GOOS == "darwin" {
-			executor := darwinnet.Executor{User: baseRunner, Root: sudoRunner{base: baseRunner}, InUse: deploymentInUse}
+			executor := darwinnet.Executor{User: baseRunner, Root: rootRunner, InUse: deploymentInUse}
 			if command == "install" {
-				progressItem := startProgress(ctx, stderr, "Installing the Darwin private network")
-				report, err := installDarwinNetwork(ctx, executor, *archive, *interfaceID, runtime.GOARCH, *vmnetMode, layout.CIDR(), *apply)
+				progressItem := startProgress(ctx, stderr, "Installing the Darwin fixed-IP network")
+				report, err := installDarwinNetwork(ctx, executor, options.Archive, options.InterfaceID, runtime.GOARCH, vmnetMode, layout.CIDR(), options.Apply)
 				progressItem.Stop(err)
 				if err != nil {
 					errorf(stderr, "%v", err)
@@ -262,29 +262,30 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 					}
 					return exitIntegrity
 				}
-				if structuredOutput(stdout, *jsonOutput) {
+				if structuredOutput(stdout) {
 					return encodeJSON(stdout, stderr, report)
 				}
 				for _, warning := range report.Warnings {
 					warningf(stderr, "%s", warning)
 				}
 				fmt.Fprintf(stdout, "action: %s\napplied: %t\n", report.Action, report.Applied)
-				for path, metadata := range report.Targets {
+				for _, path := range sortedMapKeys(report.Targets) {
+					metadata := report.Targets[path]
 					fmt.Fprintf(stdout, "%s %s\n", path, metadata)
 				}
 				if !report.Applied && report.Action != "none" {
-					fmt.Fprintln(stdout, "rerun with --yes using the same --archive and --interface-id after reviewing this plan and caching sudo credentials")
+					fmt.Fprintln(stdout, "rerun with --yes using the same --archive and --interface-id; Farrow will request sudo when needed")
 				}
 				return exitOK
 			}
-			progressItem := startProgress(ctx, stderr, "Removing the Darwin private network")
-			report, err := executor.Uninstall(ctx, *apply)
+			progressItem := startProgress(ctx, stderr, "Removing the Darwin fixed-IP network")
+			report, err := executor.Uninstall(ctx, options.Apply)
 			progressItem.Stop(err)
 			if err != nil {
 				errorf(stderr, "%v", err)
 				return exitIntegrity
 			}
-			if structuredOutput(stdout, *jsonOutput) {
+			if structuredOutput(stdout) {
 				return encodeJSON(stdout, stderr, report)
 			}
 			for _, path := range report.RemoveFiles {
@@ -296,25 +297,21 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "applied: %t\n", report.Applied)
 			return exitOK
 		}
-		if *archive != "" || *interfaceID != "" {
-			fmt.Fprintln(stderr, "--archive and --interface-id are Darwin-only")
-			return exitUsage
-		}
-		executor := linuxnet.Executor{User: baseRunner, Root: sudoRunner{base: baseRunner}, InUse: deploymentInUse}
+		executor := linuxnet.Executor{User: baseRunner, Root: rootRunner, InUse: deploymentInUse}
 		if command == "install" {
 			linuxConfig, configErr := linuxnet.ConfigForCIDR(layout.CIDR())
 			if configErr != nil {
 				errorf(stderr, "%v", configErr)
 				return exitUsage
 			}
-			progressItem := startProgress(ctx, stderr, "Installing the Linux private network")
-			report, err := executor.InstallConfig(ctx, linuxConfig, *apply)
+			progressItem := startProgress(ctx, stderr, "Installing the Linux fixed-IP network")
+			report, err := executor.InstallConfig(ctx, linuxConfig, options.Apply)
 			progressItem.Stop(err)
 			if err != nil {
 				errorf(stderr, "%v", err)
 				return exitIntegrity
 			}
-			if structuredOutput(stdout, *jsonOutput) {
+			if structuredOutput(stdout) {
 				return encodeJSON(stdout, stderr, report)
 			}
 			for _, warning := range report.Warnings {
@@ -334,18 +331,18 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintf(stdout, "applied: %t\n", report.Applied)
 			if !report.Applied {
-				fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan and caching sudo credentials")
+				fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
 			}
 			return exitOK
 		}
-		progressItem := startProgress(ctx, stderr, "Removing the Linux private network")
-		report, err := executor.Uninstall(ctx, *apply)
+		progressItem := startProgress(ctx, stderr, "Removing the Linux fixed-IP network")
+		report, err := executor.Uninstall(ctx, options.Apply)
 		progressItem.Stop(err)
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitIntegrity
 		}
-		if structuredOutput(stdout, *jsonOutput) {
+		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, report)
 		}
 		for _, path := range report.Plan.RemoveFiles {
@@ -356,23 +353,17 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "applied: %t\n", report.Applied)
 		if !report.Applied {
-			fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan and caching sudo credentials")
+			fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
 		}
 		return exitOK
 	}
 	if command != "status" {
-		fmt.Fprintln(stderr, "usage: farrow network status|install|uninstall [--json|--yaml] [--verbose] [--yes]")
-		return exitUsage
-	}
-	flags := newCommandFlagSet("network status", stderr)
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	networkCIDR := flags.String("cidr", "", "expected host-global RFC1918 IPv4 /24; defaults to installed network or 10.10.10.0/24")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
+		errorf(stderr, "unknown network action %q", command)
 		return exitUsage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cidr := *networkCIDR
+	cidr := options.CIDR
 	if cidr == "" {
 		cidr = subnet.DefaultCIDR
 	}
@@ -385,7 +376,7 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 	progressItem := startProgress(ctx, stderr, "Inspecting the host network")
 	preflightReport := netpreflight.Run(ctx, netpreflight.Request{OS: runtime.GOOS, Arch: runtime.GOARCH, Purpose: netpreflight.Inspect, Layout: layout}, netpreflight.Probe{Runner: baseRunner})
 	installedReadable := preflightReport.Installation.Status == "exact" || preflightReport.Installation.Status == "protected"
-	if *networkCIDR == "" && installedReadable && preflightReport.Installation.CIDR != "" && preflightReport.Installation.CIDR != layout.CIDR() {
+	if options.CIDR == "" && installedReadable && preflightReport.Installation.CIDR != "" && preflightReport.Installation.CIDR != layout.CIDR() {
 		installedLayout, installedErr := subnet.Parse(preflightReport.Installation.CIDR)
 		if installedErr == nil {
 			preflightReport = netpreflight.Run(ctx, netpreflight.Request{OS: runtime.GOOS, Arch: runtime.GOARCH, Purpose: netpreflight.Inspect, Layout: installedLayout}, netpreflight.Probe{Runner: baseRunner})
@@ -409,7 +400,7 @@ func runNetwork(args []string, stdout, stderr io.Writer) int {
 		Preflight netpreflight.Report `json:"preflight"`
 		Checks    []doctor.Check      `json:"checks,omitempty"`
 	}{OS: doctorReport.OS, Arch: doctorReport.Arch, Preflight: preflightReport, Checks: checks}
-	if structuredOutput(stdout, *jsonOutput) {
+	if structuredOutput(stdout) {
 		if code := encodeJSON(stdout, stderr, result); code != exitOK {
 			return code
 		}
@@ -483,7 +474,7 @@ func executeSSHProcess(ctx context.Context, commandName, node, user, host string
 	}
 	sshCommand := exec.CommandContext(ctx, sshPath, sshArgs...)
 	sshCommand.Stdin = os.Stdin
-	structured := structuredOutput(stdout, false)
+	structured := structuredOutput(stdout)
 	interactiveStructured := structured && len(arguments) == 0
 	var capturedStdout, capturedStderr boundedCapture
 	if interactiveStructured {
@@ -560,7 +551,7 @@ func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, st
 	}
 	debugf(stderr, "ssh mode=private node=%s user=%s host=%s port=%d arguments=%d", connection.Node, connection.User, connection.Host, connection.Port, len(command))
 	result, runErr := executeSSHProcess(ctx, commandName, connection.Node, connection.User, connection.Host, connection.Port, sshPath, sshArgs, command, stdout, stderr)
-	if structuredOutput(stdout, false) {
+	if structuredOutput(stdout) {
 		if code := encodeJSON(stdout, stderr, result); code != exitOK {
 			return code
 		}
@@ -573,7 +564,7 @@ func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, st
 			}
 			return exitError.ExitCode()
 		}
-		if !structuredOutput(stdout, false) {
+		if !structuredOutput(stdout) {
 			errorf(stderr, "%v", runErr)
 		}
 		return exitRuntime
@@ -588,7 +579,7 @@ func runSSH(commandName string, args []string, stdout, stderr io.Writer) int {
 		return exitConflict
 	}
 	if resolved.Network != "private" {
-		errorf(stderr, "this deployment predates the fixed-IP redesign; recreate it with `farrow destroy --force && farrow up`")
+		errorf(stderr, "%s", legacyDeploymentMessage)
 		return exitConflict
 	}
 	return runPrivateSSH(commandName, args, resolved, stdout, stderr)
@@ -723,30 +714,27 @@ func withoutRecordedAddresses(addresses []string) []string {
 	return filtered
 }
 
-func runProvision(args []string, stdout, stderr io.Writer) int {
-	flags := newCommandFlagSet("provision", stderr)
-	scriptPath := flags.String("script", "", "local Bash script to stream to each selected guest")
-	sudo := flags.Bool("sudo", false, "run the fixed guest /bin/bash command through sudo -n")
-	parallelism := flags.Int("parallel", 1, "bounded node concurrency, 1..4")
-	timeout := flags.Duration("timeout", time.Hour, "hard deadline for the complete operation, maximum 24h")
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	if err := flags.Parse(args); err != nil {
+type provisionOptions struct {
+	ScriptPath  string
+	Sudo        bool
+	Parallelism int
+	Timeout     time.Duration
+}
+
+func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Writer) int {
+	if options.ScriptPath == "" {
+		errorf(stderr, "--script is required")
 		return exitUsage
 	}
-	nodes := flags.Args()
-	if *scriptPath == "" {
-		fmt.Fprintln(stderr, "usage: farrow provision --script path [--sudo] [--parallel 1..4] [--timeout 1h] [--json|--yaml] [--verbose] [node...]")
-		return exitUsage
-	}
-	if *parallelism < 1 || *parallelism > provision.MaxParallelism {
+	if options.Parallelism < 1 || options.Parallelism > provision.MaxParallelism {
 		fmt.Fprintf(stderr, "provision parallelism must be 1..%d\n", provision.MaxParallelism)
 		return exitUsage
 	}
-	if *timeout <= 0 || *timeout > 24*time.Hour {
+	if options.Timeout <= 0 || options.Timeout > 24*time.Hour {
 		fmt.Fprintln(stderr, "provision timeout must be greater than zero and no more than 24h")
 		return exitUsage
 	}
-	script, err := provision.LoadScript(*scriptPath)
+	script, err := provision.LoadScript(options.ScriptPath)
 	if err != nil {
 		errorf(stderr, "%v", err)
 		if errors.Is(err, os.ErrNotExist) {
@@ -764,7 +752,7 @@ func runProvision(args []string, stdout, stderr io.Writer) int {
 		errorf(stderr, "%v", err)
 		return exitRuntime
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), options.Timeout)
 	defer cancel()
 	deploymentLock, err := privatevm.AcquireLock(ctx, deployment, false)
 	if err != nil {
@@ -818,16 +806,16 @@ func runProvision(args []string, stdout, stderr io.Writer) int {
 		errorf(stderr, "%v", err)
 		return exitCapability
 	}
-	startMessage := fmt.Sprintf("script_sha256=%s bytes=%d sudo=%t parallel=%d targets=%s", script.SHA256, script.Size, *sudo, *parallelism, strings.Join(selectedNames, ","))
+	startMessage := fmt.Sprintf("script_sha256=%s bytes=%d sudo=%t parallel=%d targets=%s", script.SHA256, script.Size, options.Sudo, options.Parallelism, strings.Join(selectedNames, ","))
 	if err := recordEvent(ctx, "provision", "info", "starting "+startMessage); err != nil {
 		fmt.Fprintln(stderr, "refuse provision without an auditable event append:", err)
 		return exitIntegrity
 	}
-	debugf(stderr, "provision operation_id=%s targets=%s timeout=%s parallel=%d sudo=%t script_sha256=%s", operationID, strings.Join(selectedNames, ","), *timeout, *parallelism, *sudo, script.SHA256)
+	debugf(stderr, "provision operation_id=%s targets=%s timeout=%s parallel=%d sudo=%t script_sha256=%s", operationID, strings.Join(selectedNames, ","), options.Timeout, options.Parallelism, options.Sudo, script.SHA256)
 	progressItem := startProgress(ctx, stderr, fmt.Sprintf("Provisioning %d node(s)", len(targets)))
 	report, err := (provision.Executor{
-		Runner: provision.SSHRunner{SSHPath: sshPath}, Parallelism: *parallelism, OperationID: operationID,
-	}).Execute(ctx, script, targets, *sudo)
+		Runner: provision.SSHRunner{SSHPath: sshPath}, Parallelism: options.Parallelism, OperationID: operationID,
+	}).Execute(ctx, script, targets, options.Sudo)
 	progressItem.Stop(err)
 	if err != nil {
 		errorf(stderr, "%v", err)
@@ -855,7 +843,7 @@ func runProvision(args []string, stdout, stderr io.Writer) int {
 		}
 		report.AuditError += "release deployment lock: " + releaseErr.Error()
 	}
-	if structuredOutput(stdout, *jsonOutput) {
+	if structuredOutput(stdout) {
 		if code := encodeJSON(stdout, stderr, report); code != exitOK {
 			return code
 		}
@@ -889,8 +877,12 @@ func encodeJSON(out, errOut io.Writer, value any) int {
 	return exitOK
 }
 
+func lifecycleReadsConfig(command string) bool {
+	return command == "up" || command == "plan" || command == "recreate" || command == "reload"
+}
+
 func loadLifecycleConfig(command, configPath string) (spec.Resolved, bool, error) {
-	if command != "up" && command != "plan" && command != "recreate" && command != "reload" {
+	if !lifecycleReadsConfig(command) {
 		return spec.Resolved{}, false, nil
 	}
 	file, _, err := config.Discover("", configPath)
@@ -922,7 +914,7 @@ func currentProjectResolved() (spec.Resolved, error) {
 func printPrivateStatus(out io.Writer, status privatevm.Status) {
 	textField(out, 12, "spec hash", status.SpecHash)
 	for _, node := range status.Nodes {
-		fmt.Fprintf(out, "%-16s %s  runtime=%s  private=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.Address, node.SSHHost, node.SSHPort)
+		fmt.Fprintf(out, "%-16s %s  runtime=%s  address=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.Address, node.SSHHost, node.SSHPort)
 		if node.ProcessID > 0 {
 			fmt.Fprintf(out, " pid=%d", node.ProcessID)
 		}
@@ -946,16 +938,16 @@ type lifecyclePartialFailure struct {
 	RolledBack  []string `json:"rolled_back"`
 }
 
-func reportPrivateLifecycleError(err error, operationID string, jsonOutput bool, stdout, stderr io.Writer) int {
+func reportPrivateLifecycleError(err error, operationID string, stdout, stderr io.Writer) int {
 	if errors.Is(err, privatevm.ErrRecreateRequired) {
-		return reportCommandFailure(stdout, stderr, jsonOutput, "recreate_required", err.Error(), operationID, exitConflict)
+		return reportCommandFailure(stdout, stderr, "recreate_required", err.Error(), operationID, exitConflict)
 	}
 	if errors.Is(err, privatevm.ErrNodesRemoved) {
-		return reportCommandFailure(stdout, stderr, jsonOutput, "nodes_removed", err.Error(), operationID, exitConflict)
+		return reportCommandFailure(stdout, stderr, "nodes_removed", err.Error(), operationID, exitConflict)
 	}
 	var networkPreflight *privatevm.NetworkPreflightError
 	if errors.As(err, &networkPreflight) {
-		if structuredOutput(stdout, jsonOutput) {
+		if structuredOutput(stdout) {
 			if code := encodeJSON(stdout, stderr, networkPreflight.Report); code != exitOK {
 				return code
 			}
@@ -965,11 +957,11 @@ func reportPrivateLifecycleError(err error, operationID string, jsonOutput bool,
 	}
 	var capability *privatevm.CapabilityError
 	if errors.As(err, &capability) {
-		return reportCommandFailure(stdout, stderr, jsonOutput, "capability", capability.Error(), operationID, exitCapability)
+		return reportCommandFailure(stdout, stderr, "capability", capability.Error(), operationID, exitCapability)
 	}
 	var partial *privatevm.PartialError
 	if errors.As(err, &partial) {
-		if structuredOutput(stdout, jsonOutput) {
+		if structuredOutput(stdout) {
 			payload := lifecyclePartialFailure{Error: "partial", Message: partial.Error(), OperationID: operationID, Nodes: partial.Nodes, RolledBack: partial.RolledBack}
 			if code := encodeJSON(stdout, stderr, payload); code != exitOK {
 				return code
@@ -980,12 +972,12 @@ func reportPrivateLifecycleError(err error, operationID string, jsonOutput bool,
 	}
 	var deleteErr *persistentDeleteError
 	if errors.As(err, &deleteErr) {
-		return reportCommandFailure(stdout, stderr, jsonOutput, "persistent_delete", deleteErr.Error(), operationID, exitIntegrity)
+		return reportCommandFailure(stdout, stderr, "persistent_delete", deleteErr.Error(), operationID, exitIntegrity)
 	}
-	return reportCommandFailure(stdout, stderr, jsonOutput, "runtime", err.Error(), operationID, exitRuntime)
+	return reportCommandFailure(stdout, stderr, "runtime", err.Error(), operationID, exitRuntime)
 }
 
-func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, purge, noWait, rollback, jsonOutput bool, stdout, stderr io.Writer) int {
+func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, purge, noWait, rollback bool, stdout, stderr io.Writer) int {
 	operationID := ""
 	if command != "status" && command != "plan" {
 		var err error
@@ -1003,9 +995,9 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		defer cancel()
 		plan, err := manager.Plan(ctx, resolved)
 		if err != nil {
-			return reportPrivateLifecycleError(err, operationID, jsonOutput, stdout, stderr)
+			return reportPrivateLifecycleError(err, operationID, stdout, stderr)
 		}
-		if structuredOutput(stdout, jsonOutput) {
+		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, plan)
 		}
 		textField(stdout, 14, "action", statusValue(stdout, plan.Action))
@@ -1036,7 +1028,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	case "restart":
 		timeout, operation = withReadinessTimeout(15*time.Minute, resolved), manager.Restart
 	case "recreate":
-		if err := confirmCLIAction(force, "private recreate", stderr); err != nil {
+		if err := confirmCLIAction(force, "recreate", stderr); err != nil {
 			errorf(stderr, "%v", err)
 			return exitUsage
 		}
@@ -1045,12 +1037,20 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	case "status":
 		operation = manager.Status
 	case "destroy":
-		action := "private destroy"
+		action := "destroy"
 		if len(nodes) != 0 {
-			action = "private node destroy"
+			action = "node destroy"
 			if deletePersistent || purge {
 				fmt.Fprintln(stderr, "--delete-persistent and --purge apply to whole-deployment destroy only")
 				return exitUsage
+			}
+		}
+		if !force {
+			// State the widened scope before the typed confirmation.
+			if purge {
+				fmt.Fprintln(stderr, "purge: also deletes persistent data disks, the deployment keys, and the deployment state (images stay cached)")
+			} else if deletePersistent {
+				fmt.Fprintln(stderr, "delete-persistent: also deletes persistent data disks")
 			}
 		}
 		if err := confirmCLIAction(force, action, stderr); err != nil {
@@ -1098,7 +1098,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	}
 	progressItem.Stop(err)
 	if err != nil {
-		return reportPrivateLifecycleError(err, operationID, jsonOutput, stdout, stderr)
+		return reportPrivateLifecycleError(err, operationID, stdout, stderr)
 	}
 	if command == "destroy" && purge {
 		if purgeErr := purgeDeployment(ctx, stdout); purgeErr != nil {
@@ -1128,7 +1128,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 			}
 		}
 	}
-	if structuredOutput(stdout, jsonOutput) {
+	if structuredOutput(stdout) {
 		return encodeJSON(stdout, stderr, status)
 	}
 	printPrivateStatus(stdout, status)
@@ -1136,8 +1136,10 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 }
 
 func runLifecycleCommand(command string, options lifecycleOptions, nodes []string, stdout, stderr io.Writer) int {
-	if (options.DeletePersistent || options.Purge) && !options.Force {
-		return reportCommandFailure(stdout, stderr, false, "usage", "--delete-persistent and --purge require the separate --force destroy confirmation", "", exitUsage)
+	if (options.DeletePersistent || options.Purge) && !options.Force && !term.IsTerminal(int(os.Stdin.Fd())) {
+		// On a terminal the interactive destroy confirmation covers the
+		// widened scope; without one, automation must state --force.
+		return reportCommandFailure(stdout, stderr, "usage", "--delete-persistent and --purge require the separate --force destroy confirmation", "", exitUsage)
 	}
 	if options.Purge {
 		// A purge is a terminal disposal; retained persistent disks make no
@@ -1146,7 +1148,7 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 	}
 	resolvedFile, hasConfig, err := loadLifecycleConfig(command, options.ConfigPath)
 	if err != nil {
-		return reportCommandFailure(stdout, stderr, false, "usage", err.Error(), "", exitUsage)
+		return reportCommandFailure(stdout, stderr, "usage", err.Error(), "", exitUsage)
 	}
 	persisted, persistedErr := currentProjectResolved()
 	switch {
@@ -1156,83 +1158,102 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 			hasConfig = true
 		}
 	case persistedErr == nil && persisted.Network == "user":
-		return reportCommandFailure(stdout, stderr, false, "conflict", "this deployment predates the fixed-IP redesign; remove its state and run `farrow up` again", "", exitConflict)
+		return reportCommandFailure(stdout, stderr, "conflict", legacyDeploymentMessage, "", exitConflict)
 	}
 	if !hasConfig {
-		return reportCommandFailure(stdout, stderr, false, "usage", config.ErrNoConfig.Error(), "", exitConflict)
+		message := config.ErrNoConfig.Error()
+		if !lifecycleReadsConfig(command) {
+			message = "no deployment state found; run `farrow up` first"
+		}
+		return reportCommandFailure(stdout, stderr, "conflict", message, "", exitConflict)
 	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
-	if command == "reload" {
+	sequence := lifecycleSequence(command)
+	if len(sequence) == 2 {
 		// Vagrant-style reload: a stop/boot cycle that re-reads the
 		// configuration. Additive changes apply on the way up; destructive
 		// ones report their per-node recreate path exactly like plain up.
-		if code := runPrivateCommand("stop", resolvedFile, nodes, options.Repository, options.Force, false, false, options.NoWait, false, false, stdout, stderr); code != exitOK {
+		if code := runPrivateCommand(sequence[0], resolvedFile, nodes, options.Repository, options.Force, false, false, options.NoWait, false, stdout, stderr); code != exitOK {
 			return code
 		}
-		command = "up"
+		command = sequence[1]
 	}
-	return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, false, stdout, stderr)
+	return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stdout, stderr)
 }
 
-func runSSHConfig(args []string, stdout, stderr io.Writer) int {
-	flags := newCommandFlagSet("ssh-config", stderr)
-	install := flags.Bool("install", false, "install a marker-owned Include and deployment fragment")
-	remove := flags.Bool("remove", false, "remove the marker-owned Include and fragment")
-	name := flags.String("name", "farrow", "safe SSH Host/file prefix")
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	if err := flags.Parse(args); err != nil || (*install && *remove) {
-		fmt.Fprintln(stderr, "usage: farrow ssh-config [--install|--remove] [--name name] [--json|--yaml] [--verbose] [node...]")
+func lifecycleSequence(command string) []string {
+	if command == "reload" {
+		return []string{"stop", "up"}
+	}
+	return []string{command}
+}
+
+type sshConfigOptions struct {
+	Install bool
+	Remove  bool
+	Name    string
+}
+
+func runSSHConfig(options sshConfigOptions, nodes []string, stdout, stderr io.Writer) int {
+	if options.Install && options.Remove {
+		errorf(stderr, "--install and --remove are mutually exclusive")
 		return exitUsage
 	}
-	nodes := flags.Args()
-	if *remove && len(nodes) != 0 {
+	if options.Name == "" {
+		options.Name = "farrow"
+	}
+	if options.Remove && len(nodes) != 0 {
 		fmt.Fprintln(stderr, "ssh-config --remove removes the deployment fragment and does not accept node selectors")
 		return exitUsage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// Removal is intentionally state-independent: destroy preserves the
-	// matching project marker, and sshconfig.Remove itself deletes only the
-	// exact marker-owned fragment and Include. This keeps rollback available
+	// deployment state, and sshconfig.Remove itself deletes only the exact
+	// marker-owned fragment and Include. This keeps rollback available
 	// after resolved state or node artifacts are gone.
-	if *remove {
-		result, err := removeSSHConfigFragment(*name)
+	if options.Remove {
+		result, err := removeSSHConfigFragment(options.Name)
 		if err != nil {
-			return reportSSHConfigFailure(result, err, *jsonOutput, stdout, stderr)
+			return reportSSHConfigFailure(result, err, stdout, stderr)
 		}
-		if structuredOutput(stdout, *jsonOutput) {
+		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, result)
 		}
-		fmt.Fprintf(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, *name, result.Changed, result.Fragment, result.Config)
+		fmt.Fprintf(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, options.Name, result.Changed, result.Fragment, result.Config)
 		return exitOK
 	}
-	if resolved, err := currentProjectResolved(); err == nil && resolved.Network == "private" {
-		manager := privatevm.Manager{FarrowVersion: version.Version, Nodes: append([]string(nil), nodes...)}
-		if *install {
-			var result sshconfig.Result
-			result, err = manager.InstallSSHConfig(ctx, *name, "")
-			if err != nil {
-				return reportSSHConfigFailure(result, err, *jsonOutput, stdout, stderr)
-			}
-			if structuredOutput(stdout, *jsonOutput) {
-				return encodeJSON(stdout, stderr, result)
-			}
-			fmt.Fprintf(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, *name, result.Changed, result.Fragment, result.Config)
-			return exitOK
-		}
-		text, err := manager.SSHConfig(ctx)
+	resolved, resolveErr := currentProjectResolved()
+	if resolveErr != nil {
+		errorf(stderr, "no deployment state found; run `farrow up` first")
+		return exitConflict
+	}
+	if resolved.Network != "private" {
+		errorf(stderr, "%s", legacyDeploymentMessage)
+		return exitConflict
+	}
+	manager := privatevm.Manager{FarrowVersion: version.Version, Nodes: append([]string(nil), nodes...)}
+	if options.Install {
+		result, err := manager.InstallSSHConfig(ctx, options.Name, "")
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return reportSSHConfigFailure(result, err, stdout, stderr)
 		}
-		if structuredOutput(stdout, *jsonOutput) {
-			return encodeJSON(stdout, stderr, map[string]string{"config": text})
+		if structuredOutput(stdout) {
+			return encodeJSON(stdout, stderr, result)
 		}
-		fmt.Fprint(stdout, text)
+		fmt.Fprintf(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, options.Name, result.Changed, result.Fragment, result.Config)
 		return exitOK
 	}
-	errorf(stderr, "no deployment state found; run `farrow up` first")
-	return exitConflict
+	text, err := manager.SSHConfig(ctx)
+	if err != nil {
+		errorf(stderr, "%v", err)
+		return exitRuntime
+	}
+	if structuredOutput(stdout) {
+		return encodeJSON(stdout, stderr, map[string]string{"config": text})
+	}
+	fmt.Fprint(stdout, text)
+	return exitOK
 }
 
 // removeSSHConfigFragment is deliberately state-independent: destroy keeps
@@ -1246,9 +1267,9 @@ func removeSSHConfigFragment(name string) (sshconfig.Result, error) {
 	return sshconfig.Remove(home, name)
 }
 
-func reportSSHConfigFailure(result sshconfig.Result, err error, jsonOutput bool, stdout, stderr io.Writer) int {
+func reportSSHConfigFailure(result sshconfig.Result, err error, stdout, stderr io.Writer) int {
 	partial := result.Changed && strings.HasSuffix(result.Action, "-partial")
-	if structuredOutput(stdout, jsonOutput) {
+	if structuredOutput(stdout) {
 		payload := struct {
 			Error   string           `json:"error"`
 			Message string           `json:"message"`
@@ -1267,16 +1288,9 @@ func reportSSHConfigFailure(result sshconfig.Result, err error, jsonOutput bool,
 	return exitIntegrity
 }
 
-func runHosts(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || (args[0] != hostconfig.ActionInstall && args[0] != hostconfig.ActionUninstall) {
-		fmt.Fprintln(stderr, "usage: farrow hosts install|uninstall [--json|--yaml] [--verbose] [--yes]")
-		return exitUsage
-	}
-	action := args[0]
-	flags := newCommandFlagSet("hosts "+action, stderr)
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	apply := flags.Bool("yes", false, "apply the displayed privileged plan")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
+func runHosts(action string, apply bool, stdout, stderr io.Writer) int {
+	if action != hostconfig.ActionInstall && action != hostconfig.ActionUninstall {
+		errorf(stderr, "unknown hosts action %q", action)
 		return exitUsage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1292,19 +1306,28 @@ func runHosts(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	baseRunner := execx.OSRunner{Timeout: 30 * time.Second, OutputLimit: 1 << 20}
-	debugf(stderr, "hosts action=%s entries=%d apply=%t", action, len(entries), *apply)
+	rootRunner := setupRootRunner(baseRunner)
+	if apply {
+		privilege := &sudoSession{base: baseRunner, stderr: stderr, scope: "hosts command"}
+		defer privilege.close()
+		if err := privilege.ensure(ctx, "apply the reviewed marker-owned /etc/hosts plan"); err != nil {
+			errorf(stderr, "%v", err)
+			return exitCapability
+		}
+	}
+	debugf(stderr, "hosts action=%s entries=%d apply=%t", action, len(entries), apply)
 	progressMessage := "Installing deployment host entries"
 	if action == hostconfig.ActionUninstall {
 		progressMessage = "Removing deployment host entries"
 	}
 	progressItem := startProgress(ctx, stderr, progressMessage)
-	report, err := (hostconfig.Executor{Root: sudoRunner{base: baseRunner}}).Execute(ctx, action, entries, *apply)
+	report, err := (hostconfig.Executor{Root: rootRunner}).Execute(ctx, action, entries, apply)
 	progressItem.Stop(err)
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitIntegrity
 	}
-	if structuredOutput(stdout, *jsonOutput) {
+	if structuredOutput(stdout) {
 		return encodeJSON(stdout, stderr, report)
 	}
 	textField(stdout, 16, "action", statusValue(stdout, report.Plan.Action))
@@ -1319,7 +1342,7 @@ func runHosts(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, line)
 	}
 	if report.Plan.Changed && !report.Applied {
-		fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact marker-owned plan and caching sudo credentials")
+		fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact marker-owned plan; Farrow will request sudo when needed")
 	}
 	return exitOK
 }
@@ -1354,56 +1377,30 @@ func readStructuredLogChunk(reader *bufio.Reader) (string, bool, error) {
 	return string(chunk), false, err
 }
 
-func splitLogArgs(args []string) (string, []string, error) {
-	node := ""
-	flagArgs := make([]string, 0, len(args))
-	for index := 0; index < len(args); index++ {
-		argument := args[index]
-		switch {
-		case argument == "--source" || argument == "-source":
-			if index+1 >= len(args) {
-				return "", nil, fmt.Errorf("%s requires a value", argument)
-			}
-			flagArgs = append(flagArgs, argument, args[index+1])
-			index++
-		case strings.HasPrefix(argument, "--source=") || strings.HasPrefix(argument, "-source=") || argument == "--follow" || argument == "-follow" || strings.HasPrefix(argument, "--follow=") || strings.HasPrefix(argument, "-follow="):
-			flagArgs = append(flagArgs, argument)
-		case strings.HasPrefix(argument, "-"):
-			flagArgs = append(flagArgs, argument)
-		default:
-			if node != "" {
-				return "", nil, fmt.Errorf("logs accepts one node, got %q and %q", node, argument)
-			}
-			node = argument
-		}
-	}
-	return node, flagArgs, nil
+type logOptions struct {
+	Source string
+	Follow bool
 }
 
-func runLogs(args []string, stdout, stderr io.Writer) int {
-	requestedNode, flagArgs, splitErr := splitLogArgs(args)
-	if splitErr != nil {
-		errorf(stderr, "%v", splitErr)
-		return exitUsage
-	}
-	flags := newCommandFlagSet("logs", stderr)
-	source := flags.String("source", "serial", "serial, qemu, or events")
-	follow := flags.Bool("follow", false, "continue streaming appended log data")
-	if err := flags.Parse(flagArgs); err != nil || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: farrow logs [node] [--source serial|qemu|events] [--follow]")
-		return exitUsage
+func runLogs(options logOptions, requestedNode string, stdout, stderr io.Writer) int {
+	if options.Source == "" {
+		options.Source = "serial"
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	resolved, resolveErr := currentProjectResolved()
-	if resolveErr != nil || resolved.Network != "private" {
+	if resolveErr != nil {
 		errorf(stderr, "no deployment state found; run `farrow up` first")
 		return exitConflict
 	}
+	if resolved.Network != "private" {
+		errorf(stderr, "%s", legacyDeploymentMessage)
+		return exitConflict
+	}
 	node := requestedNode
-	path, err := (privatevm.Manager{FarrowVersion: version.Version}).LogPath(node, *source)
+	path, err := (privatevm.Manager{FarrowVersion: version.Version}).LogPath(node, options.Source)
 	if node == "" {
-		if *source == "events" {
+		if options.Source == "events" {
 			node = "deployment"
 		} else {
 			for _, candidate := range resolved.Nodes {
@@ -1424,7 +1421,7 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 		return exitRuntime
 	}
 	defer handle.Close()
-	if structuredOutput(stdout, false) && !*follow {
+	if structuredOutput(stdout) && !options.Follow {
 		info, err := handle.Stat()
 		if err != nil {
 			errorf(stderr, "%v", err)
@@ -1437,12 +1434,12 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 		}
 		content := capture.String()
 		return encodeJSON(stdout, stderr, logResult{
-			Node: node, Source: *source, Path: path, Content: content,
+			Node: node, Source: options.Source, Path: path, Content: content,
 			Bytes: len(content), TotalBytes: info.Size(), Truncated: capture.truncated,
 		})
 	}
-	if structuredOutput(stdout, false) {
-		if err := encodeStreamOutput(stdout, logStreamRecord{Type: "start", Node: node, Source: *source, Path: path}); err != nil {
+	if structuredOutput(stdout) {
+		if err := encodeStreamOutput(stdout, logStreamRecord{Type: "start", Node: node, Source: options.Source, Path: path}); err != nil {
 			fmt.Fprintf(stderr, "encode %s log stream: %v\n", outputFormatFor(stdout), err)
 			return exitRuntime
 		}
@@ -1453,7 +1450,7 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 			if chunk != "" {
 				sequence++
 				if err := encodeStreamOutput(stdout, logStreamRecord{
-					Type: "line", Node: node, Source: *source, Path: path, Sequence: sequence,
+					Type: "line", Node: node, Source: options.Source, Path: path, Sequence: sequence,
 					Content: chunk, Continued: continued,
 				}); err != nil {
 					fmt.Fprintf(stderr, "encode %s log stream: %v\n", outputFormatFor(stdout), err)
@@ -1478,10 +1475,10 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 		errorf(stderr, "%v", err)
 		return exitRuntime
 	}
-	if *follow {
-		fmt.Fprintf(stderr, "%s following %s log for %s\n", styled(stderr, ansiCyan, "→"), *source, node)
+	if options.Follow {
+		fmt.Fprintf(stderr, "%s following %s log for %s\n", styled(stderr, ansiCyan, "→"), options.Source, node)
 	}
-	for *follow {
+	for options.Follow {
 		select {
 		case <-ctx.Done():
 			return exitOK
@@ -1495,19 +1492,13 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func runValidate(args []string, stdout, stderr io.Writer) int {
-	flags := newCommandFlagSet("validate", stderr)
-	filePath := flags.String("f", "", "configuration file")
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
-		return exitUsage
-	}
+func runValidate(filePath string, stdout, stderr io.Writer) int {
 	cwd, err := os.Getwd()
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitRuntime
 	}
-	file, source, err := config.Discover(cwd, *filePath)
+	file, source, err := config.Discover(cwd, filePath)
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitUsage
@@ -1530,7 +1521,7 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 		Resolved spec.Resolved `json:"resolved"`
 		Warnings []string      `json:"warnings,omitempty"`
 	}{true, source, hash, resolved, warnings}
-	if structuredOutput(stdout, *jsonOutput) {
+	if structuredOutput(stdout) {
 		return encodeJSON(stdout, stderr, result)
 	}
 	printWarnings(stderr, warnings)
@@ -1540,34 +1531,32 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func runInit(args []string, stdout, stderr io.Writer) int {
-	flags := newCommandFlagSet("init", stderr)
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	networkCIDR := flags.String("network-cidr", "", "rebase the template to one RFC1918 IPv4 /24")
-	output := flags.String("output", "", "write to this path instead of ./farrow.yml; '-' writes to stdout")
-	force := flags.Bool("force", false, "overwrite an existing configuration file")
-	if err := flags.Parse(args); err != nil || flags.NArg() > 1 {
-		fmt.Fprintf(stderr, "usage: farrow init [%s] [--network-cidr RFC1918/24] [-o path|-] [--force]\n", strings.Join(config.TemplateNames(), "|"))
-		return exitUsage
+type initOptions struct {
+	Template    string
+	NetworkCIDR string
+	Output      string
+	Force       bool
+}
+
+func runInit(options initOptions, stdout, stderr io.Writer) int {
+	name := options.Template
+	if name == "" {
+		name = "meta"
 	}
-	name := "meta"
-	if flags.NArg() == 1 {
-		name = flags.Arg(0)
-	}
-	data, err := config.Template(name, *networkCIDR)
+	data, err := config.Template(name, options.NetworkCIDR)
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitUsage
 	}
-	if *networkCIDR != "" {
-		if layout, parseErr := subnet.Parse(*networkCIDR); parseErr == nil {
+	if options.NetworkCIDR != "" {
+		if layout, parseErr := subnet.Parse(options.NetworkCIDR); parseErr == nil {
 			if warning := layout.Warning(); warning != "" {
 				warningf(stderr, "%s", warning)
 			}
 		}
 	}
-	if *output == "-" {
-		if structuredOutput(stdout, *jsonOutput) {
+	if options.Output == "-" {
+		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, struct {
 				Template string `json:"template"`
 				Content  string `json:"content"`
@@ -1576,7 +1565,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		_, _ = stdout.Write(data)
 		return exitOK
 	}
-	target := *output
+	target := options.Output
 	if target == "" {
 		cwd, cwdErr := os.Getwd()
 		if cwdErr != nil {
@@ -1590,7 +1579,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		errorf(stderr, "%v", err)
 		return exitUsage
 	}
-	if *force {
+	if options.Force {
 		err = fsutil.AtomicWrite(target, data, 0o600)
 	} else {
 		err = fsutil.AtomicCreate(target, data, 0o600)
@@ -1603,7 +1592,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		errorf(stderr, "%v", err)
 		return exitRuntime
 	}
-	if structuredOutput(stdout, *jsonOutput) {
+	if structuredOutput(stdout) {
 		return encodeJSON(stdout, stderr, struct {
 			Template string `json:"template"`
 			Path     string `json:"path"`
@@ -1615,22 +1604,27 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func runImage(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: farrow image list|info|pull|prune|import|sync|reset-manifest")
-		return exitUsage
-	}
-	switch args[0] {
+type imageOptions struct {
+	Action         string
+	Repository     string
+	Alias          string
+	Source         string
+	Path           string
+	ExpectedSHA256 string
+	Name           string
+	Boot           string
+	SourceUser     string
+	DryRun         bool
+	Apply          bool
+	AllowDowngrade bool
+}
+
+func runImage(options imageOptions, stdout, stderr io.Writer) int {
+	switch options.Action {
 	case "list":
-		flags := newCommandFlagSet("image list", stderr)
-		jsonOutput := flags.Bool("json", false, "emit stable JSON")
-		repository := flags.String("repo", "", "image repository URL or absolute local directory")
-		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
-			return exitUsage
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		service, err := imageService(*repository, nil)
+		service, err := imageService(options.Repository, nil)
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime
@@ -1640,7 +1634,7 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 			errorf(stderr, "%v", err)
 			return exitRuntime
 		}
-		if structuredOutput(stdout, *jsonOutput) {
+		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, struct {
 				Manifest image.ManifestState `json:"manifest"`
 				Images   []image.Entry       `json:"images"`
@@ -1654,28 +1648,25 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	case "info", "pull":
-		flags := newCommandFlagSet("image "+args[0], stderr)
-		jsonOutput := flags.Bool("json", false, "emit stable JSON")
-		repository := flags.String("repo", "", "image repository URL or absolute local directory")
-		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 1 {
-			fmt.Fprintf(stderr, "usage: farrow image %s [--repo URL|DIR] [--json|--yaml] [--verbose] <alias>\n", args[0])
+		if options.Alias == "" {
+			errorf(stderr, "image %s requires an alias", options.Action)
 			return exitUsage
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		var progressItem *progress
-		service, err := imageService(*repository, deferredProgressReporter(&progressItem))
+		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime
 		}
 		var info image.Info
-		if args[0] == "pull" {
-			debugf(stderr, "image pull alias=%s timeout=%s", flags.Arg(0), 30*time.Minute)
-			progressItem = startProgress(ctx, stderr, fmt.Sprintf("Pulling image %s", flags.Arg(0)))
-			info, err = service.PullAlias(ctx, flags.Arg(0))
+		if options.Action == "pull" {
+			debugf(stderr, "image pull alias=%s timeout=%s", options.Alias, 30*time.Minute)
+			progressItem = startProgress(ctx, stderr, fmt.Sprintf("Pulling image %s", options.Alias))
+			info, err = service.PullAlias(ctx, options.Alias)
 		} else {
-			info, err = service.Info(ctx, flags.Arg(0))
+			info, err = service.Info(ctx, options.Alias)
 		}
 		progressItem.Stop(err)
 		if err != nil {
@@ -1683,7 +1674,7 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 			return exitRuntime
 		}
 		printImageStatusWarning(stderr, info.Entry)
-		if structuredOutput(stdout, *jsonOutput) {
+		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, info)
 		}
 		fmt.Fprintf(stdout, "%s %s %s status=%s sha256:%s cached=%t\n", info.Entry.Alias, info.Entry.Release, info.Entry.Arch, info.Entry.Status, info.Entry.SHA256, info.Cached)
@@ -1692,12 +1683,8 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	case "prune":
-		flags := newCommandFlagSet("image prune", stderr)
-		dryRun := flags.Bool("dry-run", false, "show unreferenced images and stale staging files without deleting")
-		yes := flags.Bool("yes", false, "delete the displayed unreferenced images and stale staging files")
-		jsonOutput := flags.Bool("json", false, "emit stable JSON")
-		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || (*dryRun && *yes) {
-			fmt.Fprintln(stderr, "usage: farrow image prune [--dry-run|--yes] [--json|--yaml] [--verbose]")
+		if options.DryRun && options.Apply {
+			errorf(stderr, "--dry-run and --yes are mutually exclusive")
 			return exitUsage
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -1708,7 +1695,7 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 			return exitRuntime
 		}
 		progressItem := startProgress(ctx, stderr, "Scanning unreferenced image cache entries")
-		report, err := service.PruneAll(ctx, *yes, func(refCtx context.Context) (map[string]struct{}, error) {
+		report, err := service.PruneAll(ctx, options.Apply, func(refCtx context.Context) (map[string]struct{}, error) {
 			return nodeImageReferences(service.DataRoot)
 		})
 		progressItem.Stop(err)
@@ -1716,7 +1703,7 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 			errorf(stderr, "%v", err)
 			return exitIntegrity
 		}
-		if structuredOutput(stdout, *jsonOutput) {
+		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, report)
 		}
 		if len(report.Items) == 0 {
@@ -1736,43 +1723,32 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	case "sync":
-		flags := newCommandFlagSet("image sync", stderr)
-		allowDowngrade := flags.Bool("allow-downgrade", false, "explicitly activate a version below the high-water mark")
-		jsonOutput := flags.Bool("json", false, "emit stable JSON")
-		if err := flags.Parse(args[1:]); err != nil {
-			return exitUsage
-		}
-		if flags.NArg() != 1 {
-			fmt.Fprintln(stderr, "usage: farrow image sync [--allow-downgrade] <url|path>")
+		if options.Source == "" {
+			errorf(stderr, "image sync requires a URL or path")
 			return exitUsage
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", flags.Arg(0), *allowDowngrade)
+		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", options.Source, options.AllowDowngrade)
 		service, err := imageService("", nil)
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime
 		}
 		progressItem := startProgress(ctx, stderr, "Synchronizing the image manifest")
-		state, err := service.SyncManifest(ctx, flags.Arg(0), *allowDowngrade)
+		state, err := service.SyncManifest(ctx, options.Source, options.AllowDowngrade)
 		progressItem.Stop(err)
 		if err != nil {
-			_ = emitCommandFailure(stdout, stderr, *jsonOutput, "runtime", err.Error(), "")
+			_ = emitCommandFailure(stdout, stderr, "runtime", err.Error(), "")
 			errorf(stderr, "%v", err)
 			return exitRuntime
 		}
-		if structuredOutput(stdout, *jsonOutput) {
+		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, state)
 		}
 		fmt.Fprintf(stdout, "activated manifest version %d digest %s key %s\n", state.ActiveVersion, state.ActiveDigest, state.KeyID)
 		return exitOK
 	case "reset-manifest":
-		flags := newCommandFlagSet("image reset-manifest", stderr)
-		jsonOutput := flags.Bool("json", false, "emit stable JSON")
-		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
-			return exitUsage
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		service, err := imageService("", nil)
@@ -1785,26 +1761,17 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 			errorf(stderr, "%v", err)
 			return exitRuntime
 		}
-		if structuredOutput(stdout, *jsonOutput) {
+		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, state)
 		}
 		fmt.Fprintf(stdout, "active manifest reset to embedded version %d; high-water mark %d preserved\n", state.ActiveVersion, state.HighestVersion)
 		return exitOK
 	case "import":
-		flags := newCommandFlagSet("image import", stderr)
-		expected := flags.String("sha256", "", "optional expected SHA-256")
-		name := flags.String("name", "", "optional immutable local- prefixed alias")
-		boot := flags.String("boot", "", "required with --name: bios or uefi")
-		sourceUser := flags.String("source-user", "", "required with --name: source image login user")
-		jsonOutput := flags.Bool("json", false, "emit stable JSON")
-		if err := flags.Parse(args[1:]); err != nil {
+		if options.Path == "" {
+			errorf(stderr, "image import requires a path")
 			return exitUsage
 		}
-		if flags.NArg() != 1 {
-			fmt.Fprintln(stderr, "usage: farrow image import [--sha256 digest] [--name alias --boot bios|uefi --source-user user] <path>")
-			return exitUsage
-		}
-		invalidAliasMetadata := (*name == "" && (*boot != "" || *sourceUser != "")) || (*name != "" && (*sourceUser == "" || (*boot != "bios" && *boot != "uefi")))
+		invalidAliasMetadata := (options.Name == "" && (options.Boot != "" || options.SourceUser != "")) || (options.Name != "" && (options.SourceUser == "" || (options.Boot != "bios" && options.Boot != "uefi")))
 		if invalidAliasMetadata {
 			fmt.Fprintln(stderr, "--name requires --boot bios|uefi and --source-user; alias metadata is immutable")
 			return exitUsage
@@ -1819,12 +1786,12 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		var path string
 		var metadata image.Metadata
 		var localEntry *image.Entry
-		debugf(stderr, "image import source=%s expected_sha256=%s alias=%s", flags.Arg(0), *expected, *name)
+		debugf(stderr, "image import source=%s expected_sha256=%s alias=%s", options.Path, options.ExpectedSHA256, options.Name)
 		progressItem := startProgress(ctx, stderr, "Importing and verifying the image")
-		if *name == "" {
-			path, metadata, err = service.ImportFile(ctx, flags.Arg(0), *expected)
+		if options.Name == "" {
+			path, metadata, err = service.ImportFile(ctx, options.Path, options.ExpectedSHA256)
 		} else {
-			entry, importedPath, importedMetadata, importErr := service.ImportNamed(ctx, flags.Arg(0), *expected, *name, *boot, *sourceUser)
+			entry, importedPath, importedMetadata, importErr := service.ImportNamed(ctx, options.Path, options.ExpectedSHA256, options.Name, options.Boot, options.SourceUser)
 			path, metadata, err = importedPath, importedMetadata, importErr
 			if importErr == nil {
 				localEntry = &entry
@@ -1835,8 +1802,14 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 			Path     string         `json:"path"`
 			Metadata image.Metadata `json:"metadata"`
 			Entry    *image.Entry   `json:"entry,omitempty"`
+			Error    string         `json:"error,omitempty"`
+			Message  string         `json:"message,omitempty"`
 		}{Path: path, Metadata: metadata, Entry: localEntry}
-		if structuredOutput(stdout, *jsonOutput) {
+		if err != nil {
+			result.Error = "runtime"
+			result.Message = err.Error()
+		}
+		if structuredOutput(stdout) {
 			if code := encodeJSON(stdout, stderr, result); code != exitOK {
 				return code
 			}
@@ -1849,27 +1822,18 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	default:
-		fmt.Fprintf(stderr, "unknown image command %q\n", args[0])
+		fmt.Fprintf(stderr, "unknown image command %q\n", options.Action)
 		return exitUsage
 	}
 }
 
-func runDoctor(args []string, stdout, stderr io.Writer) int {
-	flags := newCommandFlagSet("doctor", stderr)
-	jsonOutput := flags.Bool("json", false, "emit stable JSON")
-	if err := flags.Parse(args); err != nil {
-		return exitUsage
-	}
-	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "doctor does not accept positional arguments")
-		return exitUsage
-	}
+func runDoctor(stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	progressItem := startProgress(ctx, stderr, "Checking host capabilities")
 	report := (doctor.Probe{}).Run(ctx)
 	progressItem.Stop(nil)
-	if structuredOutput(stdout, *jsonOutput) {
+	if structuredOutput(stdout) {
 		if code := encodeJSON(stdout, stderr, report); code != exitOK {
 			return code
 		}

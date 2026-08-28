@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -35,6 +36,13 @@ func TestDarwinInstallForwardsSharedMode(t *testing.T) {
 	report, err := installDarwinNetwork(context.Background(), recorder, "/archive", "uuid", "arm64", "shared", "172.31.251.0/24", true)
 	if err != nil || recorder.mode != "shared" || recorder.cidr != "172.31.251.0/24" || !recorder.apply || !report.Applied {
 		t.Fatalf("mode=%q cidr=%q apply=%t report=%#v err=%v", recorder.mode, recorder.cidr, recorder.apply, report, err)
+	}
+}
+
+func TestSortedMapKeysMakesPlanOutputDeterministic(t *testing.T) {
+	got := strings.Join(sortedMapKeys(map[string]string{"/z": "z", "/a": "a", "/m": "m"}), ",")
+	if got != "/a,/m,/z" {
+		t.Fatalf("sorted keys = %q", got)
 	}
 }
 
@@ -136,20 +144,20 @@ func TestProvisionRejectsUnsafeInputBeforeProjectAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name string
-		args []string
-		code int
-		want string
+		name    string
+		options provisionOptions
+		code    int
+		want    string
 	}{
-		{name: "missing script flag", code: exitUsage, want: "usage: farrow provision"},
-		{name: "missing script file", args: []string{"--script", filepath.Join(root, "missing.sh")}, code: exitUsage, want: "inspect provision script"},
-		{name: "invalid parallelism", args: []string{"--script", scriptPath, "--parallel", "0"}, code: exitUsage, want: "parallelism must be"},
-		{name: "invalid timeout", args: []string{"--script", scriptPath, "--timeout", "25h"}, code: exitUsage, want: "no more than 24h"},
-		{name: "symlink script", args: []string{"--script", symlinkPath}, code: exitIntegrity, want: "non-symlink"},
+		{name: "missing script flag", options: provisionOptions{Parallelism: 1, Timeout: time.Hour}, code: exitUsage, want: "--script is required"},
+		{name: "missing script file", options: provisionOptions{ScriptPath: filepath.Join(root, "missing.sh"), Parallelism: 1, Timeout: time.Hour}, code: exitUsage, want: "inspect provision script"},
+		{name: "invalid parallelism", options: provisionOptions{ScriptPath: scriptPath, Parallelism: 0, Timeout: time.Hour}, code: exitUsage, want: "parallelism must be"},
+		{name: "invalid timeout", options: provisionOptions{ScriptPath: scriptPath, Parallelism: 1, Timeout: 25 * time.Hour}, code: exitUsage, want: "no more than 24h"},
+		{name: "symlink script", options: provisionOptions{ScriptPath: symlinkPath, Parallelism: 1, Timeout: time.Hour}, code: exitIntegrity, want: "non-symlink"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			if code := runProvision(test.args, &stdout, &stderr); code != test.code || !strings.Contains(stderr.String(), test.want) || stdout.Len() != 0 {
+			if code := runProvision(test.options, nil, &stdout, &stderr); code != test.code || !strings.Contains(stderr.String(), test.want) || stdout.Len() != 0 {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 		})
@@ -181,6 +189,15 @@ func TestCommandTimeoutHonorsResolvedReadiness(t *testing.T) {
 	}
 }
 
+func TestLifecycleSequenceKeepsReloadDistinctFromRestart(t *testing.T) {
+	if got := strings.Join(lifecycleSequence("reload"), ","); got != "stop,up" {
+		t.Fatalf("reload sequence = %q", got)
+	}
+	if got := strings.Join(lifecycleSequence("restart"), ","); got != "restart" {
+		t.Fatalf("restart sequence = %q", got)
+	}
+}
+
 func TestLoadPrivatePreflightConfigAcceptsRelativePath(t *testing.T) {
 	resolved, err := loadPrivatePreflightConfig("../../tests/fixtures/private-two.yaml")
 	if err != nil {
@@ -209,7 +226,11 @@ func TestImageListJSON(t *testing.T) {
 
 func TestUsageErrors(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{nil, {"unknown"}, {"version", "extra"}} {
+	var stdout, stderr bytes.Buffer
+	if code := run(nil, &stdout, &stderr); code != exitOK || !strings.Contains(stdout.String(), "Usage:") || stderr.Len() != 0 {
+		t.Fatalf("empty invocation code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, args := range [][]string{{"unknown"}, {"version", "extra"}} {
 		var stdout, stderr bytes.Buffer
 		if code := run(args, &stdout, &stderr); code != exitUsage {
 			t.Errorf("run(%v) code=%d, want %d", args, code, exitUsage)
@@ -247,7 +268,7 @@ func TestNoWaitOnlyAppliesToStartingCommands(t *testing.T) {
 }
 
 func TestCompletions(t *testing.T) {
-	t.Parallel()
+	t.Setenv("FARROW_HOME", t.TempDir())
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		var stdout, stderr bytes.Buffer
 		if code := run([]string{"completion", shell}, &stdout, &stderr); code != exitOK {
@@ -264,7 +285,10 @@ func TestCompletions(t *testing.T) {
 		want []string
 	}{
 		{args: []string{"__complete", "setup", ""}, want: []string{"meta", "dual", "trio", "full"}},
+		{args: []string{"__complete", "setup", "--mode", ""}, want: []string{"host", "shared"}},
 		{args: []string{"__complete", "image", ""}, want: []string{"list", "pull", "sync"}},
+		{args: []string{"__complete", "image", "pull", "u"}, want: []string{"u24"}},
+		{args: []string{"__complete", "up", "--file", "../../tests/fixtures/private-two.yaml", ""}, want: []string{"meta", "node-1"}},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := run(test.args, &stdout, &stderr); code != exitOK {
@@ -278,7 +302,7 @@ func TestCompletions(t *testing.T) {
 	}
 }
 
-func TestPrivateDeploymentDestroyNeverFallsThroughToQuick(t *testing.T) {
+func TestDeploymentDestroyUsesPersistedStateWithoutConfiguration(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("FARROW_HOME", root)
 	resolved := spec.Resolved{
@@ -305,8 +329,57 @@ func TestPrivateDeploymentDestroyNeverFallsThroughToQuick(t *testing.T) {
 	if code := run([]string{"destroy"}, &stdout, &stderr); code != exitUsage {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "private destroy requires --force") {
-		t.Fatalf("private destroy dispatch was ambiguous: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "destroy requires --force") {
+		t.Fatalf("deployment destroy dispatch was ambiguous: %s", stderr.String())
+	}
+}
+
+func TestLegacyDeploymentDiagnosticsDistinguishExistingState(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	resolved := spec.Quick(true, false)
+	hash, err := spec.Hash(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (state.Store{Root: root}).WriteDeployment(state.DeploymentState{
+		Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash,
+		Resolved: resolved, UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"logs", "ssh-config", "status", "ssh"} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		if code := run([]string{"--json", command}, &stdout, &stderr); code != exitConflict {
+			t.Fatalf("%s code=%d stdout=%q stderr=%q", command, code, stdout.String(), stderr.String())
+		}
+		var failure commandFailure
+		if err := json.Unmarshal(stdout.Bytes(), &failure); err != nil {
+			t.Fatalf("%s failure JSON: %v\n%s", command, err, stdout.String())
+		}
+		if failure.Error != "conflict" || failure.Message != legacyDeploymentMessage || !strings.Contains(stderr.String(), "predates the fixed-IP redesign") {
+			t.Fatalf("%s failure=%#v stderr=%q", command, failure, stderr.String())
+		}
+	}
+}
+
+func TestMissingDeploymentDiagnosticsRemainDistinctFromLegacyState(t *testing.T) {
+	t.Setenv("FARROW_HOME", t.TempDir())
+	const missingMessage = "no deployment state found; run `farrow up` first"
+	for _, command := range []string{"logs", "ssh-config", "status", "ssh"} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		if code := run([]string{"--json", command}, &stdout, &stderr); code != exitConflict {
+			t.Fatalf("%s code=%d stdout=%q stderr=%q", command, code, stdout.String(), stderr.String())
+		}
+		var failure commandFailure
+		if err := json.Unmarshal(stdout.Bytes(), &failure); err != nil {
+			t.Fatalf("%s failure JSON: %v\n%s", command, err, stdout.String())
+		}
+		if failure.Error != "conflict" || failure.Message != missingMessage || strings.Contains(failure.Message, legacyDeploymentMessage) {
+			t.Fatalf("%s failure=%#v stderr=%q", command, failure, stderr.String())
+		}
 	}
 }
 

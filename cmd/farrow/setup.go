@@ -362,7 +362,7 @@ func constrainSetupNetworkMode(report netpreflight.Report, requested string, exp
 	report.Findings = append(report.Findings, netpreflight.Finding{
 		Code: "installation.mode_mismatch", Severity: netpreflight.Error, Class: netpreflight.State,
 		Evidence: fmt.Sprintf("installed=%s requested=%s", report.Installation.Mode, requested),
-		Fix:      fmt.Sprintf("rerun setup without --mode to reuse %s, or stop private projects, uninstall the owned network, then rerun with --mode %s", report.Installation.Mode, requested),
+		Fix:      fmt.Sprintf("rerun setup without --mode to reuse %s, or stop the deployment, uninstall the owned network, then rerun with --mode %s", report.Installation.Mode, requested),
 	})
 	report.Ready = false
 	if report.ExitCode < exitConflict {
@@ -393,7 +393,7 @@ func setupFindingError(report netpreflight.Report) error {
 		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
-		lines = append(lines, "private network is not ready")
+		lines = append(lines, "fixed-IP network is not ready")
 	}
 	return errors.New(strings.Join(lines, "\n"))
 }
@@ -419,19 +419,20 @@ func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) er
 	}
 }
 
-// setupSudoSession asks for the user's password at most once per setup run.
+// sudoSession asks for the user's password at most once per command.
 // The first privileged step announces its reason and prompts; a background
-// keeper then refreshes the cached credential every minute until setup
+// keeper then refreshes the cached credential every minute until the command
 // finishes, so no later step prompts again — even when a slow download or
 // package installation outlives sudo's timestamp window.
-type setupSudoSession struct {
+type sudoSession struct {
 	base     execx.Runner
 	stderr   io.Writer
+	scope    string
 	acquired bool
 	stop     context.CancelFunc
 }
 
-func (session *setupSudoSession) ensure(ctx context.Context, reason string) error {
+func (session *sudoSession) ensure(ctx context.Context, reason string) error {
 	if os.Geteuid() == 0 {
 		return nil
 	}
@@ -440,7 +441,11 @@ func (session *setupSudoSession) ensure(ctx context.Context, reason string) erro
 	}
 	if reason != "" {
 		fmt.Fprintf(session.stderr, "%s sudo needed: %s\n", styled(session.stderr, ansiCyan, "→"), reason)
-		fmt.Fprintln(session.stderr, "  one password prompt covers this whole setup run")
+		scope := session.scope
+		if scope == "" {
+			scope = "command"
+		}
+		fmt.Fprintf(session.stderr, "  one password prompt covers this whole %s\n", scope)
 	}
 	const sudo = "/usr/bin/sudo"
 	if term.IsTerminal(int(os.Stdin.Fd())) {
@@ -452,7 +457,12 @@ func (session *setupSudoSession) ensure(ctx context.Context, reason string) erro
 			return fmt.Errorf("acquire sudo credential: %w", err)
 		}
 	} else if _, err := session.base.Run(ctx, sudo, "-n", "-v"); err != nil {
-		return errors.New("setup requires an existing non-interactive sudo credential; run sudo -v or use a terminal")
+		// `sudo -n -v` can still demand authentication under a NOPASSWD: ALL
+		// policy because it validates a timestamp without running a command.
+		// Prove the command path separately before rejecting automation hosts.
+		if _, commandErr := session.base.Run(ctx, sudo, "-n", "--", "/usr/bin/true"); commandErr != nil {
+			return errors.New("non-interactive sudo access is unavailable; use a terminal or configure a suitable NOPASSWD policy")
+		}
 	}
 	keeperContext, cancel := context.WithCancel(ctx)
 	session.stop = cancel
@@ -472,7 +482,7 @@ func (session *setupSudoSession) ensure(ctx context.Context, reason string) erro
 	return nil
 }
 
-func (session *setupSudoSession) close() {
+func (session *sudoSession) close() {
 	if session.stop != nil {
 		session.stop()
 	}
@@ -485,7 +495,7 @@ func setupRootRunner(base execx.Runner) execx.Runner {
 	return sudoRunner{base: base}
 }
 
-func runSetupCommands(ctx context.Context, commands []setuphost.Command, base execx.Runner, sudo *setupSudoSession, stderr io.Writer) (changed, mutationUncertain bool, err error) {
+func runSetupCommands(ctx context.Context, commands []setuphost.Command, base execx.Runner, sudo *sudoSession, stderr io.Writer) (changed, mutationUncertain bool, err error) {
 	for _, command := range commands {
 		if err := command.Validate(); err != nil {
 			return changed, false, err
@@ -516,7 +526,7 @@ func setupNeedsNetworkInstall(report netpreflight.Report) bool {
 	return report.Installation.Status == "" || report.Installation.Status == "absent"
 }
 
-func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo string, report netpreflight.Report, base execx.Runner, sudo *setupSudoSession, stderr io.Writer) (setupStep, bool, error) {
+func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo string, report netpreflight.Report, base execx.Runner, sudo *sudoSession, stderr io.Writer) (setupStep, bool, error) {
 	if !setupNeedsNetworkInstall(report) {
 		tickf(stderr, "Network %s is already installed", report.CIDR)
 		return setupStep{Name: "network", Status: "ready", Detail: report.CIDR}, false, nil
@@ -542,7 +552,7 @@ func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo
 		// configuration, so nothing has to reach github.com.
 		if sources.Archive == "" && !setuphost.SocketVMNetCached(runtime.GOARCH) {
 			if binaries, ok := setupHomebrewSocketVMNet(ctx, base, stderr); ok {
-				progressItem := startProgress(ctx, stderr, "Installing the private network (socket_vmnet from Homebrew, root-owned copy)")
+				progressItem := startProgress(ctx, stderr, "Installing the fixed-IP network (socket_vmnet from Homebrew, root-owned copy)")
 				installReport, err := executor.InstallFromHomebrew(ctx, binaries, interfaceID, runtime.GOARCH, mode, report.CIDR, true)
 				progressItem.Stop(err)
 				if err != nil {
@@ -560,7 +570,7 @@ func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo
 			return setupStep{}, false, err
 		}
 		debugf(stderr, "socket_vmnet source=%s downloaded=%t", download.URL, download.Downloaded)
-		progressItem := startProgress(ctx, stderr, "Installing the private network")
+		progressItem := startProgress(ctx, stderr, "Installing the fixed-IP network")
 		installReport, err := executor.InstallModeNetwork(ctx, download.Path, interfaceID, runtime.GOARCH, mode, report.CIDR, true)
 		progressItem.Stop(err)
 		if err != nil {
@@ -573,7 +583,7 @@ func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo
 		return setupStep{}, false, err
 	}
 	executor := linuxnet.Executor{User: base, Root: setupRootRunner(base)}
-	progressItem := startProgress(ctx, stderr, "Installing the private network")
+	progressItem := startProgress(ctx, stderr, "Installing the fixed-IP network")
 	installReport, err := executor.InstallConfig(ctx, linuxConfig, true)
 	progressItem.Stop(err)
 	if err != nil {
@@ -646,7 +656,7 @@ func companionHostsHelper() (string, error) {
 	return "", errors.New("matching farrow-hosts-helper was not found beside the CLI or in its package libexec directory")
 }
 
-func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, sudo *setupSudoSession, stderr io.Writer) (setupStep, bool, error) {
+func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, sudo *sudoSession, stderr io.Writer) (setupStep, bool, error) {
 	if digest, err := hostconfig.InstalledHelperDigest(); err == nil {
 		tickf(stderr, "Hosts helper is already installed")
 		return setupStep{Name: "hosts-helper", Status: "ready", Detail: digest}, false, nil
@@ -698,24 +708,24 @@ func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, sudo *setupS
 			_, _ = root.Run(context.Background(), "/bin/rm", "-f", "--", staged)
 		}
 	}()
-	progressItem := startProgress(ctx, stderr, "Installing the private hosts helper")
+	progressItem := startProgress(ctx, stderr, "Installing the hosts helper")
 	result, installErr := root.Run(ctx, "/usr/bin/install", "-o", "root", "-g", "0", "-m", "0755", source, staged)
 	progressItem.Stop(installErr)
 	if installErr != nil {
 		debugf(stderr, "hosts helper install exit=%d stderr=%q", result.ExitCode, strings.TrimSpace(string(result.Stderr)))
-		return setupStep{}, true, fmt.Errorf("install private hosts helper failed with exit code %d", result.ExitCode)
+		return setupStep{}, true, fmt.Errorf("install hosts helper failed with exit code %d", result.ExitCode)
 	}
 	stagedDigest, stageErr := hostconfig.RootOwnedHelperDigest(staged)
 	if stageErr != nil || stagedDigest != digest {
 		if stageErr == nil {
 			stageErr = errors.New("staged hosts helper digest differs from the packaged CLI companion")
 		}
-		return setupStep{}, true, fmt.Errorf("verify staged private hosts helper: %w", stageErr)
+		return setupStep{}, true, fmt.Errorf("verify staged hosts helper: %w", stageErr)
 	}
 	moveResult, moveErr := root.Run(ctx, "/bin/mv", "-f", "--", staged, hostconfig.InstalledHelperPath)
 	if moveErr != nil {
 		debugf(stderr, "hosts helper publish exit=%d stderr=%q", moveResult.ExitCode, strings.TrimSpace(string(moveResult.Stderr)))
-		return setupStep{}, true, fmt.Errorf("publish private hosts helper failed with exit code %d", moveResult.ExitCode)
+		return setupStep{}, true, fmt.Errorf("publish hosts helper failed with exit code %d", moveResult.ExitCode)
 	}
 	staged = ""
 	installedDigest, verifyErr := hostconfig.InstalledHelperDigest()
@@ -723,7 +733,7 @@ func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, sudo *setupS
 		if verifyErr == nil {
 			verifyErr = errors.New("installed hosts helper digest changed")
 		}
-		return setupStep{Name: "hosts-helper", Status: "failed", Changed: true}, true, fmt.Errorf("verify private hosts helper: %w", verifyErr)
+		return setupStep{Name: "hosts-helper", Status: "failed", Changed: true}, true, fmt.Errorf("verify hosts helper: %w", verifyErr)
 	}
 	status := "installed"
 	if targetExists {
@@ -878,7 +888,7 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 }
 
 func emitSetupResult(result setupResult, stdout, stderr io.Writer) int {
-	if structuredOutput(stdout, false) {
+	if structuredOutput(stdout) {
 		return encodeJSON(stdout, stderr, result)
 	}
 	textField(stdout, 14, "host", result.OS+"/"+result.Arch)
@@ -940,7 +950,7 @@ func failSetup(result *setupResult, code int, failure error, stdout, stderr io.W
 		result.NextArgv = nil
 	}
 	errorf(stderr, "%v", failure)
-	if structuredOutput(stdout, false) {
+	if structuredOutput(stdout) {
 		if encodeCode := emitSetupResult(*result, stdout, stderr); encodeCode != exitOK {
 			return encodeCode
 		}
@@ -1054,7 +1064,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 	base := execx.OSRunner{Timeout: 20 * time.Minute, OutputLimit: 64 << 10}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
-	sudoSession := &setupSudoSession{base: base, stderr: stderr}
+	sudoSession := &sudoSession{base: base, stderr: stderr, scope: "setup run"}
 	defer sudoSession.close()
 	networkMode := ""
 	if private {
@@ -1201,7 +1211,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 			if finalErr == nil {
 				finalErr = setupFindingError(finalReport)
 			}
-			return failSetup(&result, exitIntegrity, fmt.Errorf("private network verification failed: %w", finalErr), stdout, stderr)
+			return failSetup(&result, exitIntegrity, fmt.Errorf("fixed-IP network verification failed: %w", finalErr), stdout, stderr)
 		}
 		result.Network = &finalReport
 		helperStep, uncertain, helperErr := ensureSetupHostsHelper(ctx, base, sudoSession, stderr)
@@ -1219,7 +1229,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		result.Steps = append(result.Steps, setupStep{Name: "network", Status: "ready", Detail: "QEMU user NAT"})
 	}
 	if private {
-		verifyProgress := startProgress(ctx, stderr, "Verifying the private host setup")
+		verifyProgress := startProgress(ctx, stderr, "Verifying the fixed-IP host setup")
 		checks, verifyErr := verifySetup(ctx, true)
 		verifyProgress.Stop(verifyErr)
 		result.Checks = checks

@@ -249,7 +249,7 @@ func TestSetupSudoSessionAsksAtMostOnce(t *testing.T) {
 	}
 	runner := &recordingSetupRunner{}
 	var stderr bytes.Buffer
-	session := &setupSudoSession{base: runner, stderr: &stderr}
+	session := &sudoSession{base: runner, stderr: &stderr, scope: "setup run"}
 	defer session.close()
 	ctx := context.Background()
 	if err := session.ensure(ctx, "install the network"); err != nil {
@@ -270,6 +270,36 @@ func TestSetupSudoSessionAsksAtMostOnce(t *testing.T) {
 	}
 }
 
+type passwordlessSetupRunner struct{ calls []string }
+
+func (runner *passwordlessSetupRunner) Run(_ context.Context, binary string, args ...string) (execx.Result, error) {
+	call := strings.Join(append([]string{binary}, args...), " ")
+	runner.calls = append(runner.calls, call)
+	if call == "/usr/bin/sudo -n -v" {
+		return execx.Result{ExitCode: 1}, errors.New("interactive authentication is required")
+	}
+	return execx.Result{}, nil
+}
+
+func TestSetupSudoSessionAcceptsPasswordlessCommandPolicy(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; sudo session is a no-op")
+	}
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		t.Skip("interactive stdin would open a real sudo prompt")
+	}
+	runner := &passwordlessSetupRunner{}
+	session := &sudoSession{base: runner, stderr: &bytes.Buffer{}}
+	defer session.close()
+	if err := session.ensure(context.Background(), "install the network"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/usr/bin/sudo -n -v", "/usr/bin/sudo -n -- /usr/bin/true"}
+	if strings.Join(runner.calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("sudo probes = %v, want %v", runner.calls, want)
+	}
+}
+
 func TestSetupCommandFailureSeparatesChangedFromUncertain(t *testing.T) {
 	commands := []setuphost.Command{
 		{Name: "first", Binary: "/usr/bin/true"},
@@ -285,7 +315,7 @@ func TestSetupCommandFailureSeparatesChangedFromUncertain(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &setupSequenceRunner{failAt: test.failAt}
-			sudo := &setupSudoSession{base: runner, stderr: &bytes.Buffer{}}
+			sudo := &sudoSession{base: runner, stderr: &bytes.Buffer{}}
 			changed, uncertain, err := runSetupCommands(context.Background(), commands, runner, sudo, &bytes.Buffer{})
 			if err == nil || changed != test.wantChanged || !uncertain {
 				t.Fatalf("changed=%t uncertain=%t err=%v", changed, uncertain, err)

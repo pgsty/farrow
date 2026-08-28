@@ -402,15 +402,18 @@ func TestBoundedCaptureReportsTruncation(t *testing.T) {
 	}
 }
 
-func TestSplitLogArgsAcceptsFlagsAfterNode(t *testing.T) {
-	node, flagArgs, err := splitLogArgs([]string{"meta", "--source", "events", "--follow"})
-	if err != nil {
+func TestLogsCobraAcceptsFlagsAfterNode(t *testing.T) {
+	command := newLogsCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	if err := command.ParseFlags([]string{"meta", "--source", "events", "--follow"}); err != nil {
 		t.Fatal(err)
 	}
-	if node != "meta" || strings.Join(flagArgs, " ") != "--source events --follow" {
-		t.Fatalf("node=%q flags=%v", node, flagArgs)
+	arguments := command.Flags().Args()
+	source, _ := command.Flags().GetString("source")
+	follow, _ := command.Flags().GetBool("follow")
+	if strings.Join(arguments, " ") != "meta" || source != "events" || !follow {
+		t.Fatalf("arguments=%v source=%q follow=%t", arguments, source, follow)
 	}
-	if _, _, err := splitLogArgs([]string{"meta", "other"}); err == nil {
+	if err := command.Args(command, []string{"meta", "other"}); err == nil {
 		t.Fatal("multiple log nodes were accepted")
 	}
 }

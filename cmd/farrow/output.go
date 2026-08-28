@@ -28,13 +28,16 @@ const (
 )
 
 type outputContext struct {
-	format     outputFormat
-	verbose    bool
-	settings   *viper.Viper
-	stdoutTTY  bool
-	stderrTTY  bool
-	stderrFile bool
-	color      bool
+	format      outputFormat
+	verbose     bool
+	settings    *viper.Viper
+	stdoutTTY   bool
+	stderrTTY   bool
+	stderrFile  bool
+	color       bool
+	mu          sync.Mutex
+	stdoutBytes int64
+	lastError   string
 }
 
 type commandFailure struct {
@@ -43,15 +46,15 @@ type commandFailure struct {
 	OperationID string `json:"operation_id,omitempty"`
 }
 
-func emitCommandFailure(stdout, stderr io.Writer, legacyJSON bool, category, message, operationID string) int {
-	if !structuredOutput(stdout, legacyJSON) {
+func emitCommandFailure(stdout, stderr io.Writer, category, message, operationID string) int {
+	if !structuredOutput(stdout) {
 		return exitOK
 	}
 	return encodeJSON(stdout, stderr, commandFailure{Error: category, Message: message, OperationID: operationID})
 }
 
-func reportCommandFailure(stdout, stderr io.Writer, legacyJSON bool, category, message, operationID string, code int) int {
-	if encodeCode := emitCommandFailure(stdout, stderr, legacyJSON, category, message, operationID); encodeCode != exitOK {
+func reportCommandFailure(stdout, stderr io.Writer, category, message, operationID string, code int) int {
+	if encodeCode := emitCommandFailure(stdout, stderr, category, message, operationID); encodeCode != exitOK {
 		return encodeCode
 	}
 	errorf(stderr, "%s", message)
@@ -62,6 +65,46 @@ type outputWriter struct {
 	io.Writer
 	context *outputContext
 	stderr  bool
+}
+
+func (writer *outputWriter) Write(data []byte) (int, error) {
+	written, err := writer.Writer.Write(data)
+	if writer.context != nil && !writer.stderr && written > 0 {
+		writer.context.mu.Lock()
+		writer.context.stdoutBytes += int64(written)
+		writer.context.mu.Unlock()
+	}
+	return written, err
+}
+
+func structuredPayloadWritten(writer io.Writer) bool {
+	state := outputContextFrom(writer)
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.stdoutBytes > 0
+}
+
+func recordCommandError(writer io.Writer, message string) {
+	state := outputContextFrom(writer)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.lastError = message
+	state.mu.Unlock()
+}
+
+func recordedCommandError(writer io.Writer) string {
+	state := outputContextFrom(writer)
+	if state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.lastError
 }
 
 func writerFile(writer io.Writer) (*os.File, bool) {
@@ -109,8 +152,8 @@ func outputFormatFor(writer io.Writer) outputFormat {
 	return outputText
 }
 
-func structuredOutput(writer io.Writer, legacyJSON bool) bool {
-	return legacyJSON || outputFormatFor(writer) != outputText
+func structuredOutput(writer io.Writer) bool {
+	return outputFormatFor(writer) != outputText
 }
 
 func verboseOutput(writer io.Writer) bool {
@@ -359,6 +402,7 @@ func errorf(stderr io.Writer, format string, arguments ...any) {
 	message := strings.TrimSpace(fmt.Sprintf(format, arguments...))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "ERROR:"))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "error:"))
+	recordCommandError(stderr, message)
 	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiRed, "error:"), message)
 }
 

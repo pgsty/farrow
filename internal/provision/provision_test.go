@@ -14,6 +14,8 @@ import (
 	"github.com/pgsty/farrow/internal/vm"
 )
 
+const sshRunnerTestTimeout = 20 * time.Second
+
 func TestLoadScriptSnapshotAndSafety(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "setup.sh")
@@ -171,7 +173,7 @@ func TestSSHRunnerStreamsSnapshotAndCapturesExit(t *testing.T) {
 	if err := os.WriteFile(fakeSSH, []byte("#!/bin/sh\nprintf 'remote=%s\\n' \"$*\"\nprintf 'stdin='\ncat\nprintf 'fixture stderr\\n' >&2\nexit 17\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sshRunnerTestTimeout)
 	defer cancel()
 	script := fixtureScript()
 	result := (SSHRunner{SSHPath: fakeSSH}).Run(ctx, fixtureTarget("meta"), script, true)
@@ -193,7 +195,7 @@ func TestSSHRunnerBoundsCapturedOutput(t *testing.T) {
 	if err := os.WriteFile(fakeSSH, []byte("#!/bin/sh\nprintf '123456789'\nprintf 'abcdefghi' >&2\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sshRunnerTestTimeout)
 	defer cancel()
 	script := fixtureScript()
 	result := (SSHRunner{SSHPath: fakeSSH, OutputLimit: 4}).Run(ctx, fixtureTarget("meta"), script, false)

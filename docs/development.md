@@ -82,6 +82,33 @@ keeps its strict `vm_*` namespace, size limit, and symlink checks, and
 presentation flags are runtime-only, never written into the configuration
 file.
 
+Every visible command is a public contract, not just a dispatch label:
+
+- declare `Use`, `Short`, `Long`, `Example`, and an explicit `Args` validator;
+- register user-facing flags with Cobra so help, validation, and completion
+  share one definition;
+- keep `-f/--file` scoped to `setup`, `validate`, `plan`, `up`, `reload`, and
+  `recreate`; state-only commands must not pretend to consume an inventory;
+- explain discovery and applied-state fallback in the command's own help,
+  rather than requiring the reference manual to decode it;
+- register completions for closed vocabularies and safe read-only resources;
+- state what `--force` or `--yes` bypasses in the flag description;
+- put execution logic below the Cobra constructor and keep stdout/stderr plus
+  exit-code behavior independent of help rendering.
+
+The command-tree tests walk every visible command and enforce the metadata,
+argument-validator, and config-flag contracts. `ssh` and `exec` are the only
+intentional `DisableFlagParsing` exceptions because everything after their
+optional `--` belongs to OpenSSH or the remote program. Every other leaf binds
+Cobra flags directly into a typed options value and calls its operation once;
+there is no second `flag.FlagSet` parser or argv reconstruction layer.
+
+The root assembly lives in `command_root.go`. Setup, lifecycle, access, image,
+network, and miscellaneous command constructors stay in the matching flat
+`command_*.go` file. Shared Cobra validators/completion helpers live in
+`cli.go`; concrete operation code remains below the command layer. Do not put
+a second parser, host mutation, or output rendering inside a constructor.
+
 ## Test
 
 Run the full gate after a coherent batch of changes:
@@ -122,11 +149,10 @@ tests/e2e/host-audit.sh
 ```
 
 The e2e scripts predate the inventory-as-config redesign and are due for a
-rewrite as part of the native replay gate; treat them as references for the
-safety conventions, not as runnable acceptance today. The product smokes accept an absolute Farrow binary, an existing mode-0700
-data root, and a new evidence root. They remain ownership-bounded. The private
-smoke inspects an existing healthy, unoccupied network; it never installs or
-uninstalls host networking. See [`tests/e2e/README.md`](../tests/e2e/README.md).
+rewrite as part of the native replay gate. Treat them as references for safety
+conventions, not as runnable current acceptance. Their old project/profile/
+lease inputs are deliberately not documented as current commands; see
+[`tests/e2e/README.md`](../tests/e2e/README.md) for the exact boundary.
 
 Tier-1 hosts are macOS arm64 with HVF and Linux amd64 with KVM. macOS amd64 and
 Linux arm64 are compile-and-unit-test targets until native hardware evidence is

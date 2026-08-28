@@ -4,21 +4,46 @@
 farrow [--json|--yaml] [--verbose] <command> [flags] [node...]
 ```
 
+The executable is the first reference for the installed version. Every visible
+command carries its own purpose, operational boundary, and copyable examples:
+
+```bash
+farrow --help
+farrow setup --help
+farrow image pull --help
+```
+
+In text mode, bare `farrow` and namespace commands such as `farrow image`
+display their contextual help and exit successfully. In JSON/YAML mode, a bare
+namespace is a structured usage error; explicit `--help` always renders human
+help text.
+
 ## Conventions
 
 **One deployment.** Farrow manages exactly one deployment per user; all state
 lives under the data root (`FARROW_HOME`, default `~/.farrow`), and nothing is
-written into the working directory. `status`, `start`, `stop`, `restart`,
-`ssh`, `exec`, `logs`, `destroy`, `recreate`, `provision`, `ss`, `ssh-config`,
-and `hosts` read that state and work from any directory. `up`, `plan`,
-`reload`, `validate`, and `setup` read the configuration in front of you;
-pointing them at a different file proposes a new desired state for the same
-deployment, diffed node by node.
+written into the working directory except a configuration explicitly created
+by `init` or `setup`. Commands backed only by applied state work from any
+directory. `plan`, `up`, `reload`, and `recreate` prefer an explicit or
+discovered Inventory, but fall back to the applied resolved spec when no file
+exists. Pointing them at a different file proposes a new desired state for the
+same deployment, diffed node by node. `validate` always requires a file.
 
 **Config discovery.** Commands that accept a configuration look for
 `-f <file>` first, then `farrow.yml`, `farrow.yaml`, `pigsty.yml`, and
 `pigsty.yaml` in the working directory. The content is always a
-Pigsty-compatible inventory; see [config.md](config.md).
+Pigsty-compatible inventory; see [config.md](config.md). Applied-state
+fallback happens only after that search and only when a deployment exists.
+
+The source policy is command-scoped; `-f` is deliberately not a global flag:
+
+| Commands | Desired-state source |
+|---|---|
+| `setup [template]` | explicit `-f`, otherwise discovery, otherwise generate `meta`; a template and `-f` are mutually exclusive |
+| `init [template]` | generates a new inventory and reads no existing desired state |
+| `validate` | explicit `-f`, then discovery; never applied state |
+| `plan`, `up`, `reload`, `recreate` | explicit `-f`, then discovery, then the applied resolved specification |
+| all other lifecycle/access commands | no desired-state inventory; they use applied or marker-owned state as applicable and do not expose `-f` |
 
 **Node selectors.** `plan`, `up`, `start`, `stop`, `restart`, `reload`,
 `recreate`, `status`, `provision`, and `destroy` accept trailing node names to
@@ -31,14 +56,27 @@ the same field contract. Final results go to stdout; progress, warnings, and
 ANSI styling appears only on a real terminal. `FARROW_OUTPUT` and
 `FARROW_VERBOSE` set process-level defaults; explicit flags win.
 
+On failure, a command that has not already emitted a richer typed result writes
+one structured object with `error` and `message` before returning its documented
+non-zero exit code. Commands whose result already carries failure state (for
+example setup, provision, network preflight, or remote execution) emit exactly
+that one result rather than appending a second document.
+
 Some commands produce native payloads or streams: `init`, `ssh-config`, and
 `completion` keep redirectable text payloads in default mode; `exec` captures
 bounded remote stdout/stderr as fields in structured modes; `logs --follow
 --json` is NDJSON.
 
-**Confirmation.** Destructive operations print their plan and change nothing
-until `--force` (deployment data) or `--yes` (host state). `setup` prints one
-compact transaction and asks once in a terminal; `--yes` covers automation.
+**Confirmation.** Destructive operations change nothing unconfirmed. On a
+real terminal, `destroy` and `recreate` ask you to type the action word
+(`--purge`/`--delete-persistent` state their widened scope first); without a
+terminal, `--force` is required. Host-state commands print their exact
+privileged plan and need `--yes`. `setup` prints one compact transaction and
+asks once in a terminal; `--yes` covers automation.
+`setup`, `network install/uninstall`, and applied `hosts` operations invoke
+sudo themselves at the first privileged step. Running `sudo -v` beforehand is
+optional, not a Farrow prerequisite; do not run the whole Farrow process as
+root.
 
 ## Exit codes
 
@@ -50,15 +88,17 @@ compact transaction and asks once in a terminal; `--yes` covers automation.
 | 3 | capability missing | no QEMU, no native accelerator, no firmware |
 | 4 | state conflict | per-node changes need `recreate --force <node>`; removed nodes need explicit destroy; no configuration found; a foreign vmnet consumer holds the subnet |
 | 5 | partial completion | some nodes of a multi-node operation failed |
+| 6 | resource conflict | requested address, port, or host resource is already in use |
 | 7 | integrity failure | checksum, signature, or ownership mismatch |
 
-`ssh` and `exec` pass the remote exit code through.
+`ssh` and `exec` pass the remote program's exit code through, except SSH's
+reserved transport-failure code 255, which Farrow maps to runtime failure 1.
 
 ## First-time setup
 
 ```bash
 farrow setup [meta|dual|trio|full] [-f <file>] [--network-cidr <RFC1918/24>] \
-             [--mode host|shared] [--dry-run|--yes]
+             [--mode host|shared] [--repo <URL-or-dir>] [--dry-run|--yes]
 ```
 
 With no template and no discovered configuration, setup generates the
@@ -69,7 +109,7 @@ preserved and reported.
 
 Setup installs missing QEMU/image/firmware/SSH/network dependencies through
 Homebrew, APT, or DNF, verifies native acceleration, installs or reuses the
-host-global private network, and digest-verifies the companion hosts helper.
+host-global fixed-IP network, and digest-verifies the companion hosts helper.
 On macOS the socket_vmnet backend comes from the version-matched Homebrew
 formula by default (installed as the user when absent, then copied into
 root-owned `/opt/farrow`); the digest-pinned release download —
@@ -78,36 +118,37 @@ fallback. Setup prints one plan, then asks for the sudo password at most
 once per run; all downloads honor the standard `HTTPS_PROXY`/`HTTP_PROXY`/
 `NO_PROXY` environment variables. `--mode` is macOS-only (`host` default).
 `--network-cidr` applies only to a newly generated template. The full
-decision table is in [networking.md](networking.md).
+backend and privilege model is in [architecture.md](architecture.md).
 
 ## Lifecycle
 
 ```bash
 farrow plan      [flags] [node...]   # classify pending changes; nothing mutates
-farrow up        [flags] [node...]   # create new nodes, boot, or converge
+farrow up        [flags] [node...]   # create additions and start stopped selected nodes
 farrow start     [flags] [node...]
 farrow stop      [flags] [node...]   # alias: halt
 farrow restart   [flags] [node...]   # plain stop/start; does not re-read config
 farrow reload    [flags] [node...]   # stop + re-read configuration + up
-farrow recreate  [flags] [node...]   # destroy then create; requires --force
+farrow recreate  [flags] [node...]   # destroy then create; prompts unless --force
 farrow status    [flags] [node...]
-farrow destroy   [flags] [node...]   # requires --force
+farrow destroy   [flags] [node...]   # prompts unless --force
 ```
 
 | Flag | Accepted by | Description |
 |---|---|---|
 | `-f <file>` | `plan`, `up`, `reload`, `recreate` | configuration file |
 | `--repo <URL-or-dir>` | `plan`, `up`, `reload` | prefer artifacts from this signed repository |
-| `--force` | `destroy`, `recreate` | confirm a destructive operation |
-| `--delete-persistent` | `destroy` | also delete `persistent: true` data disks |
-| `--purge` | `destroy` | terminal disposal: persistent disks, the deployment keys, and the deployment state (images stay cached) |
+| `--force` | `destroy`, `recreate` | skip the interactive confirmation (required without a terminal) |
+| `--delete-persistent` | whole-deployment `destroy` | also delete `persistent: true` data disks; invalid with node selectors |
+| `--purge` | whole-deployment `destroy` | terminal disposal: persistent disks, the deployment keys, and the deployment state (images stay cached); invalid with node selectors |
 | `--no-wait` | starting commands | return once QMP and process identity are confirmed |
 | `--rollback` | `up`, `reload` | remove artifacts from nodes that failed during this prepare |
 
-Once the deployment exists, `start`, `stop`, `restart`, `status`, and
-`destroy` read the applied state, take no `-f`, and work from any directory;
-supplying a configuration to `up`/`reload` is how you *change* the
-deployment.
+Once the deployment exists, every lifecycle command can operate away from the
+Inventory. `start`, `stop`, `restart`, `status`, and `destroy` always read the
+applied state and take no `-f`; `plan`, `up`, `reload`, and `recreate` use the
+applied spec only when no explicit/discovered file exists. Supplying a file to
+the latter commands is how you *change* the deployment.
 
 ### Drift is node-granular
 
@@ -115,13 +156,15 @@ deployment.
 
 | plan field | Meaning | Applied by |
 |---|---|---|
-| `create` | hosts in the config without committed state | `farrow up` (additive; peers untouched) |
+| `create` | hosts in the config without committed state | `farrow up` (additive; running peers untouched) |
 | `recreate` | nodes whose definition changed | `farrow recreate --force <node...>` |
 | `missing` | stateful nodes the config dropped | `farrow destroy <node...> --force` — never automatic |
 
-A deployment-level change (login user, subnet, defaults) is a
-whole-deployment recreate. Editing non-`vm_*` inventory variables never
-causes drift.
+A deployment-level change (login user or subnet) is a whole-deployment
+recreate. Unconsumed Inventory variables never cause drift, but the native
+Pigsty whitelist (`nodename`, `admin_ip`, `pg_cluster`, `pg_seq`, and the
+node-admin identity fields) is consumed even though those names do not begin
+with `vm_`.
 
 ### Deletion
 
@@ -160,8 +203,8 @@ namespace and prints the resolved spec hash.
 ## Access
 
 ```bash
-farrow ssh  [node]
-farrow exec [node] -- <command> [args...]
+farrow ssh  [node] [--] [command [args...]]
+farrow exec [node] [--] <command> [args...]
 farrow provision --script <path> [--sudo] [--parallel 1..4] [--timeout <duration>] [node...]
 farrow ssh-config [--install|--remove] [--name <prefix>] [node...]
 farrow ss [node...]
@@ -199,7 +242,8 @@ Host-global state, serving the one deployment:
 
 ```bash
 farrow network status    [--cidr <RFC1918/24>]
-farrow network install   [--cidr <RFC1918/24>] [--mode host|shared] [--yes]
+farrow network install   [--cidr <RFC1918/24>] [--mode host|shared] \
+                         [--archive <path>] [--interface-id <UUID>] [--yes]
 farrow network uninstall [--yes]
 ```
 
@@ -207,7 +251,7 @@ Read-only preflight probes run internally before install and every lifecycle
 mutation; `network status` reports the installation state plus the same
 readiness findings. `install`/`uninstall` print the full privileged plan and
 change nothing without `--yes`; `uninstall` refuses while any recorded node
-of the deployment is live. See [networking.md](networking.md).
+of the deployment is live. See [architecture.md](architecture.md).
 
 ## Misc
 
@@ -215,3 +259,10 @@ of the deployment is live. See [networking.md](networking.md).
 farrow version
 farrow completion bash|zsh|fish|powershell
 ```
+
+For an interactive shell, load or install the generated completion script; it
+includes command/flag names, templates, image aliases, closed flag choices,
+and best-effort node names from the desired or applied specification. For
+example, Bash can use `source <(farrow completion bash)` for the current
+session, while Fish can write to
+`~/.config/fish/completions/farrow.fish`.

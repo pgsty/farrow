@@ -37,4 +37,20 @@ func TestIntegrationNamedLocalImportIsImmutableAndResolvable(t *testing.T) {
 	if _, _, _, err := store.RegisterLocalAlias(context.Background(), "u24", path, metadata, "arm64", "uefi", "ubuntu"); err == nil {
 		t.Fatal("catalog-shaped local alias was accepted")
 	}
+	names, err := LocalAliasNames(store.DataRoot)
+	if err != nil || len(names) != 1 || names[0] != "local-u24" {
+		t.Fatalf("local alias names = %v, %v", names, err)
+	}
+}
+
+func TestLocalAliasNamesIsSideEffectFreeWhenRegistryIsAbsent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	names, err := LocalAliasNames(root)
+	if err != nil || len(names) != 0 {
+		t.Fatalf("local alias names = %v, %v", names, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "images")); !os.IsNotExist(err) {
+		t.Fatalf("completion lookup created image state: %v", err)
+	}
 }
