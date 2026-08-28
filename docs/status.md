@@ -66,6 +66,24 @@ replayed on native hardware yet:
   **The Homebrew install path and the sudo keeper have not run against a
   real `brew install` + password prompt end to end.**
 
+## EL7/EL8 compatibility replay (2026-08-28)
+
+Catalog `2026082801` is signed with the active embedded-trust key and published
+at `https://m0/farrow`: 9 image families / 17 artifacts, including EL7 amd64
+and EL8 on both architectures. All 17 images and the two socket_vmnet archives
+passed a fresh full-file SHA-256 replay before activation; a fresh client
+accepted the public catalog and signature.
+
+An isolated macOS arm64 lifecycle replay exercised stock Rocky Linux 8.10
+arm64 through the built-in compatibility rule. Farrow selected
+`qemu-system-aarch64`, `virt`, `tcg,thread=multi`, and `max`; stop/start reached
+the generation/spec-bound ready marker in 44.2 seconds. The guest reported
+`aarch64`, active NetworkManager/sshd/cloud-final, `private0` at
+`10.10.10.20/24` without gateway or DNS, and `dba` UID/GID 88. The temporary
+deployment was then destroyed without changing the four pre-existing native
+HVF process IDs. EL7's bytes, qcow2/BIOS layout, and 4K XFS root are verified;
+a current native Linux/amd64 Farrow lifecycle replay remains pending.
+
 ## Not verified
 
 - Any native replay of the current tree: single-node and four-node labs on
@@ -79,6 +97,7 @@ replayed on native hardware yet:
 - Opt-in QEMU 9p host shares (wired pre-redesign; still unreplayed).
 - Host reboot persistence, on any host.
 - Tier-2 native smoke: macOS amd64, Linux arm64.
+- EL7 through the current Farrow lifecycle on native Linux/amd64.
 - Published Homebrew tap, RPM or DEB repository consumption.
 
 ## Blocks 1.0
@@ -113,15 +132,17 @@ created, and development artifacts stay explicitly unsigned.
   `start`/`destroy` work); a live one shows as `running` and `farrow stop`
   finishes the transition. This replaced the removed `repair` command; only
   an identity-ambiguous live runtime still requires manual inspection.
-- **Every VM start prints a `testing` image warning** until the hosting and
-  custody gates close.
+- **Every VM start prints its image status warning.** Current catalog images
+  remain `testing`, except EOL EL7 which is `deprecated`.
 
 The plan for what comes next is in [phase-2.md](phase-2.md).
 
 ## Deliberately out of scope for 1.0
 
-- Cross-architecture emulation. Native only, no TCG fallback.
-- Rocky Linux 8 guests (64 KiB-granule arm64 kernel) and EL8 hosts.
+- Arbitrary accelerator fallback. TCG is selected only for an explicit foreign
+  `vm_arch` or a catalogued image/host incompatibility; performance results from
+  TCG are not evidence.
+- EL7 outside native Linux/amd64.
 - Live QMP snapshots.
 - Automatic repair or a global destructive cleanup command — `image prune`
   removes only provably unreferenced files and defaults to a dry run, and

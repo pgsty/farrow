@@ -72,15 +72,18 @@ the template in an empty directory.
 first; it installs supported dependencies and performs the same final host
 verification. A successful source build alone proves nothing about the host.
 
-## No native accelerator
+## Native acceleration or a compatibility runtime is unavailable
 
-Farrow requires HVF on macOS and KVM on Linux, on the native architecture, and
-will not fall back to TCG. On Linux, check that `/dev/kvm` exists and that your
-user can open it — usually membership in the `kvm` group. Inside a VM, nested
-virtualization must be enabled by the outer hypervisor.
+Native paths require HVF on macOS and KVM on Linux. On Linux, check that
+`/dev/kvm` exists and that your user can open it — usually membership in the
+`kvm` group. Inside a VM, nested virtualization must be enabled by the outer
+hypervisor.
 
-Cross-architecture guests are not supported. `arch: native` is the only
-accepted value.
+TCG is selected only for an explicit foreign `vm_arch` or a built-in
+image/host compatibility rule; an arbitrary native failure never falls back.
+Homebrew QEMU includes both system emulators. Linux setup remains host-native,
+so a foreign `vm_arch` there also requires the matching `qemu-system-*` binary
+and UEFI firmware to be installed separately.
 
 ## `up` times out waiting for SSH
 

@@ -19,6 +19,18 @@ type embeddedGolden struct {
 func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 	t.Parallel()
 	expected := map[string]embeddedGolden{
+		"el7/amd64": {
+			release: "7.9.20221112.0", url: "https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2",
+			sha256: "284aab2b23d91318f169ff464bce4d53404a15a0618ceb34562838c59af4adea", artifactSize: 902889472, virtualSize: 8589934592, sourceUser: "centos",
+		},
+		"el8/amd64": {
+			release: "8.10.20240528.0", url: "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base-8.10-20240528.0.x86_64.qcow2",
+			sha256: "e56066c58606191e96184de9a9183a3af33c59bcbd8740d8b10ca054a7a89c14", artifactSize: 2065760256, virtualSize: 10737418240, sourceUser: "rocky",
+		},
+		"el8/arm64": {
+			release: "8.10.20240528.0", url: "https://dl.rockylinux.org/pub/rocky/8/images/aarch64/Rocky-8-GenericCloud-Base-8.10-20240528.0.aarch64.qcow2",
+			sha256: "946b5b9845aa5e3ed98f1bc6ee9873201712a2aef01b87731aed16857e0ca13f", artifactSize: 1925644288, virtualSize: 10737418240, sourceUser: "rocky",
+		},
 		"el9/amd64": {
 			release: "9.8.20260525.0", url: "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
 			sha256: "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8", artifactSize: 645988352, virtualSize: 10737418240, sourceUser: "rocky",
@@ -77,7 +89,7 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 		},
 	}
 
-	if len(expected) != 14 || len(embedded) != len(expected) {
+	if len(expected) != 17 || len(embedded) != len(expected) {
 		t.Fatalf("formal matrix sizes: golden=%d embedded=%d", len(expected), len(embedded))
 	}
 	entries := EmbeddedEntries()
@@ -85,12 +97,7 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 		t.Fatalf("EmbeddedEntries count = %d, want %d", len(entries), len(expected))
 	}
 
-	wantOrder := make([]string, 0, 14)
-	for _, alias := range formalAliases {
-		for _, arch := range []string{"amd64", "arm64"} {
-			wantOrder = append(wantOrder, alias+"/"+arch)
-		}
-	}
+	wantOrder := append([]string(nil), formalMatrix...)
 	gotOrder := make([]string, 0, len(entries))
 	perAlias := make(map[string]map[string]bool)
 	for _, entry := range entries {
@@ -104,14 +111,18 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 		if entry.Release != want.release || entry.Upstream != want.url || entry.SHA256 != want.sha256 || entry.ArtifactSize != want.artifactSize || entry.VirtualSize != want.virtualSize || entry.SourceUser != want.sourceUser {
 			t.Errorf("%s metadata mismatch:\n got %#v\nwant %#v", key, entry, want)
 		}
-		if entry.Format != "qcow2" || entry.Boot != "uefi" || entry.Status != "testing" || strings.TrimSpace(entry.Provenance) == "" {
+		wantBoot, wantStatus := "uefi", "testing"
+		if entry.Alias == "el7" {
+			wantBoot, wantStatus = "bios", "deprecated"
+		}
+		if entry.Format != "qcow2" || entry.Boot != wantBoot || entry.Status != wantStatus || strings.TrimSpace(entry.Provenance) == "" {
 			t.Errorf("%s incomplete policy fields: %#v", key, entry)
 		}
 		parsed, err := url.Parse(entry.Upstream)
 		if err != nil || hasMovingReleasePath(parsed.Path) || strings.Contains(strings.ToLower(entry.Upstream), "latest") {
 			t.Errorf("%s has a moving or invalid URL: %q", key, entry.Upstream)
 		}
-		if parsed.Host != "dl.rockylinux.org" && parsed.Host != "cloud.debian.org" && parsed.Host != "cloud-images.ubuntu.com" {
+		if parsed.Host != "dl.rockylinux.org" && parsed.Host != "cloud.debian.org" && parsed.Host != "cloud-images.ubuntu.com" && parsed.Host != "cloud.centos.org" {
 			t.Errorf("%s is not on an expected distribution-owned host: %q", key, parsed.Host)
 		}
 		if entry.ArtifactSize <= 0 || entry.VirtualSize <= 0 || entry.ArtifactSize > entry.VirtualSize {
@@ -129,7 +140,13 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 	if !reflect.DeepEqual(gotOrder, wantOrder) {
 		t.Errorf("EmbeddedEntries order = %v, want %v", gotOrder, wantOrder)
 	}
+	if arches := perAlias["el7"]; len(arches) != 1 || !arches["amd64"] {
+		t.Errorf("el7 architecture set = %v", arches)
+	}
 	for _, alias := range formalAliases {
+		if alias == "el7" {
+			continue
+		}
 		arches := perAlias[alias]
 		if len(arches) != 2 || !arches["amd64"] || !arches["arm64"] {
 			t.Errorf("%s architecture set = %v", alias, arches)
@@ -140,6 +157,8 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 func TestEmbeddedFriendlyAliases(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
+		"c7": "el7", "centos7": "el7", "centos79": "el7",
+		"rocky8": "el8",
 		"rocky9": "el9", "rocky": "el9", "rocky10": "el10",
 		"debian12": "d12", "bookworm": "d12", "debian13": "d13", "debian": "d13", "trixie": "d13",
 		"ubuntu22": "u22", "ubuntu2204": "u22", "jammy": "u22",
@@ -158,10 +177,8 @@ func TestEmbeddedFriendlyAliases(t *testing.T) {
 	if _, err := embeddedEntry("unknown", "amd64"); err == nil {
 		t.Fatal("unknown alias unexpectedly resolved")
 	}
-	for _, alias := range []string{"el8", "rocky8"} {
-		if _, err := embeddedEntry(alias, "amd64"); err == nil {
-			t.Fatalf("retired alias %q unexpectedly resolved", alias)
-		}
+	if _, err := embeddedEntry("el7", "arm64"); err == nil {
+		t.Fatal("EL7 unexpectedly has an arm64 artifact")
 	}
 	if _, err := embeddedEntry("u24", "s390x"); err == nil {
 		t.Fatal("unsupported architecture unexpectedly resolved")

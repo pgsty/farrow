@@ -31,6 +31,31 @@ func TestResolveSupportMatrix(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeNativeAndEmulated(t *testing.T) {
+	t.Parallel()
+	host, _ := Resolve("darwin", "arm64")
+	native, err := ResolveRuntime(host, "native", false)
+	if err != nil || native != host {
+		t.Fatalf("native runtime = %#v, %v", native, err)
+	}
+	sameArch, err := ResolveRuntime(host, "arm64", true)
+	if err != nil || !sameArch.Emulated || sameArch.QEMUBinary != "qemu-system-aarch64" || sameArch.Machine != "virt" || sameArch.Accelerator != "tcg,thread=multi" || sameArch.CPU != "max" {
+		t.Fatalf("same-arch TCG runtime = %#v, %v", sameArch, err)
+	}
+	foreign, err := ResolveRuntime(host, "amd64", false)
+	if err != nil || !foreign.Emulated || foreign.QEMUBinary != "qemu-system-x86_64" || foreign.Machine != "q35" || foreign.RequiresUEFI || foreign.Accelerator != "tcg,thread=single" {
+		t.Fatalf("foreign runtime = %#v, %v", foreign, err)
+	}
+	linuxAMD, _ := Resolve("linux", "amd64")
+	armOnAMD, err := ResolveRuntime(linuxAMD, "arm64", false)
+	if err != nil || armOnAMD.Accelerator != "tcg,thread=multi" || armOnAMD.QEMUBinary != "qemu-system-aarch64" {
+		t.Fatalf("arm64-on-amd64 runtime = %#v, %v", armOnAMD, err)
+	}
+	if _, err := ResolveRuntime(host, "s390x", true); err == nil {
+		t.Fatal("unsupported guest architecture accepted")
+	}
+}
+
 func TestParseQEMUVersion(t *testing.T) {
 	t.Parallel()
 	for input, want := range map[string]Version{
@@ -144,6 +169,13 @@ func TestFindQEMUBinaryUsesOnlyControlledLinuxFallback(t *testing.T) {
 			name:    "custom linux binary has no fallback",
 			profile: Profile{OS: "linux", Arch: "amd64", QEMUBinary: "custom-qemu"},
 			calls:   []string{"custom-qemu"},
+			wantErr: true,
+		},
+		{
+			name:    "emulated linux runtime has no native libexec fallback",
+			profile: Profile{OS: "linux", Arch: "arm64", QEMUBinary: "qemu-system-aarch64", Emulated: true},
+			paths:   map[string]string{RHELQEMUBinary: RHELQEMUBinary},
+			calls:   []string{"qemu-system-aarch64"},
 			wantErr: true,
 		},
 	}

@@ -89,9 +89,18 @@ func printWarnings(out io.Writer, warnings []string) {
 }
 
 func printImageStatusWarning(out io.Writer, entry image.Entry) {
-	if entry.Status != "" && entry.Status != "supported" {
+	if entry.Status == "deprecated" {
+		warningf(out, "image %s/%s (%s) is deprecated and EOL; use only for isolated compatibility testing", entry.Alias, entry.Arch, entry.Release)
+	} else if entry.Status != "" && entry.Status != "supported" {
 		warningf(out, "image %s/%s (%s) has status %s, not supported; use only with the corresponding test/risk acceptance", entry.Alias, entry.Arch, entry.Release, entry.Status)
 	}
+}
+
+func lifecycleImageArch(resolved spec.Resolved) string {
+	if resolved.Arch != "" {
+		return resolved.Arch
+	}
+	return runtime.GOARCH
 }
 
 func confirmDestructive(force, interactive bool, action string, input io.Reader, output io.Writer) error {
@@ -914,7 +923,7 @@ func currentProjectResolved() (spec.Resolved, error) {
 func printPrivateStatus(out io.Writer, status privatevm.Status) {
 	textField(out, 12, "spec hash", status.SpecHash)
 	for _, node := range status.Nodes {
-		fmt.Fprintf(out, "%-16s %s  runtime=%s  address=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.Address, node.SSHHost, node.SSHPort)
+		fmt.Fprintf(out, "%-16s %s  runtime=%s  arch=%s  accel=%s  address=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.GuestArch, node.Accel, node.Address, node.SSHHost, node.SSHPort)
 		if node.ProcessID > 0 {
 			fmt.Fprintf(out, " pid=%d", node.ProcessID)
 		}
@@ -1112,6 +1121,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	status.OperationID = operationID
 	if command == "up" || command == "start" || command == "restart" || command == "recreate" {
 		seen := make(map[string]struct{})
+		guestArch := lifecycleImageArch(resolved)
 		for _, node := range resolved.Nodes {
 			alias := node.Image
 			if alias == "" {
@@ -1122,7 +1132,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 			}
 			seen[alias] = struct{}{}
 			if service, serviceErr := imageService(repository, nil); serviceErr == nil {
-				if info, infoErr := service.Info(ctx, alias); infoErr == nil {
+				if info, infoErr := service.InfoArch(ctx, alias, guestArch); infoErr == nil {
 					printImageStatusWarning(stderr, info.Entry)
 				}
 			}

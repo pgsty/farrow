@@ -55,6 +55,7 @@ func Template(name, cidr string) ([]byte, error) {
 	fmt.Fprintf(&output, "# yours (or Pigsty's) and is never validated by farrow.\n")
 	fmt.Fprintf(&output, "#\n")
 	fmt.Fprintf(&output, "# Per-host or group-level knobs, all optional:\n")
+	fmt.Fprintf(&output, "#   vm_arch: arm64                          native, amd64, or arm64 (deployment-wide)\n")
 	fmt.Fprintf(&output, "#   vm_cpu: 2                                cores\n")
 	fmt.Fprintf(&output, "#   vm_mem: 4096                             memory (MiB, or \"8GiB\")\n")
 	fmt.Fprintf(&output, "#   vm_disk: 64                              root disk (GiB)\n")

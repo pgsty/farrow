@@ -7,12 +7,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pgsty/farrow/internal/execx"
+	"github.com/pgsty/farrow/internal/image"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/platform"
+	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
@@ -214,6 +217,12 @@ type rejectingPrivateShareRunner struct {
 }
 
 func (runner *rejectingPrivateShareRunner) Run(_ context.Context, binary string, args ...string) (execx.Result, error) {
+	if len(args) == 1 && args[0] == "--version" {
+		return execx.Result{Stdout: []byte("QEMU emulator version 11.1.0\n")}, nil
+	}
+	if len(args) == 4 && args[0] == "-machine" && args[1] == "none" && args[2] == "-netdev" && args[3] == "help" {
+		return execx.Result{Stdout: []byte("stream\n")}, nil
+	}
 	if len(args) != 2 || args[0] != "-device" || args[1] != "help" {
 		return execx.Result{}, fmt.Errorf("unexpected command %s %v", binary, args)
 	}
@@ -272,9 +281,15 @@ func privateShareCapabilityManager(t *testing.T, fixture StartConfig, runner exe
 			return netpreflight.Report{Ready: true}
 		},
 		HostPreflight: func(context.Context, platform.Profile, *spec.PrivateNetwork, execx.Runner) (Backend, error) {
-			return Backend{}, nil
+			return Backend{DarwinSocket: "/fixture/vmnet.sock"}, nil
 		},
-		LookPath: func(string) (string, error) { return "/fixture/qemu-system-aarch64", nil },
+		LookPath: func(name string) (string, error) { return "/fixture/" + name, nil },
+		FirmwareLookup: func(platform.Profile, string) (platform.Firmware, error) {
+			return platform.Firmware{Code: "/fixture/code.fd", Vars: "/fixture/vars.fd"}, nil
+		},
+		ResolveImage: func(_ context.Context, alias, arch string) (image.Entry, string, image.Metadata, error) {
+			return image.Entry{Alias: alias, Release: "test", Arch: arch, Boot: "uefi", SHA256: strings.Repeat("a", 64)}, "/fixture/base.qcow2", image.Metadata{VirtualSize: 8 * spec.GiB}, nil
+		},
 	}
 }
 
@@ -316,9 +331,11 @@ func TestPrivateRecreateShareCapabilityPrecedesDestroy(t *testing.T) {
 		name           string
 		currentShare   bool
 		requestedShare bool
+		requestedArch  string
 		wantBinary     string
 	}{
 		{name: "add-share", requestedShare: true, wantBinary: "/fixture/qemu-system-aarch64"},
+		{name: "foreign-add-share", requestedShare: true, requestedArch: "amd64", wantBinary: "/fixture/qemu-system-x86_64"},
 		{name: "remove-share", currentShare: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -334,6 +351,7 @@ func TestPrivateRecreateShareCapabilityPrecedesDestroy(t *testing.T) {
 				projectState = persistPrivateShare(t, store, share)
 			}
 			requested := cloneResolved(projectState.Resolved)
+			requested.Arch = test.requestedArch
 			if test.requestedShare {
 				requested.Nodes[0].Shares = []spec.Share{share}
 			} else {
@@ -354,6 +372,145 @@ func TestPrivateRecreateShareCapabilityPrecedesDestroy(t *testing.T) {
 				t.Fatalf("share probes=%v, want %q", runner.binaries, wantBinary)
 			}
 		})
+	}
+}
+
+func TestPrivateRecreateRuntimePolicyPrecedesDestroy(t *testing.T) {
+	fixture, _ := preparedStartFixture(t)
+	t.Setenv("FARROW_HOME", fixture.Project.Root)
+	store := state.Store{Root: fixture.Project.Root}
+	projectState, err := store.ReadDeployment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeNode, err := store.ReadNode("meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := cloneResolved(projectState.Resolved)
+	requested.Image = "el7"
+	_, err = privateShareCapabilityManager(t, fixture, &rejectingPrivateShareRunner{}).RecreateResolved(context.Background(), requested)
+	assertPrivateShareCapabilityFailurePreservesState(t, fixture, beforeNode, err)
+}
+
+func TestPrivateRecreateRuntimeDriftRequiresWholeDeployment(t *testing.T) {
+	fixture, _ := preparedStartFixture(t)
+	t.Setenv("FARROW_HOME", fixture.Project.Root)
+	store := state.Store{Root: fixture.Project.Root}
+	projectState, err := store.ReadDeployment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeNode, err := store.ReadNode("meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := cloneResolved(projectState.Resolved)
+	requested.Image = "el8"
+	manager := privateShareCapabilityManager(t, fixture, &rejectingPrivateShareRunner{})
+	manager.Nodes = []string{"meta"}
+	_, err = manager.RecreateResolved(context.Background(), requested)
+	if !errors.Is(err, ErrRecreateRequired) || !strings.Contains(err.Error(), "whole-deployment") {
+		t.Fatalf("partial runtime recreate error = %v", err)
+	}
+	afterNode, readErr := store.ReadNode("meta")
+	if readErr != nil || afterNode.Phase != beforeNode.Phase || afterNode.SpecHash != beforeNode.SpecHash {
+		t.Fatalf("node mutated after partial runtime recreate: before=%#v after=%#v err=%v", beforeNode, afterNode, readErr)
+	}
+}
+
+func TestPrivateRecreateSelectedRuntimeInputsPrecedeDestroy(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*Manager, *spec.Resolved)
+		match  string
+	}{
+		{
+			name: "foreign emulator missing",
+			mutate: func(manager *Manager, requested *spec.Resolved) {
+				requested.Arch = "amd64"
+				manager.LookPath = func(name string) (string, error) {
+					if name == "qemu-system-x86_64" {
+						return "", errors.New("foreign emulator absent")
+					}
+					return "/fixture/" + name, nil
+				}
+			},
+			match: "foreign emulator absent",
+		},
+		{
+			name: "firmware missing",
+			mutate: func(manager *Manager, _ *spec.Resolved) {
+				manager.FirmwareLookup = func(platform.Profile, string) (platform.Firmware, error) {
+					return platform.Firmware{}, errors.New("firmware absent")
+				}
+			},
+			match: "firmware absent",
+		},
+		{
+			name: "image unavailable",
+			mutate: func(manager *Manager, _ *spec.Resolved) {
+				manager.ResolveImage = func(context.Context, string, string) (image.Entry, string, image.Metadata, error) {
+					return image.Entry{}, "", image.Metadata{}, errors.New("image unavailable")
+				}
+			},
+			match: "image unavailable",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, _ := preparedStartFixture(t)
+			t.Setenv("FARROW_HOME", fixture.Project.Root)
+			store := state.Store{Root: fixture.Project.Root}
+			projectState, err := store.ReadDeployment()
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeNode, err := store.ReadNode("meta")
+			if err != nil {
+				t.Fatal(err)
+			}
+			requested := cloneResolved(projectState.Resolved)
+			manager := privateShareCapabilityManager(t, fixture, &rejectingPrivateShareRunner{})
+			test.mutate(&manager, &requested)
+			_, err = manager.RecreateResolved(context.Background(), requested)
+			if err == nil || !strings.Contains(err.Error(), test.match) {
+				t.Fatalf("recreate error = %v, want %q", err, test.match)
+			}
+			afterNode, readErr := store.ReadNode("meta")
+			if readErr != nil || afterNode.Phase != beforeNode.Phase || afterNode.SpecHash != beforeNode.SpecHash {
+				t.Fatalf("node mutated after failed runtime preflight: before=%#v after=%#v err=%v", beforeNode, afterNode, readErr)
+			}
+		})
+	}
+}
+
+func TestPrivatePlanChecksForeignRuntimeBeforeReportingCreate(t *testing.T) {
+	resolved := singlePrivateResolved()
+	resolved.Arch = "amd64"
+	profile, _ := platform.Resolve("darwin", "arm64")
+	manager := Manager{
+		NativeProfile: func() (platform.Profile, error) { return profile, nil },
+		NetworkPreflight: func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report {
+			return netpreflight.Report{Ready: true}
+		},
+		HostPreflight: func(context.Context, platform.Profile, *spec.PrivateNetwork, execx.Runner) (Backend, error) {
+			return Backend{DarwinSocket: "/fixture/vmnet.sock"}, nil
+		},
+		LookPath: func(name string) (string, error) { return "", fmt.Errorf("missing %s", name) },
+	}
+	if _, err := manager.Plan(context.Background(), resolved); err == nil || !strings.Contains(err.Error(), "qemu-system-x86_64") {
+		t.Fatalf("foreign runtime plan error = %v", err)
+	}
+	manager.LookPath = func(string) (string, error) { return "/fixture/qemu-system-x86_64", nil }
+	manager.Runner = runtimeProbeRunner{version: "QEMU emulator version 11.1.0\n", netdev: "stream\n"}
+	manager.LookupImage = func(context.Context, string, string) (image.Entry, error) {
+		return image.Entry{Alias: "u24", Arch: "amd64", Boot: "uefi"}, nil
+	}
+	manager.FirmwareLookup = func(platform.Profile, string) (platform.Firmware, error) {
+		return platform.Firmware{}, errors.New("foreign firmware absent")
+	}
+	if _, err := manager.Plan(context.Background(), resolved); err == nil || !strings.Contains(err.Error(), "foreign firmware absent") {
+		t.Fatalf("foreign firmware plan error = %v", err)
 	}
 }
 
@@ -417,5 +574,125 @@ func TestEnsureSSHAddressesUnusedDetectsConflict(t *testing.T) {
 		return nil, errors.New("connection refused")
 	}); err != nil {
 		t.Fatalf("unused address rejected: %v", err)
+	}
+}
+
+func TestInvocationRuntimeObservability(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		binary string
+		args   []string
+		arch   string
+	}{
+		{binary: "/opt/homebrew/bin/qemu-system-aarch64", arch: "arm64"},
+		{binary: "/usr/bin/qemu-system-x86_64", arch: "amd64"},
+		{binary: "/usr/libexec/qemu-kvm", args: []string{"-machine", "q35"}, arch: "amd64"},
+		{binary: "/usr/libexec/qemu-kvm", args: []string{"-machine", "virt,gic-version=max"}, arch: "arm64"},
+	} {
+		if got := invocationGuestArch(test.binary, test.args); got != test.arch {
+			t.Errorf("guest arch for %s %v = %q, want %q", test.binary, test.args, got, test.arch)
+		}
+	}
+	if got := invocationOption([]string{"-machine", "q35", "-accel", "tcg,thread=multi"}, "-accel"); got != "tcg,thread=multi" {
+		t.Fatalf("accelerator option = %q", got)
+	}
+}
+
+type runtimeProbeRunner struct {
+	version string
+	netdev  string
+}
+
+func (runner runtimeProbeRunner) Run(_ context.Context, _ string, args ...string) (execx.Result, error) {
+	if len(args) == 1 && args[0] == "--version" {
+		return execx.Result{Stdout: []byte(runner.version)}, nil
+	}
+	if len(args) == 4 && args[0] == "-machine" && args[1] == "none" && args[2] == "-netdev" && args[3] == "help" {
+		return execx.Result{Stdout: []byte(runner.netdev)}, nil
+	}
+	return execx.Result{}, fmt.Errorf("unexpected runtime probe %v", args)
+}
+
+func TestResolveRuntimeQEMUValidatesSelectedBinaryAndBackend(t *testing.T) {
+	t.Parallel()
+	host, _ := platform.Resolve("darwin", "arm64")
+	foreign, _ := platform.ResolveRuntime(host, "amd64", false)
+	backend := Backend{DarwinSocket: "/fixture/vmnet.sock", NetworkCIDR: "10.10.10.0/24", HostAddress: "10.10.10.1", DHCPEnd: "10.10.10.8"}
+	manager := Manager{
+		Runner:   runtimeProbeRunner{version: "QEMU emulator version 11.1.0\n", netdev: "stream\n"},
+		LookPath: func(string) (string, error) { return "/fixture/qemu-system-x86_64", nil },
+	}
+	path, selected, err := manager.resolveRuntimeQEMU(context.Background(), foreign, backend)
+	if err != nil || path != "/fixture/qemu-system-x86_64" || selected.ReconnectMS != 1000 || selected.DarwinUseFD || selected.NetworkCIDR != backend.NetworkCIDR {
+		t.Fatalf("selected runtime QEMU = %q %#v %v", path, selected, err)
+	}
+	manager.Runner = runtimeProbeRunner{version: "QEMU emulator version 8.1.0\n", netdev: "stream\n"}
+	if _, _, err := manager.resolveRuntimeQEMU(context.Background(), foreign, backend); err == nil || !strings.Contains(err.Error(), "minimum") {
+		t.Fatalf("old selected QEMU error = %v", err)
+	}
+	manager.Runner = runtimeProbeRunner{version: "QEMU emulator version 11.1.0\n", netdev: "tap\n"}
+	if _, selected, err := manager.resolveRuntimeQEMU(context.Background(), foreign, backend); err != nil || !selected.DarwinUseFD || selected.ReconnectMS != 0 {
+		t.Fatalf("selected QEMU FD fallback = %#v %v", selected, err)
+	}
+}
+
+func TestRuntimeDriftUsesPersistedInvocation(t *testing.T) {
+	fixture, _ := preparedStartFixture(t)
+	store := state.Store{Root: fixture.Project.Root}
+	projectState, err := store.ReadDeployment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.ReadNode("meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.Invocation = qemu.Invocation{Binary: "/opt/homebrew/bin/qemu-system-aarch64", Args: []string{"-machine", "virt", "-accel", "hvf"}}
+	if err := store.WriteNode(node); err != nil {
+		t.Fatal(err)
+	}
+	host, _ := platform.Resolve("darwin", "arm64")
+	if drifted, err := runtimeDriftNodes(store, projectState.Resolved, host); err != nil || len(drifted) != 0 {
+		t.Fatalf("native runtime drift = %v, %v", drifted, err)
+	}
+	tcg, _ := platform.ResolveRuntime(host, "arm64", true)
+	if drifted, err := runtimeDriftNodes(store, projectState.Resolved, tcg); err != nil || len(drifted) != len(projectState.Resolved.Nodes) || drifted[0] != "meta" {
+		t.Fatalf("TCG runtime drift = %v, %v", drifted, err)
+	}
+}
+
+func TestSelectRuntimeCompatibilityPolicy(t *testing.T) {
+	t.Parallel()
+	darwinArm, _ := platform.Resolve("darwin", "arm64")
+	linuxAMD, _ := platform.Resolve("linux", "amd64")
+	linuxArm, _ := platform.Resolve("linux", "arm64")
+	cases := []struct {
+		name     string
+		host     platform.Profile
+		resolved spec.Resolved
+		arch     string
+		accel    string
+		wantErr  bool
+	}{
+		{name: "primary native", host: darwinArm, resolved: spec.Resolved{Image: "el9"}, arch: "arm64", accel: "hvf"},
+		{name: "EL8 Apple TCG", host: darwinArm, resolved: spec.Resolved{Image: "el8"}, arch: "arm64", accel: "tcg,thread=multi"},
+		{name: "explicit foreign arch", host: darwinArm, resolved: spec.Resolved{Image: "el9", Arch: "amd64"}, arch: "amd64", accel: "tcg,thread=single"},
+		{name: "EL8 Linux native", host: linuxAMD, resolved: spec.Resolved{Image: "el8"}, arch: "amd64", accel: "kvm"},
+		{name: "EL8 Linux arm native", host: linuxArm, resolved: spec.Resolved{Image: "el8"}, arch: "arm64", accel: "kvm"},
+		{name: "explicit arm on Linux amd64", host: linuxAMD, resolved: spec.Resolved{Image: "el9", Arch: "arm64"}, arch: "arm64", accel: "tcg,thread=multi"},
+		{name: "EL7 Linux native", host: linuxAMD, resolved: spec.Resolved{Image: "el7"}, arch: "amd64", accel: "kvm"},
+		{name: "EL7 Linux arm refused", host: linuxArm, resolved: spec.Resolved{Image: "el7", Arch: "amd64"}, wantErr: true},
+		{name: "EL7 macOS refused", host: darwinArm, resolved: spec.Resolved{Image: "el7", Arch: "amd64"}, wantErr: true},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			decision, err := selectRuntime(test.host, test.resolved)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("select runtime = %#v, %v", decision, err)
+			}
+			if err == nil && (decision.Profile.Arch != test.arch || decision.Profile.Accelerator != test.accel) {
+				t.Fatalf("select runtime = %#v", decision)
+			}
+		})
 	}
 }

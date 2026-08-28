@@ -31,7 +31,8 @@ import (
 	"github.com/pgsty/farrow/internal/vm"
 )
 
-type ImageResolver func(context.Context, string) (image.Entry, string, image.Metadata, error)
+type ImageResolver func(context.Context, string, string) (image.Entry, string, image.Metadata, error)
+type ImageLookup func(context.Context, string, string) (image.Entry, error)
 type HostPreflightFunc func(context.Context, platform.Profile, *spec.PrivateNetwork, execx.Runner) (Backend, error)
 type NetworkPreflightFunc func(context.Context, platform.Profile, netpreflight.Request, execx.Runner) netpreflight.Report
 
@@ -116,11 +117,13 @@ type Manager struct {
 	NoWait              bool
 	RollbackFailed      bool
 	ResolveImage        ImageResolver
+	LookupImage         ImageLookup
 	HostPreflight       HostPreflightFunc
 	NetworkPreflight    NetworkPreflightFunc
 	ForceDarwinFD       bool
 	NativeProfile       func() (platform.Profile, error)
 	LookPath            func(string) (string, error)
+	FirmwareLookup      func(platform.Profile, string) (platform.Firmware, error)
 	DialSSHAddress      func(string, string) (net.Conn, error)
 	Nodes               []string
 	allowPartialDestroy bool
@@ -136,9 +139,38 @@ type NodeStatus struct {
 	Address   string      `json:"address"`
 	State     state.Phase `json:"state"`
 	Runtime   string      `json:"runtime"`
+	GuestArch string      `json:"guest_arch,omitempty"`
+	Accel     string      `json:"accelerator,omitempty"`
 	SSHHost   string      `json:"ssh_host"`
 	SSHPort   uint16      `json:"ssh_port"`
 	ProcessID int         `json:"pid,omitempty"`
+}
+
+func invocationOption(arguments []string, name string) string {
+	for index := 0; index+1 < len(arguments); index++ {
+		if arguments[index] == name {
+			return arguments[index+1]
+		}
+	}
+	return ""
+}
+
+func invocationGuestArch(binary string, arguments []string) string {
+	switch filepath.Base(binary) {
+	case "qemu-system-aarch64":
+		return "arm64"
+	case "qemu-system-x86_64":
+		return "amd64"
+	}
+	machine := strings.SplitN(invocationOption(arguments, "-machine"), ",", 2)[0]
+	switch machine {
+	case "virt":
+		return "arm64"
+	case "q35":
+		return "amd64"
+	default:
+		return ""
+	}
 }
 
 type Status struct {
@@ -187,6 +219,13 @@ func (m Manager) lookPath(name string) (string, error) {
 		return m.LookPath(name)
 	}
 	return exec.LookPath(name)
+}
+
+func (m Manager) firmwareForBoot(profile platform.Profile, boot string) (platform.Firmware, error) {
+	if m.FirmwareLookup != nil {
+		return m.FirmwareLookup(profile, boot)
+	}
+	return platform.FindFirmwareForBoot(profile, boot)
 }
 
 func (m Manager) readyTimeout(resolved spec.Resolved) (time.Duration, error) {
@@ -492,33 +531,51 @@ func (m Manager) imageDataRoot() (string, error) {
 	return state.ResolveDataRoot()
 }
 
-func (m Manager) resolveOneImage(ctx context.Context, alias string) (image.Entry, string, image.Metadata, error) {
+func (m Manager) resolveOneImage(ctx context.Context, alias, arch string) (image.Entry, string, image.Metadata, error) {
 	if m.ResolveImage != nil {
-		return m.ResolveImage(ctx, alias)
+		return m.ResolveImage(ctx, alias, arch)
 	}
 	dataRoot, err := m.imageDataRoot()
 	if err != nil {
 		return image.Entry{}, "", image.Metadata{}, err
 	}
 	resolver := image.Service{DataRoot: dataRoot, Repository: m.Repository, Runner: m.Runner, Progress: m.Progress}
-	return resolver.Resolve(ctx, alias)
+	return resolver.ResolveArch(ctx, alias, arch)
+}
+
+func (m Manager) lookupOneImage(ctx context.Context, alias, arch string) (image.Entry, error) {
+	if m.LookupImage != nil {
+		return m.LookupImage(ctx, alias, arch)
+	}
+	dataRoot, err := m.imageDataRoot()
+	if err != nil {
+		return image.Entry{}, err
+	}
+	resolver := image.Service{DataRoot: dataRoot, Repository: m.Repository, Runner: m.Runner, Progress: m.Progress}
+	return resolver.LookupArch(ctx, alias, arch)
+}
+
+func mergeBootMode(profile platform.Profile, current, alias, candidate string) (string, error) {
+	if current != "" && current != candidate {
+		return "", errors.New("private v1 does not mix BIOS and UEFI images in one deployment")
+	}
+	if profile.RequiresUEFI && candidate != "uefi" {
+		return "", &CapabilityError{Reason: fmt.Sprintf("image %s boot=%s is incompatible with required UEFI guest architecture", alias, candidate)}
+	}
+	return candidate, nil
 }
 
 func (m Manager) resolveBases(ctx context.Context, profile platform.Profile, value spec.Resolved) (map[string]BaseImage, string, error) {
 	bases := make(map[string]BaseImage)
 	boot := ""
 	for _, alias := range aliases(value) {
-		entry, path, metadata, err := m.resolveOneImage(ctx, alias)
+		entry, path, metadata, err := m.resolveOneImage(ctx, alias, profile.Arch)
 		if err != nil {
 			return nil, "", err
 		}
-		if boot == "" {
-			boot = entry.Boot
-		} else if boot != entry.Boot {
-			return nil, "", errors.New("private v1 does not mix BIOS and UEFI images in one deployment")
-		}
-		if profile.RequiresUEFI && entry.Boot != "uefi" {
-			return nil, "", &CapabilityError{Reason: fmt.Sprintf("image %s boot=%s is incompatible with required UEFI host profile", alias, entry.Boot)}
+		boot, err = mergeBootMode(profile, boot, alias, entry.Boot)
+		if err != nil {
+			return nil, "", err
 		}
 		bases[entry.Alias] = BaseImage{Path: path, Alias: entry.Alias, Release: entry.Release, Digest: entry.SHA256, VirtualSize: metadata.VirtualSize}
 		if alias != entry.Alias {
@@ -526,6 +583,114 @@ func (m Manager) resolveBases(ctx context.Context, profile platform.Profile, val
 		}
 	}
 	return bases, boot, nil
+}
+
+func (m Manager) resolveBootMode(ctx context.Context, profile platform.Profile, value spec.Resolved) (string, error) {
+	boot := ""
+	for _, alias := range aliases(value) {
+		entry, err := m.lookupOneImage(ctx, alias, profile.Arch)
+		if err != nil {
+			return "", err
+		}
+		boot, err = mergeBootMode(profile, boot, alias, entry.Boot)
+		if err != nil {
+			return "", err
+		}
+	}
+	return boot, nil
+}
+
+type runtimeDecision struct {
+	Profile platform.Profile
+	Reason  string
+}
+
+func selectRuntime(host platform.Profile, value spec.Resolved) (runtimeDecision, error) {
+	guestArch, err := platform.GuestArch(value.Arch, host.Arch)
+	if err != nil {
+		return runtimeDecision{}, err
+	}
+	imageNames := aliases(value)
+	if len(imageNames) == 0 && value.Image != "" {
+		imageNames = []string{value.Image}
+	}
+	hasEL7, hasEL8 := false, false
+	for _, name := range imageNames {
+		canonical := image.CanonicalAlias(name)
+		hasEL7 = hasEL7 || canonical == "el7"
+		hasEL8 = hasEL8 || canonical == "el8"
+	}
+	if hasEL7 && (host.OS != "linux" || host.Arch != "amd64" || guestArch != "amd64") {
+		return runtimeDecision{}, &CapabilityError{Reason: "EL7 is deliberately supported only on native Linux/amd64"}
+	}
+	emulate := guestArch != host.Arch
+	reason := "guest architecture differs from the host"
+	if hasEL8 && host.OS == "darwin" && host.Arch == "arm64" && guestArch == "arm64" {
+		emulate = true
+		reason = "stock EL8 arm64 requires a 64K translation granule unavailable through Apple HVF"
+	}
+	profile, err := platform.ResolveRuntime(host, guestArch, emulate)
+	if err != nil {
+		return runtimeDecision{}, err
+	}
+	if !profile.Emulated {
+		reason = ""
+	}
+	return runtimeDecision{Profile: profile, Reason: reason}, nil
+}
+
+func (m Manager) resolveRuntimeQEMU(ctx context.Context, profile platform.Profile, backend Backend) (string, Backend, error) {
+	qemuPath, err := platform.FindQEMUBinary(profile, m.lookPath)
+	if err != nil {
+		return "", Backend{}, err
+	}
+	if !profile.Emulated {
+		return qemuPath, backend, nil
+	}
+	result, err := m.runner().Run(ctx, qemuPath, "--version")
+	if err != nil {
+		return "", Backend{}, fmt.Errorf("probe selected QEMU version: %w", err)
+	}
+	version, err := platform.ValidateQEMUVersion(profile, string(result.Stdout)+string(result.Stderr))
+	if err != nil {
+		return "", Backend{}, err
+	}
+	if profile.OS != "darwin" {
+		return qemuPath, backend, nil
+	}
+	if backend.DarwinSocket == "" {
+		return "", Backend{}, errors.New("selected Darwin QEMU runtime has no socket_vmnet backend")
+	}
+	help, err := m.runner().Run(ctx, qemuPath, "-machine", "none", "-netdev", "help")
+	if err != nil {
+		return "", Backend{}, fmt.Errorf("probe selected QEMU network backend: %w", err)
+	}
+	selected := selectDarwinBackend(version, string(help.Stdout)+string(help.Stderr), backend.DarwinSocket)
+	selected.NetworkCIDR, selected.HostAddress, selected.DHCPEnd = backend.NetworkCIDR, backend.HostAddress, backend.DHCPEnd
+	if backend.DarwinUseFD {
+		selected.DarwinUseFD = true
+		selected.ReconnectMS = 0
+	}
+	return qemuPath, selected, nil
+}
+
+func runtimeDriftNodes(store state.Store, resolved spec.Resolved, expected platform.Profile) ([]string, error) {
+	drifted := make([]string, 0)
+	for _, definition := range resolved.Nodes {
+		node, err := store.ReadNode(definition.Name)
+		if missingPath(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		arch := invocationGuestArch(node.Invocation.Binary, node.Invocation.Args)
+		accel := invocationOption(node.Invocation.Args, "-accel")
+		if arch != expected.Arch || accel != expected.Accelerator {
+			drifted = append(drifted, definition.Name)
+		}
+	}
+	return drifted, nil
 }
 
 func (m Manager) ensureKeys(ctx context.Context, projectValue Deployment) (string, string, string, error) {
@@ -626,7 +791,11 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 		}
 		nodes = append(nodes, node)
 		if _, include := selectedSet[node.Node]; include {
-			result.Nodes = append(result.Nodes, NodeStatus{Name: node.Node, Address: definition.Address, State: node.Phase, Runtime: runtimeState, SSHHost: "127.0.0.1", SSHPort: node.SSHPort, ProcessID: node.Process.PID})
+			result.Nodes = append(result.Nodes, NodeStatus{
+				Name: node.Node, Address: definition.Address, State: node.Phase, Runtime: runtimeState,
+				GuestArch: invocationGuestArch(node.Invocation.Binary, node.Invocation.Args), Accel: invocationOption(node.Invocation.Args, "-accel"),
+				SSHHost: "127.0.0.1", SSHPort: node.SSHPort, ProcessID: node.Process.PID,
+			})
 		}
 	}
 	for _, node := range convergenceCandidates {
@@ -827,11 +996,11 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err := validateResolved(requested); err != nil {
 		return Status{}, err
 	}
-	profile, err := m.nativeProfile()
+	hostProfile, err := m.nativeProfile()
 	if err != nil {
 		return Status{}, err
 	}
-	backend, err := m.preflight(ctx, profile, requested)
+	backend, err := m.preflight(ctx, hostProfile, requested)
 	if err != nil {
 		return Status{}, err
 	}
@@ -896,9 +1065,9 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 					m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected private nodes are already running", Done: true})
 					return status, nil
 				}
-				return m.startExisting(ctx, existing, persisted, profile, backend)
+				return m.startExisting(ctx, existing, persisted, hostProfile, backend)
 			} else if allRunnable {
-				return m.startExisting(ctx, existing, persisted, profile, backend)
+				return m.startExisting(ctx, existing, persisted, hostProfile, backend)
 			} else {
 				return Status{}, errors.New("the deployment has mixed node phases; run `farrow status` to converge interrupted transitions, then retry")
 			}
@@ -909,12 +1078,28 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err := m.ensureSSHAddressesUnused(nodesWithoutCommittedState(requested.Nodes)); err != nil {
 		return Status{}, err
 	}
-	m.report("image-resolve", fmt.Sprintf("Resolving images for %d private node(s)", len(selected)))
-	bases, boot, err := m.resolveBases(ctx, profile, requested)
+	runtime, err := selectRuntime(hostProfile, requested)
 	if err != nil {
 		return Status{}, err
 	}
-	qemuPath, err := platform.FindQEMUBinary(profile, m.lookPath)
+	if hadExistingState && reusableProject != nil {
+		drifted, driftErr := runtimeDriftNodes(state.Store{Root: reusableProject.Root}, requested, runtime.Profile)
+		if driftErr != nil {
+			return Status{}, driftErr
+		}
+		if len(drifted) != 0 {
+			return Status{}, fmt.Errorf("%w: existing node runtime differs for %s", ErrRecreateRequired, strings.Join(drifted, ", "))
+		}
+	}
+	if runtime.Profile.Emulated {
+		m.report("runtime", fmt.Sprintf("Using TCG compatibility mode for %s: %s; functional results are valid, performance results are not", runtime.Profile.Arch, runtime.Reason))
+	}
+	qemuPath, backend, err := m.resolveRuntimeQEMU(ctx, runtime.Profile, backend)
+	if err != nil {
+		return Status{}, err
+	}
+	m.report("image-resolve", fmt.Sprintf("Resolving images for %d node(s)", len(selected)))
+	bases, boot, err := m.resolveBases(ctx, runtime.Profile, requested)
 	if err != nil {
 		return Status{}, err
 	}
@@ -1000,13 +1185,13 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err != nil {
 		return Status{}, err
 	}
-	firmware, err := platform.FindFirmwareForBoot(profile, boot)
+	firmware, err := m.firmwareForBoot(runtime.Profile, boot)
 	if err != nil {
 		return Status{}, err
 	}
 	prepare := PrepareConfig{
 		ProjectRoot: projectValue.Root, Resolved: resolved, SpecHash: specHash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds, Bases: bases, SSHPorts: sshPorts,
-		Profile: profile, QEMUBinary: qemuPath, Firmware: firmware, UseUEFI: boot == "uefi", Backend: backend,
+		Profile: runtime.Profile, QEMUBinary: qemuPath, Firmware: firmware, UseUEFI: boot == "uefi", Backend: backend,
 		Disks: disk.Manager{QEMUImg: qemuImg, Runner: m.runner()},
 	}
 	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: resolved.SSHUser}, Project: projectValue, Shares: shareSourcesByNode(resolved), SSHPath: sshPath, PrivateKey: privateKeyPath, KnownHosts: knownHosts, DarwinSocket: backend.DarwinSocket}
@@ -1031,7 +1216,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 		if err != nil {
 			return Status{}, err
 		}
-		return m.startExisting(ctx, projectValue, projectState, profile, backend)
+		return m.startExisting(ctx, projectValue, projectState, hostProfile, backend)
 	}
 	return m.statusFor(ctx, projectValue, "created and started the deployment")
 }
@@ -1259,8 +1444,25 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	if err != nil {
 		return LifecyclePlan{}, err
 	}
-	if _, err := m.preflight(ctx, profile, requested); err != nil {
+	runtime, err := selectRuntime(profile, requested)
+	if err != nil {
 		return LifecyclePlan{}, err
+	}
+	backend, err := m.preflight(ctx, profile, requested)
+	if err != nil {
+		return LifecyclePlan{}, err
+	}
+	if runtime.Profile.Emulated {
+		if _, _, err := m.resolveRuntimeQEMU(ctx, runtime.Profile, backend); err != nil {
+			return LifecyclePlan{}, err
+		}
+		boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)
+		if err != nil {
+			return LifecyclePlan{}, err
+		}
+		if _, err := m.firmwareForBoot(runtime.Profile, boot); err != nil {
+			return LifecyclePlan{}, err
+		}
 	}
 	hash, err := spec.Hash(requested)
 	if err != nil {
@@ -1304,6 +1506,13 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	result.Create = append([]string(nil), diff.Create...)
 	result.Recreate = append([]string(nil), diff.Changed...)
 	result.Missing = append([]string(nil), diff.Removed...)
+	runtimeDrift, err := runtimeDriftNodes(store, requested, runtime.Profile)
+	if err != nil {
+		return LifecyclePlan{}, err
+	}
+	if len(runtimeDrift) != 0 && len(m.Nodes) != 0 {
+		return LifecyclePlan{}, fmt.Errorf("%w: runtime changes require whole-deployment plan without node selectors", ErrRecreateRequired)
+	}
 	switch {
 	case diff.EnvelopeChanged:
 		result.Action = "recreate"
@@ -1315,6 +1524,11 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	case len(diff.Changed) != 0:
 		result.Action = "recreate"
 		result.Destructive = true
+		return result, nil
+	case len(runtimeDrift) != 0:
+		result.Action = "recreate"
+		result.Destructive = true
+		result.Recreate = append([]string(nil), runtimeDrift...)
 		return result, nil
 	case len(diff.Create) != 0:
 		result.Action = "converge"

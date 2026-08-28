@@ -40,6 +40,9 @@ func validateResolved(value spec.Resolved) error {
 	if value.Schema != 1 || value.Network != "private" || value.Private == nil || len(value.Nodes) < 1 || len(value.Nodes) > 20 || value.SSHUser == "" {
 		return errors.New("private plan requires schema 1, private network, and 1..20 nodes")
 	}
+	if value.Arch != "" && value.Arch != "amd64" && value.Arch != "arm64" {
+		return fmt.Errorf("unsupported resolved guest architecture %q", value.Arch)
+	}
 	if _, err := value.SSHWaitTimeout(); err != nil {
 		return err
 	}

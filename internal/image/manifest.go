@@ -26,6 +26,36 @@ type Entry struct {
 // Farrow has owner-provided image hosting/signing custody and every alias/arch
 // has passed the required native smoke matrix.
 var embedded = map[string]Entry{
+	"el7/amd64": {
+		Alias: "el7", Release: "7.9.20221112.0", Arch: "amd64",
+		Upstream:     "https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2",
+		SHA256:       "284aab2b23d91318f169ff464bce4d53404a15a0618ceb34562838c59af4adea",
+		Format:       "qcow2",
+		ArtifactSize: 902889472,
+		VirtualSize:  8589934592,
+		SourceUser:   "centos", Boot: "bios", Status: "deprecated",
+		Provenance: "CentOS Linux 7 GenericCloud 2211 archive; distribution-owned immutable artifact retained for EOL compatibility testing only; SHA-256, qcow2 metadata, MBR boot layout, and 4K XFS root verified 2026-08-28",
+	},
+	"el8/amd64": {
+		Alias: "el8", Release: "8.10.20240528.0", Arch: "amd64",
+		Upstream:     "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base-8.10-20240528.0.x86_64.qcow2",
+		SHA256:       "e56066c58606191e96184de9a9183a3af33c59bcbd8740d8b10ca054a7a89c14",
+		Format:       "qcow2",
+		ArtifactSize: 2065760256,
+		VirtualSize:  10737418240,
+		SourceUser:   "rocky", Boot: "uefi", Status: "testing",
+		Provenance: "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; native Linux/amd64 lifecycle passed and qcow2 metadata verified 2026-08-24",
+	},
+	"el8/arm64": {
+		Alias: "el8", Release: "8.10.20240528.0", Arch: "arm64",
+		Upstream:     "https://dl.rockylinux.org/pub/rocky/8/images/aarch64/Rocky-8-GenericCloud-Base-8.10-20240528.0.aarch64.qcow2",
+		SHA256:       "946b5b9845aa5e3ed98f1bc6ee9873201712a2aef01b87731aed16857e0ca13f",
+		Format:       "qcow2",
+		ArtifactSize: 1925644288,
+		VirtualSize:  10737418240,
+		SourceUser:   "rocky", Boot: "uefi", Status: "testing",
+		Provenance: "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; qcow2 metadata verified and TCG booted on Darwin/arm64 2026-08-28; Apple HVF is incompatible with its 64K-granule kernel",
+	},
 	"el9/amd64": {
 		Alias: "el9", Release: "9.8.20260525.0", Arch: "amd64",
 		Upstream:     "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
@@ -169,6 +199,8 @@ var embedded = map[string]Entry{
 }
 
 var aliases = map[string]string{
+	"c7": "el7", "centos7": "el7", "centos79": "el7",
+	"rocky8": "el8",
 	"rocky9": "el9", "rocky": "el9",
 	"rocky10":  "el10",
 	"debian12": "d12", "bookworm": "d12",
@@ -179,7 +211,19 @@ var aliases = map[string]string{
 	"ubuntu26": "u26", "ubuntu2604": "u26", "resolute": "u26",
 }
 
-var formalAliases = []string{"el9", "el10", "d12", "d13", "u22", "u24", "u26"}
+var formalAliases = []string{"el7", "el8", "el9", "el10", "d12", "d13", "u22", "u24", "u26"}
+
+var formalMatrix = []string{
+	"el7/amd64",
+	"el8/amd64", "el8/arm64",
+	"el9/amd64", "el9/arm64",
+	"el10/amd64", "el10/arm64",
+	"d12/amd64", "d12/arm64",
+	"d13/amd64", "d13/arm64",
+	"u22/amd64", "u22/arm64",
+	"u24/amd64", "u24/arm64",
+	"u26/amd64", "u26/arm64",
+}
 
 func CanonicalAlias(alias string) string {
 	alias = strings.ToLower(strings.TrimSpace(alias))
@@ -190,11 +234,9 @@ func CanonicalAlias(alias string) string {
 }
 
 func EmbeddedEntries() []Entry {
-	entries := make([]Entry, 0, len(formalAliases)*2)
-	for _, alias := range formalAliases {
-		for _, arch := range []string{"amd64", "arm64"} {
-			entries = append(entries, withRepositoryFile(embedded[alias+"/"+arch]))
-		}
+	entries := make([]Entry, 0, len(formalMatrix))
+	for _, key := range formalMatrix {
+		entries = append(entries, withRepositoryFile(embedded[key]))
 	}
 	return entries
 }

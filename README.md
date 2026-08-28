@@ -98,7 +98,10 @@ inventory is honored.
 | RHEL / Rocky / AlmaLinux / Oracle 9 | NetworkManager backend implemented; native replay pending |
 | macOS amd64, Linux arm64 | built and unit-tested; not regularly exercised natively |
 
-Native acceleration is mandatory. Farrow never silently falls back to TCG.
+Native acceleration remains the normal path. Farrow selects TCG only when the
+user explicitly chooses a foreign `vm_arch`, or for a catalogued incompatibility
+such as the stock EL8 arm64 64K kernel on Apple Silicon. The selected runtime is
+visible in status output; arbitrary native failures never trigger a retry.
 
 ## Documentation
 
@@ -122,7 +125,8 @@ Native acceleration is mandatory. Farrow never silently falls back to TCG.
 - QEMU runs as your user. `setup` may use the system package manager through
   sudo to install missing dependencies; after that, only host-network
   installation and the optional `/etc/hosts` publisher cross the root boundary.
-- Native architecture and native acceleration only; no silent emulation.
+- Native architecture and acceleration by default; bounded, visible TCG only
+  for explicit architecture choice or a known image/host incompatibility.
 - Destructive operations are ownership- and path-bounded. Ambiguous state is
   preserved and reported. Removing a node from the configuration never
   destroys it.

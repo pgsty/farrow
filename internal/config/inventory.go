@@ -43,7 +43,7 @@ const (
 )
 
 var knownVMKeys = map[string]struct{}{
-	"vm_skip": {}, "vm_image": {}, "vm_cpu": {}, "vm_mem": {},
+	"vm_skip": {}, "vm_image": {}, "vm_arch": {}, "vm_cpu": {}, "vm_mem": {},
 	"vm_disk": {}, "vm_disks": {}, "vm_alias": {}, "vm_shares": {},
 }
 
@@ -569,6 +569,9 @@ func ParseInventory(data []byte) (File, error) {
 
 	sshUser := ""
 	sshUserOwner := ""
+	vmArch := ""
+	vmArchOwner := ""
+	vmArchHosts := 0
 	controlIndex := -1
 	for _, host := range managed {
 		name, err := host.nodeName()
@@ -584,6 +587,21 @@ func ParseInventory(data []byte) (File, error) {
 			imageAlias = value
 		}
 		node.Image = image.CanonicalAlias(imageAlias)
+
+		if value, found, err := host.lookupString("vm_arch"); err != nil {
+			return File{}, err
+		} else if found {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if value != "native" && value != "amd64" && value != "arm64" {
+				return File{}, fmt.Errorf("host %s vm_arch must be native, amd64, or arm64", host.address)
+			}
+			vmArchHosts++
+			if vmArchHosts == 1 {
+				vmArch, vmArchOwner = value, host.address
+			} else if vmArch != value {
+				return File{}, fmt.Errorf("hosts %s and %s declare different vm_arch values; farrow uses one guest architecture per deployment", vmArchOwner, host.address)
+			}
+		}
 
 		node.CPUs = defaultCPU
 		if value, found, err := host.lookupInt("vm_cpu"); err != nil {
@@ -656,6 +674,12 @@ func ParseInventory(data []byte) (File, error) {
 	}
 	file.Nodes[controlIndex].Control = true
 	file.SSH.User = sshUser
+	if vmArchHosts != 0 {
+		if vmArchHosts != len(managed) {
+			return File{}, errors.New("vm_arch must resolve on every managed host; define it once in all.vars")
+		}
+		file.Arch = vmArch
+	}
 
 	if err := file.Validate(); err != nil {
 		return File{}, err

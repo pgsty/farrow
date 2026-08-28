@@ -70,6 +70,21 @@ nodes:
 	}
 }
 
+func TestExplicitGuestArchitectureResolves(t *testing.T) {
+	t.Parallel()
+	file, err := decodeTestFile("version: 1\nname: arch\narch: arm64\nnetwork: {mode: private}\nnodes: [{name: meta, address: 10.10.10.10}]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := file.Resolve()
+	if err != nil || resolved.Arch != "arm64" {
+		t.Fatalf("resolved arch = %q, %v", resolved.Arch, err)
+	}
+	if _, err := decodeTestFile("version: 1\nname: arch\narch: s390x\nnetwork: {mode: private}\nnodes: [{name: meta, address: 10.10.10.10}]\n"); err == nil {
+		t.Fatal("unsupported architecture accepted")
+	}
+}
+
 func TestStrictYAMLRejectsUnknownAndMultipleDocuments(t *testing.T) {
 	t.Parallel()
 	base := "version: 1\nname: quick\nnetwork: {mode: private}\nnodes: [{name: meta, address: 10.10.10.10}]\n"

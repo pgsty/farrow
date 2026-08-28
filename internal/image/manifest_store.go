@@ -147,17 +147,24 @@ func embeddedState() (ManifestState, error) {
 	return ManifestState{Schema: ManifestStateSchema, HighestVersion: EmbeddedManifestVersion, Active: "embedded", ActiveVersion: EmbeddedManifestVersion, ActiveDigest: manifestDigest(data), Source: "embedded", AcceptedAt: embeddedManifestGeneratedAt}, nil
 }
 
-// currentBaselineState upgrades a prior binary's embedded pointer in memory.
-// A signed active manifest is never silently replaced; reset remains the
-// explicit recovery path when its high-water mark predates this binary.
+// currentBaselineState advances any state whose accepted high-water mark
+// predates this binary. The compiled catalog is trusted, strictly newer data;
+// older signed files remain on disk and can be selected again only through an
+// explicit, high-water-aware sync.
 func currentBaselineState(state ManifestState) (ManifestState, error) {
 	if state.HighestVersion < EmbeddedManifestVersion {
-		if state.Active != "embedded" || state.Source != "embedded" {
-			return ManifestState{}, errors.New("active manifest state predates the embedded baseline; explicit reset is required")
-		}
 		return embeddedState()
 	}
 	if state.Active != "embedded" {
+		if state.ActiveVersion == EmbeddedManifestVersion {
+			data, err := EmbeddedCatalogBytes()
+			if err != nil {
+				return ManifestState{}, err
+			}
+			if state.ActiveDigest != manifestDigest(data) {
+				return ManifestState{}, errors.New("signed manifest equivocation with embedded baseline")
+			}
+		}
 		return state, nil
 	}
 	data, err := EmbeddedCatalogBytes()

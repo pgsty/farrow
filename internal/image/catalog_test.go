@@ -23,7 +23,7 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 	if entry.SHA256 != "aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476" || entry.ArtifactSize != 618417664 || entry.VirtualSize != 3758096384 || catalog.Version != EmbeddedManifestVersion || !catalog.GeneratedAt.Equal(embeddedManifestGeneratedAt) {
 		t.Fatalf("entry/catalog = %#v %#v", entry, catalog)
 	}
-	if len(catalog.Images) != 7 || len(catalog.Entries()) != 14 {
+	if len(catalog.Images) != 9 || len(catalog.Entries()) != 17 {
 		t.Fatalf("embedded catalog matrix = %d images / %d entries", len(catalog.Images), len(catalog.Entries()))
 	}
 	for _, alias := range formalAliases {
@@ -33,7 +33,11 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 			continue
 		}
 		for _, arches := range record.Releases {
-			if len(arches) != 2 {
+			want := 2
+			if alias == "el7" {
+				want = 1
+			}
+			if len(arches) != want {
 				t.Errorf("catalog image %s architectures = %v", alias, arches)
 			}
 		}

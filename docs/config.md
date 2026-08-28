@@ -42,6 +42,7 @@ all:
   vars:
     admin_ip: 10.10.10.10          # control node
     vm_image: u24                  # lab-wide default
+    # vm_arch: arm64               # optional deployment-wide guest architecture
   children:
     infra:
       hosts:
@@ -73,6 +74,7 @@ over the built-in default.
 |---|---|---|
 | `vm_skip` | `false` | `true`: this host is not managed by Farrow (a real server in a mixed inventory) |
 | `vm_image` | `u24` | guest image alias (`farrow image list`) |
+| `vm_arch` | `native` | deployment-wide guest architecture: `native`, `amd64`, or `arm64`; define in `all.vars` |
 | `vm_cpu` | `2` | CPU cores |
 | `vm_mem` | `4096` | memory; integer = MiB, or a string with units (`"8GiB"`) |
 | `vm_disk` | `64` | root disk; integer = GiB, grown on first boot, never shrunk |
@@ -93,6 +95,8 @@ Whitelisted Pigsty variables Farrow honors:
 Group-inheritance is deliberately simpler than Ansible's: deeper groups
 override shallower ones, and two sibling groups supplying **different** values
 for the same variable on the same host is an error — set it at host level.
+`vm_arch` is intentionally stricter: when present it must resolve on every
+managed host and to one value, because a deployment has one QEMU architecture.
 
 ### `vm_disks`
 

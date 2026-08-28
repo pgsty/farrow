@@ -240,8 +240,8 @@ func (f *File) Validate() error {
 	if !dnsLabel.MatchString(f.Name) {
 		return fmt.Errorf("invalid project name %q", f.Name)
 	}
-	if f.Arch != "native" {
-		return errors.New("v1 supports arch: native only")
+	if f.Arch != "native" && f.Arch != "amd64" && f.Arch != "arm64" {
+		return errors.New("arch must be native, amd64, or arm64")
 	}
 	if f.Network.Mode != "private" {
 		return fmt.Errorf("unsupported network mode %q", f.Network.Mode)
@@ -394,6 +394,9 @@ func (f File) Resolve() (spec.Resolved, error) {
 		return spec.Resolved{}, err
 	}
 	resolved := spec.Resolved{Schema: 1, Name: f.Name, Image: f.Defaults.Image, Network: f.Network.Mode, SSHUser: f.SSH.User, SSHWaitTimeoutNS: int64(f.SSH.WaitTimeout)}
+	if f.Arch != "native" {
+		resolved.Arch = f.Arch
+	}
 	if f.Network.Mode == "private" {
 		resolved.Private = &spec.PrivateNetwork{CIDR: f.Network.CIDR, HostAddress: f.Network.HostAddress, DHCPEnd: f.Network.DHCPEnd}
 	}

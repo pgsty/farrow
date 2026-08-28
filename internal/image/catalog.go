@@ -16,11 +16,11 @@ import (
 
 const (
 	ManifestSchema          = 2
-	EmbeddedManifestVersion = 2026082601
+	EmbeddedManifestVersion = 2026082801
 	MaxManifestSize         = 1 << 20
 )
 
-var embeddedManifestGeneratedAt = time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
+var embeddedManifestGeneratedAt = time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
 
 func reservedLocalNamespace(value string) bool {
 	return value == "local" || strings.HasPrefix(value, localAliasPrefix)

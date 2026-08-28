@@ -115,6 +115,7 @@ type PrivateNetwork struct {
 type Resolved struct {
 	Schema           int             `json:"schema"`
 	Name             string          `json:"name"`
+	Arch             string          `json:"arch,omitempty"`
 	Image            string          `json:"image"`
 	Network          string          `json:"network"`
 	Private          *PrivateNetwork `json:"private,omitempty"`

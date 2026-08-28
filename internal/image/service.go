@@ -36,6 +36,32 @@ type Info struct {
 	Metadata *Metadata     `json:"metadata,omitempty"`
 }
 
+// LookupArch resolves catalog metadata for an explicit architecture without
+// refreshing the catalog or downloading an artifact. It is used by read-only
+// lifecycle planning to validate boot firmware before reporting feasibility.
+func (s Service) LookupArch(ctx context.Context, alias, arch string) (Entry, error) {
+	if arch != "amd64" && arch != "arm64" {
+		return Entry{}, fmt.Errorf("unsupported image architecture %q", arch)
+	}
+	catalog, _, repository, err := s.catalog(ctx, false)
+	if err != nil {
+		return Entry{}, err
+	}
+	entry, entryErr := catalog.Entry(alias, arch)
+	if entryErr == nil {
+		return entry, nil
+	}
+	store, err := s.store(repository)
+	if err != nil {
+		return Entry{}, err
+	}
+	localEntry, _, _, localErr := store.ResolveLocalAlias(ctx, alias, arch)
+	if localErr != nil {
+		return Entry{}, entryErr
+	}
+	return localEntry, nil
+}
+
 func (s Service) runner() execx.Runner {
 	if s.Runner != nil {
 		return s.Runner
@@ -145,6 +171,16 @@ func (s Service) Info(ctx context.Context, alias string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+	return s.InfoArch(ctx, alias, profile.Arch)
+}
+
+// InfoArch reports one alias for an explicit guest architecture without
+// downloading it. Lifecycle warnings use this path so they describe the
+// artifact that was actually selected rather than the host architecture.
+func (s Service) InfoArch(ctx context.Context, alias, arch string) (Info, error) {
+	if arch != "amd64" && arch != "arm64" {
+		return Info{}, fmt.Errorf("unsupported image architecture %q", arch)
+	}
 	catalog, manifestState, repository, err := s.catalog(ctx, true)
 	if err != nil {
 		return Info{}, err
@@ -153,9 +189,9 @@ func (s Service) Info(ctx context.Context, alias string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	entry, entryErr := catalog.Entry(alias, profile.Arch)
+	entry, entryErr := catalog.Entry(alias, arch)
 	if entryErr != nil {
-		localEntry, path, metadata, localErr := store.ResolveLocalAlias(ctx, alias, profile.Arch)
+		localEntry, path, metadata, localErr := store.ResolveLocalAlias(ctx, alias, arch)
 		if localErr != nil {
 			return Info{}, entryErr
 		}
@@ -207,7 +243,17 @@ func (s Service) Resolve(ctx context.Context, alias string) (Entry, string, Meta
 	if err != nil {
 		return Entry{}, "", Metadata{}, err
 	}
-	s.report("image-resolve", fmt.Sprintf("Resolving image %s for %s", alias, profile.Arch))
+	return s.ResolveArch(ctx, alias, profile.Arch)
+}
+
+// ResolveArch is the lifecycle seam for an explicit deployment guest
+// architecture. It does not infer acceleration or fall back to another
+// artifact architecture.
+func (s Service) ResolveArch(ctx context.Context, alias, arch string) (Entry, string, Metadata, error) {
+	if arch != "amd64" && arch != "arm64" {
+		return Entry{}, "", Metadata{}, fmt.Errorf("unsupported image architecture %q", arch)
+	}
+	s.report("image-resolve", fmt.Sprintf("Resolving image %s for %s", alias, arch))
 	catalog, _, repository, err := s.catalog(ctx, true)
 	if err != nil {
 		return Entry{}, "", Metadata{}, err
@@ -216,14 +262,14 @@ func (s Service) Resolve(ctx context.Context, alias string) (Entry, string, Meta
 	if err != nil {
 		return Entry{}, "", Metadata{}, err
 	}
-	entry, entryErr := catalog.Entry(alias, profile.Arch)
+	entry, entryErr := catalog.Entry(alias, arch)
 	if entryErr != nil {
 		s.report("image-resolve", fmt.Sprintf("Looking for local image alias %s", alias))
-		localEntry, path, metadata, localErr := store.ResolveLocalAlias(ctx, alias, profile.Arch)
+		localEntry, path, metadata, localErr := store.ResolveLocalAlias(ctx, alias, arch)
 		if localErr != nil {
 			return Entry{}, "", Metadata{}, entryErr
 		}
-		s.Progress.Report(activity.Event{Phase: "image-ready", Message: fmt.Sprintf("Using local image %s (%s)", localEntry.Alias, profile.Arch), Done: true})
+		s.Progress.Report(activity.Event{Phase: "image-ready", Message: fmt.Sprintf("Using local image %s (%s)", localEntry.Alias, arch), Done: true})
 		return localEntry, path, metadata, nil
 	}
 	path, metadata, err := store.Pull(ctx, entry)

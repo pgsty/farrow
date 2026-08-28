@@ -67,6 +67,28 @@ func TestBuildLinuxAMD64DoesNotAddFirmware(t *testing.T) {
 	}
 }
 
+func TestBuildUsesSelectedTCGRuntimeVerbatim(t *testing.T) {
+	t.Parallel()
+	host, _ := platform.Resolve("darwin", "arm64")
+	runtimeProfile, err := platform.ResolveRuntime(host, "amd64", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := testConfig(t, "darwin", "amd64")
+	config.Profile = runtimeProfile
+	config.Binary = "/opt/homebrew/bin/qemu-system-x86_64"
+	invocation, err := Build(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(invocation.Args, " ")
+	for _, want := range []string{"-machine q35", "-accel tcg,thread=single", "-cpu max"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("TCG invocation missing %q: %s", want, joined)
+		}
+	}
+}
+
 func TestBuildRejectsIPv6ForwardBindBeforeArgvConstruction(t *testing.T) {
 	t.Parallel()
 	for _, bind := range []string{"::1", "2001:db8::1", "::ffff:127.0.0.1"} {

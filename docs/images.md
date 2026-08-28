@@ -14,7 +14,8 @@ For `farrow image pull u24` or the first `farrow up`, Farrow:
 2. fetches `catalog.json` and `catalog.json.minisig` from `--repo`,
    `FARROW_REPO`, or the release-build default repository, in that order;
 3. verifies the catalog signature and selects the family's explicit `default`
-   release for the native architecture;
+   release; standalone `image pull` uses the native architecture, while the
+   lifecycle uses `vm_arch` when it is set;
 4. reuses the readable local file only when its size, SHA-256, and qcow2
    structure match the catalog;
 5. otherwise downloads `<repo>/<file>`, then tries the immutable upstream URL
@@ -26,10 +27,12 @@ rate, and ETA. The following checksum pass reports its own byte progress, so a
 large local verification is distinguishable from a stalled download. URL
 credentials, query strings, and fragments are not printed.
 
-The default repository (`image.DefaultRepositoryURL`) is the development
-host `https://m0/farrow` until the public image host goes live; the release
-build will override it with Go `-ldflags -X`. A failed default sync falls
-back to the embedded catalog, so machines that cannot reach it lose nothing.
+The default repository (`image.DefaultRepositoryURL`) is currently the
+development host `https://m0/farrow`. The variable can be changed at build
+time with Go `-ldflags -X`, but the checked-in development and GoReleaser
+configurations do not currently override it. A failed default sync falls back
+to the embedded catalog, so machines that cannot reach it still have the
+bootstrap catalog and its immutable upstream URLs.
 Overrides:
 
 ```bash
@@ -52,6 +55,8 @@ farrow image info u24
 
 | Alias | Distribution | Release | Virtual size | Source user |
 |---|---|---|---:|---|
+| `el7` | CentOS Linux 7 (EOL) | 7.9 / 2211 | 8 GiB | `centos` |
+| `el8` | Rocky Linux 8 | 8.10 | 10 GiB | `rocky` |
 | `el9` | Rocky Linux 9 | 9.8 | 10 GiB | `rocky` |
 | `el10` | Rocky Linux 10 | 10.2 | 10 GiB | `rocky` |
 | `d12` | Debian 12 bookworm | 20260806 | 3 GiB | `debian` |
@@ -60,12 +65,27 @@ farrow image info u24
 | `u24` | Ubuntu 24.04 noble | 20260801 | 3.5 GiB | `ubuntu` |
 | `u26` | Ubuntu 26.04 resolute | 20260731 | 3.5 GiB | `ubuntu` |
 
-Each alias has one `amd64` and one `arm64` artifact — 14 entries in total, all
-UEFI. Farrow only ever resolves the artifact matching your native architecture.
+The catalog has 17 entries. EL7 is amd64-only and boots with legacy BIOS; every
+other alias has amd64 and arm64 UEFI artifacts. Farrow resolves the requested
+deployment architecture exactly and never substitutes another artifact.
 
-All entries are currently marked `testing`. Nothing is published as `supported`
-until self-hosted artifacts and their key custody are in place, so every start
-prints a warning naming the image and its status:
+EL7 is deliberately supported only on native Linux/amd64 and is marked
+`deprecated`: it is for compatibility tests, not an Internet-facing system.
+EL8 remains native on matching-architecture Linux hosts (and its amd64 image
+remains native on macOS amd64). Its stock arm64 64K-granule kernel cannot use
+Apple HVF, so Farrow automatically selects explicit TCG compatibility mode for
+that one host/image combination. TCG results are functionally meaningful but
+must not be used as performance evidence.
+
+Homebrew's macOS QEMU package supplies both system emulators. Linux dependency
+setup remains host-native to avoid pulling a second emulator stack for normal
+users; an explicit foreign `vm_arch` on Linux therefore requires the matching
+`qemu-system-*` binary and UEFI firmware to be installed separately. A missing
+emulator or firmware is a preflight error, never a silent architecture change.
+
+EL7 is `deprecated`; all other entries are currently `testing`. Nothing is
+published as `supported` until self-hosted artifacts and their key custody are
+in place, so every start prints a warning naming the image and its status:
 
 ```text
 warning: image u24/amd64 (20260801.0.0) has status testing, not supported;
@@ -163,12 +183,12 @@ Imports go through the same qcow2 safety checks as downloads.
 
 ## Catalog updates and new images
 
-The catalog is versioned and signed with minisign. The verifier embeds the
-active and standby production public keys (`internal/image/keys.go`); the
-private keys live on the repository build host under
-`/data/repo/keys/farrow/`, and `tools/catalogsign` performs key generation,
-signing, and verification with the exact implementation the CLI verifies
-with:
+The catalog is versioned and signed with minisign. Ordinary builds already
+embed the active and standby public verification keys
+(`internal/image/keys.go`). The private keys are not in this repository; the
+current operator location is `m0:/data/repo/keys/farrow`, and
+`tools/catalogsign` performs key generation, signing, and verification with
+the same minisign implementation the CLI uses:
 
 ```bash
 CATALOGSIGN_PASSWORD=... go run ./tools/catalogsign sign \
@@ -192,6 +212,17 @@ Old versioned files remain addressable until no published catalog or deployed
 lab needs them. A new family is the same process plus one new top-level
 directory and one catalog object; aliases remain local to that object.
 
+For the bootstrap matrix compiled into this repository, export the exact JSON
+instead of reconstructing it by hand:
+
+```bash
+go run ./tools/catalogexport /absolute/new/catalog.json
+```
+
+When the public catalog uses the same version as the embedded baseline, its
+bytes must be exactly this export; different bytes at one version are rejected
+as equivocation.
+
 Manual catalog activation is also available:
 
 ```bash
@@ -207,10 +238,12 @@ strings, or fragments; use an authenticated repository transport outside the
 URL when private distribution is required. `reset-manifest` restores the
 bootstrap catalog compiled into the binary.
 
-Until active and standby production key custody is assigned, ordinary builds
-contain no external catalog roots: the embedded catalog and `reset-manifest`
-remain available, while `sync` fails closed. Tests inject development roots
-explicitly; those roots are not compiled into release binaries.
+`sync` therefore works only for catalogs signed by one of those two embedded
+keys and fails closed for unknown keys, equivocation, or a version below the
+high-water mark (unless an operator explicitly allows a downgrade).
+`reset-manifest` restores the embedded bootstrap catalog but does not erase
+the recorded high-water mark. Development test roots are injected only by
+tests and are not compiled into release binaries.
 
 Application release signatures and image catalog keys are separate trust
 domains. Signing a release never authorizes a catalog, and vice versa.

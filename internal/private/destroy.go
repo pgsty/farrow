@@ -10,7 +10,6 @@ import (
 
 	"github.com/pgsty/farrow/internal/fsutil"
 	"github.com/pgsty/farrow/internal/persistent"
-	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
@@ -369,7 +368,23 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err != nil {
 		return Status{}, err
 	}
-	if _, err := m.preflight(ctx, profile, requested); err != nil {
+	backend, err := m.preflight(ctx, profile, requested)
+	if err != nil {
+		return Status{}, err
+	}
+	runtime, err := selectRuntime(profile, requested)
+	if err != nil {
+		return Status{}, err
+	}
+	qemuPath, _, err := m.resolveRuntimeQEMU(ctx, runtime.Profile, backend)
+	if err != nil {
+		return Status{}, err
+	}
+	_, boot, err := m.resolveBases(ctx, runtime.Profile, requested)
+	if err != nil {
+		return Status{}, err
+	}
+	if _, err := m.firmwareForBoot(runtime.Profile, boot); err != nil {
 		return Status{}, err
 	}
 	destroyManager := m
@@ -381,6 +396,15 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err != nil {
 		return Status{}, err
 	}
+	if len(m.Nodes) != 0 {
+		drifted, driftErr := runtimeDriftNodes(state.Store{Root: projectValue.Root}, requested, runtime.Profile)
+		if driftErr != nil {
+			return Status{}, driftErr
+		}
+		if len(drifted) != 0 {
+			return Status{}, fmt.Errorf("%w: runtime changes require whole-deployment recreate without node selectors", ErrRecreateRequired)
+		}
+	}
 	if err := selectedShareSources(projectValue, requested, requestedSelection); err != nil {
 		return Status{}, err
 	}
@@ -389,10 +413,6 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 		return Status{}, err
 	}
 	if selectedHasShares(requested, requestedSelection) {
-		qemuPath, err := platform.FindQEMUBinary(profile, m.lookPath)
-		if err != nil {
-			return Status{}, err
-		}
 		shareBinaries = append(shareBinaries, qemuPath)
 	}
 	if err := validatePrivateShareDeviceHelp(ctx, m.runner(), shareBinaries); err != nil {

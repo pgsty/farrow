@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +90,20 @@ func TestTestingImageWarningIsProminent(t *testing.T) {
 	printImageStatusWarning(&output, image.Entry{Alias: "u24", Status: "supported"})
 	if output.Len() != 0 {
 		t.Fatalf("supported image warning = %q", output.String())
+	}
+	printImageStatusWarning(&output, image.Entry{Alias: "el7", Arch: "amd64", Release: "7.9", Status: "deprecated"})
+	if !strings.Contains(output.String(), "deprecated and EOL") {
+		t.Fatalf("deprecated image warning = %q", output.String())
+	}
+}
+
+func TestLifecycleImageArchUsesResolvedGuest(t *testing.T) {
+	t.Parallel()
+	if got := lifecycleImageArch(spec.Resolved{Arch: "amd64"}); got != "amd64" {
+		t.Fatalf("explicit lifecycle image arch = %q", got)
+	}
+	if got := lifecycleImageArch(spec.Resolved{}); got != runtime.GOARCH {
+		t.Fatalf("native lifecycle image arch = %q, want %q", got, runtime.GOARCH)
 	}
 }
 
@@ -219,8 +234,10 @@ func TestImageListJSON(t *testing.T) {
 			t.Errorf("image JSON missing %q: %s", want, stdout.String())
 		}
 	}
-	if strings.Contains(stdout.String(), `"alias": "el8"`) {
-		t.Fatalf("retired EL8 alias remained in the embedded image list: %s", stdout.String())
+	for _, want := range []string{`"alias": "el7"`, `"alias": "el8"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("restored compatibility image %s missing from embedded image list: %s", want, stdout.String())
+		}
 	}
 }
 

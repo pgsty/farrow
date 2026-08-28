@@ -63,6 +63,11 @@ func TestDiffResolvedClassifiesNodeChanges(t *testing.T) {
 	if !diffResolved(persisted, envelope, stateful).EnvelopeChanged {
 		t.Fatalf("SSH user change must be an envelope change")
 	}
+	architecture := diffFixtureResolved()
+	architecture.Arch = "amd64"
+	if !diffResolved(persisted, architecture, stateful).EnvelopeChanged {
+		t.Fatalf("guest architecture change must be an envelope change")
+	}
 }
 
 func diffTestProject(t *testing.T) Deployment {

@@ -130,6 +130,62 @@ all:
 	}
 }
 
+func TestParseInventoryDeploymentArchitecture(t *testing.T) {
+	file := mustParseInventory(t, `
+all:
+  vars: { vm_arch: amd64 }
+  children:
+    nodes:
+      hosts:
+        10.10.10.10: {}
+        10.10.10.11: {}
+`)
+	resolved, err := file.Resolve()
+	if err != nil || file.Arch != "amd64" || resolved.Arch != "amd64" {
+		t.Fatalf("resolved architecture = file:%q resolved:%q err:%v", file.Arch, resolved.Arch, err)
+	}
+	for name, text := range map[string]string{
+		"empty": `
+all:
+  vars: { vm_arch: "" }
+  children:
+    nodes:
+      hosts:
+        10.10.10.10: {}
+`,
+		"unsupported": `
+all:
+  vars: { vm_arch: s390x }
+  children:
+    nodes:
+      hosts:
+        10.10.10.10: {}
+`,
+		"partial": `
+all:
+  children:
+    nodes:
+      hosts:
+        10.10.10.10: { vm_arch: amd64 }
+        10.10.10.11: {}
+`,
+		"mixed": `
+all:
+  children:
+    nodes:
+      hosts:
+        10.10.10.10: { vm_arch: amd64 }
+        10.10.10.11: { vm_arch: arm64 }
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseInventory([]byte(text)); err == nil || !strings.Contains(err.Error(), "vm_arch") {
+				t.Fatalf("invalid vm_arch inventory error = %v", err)
+			}
+		})
+	}
+}
+
 func TestParseInventoryExplicitEmptyDisksOverrides(t *testing.T) {
 	file := mustParseInventory(t, `
 all:

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -321,5 +322,87 @@ func TestPriorEmbeddedStateAdvancesToNewBinaryBaseline(t *testing.T) {
 	}
 	if reset.ActiveVersion != EmbeddedManifestVersion || reset.HighestVersion != EmbeddedManifestVersion {
 		t.Fatalf("persisted reset = %#v", reset)
+	}
+}
+
+func TestPriorSignedStateAdvancesAndCanSyncCurrentBaseline(t *testing.T) {
+	t.Parallel()
+	manager := ManifestManager{DataRoot: filepath.Join(t.TempDir(), "data"), Keys: testManifestRoots(t)}
+	if err := manager.validate(); err != nil {
+		t.Fatal(err)
+	}
+	key := privateKey(t, developmentPrivateRoot1)
+	priorPath := signedCatalog(t, t.TempDir(), EmbeddedManifestVersion-1, key, nil)
+	priorData, err := os.ReadFile(priorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorSignature, err := os.ReadFile(priorPath + ".minisig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorCatalog, err := strictCatalog(priorData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID, err := verifyManifest(manager.Keys, priorData, priorSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorDigest := manifestDigest(priorData)
+	priorName := fmt.Sprintf("v%d-%s.json", priorCatalog.Version, priorDigest)
+	if err := os.WriteFile(filepath.Join(manager.versions(), priorName), priorData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manager.versions(), priorName)+".minisig", priorSignature, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	priorState := ManifestState{
+		Schema: ManifestStateSchema, HighestVersion: priorCatalog.Version,
+		Active: priorName, ActiveVersion: priorCatalog.Version, ActiveDigest: priorDigest,
+		KeyID: strings.ToUpper(strconv.FormatUint(keyID, 16)), Source: "local:" + priorPath,
+		AcceptedAt: time.Now().UTC(),
+	}
+	stateData, err := json.Marshal(priorState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manager.statePath(), append(stateData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog, state, err := manager.Current()
+	if err != nil || catalog.Version != EmbeddedManifestVersion || state.Active != "embedded" || state.HighestVersion != EmbeddedManifestVersion {
+		t.Fatalf("advanced signed baseline = %#v %#v %v", catalog, state, err)
+	}
+
+	currentData, err := EmbeddedCatalogBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentPath := filepath.Join(t.TempDir(), "catalog.json")
+	if err := os.WriteFile(currentPath, currentData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	currentSignature := minisign.SignWithComments(key, currentData, "timestamp:1787894400", "farrow current baseline")
+	if err := os.WriteFile(currentPath+".minisig", currentSignature, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := manager.Sync(context.Background(), currentPath, false)
+	if err != nil || accepted.ActiveVersion != EmbeddedManifestVersion || accepted.Active == "embedded" || accepted.HighestVersion != EmbeddedManifestVersion {
+		t.Fatalf("sync current signed baseline = %#v %v", accepted, err)
+	}
+}
+
+func TestSignedBaselineVersionRejectsDifferentBytes(t *testing.T) {
+	t.Parallel()
+	state := ManifestState{
+		Schema: ManifestStateSchema, HighestVersion: EmbeddedManifestVersion,
+		Active:        fmt.Sprintf("v%d-%s.json", EmbeddedManifestVersion, strings.Repeat("f", 64)),
+		ActiveVersion: EmbeddedManifestVersion, ActiveDigest: strings.Repeat("f", 64),
+		KeyID: "E87A2D0D9F49B03B", Source: "local:/fixture/catalog.json", AcceptedAt: time.Now().UTC(),
+	}
+	if _, err := currentBaselineState(state); err == nil || !strings.Contains(err.Error(), "equivocation") {
+		t.Fatalf("signed baseline equivocation error = %v", err)
 	}
 }

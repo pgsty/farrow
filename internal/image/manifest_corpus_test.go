@@ -16,7 +16,7 @@ import (
 
 // TestIntegrationEmbeddedMatchesLocalCorpus independently checks the embedded
 // constants against a locally retained source corpus. It is opt-in because it
-// hashes all 14 in-scope artifacts and requires qemu-img; release evidence should run:
+// hashes all 17 in-scope artifacts and requires qemu-img; release evidence should run:
 //
 // FARROW_IMAGE_CORPUS=/path/to/image go test ./internal/image -run LocalCorpus
 func TestIntegrationEmbeddedMatchesLocalCorpus(t *testing.T) {
@@ -60,23 +60,23 @@ func TestIntegrationEmbeddedMatchesLocalCorpus(t *testing.T) {
 		formal[alias] = true
 	}
 	checked := 0
-	seen := make(map[string]bool, 14)
+	seen := make(map[string]bool, len(formalMatrix))
 	for _, row := range rows[1:] {
 		alias := row[header["alias"]]
 		if !formal[alias] {
 			continue
 		}
 		arch := row[header["arch"]]
+		entry, entryErr := embeddedEntry(alias, arch)
+		if entryErr != nil || entry.Release != row[header["version"]] {
+			continue
+		}
 		key := alias + "/" + arch
 		if seen[key] {
 			t.Fatalf("manifest.tsv has duplicate formal row %s", key)
 		}
 		seen[key] = true
 		t.Run(key, func(t *testing.T) {
-			entry, err := embeddedEntry(alias, arch)
-			if err != nil {
-				t.Fatal(err)
-			}
 			if entry.Release != row[header["version"]] || entry.Upstream != row[header["source_url"]] {
 				t.Fatalf("embedded source identity differs from manifest.tsv: %#v", entry)
 			}
@@ -128,15 +128,12 @@ func TestIntegrationEmbeddedMatchesLocalCorpus(t *testing.T) {
 		})
 		checked++
 	}
-	if checked != 14 {
-		t.Fatalf("checked %d formal corpus rows, want 14", checked)
+	if checked != len(formalMatrix) {
+		t.Fatalf("checked %d formal corpus rows, want %d", checked, len(formalMatrix))
 	}
-	for _, alias := range formalAliases {
-		for _, arch := range []string{"amd64", "arm64"} {
-			key := alias + "/" + arch
-			if !seen[key] {
-				t.Errorf("manifest.tsv is missing formal row %s", key)
-			}
+	for _, key := range formalMatrix {
+		if !seen[key] {
+			t.Errorf("manifest.tsv is missing formal row %s", key)
 		}
 	}
 }

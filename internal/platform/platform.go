@@ -42,6 +42,7 @@ type Profile struct {
 	CPU          string
 	MinimumQEMU  Version
 	RequiresUEFI bool
+	Emulated     bool
 }
 
 var profiles = map[string]Profile{
@@ -88,7 +89,7 @@ func FindQEMUBinary(profile Profile, lookup func(string) (string, error)) (strin
 }
 
 func allowsRHELQEMUFallback(profile Profile) bool {
-	if profile.OS != "linux" {
+	if profile.OS != "linux" || profile.Emulated {
 		return false
 	}
 	switch profile.Arch {
@@ -139,7 +140,7 @@ func FindFirmware(profile Profile) (Firmware, error) {
 func FindFirmwareForBoot(profile Profile, boot string) (Firmware, error) {
 	if boot == "bios" {
 		if profile.RequiresUEFI {
-			return Firmware{}, fmt.Errorf("BIOS image is incompatible with required UEFI host profile %s/%s", profile.OS, profile.Arch)
+			return Firmware{}, fmt.Errorf("BIOS image is incompatible with required UEFI guest architecture %s", profile.Arch)
 		}
 		return Firmware{}, nil
 	}
@@ -152,6 +153,52 @@ func FindFirmwareForBoot(profile Profile, boot string) (Firmware, error) {
 		}
 	}
 	return Firmware{}, fmt.Errorf("no matching UEFI code/vars pair found for %s/%s", profile.OS, profile.Arch)
+}
+
+// GuestArch resolves the deployment-wide guest architecture. An empty value or
+// "native" follows the host; explicit values are stable desired state.
+func GuestArch(requested, hostArch string) (string, error) {
+	if requested == "" || requested == "native" {
+		requested = hostArch
+	}
+	if requested != "amd64" && requested != "arm64" {
+		return "", fmt.Errorf("unsupported guest architecture %q", requested)
+	}
+	return requested, nil
+}
+
+// ResolveRuntime selects the QEMU system binary and machine for one guest
+// architecture on a supported host. Acceleration is policy, never a user
+// supplied QEMU argument: native uses the host hypervisor, while compatibility
+// mode uses multi-threaded TCG with QEMU's max CPU model.
+func ResolveRuntime(host Profile, guestArch string, emulate bool) (Profile, error) {
+	guestArch, err := GuestArch(guestArch, host.Arch)
+	if err != nil {
+		return Profile{}, err
+	}
+	if guestArch == host.Arch && !emulate {
+		return host, nil
+	}
+	accelerator := "tcg,thread=multi"
+	if host.Arch == "arm64" && guestArch == "amd64" {
+		// A single translation thread preserves x86's stronger memory-ordering
+		// contract on an Arm host. Compatibility takes precedence over throughput.
+		accelerator = "tcg,thread=single"
+	}
+	runtimeProfile := Profile{
+		OS: host.OS, Arch: guestArch, Tier: Tier2,
+		Accelerator: accelerator, CPU: "max",
+		MinimumQEMU: host.MinimumQEMU, RequiresUEFI: guestArch == "arm64", Emulated: true,
+	}
+	switch guestArch {
+	case "amd64":
+		runtimeProfile.QEMUBinary = "qemu-system-x86_64"
+		runtimeProfile.Machine = "q35"
+	case "arm64":
+		runtimeProfile.QEMUBinary = "qemu-system-aarch64"
+		runtimeProfile.Machine = "virt"
+	}
+	return runtimeProfile, nil
 }
 
 // Native resolves the current process host.
