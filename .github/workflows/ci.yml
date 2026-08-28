@@ -35,7 +35,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go install honnef.co/go/tools/cmd/staticcheck@v0.8.0
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
       - name: Install pinned GoReleaser
         uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
@@ -51,15 +52,16 @@ jobs:
           source packaging/toolchain.env
           test "$(go env GOVERSION)" = "go${FARROW_GO_VERSION}"
           test "$(staticcheck -version | awk '{print $2; exit}')" = "${FARROW_STATICCHECK_VERSION}"
+          test "$(govulncheck -version | awk -F'@v' '/^Scanner:/ {print $2; exit}')" = "${FARROW_GOVULNCHECK_VERSION}"
           test "$(goreleaser --version | awk '/GitVersion:/ {sub(/^v/, "", $2); print $2; exit}')" = "${FARROW_GORELEASER_VERSION}"
 
       - name: Source hygiene and module integrity
         shell: bash
         run: |
           set -euo pipefail
-          test -z "$(find cmd internal profiles -type f -name '*.go' -print0 | xargs -0 gofmt -l)"
+          test -z "$(find cmd internal tools -type f -name '*.go' -print0 | xargs -0 gofmt -l)"
           git diff --check
-          go mod verify
+          make module-check shell-check
 
       - name: Unit tests
         run: make test
@@ -73,14 +75,14 @@ jobs:
       - name: Staticcheck
         run: make staticcheck
 
+      - name: Reachable vulnerability scan
+        run: make vuln
+
       - name: License inventory
         run: make license-check
 
-      - name: Profile and Pigsty wrapper contracts
-        run: make profile-contract wrapper-test
-
       - name: Image pipeline simulated and offline boundaries
-        run: ./tests/image-pipeline-test.sh
+        run: make image-pipeline-test
 
       - name: Cross-build supported targets
         run: make cross-check

@@ -91,6 +91,11 @@ git -C "${repo}" diff --cached --quiet || {
   printf 'local release refuses untracked files; commit, ignore, or move them first\n' >&2
   exit 1
 }
+origin=$(git -C "${repo}" remote get-url origin 2>/dev/null || true)
+[[ -n ${origin} ]] || {
+  printf 'local release requires an origin remote for GoReleaser repository metadata\n' >&2
+  exit 1
+}
 
 commit=$(git -C "${repo}" rev-parse --verify HEAD)
 tag_commit=$(git -C "${repo}" rev-parse --verify "refs/tags/v${version}^{commit}" 2>/dev/null || true)

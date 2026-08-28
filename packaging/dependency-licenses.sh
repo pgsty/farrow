@@ -25,7 +25,7 @@ license_source_mappings() {
     'golang.org-x-crypto-LICENSE|module|golang.org/x/crypto@v0.52.0/LICENSE' \
     'golang.org-x-sys-LICENSE|module|golang.org/x/sys@v0.45.0/LICENSE' \
     'golang.org-x-term-LICENSE|module|golang.org/x/term@v0.43.0/LICENSE' \
-    'golang.org-x-text-LICENSE|module|golang.org/x/text@v0.37.0/LICENSE'
+    'golang.org-x-text-LICENSE|module|golang.org/x/text@v0.39.0/LICENSE'
 }
 
 license_names() {

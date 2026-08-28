@@ -27,7 +27,7 @@ expected=$(printf '%s\n' \
   $'golang.org/x/crypto\tv0.52.0' \
   $'golang.org/x/sys\tv0.45.0' \
   $'golang.org/x/term\tv0.43.0' \
-  $'golang.org/x/text\tv0.37.0' | LC_ALL=C sort)
+  $'golang.org/x/text\tv0.39.0' | LC_ALL=C sort)
 actual=$(
   cd "${repo}"
   go list -deps -json ./cmd/farrow ./cmd/farrow-hosts-helper |

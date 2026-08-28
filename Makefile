@@ -1,7 +1,7 @@
 .PHONY: build \
 	build-darwin-amd64 build-darwin-arm64 build-linux-amd64 build-linux-arm64 \
 	amd arm cross build-cross cross-check \
-	test race vet staticcheck vuln check license-check \
+	module-check shell-check test race vet staticcheck vuln check license-check \
 	image-pipeline-test image-pipeline-native-test \
 	release-check release-snapshot release-local gr-check gr-snapshot gr-local release-dev
 
@@ -41,6 +41,13 @@ staticcheck:
 vuln:
 	govulncheck ./...
 
+module-check:
+	go mod verify
+	go mod tidy -diff
+
+shell-check:
+	@for script in packaging/*.sh packaging/image-pipeline/*.sh tests/*.sh; do bash -n "$$script"; done
+
 cross: build-darwin-amd64 build-darwin-arm64 build-linux-amd64 build-linux-arm64
 
 build-cross: cross
@@ -51,7 +58,7 @@ cross-check:
 	GOOS=linux GOARCH=amd64 go build ./...
 	GOOS=linux GOARCH=arm64 go build ./...
 
-check: test race vet staticcheck vuln cross-check image-pipeline-test license-check
+check: module-check shell-check test race vet staticcheck vuln cross-check image-pipeline-test license-check
 
 license-check:
 	./packaging/verify-licenses.sh
