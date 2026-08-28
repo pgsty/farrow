@@ -7,6 +7,10 @@ project_name: farrow
 # a successful snapshot when a different review name is requested.
 dist: .goreleaser-dist
 
+before:
+  hooks:
+    - ./packaging/dependency-licenses.sh stage .goreleaser-licenses
+
 builds:
   - id: farrow
     main: ./cmd/farrow
@@ -120,10 +124,8 @@ archives:
           mtime: "{{ .Env.FARROW_BUILD_DATE }}"
       - src: README.md
         info: *archive_file_info
-      - src: THIRD_PARTY_LICENSES.md
-        info: *archive_file_info
-      - src: third_party/licenses/*
-        dst: third_party/licenses
+      - src: .goreleaser-licenses/*
+        dst: licenses
         info: *archive_file_info
 
 nfpms:

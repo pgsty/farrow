@@ -62,9 +62,8 @@ install -d -m 0755 \
   "${package_content}/usr/bin" \
   "${package_content}/usr/share/doc/farrow/licenses"
 install -m 0755 "${helper}" "${package_content}/opt/farrow/libexec/farrow-hosts-helper"
-install -m 0644 "${repo}/LICENSE" "${repo}/README.md" "${repo}/THIRD_PARTY_LICENSES.md" \
-  "${package_content}/usr/share/doc/farrow/"
-install -m 0644 "${repo}"/third_party/licenses/* "${package_content}/usr/share/doc/farrow/licenses/"
+install -m 0644 "${repo}/LICENSE" "${repo}/README.md" "${package_content}/usr/share/doc/farrow/"
+"${repo}/packaging/dependency-licenses.sh" stage "${package_content}/usr/share/doc/farrow/licenses"
 
 binary_sha=$(shasum -a 256 "${binary}" | awk '{print $1}')
 helper_sha=$(shasum -a 256 "${helper}" | awk '{print $1}')

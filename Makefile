@@ -68,12 +68,13 @@ release-check:
 
 release-snapshot: release-check
 	@normalized=$$(printf '%s' "$(SNAPSHOT_DIST)" | tr '[:upper:]' '[:lower:]'); \
-	  case "$$normalized" in ""|*/*|.goreleaser-dist|.goreleaser-companion) \
+	  case "$$normalized" in ""|*/*|.goreleaser-dist|.goreleaser-companion|.goreleaser-licenses) \
 	  echo "SNAPSHOT_DIST must be one new directory directly under the repository root" >&2; exit 2 ;; \
 	  esac
 	@test ! -e "$(SNAPSHOT_DIST)" || { echo "refuse existing snapshot output: $(SNAPSHOT_DIST)" >&2; exit 1; }
 	@test ! -e .goreleaser-dist || { echo "refuse existing GoReleaser work output: .goreleaser-dist" >&2; exit 1; }
 	@test ! -e .goreleaser-companion -a ! -L .goreleaser-companion || { echo "refuse existing GoReleaser companion stage: .goreleaser-companion" >&2; exit 1; }
+	@test ! -e .goreleaser-licenses -a ! -L .goreleaser-licenses || { echo "refuse existing generated license stage: .goreleaser-licenses" >&2; exit 1; }
 	@set -e; \
 	  source_epoch=$${SOURCE_DATE_EPOCH:-$$(git show -s --format=%ct HEAD)}; \
 	  test -n "$$source_epoch" || { echo "cannot resolve SOURCE_DATE_EPOCH" >&2; exit 2; }; \
@@ -86,6 +87,7 @@ release-snapshot: release-check
 	    ./packaging/goreleaser-companion.sh cleanup darwin arm64 .goreleaser-companion; \
 	    ./packaging/goreleaser-companion.sh cleanup linux amd64 .goreleaser-companion; \
 	    ./packaging/goreleaser-companion.sh cleanup linux arm64 .goreleaser-companion; \
+	    ./packaging/dependency-licenses.sh clean .goreleaser-licenses; \
 	    if test -e .goreleaser-dist; then rm -rf -- .goreleaser-dist; fi; \
 	  }; \
 	  trap cleanup_companions EXIT; \

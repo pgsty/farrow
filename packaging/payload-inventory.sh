@@ -1,24 +1,18 @@
 #!/usr/bin/env bash
 
-# Shared release payload inventories. Keep the fixed application files here;
-# dependency licenses are derived from the license corpus that is validated by
-# verify-licenses.sh and copied wholesale by every packaging path.
+# Shared release payload inventories. Dependency license names come from the
+# single staging script used by every packaging path.
 
 farrow_common_payload_paths() {
   local repo=$1
   local licenses
-  [[ -d ${repo}/third_party/licenses ]] || {
-    printf 'missing dependency license directory: %s\n' "${repo}/third_party/licenses" >&2
-    return 1
-  }
-  licenses=$(find "${repo}/third_party/licenses" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort) || return
+  licenses=$("${repo}/packaging/dependency-licenses.sh" list) || return
   printf '%s\n' \
     LICENSE \
-    README.md \
-    THIRD_PARTY_LICENSES.md
+    README.md
   if [[ -n ${licenses} ]]; then
     while IFS= read -r license; do
-      printf 'third_party/licenses/%s\n' "${license##*/}"
+      printf 'licenses/%s\n' "${license}"
     done <<<"${licenses}"
   fi
 }
@@ -43,10 +37,10 @@ farrow_linux_package_payload_paths() {
   common=$(farrow_common_payload_paths "${repo}") || return
   while IFS= read -r path; do
     case ${path} in
-      LICENSE|README.md|THIRD_PARTY_LICENSES.md)
+      LICENSE|README.md)
         printf 'usr/share/doc/farrow/%s\n' "${path}"
         ;;
-      third_party/licenses/*)
+      licenses/*)
         printf 'usr/share/doc/farrow/licenses/%s\n' "${path##*/}"
         ;;
       *)

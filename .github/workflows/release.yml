@@ -89,6 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap './packaging/dependency-licenses.sh clean .goreleaser-licenses' EXIT
           goreleaser release --clean --skip=publish --parallelism 1
           ./packaging/verify-goreleaser.sh "${FARROW_VERSION}" "${GITHUB_WORKSPACE}/.goreleaser-dist"
           ./packaging/verify-linux-packages.sh \

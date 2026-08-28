@@ -42,6 +42,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+license_corpus=${temporary}/license-corpus
+"${repo}/packaging/dependency-licenses.sh" stage "${license_corpus}"
+
 commit=${FARROW_COMMIT:-uncommitted}
 [[ ${commit} == uncommitted || ${commit} =~ ^[0-9a-f]{40}$ ]] || { printf 'FARROW_COMMIT must be a full lowercase hash or uncommitted\n' >&2; exit 2; }
 if date -u -r "${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ >/dev/null 2>&1; then
@@ -92,9 +95,8 @@ for arch in amd64 arm64; do
     '{schema:1,version:$version,commit:$commit,date:$date,source_date_epoch:$source_epoch,goos:"linux",goarch:$arch,cgo_enabled:false,farrow_sha256:$binary_sha,hosts_helper_sha256:$helper_sha}' \
     >"${build_info}"
   chmod 0644 "${build_info}"
-  install -m 0644 "${repo}/LICENSE" "${repo}/README.md" "${repo}/THIRD_PARTY_LICENSES.md" \
-    "${payload}/usr/share/doc/farrow/"
-  install -m 0644 "${repo}"/third_party/licenses/* "${payload}/usr/share/doc/farrow/licenses/"
+  install -m 0644 "${repo}/LICENSE" "${repo}/README.md" "${payload}/usr/share/doc/farrow/"
+  install -m 0644 "${license_corpus}"/* "${payload}/usr/share/doc/farrow/licenses/"
 
   for format in deb rpm; do
     package=${output}/farrow_${version}_linux_${arch}.${format}

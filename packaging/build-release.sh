@@ -77,6 +77,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+license_corpus=${temporary}/license-corpus
+"${repo}/packaging/dependency-licenses.sh" stage "${license_corpus}"
+
 ldflags="-buildid= -s -w -X github.com/pgsty/farrow/internal/version.Version=${version} -X github.com/pgsty/farrow/internal/version.Commit=${commit} -X github.com/pgsty/farrow/internal/version.Date=${build_date}"
 targets=(darwin/arm64 darwin/amd64 linux/amd64 linux/arm64)
 
@@ -85,7 +88,7 @@ for target in "${targets[@]}"; do
   goarch=${target#*/}
   root_name="farrow_${version}_${goos}_${goarch}"
   stage="${temporary}/${root_name}"
-  install -d -m 0755 "${stage}/bin" "${stage}/third_party/licenses"
+  install -d -m 0755 "${stage}/bin" "${stage}/licenses"
   (
     cd "${repo}"
     CGO_ENABLED=0 GOOS=${goos} GOARCH=${goarch} GOFLAGS=-mod=readonly \
@@ -99,8 +102,8 @@ for target in "${targets[@]}"; do
   )
   chmod 0755 "${stage}/bin/farrow" "${stage}/bin/farrow-hosts-helper"
   farrow_sha=$(shasum -a 256 "${stage}/bin/farrow" | awk '{print $1}')
-  install -m 0644 "${repo}/LICENSE" "${repo}/README.md" "${repo}/THIRD_PARTY_LICENSES.md" "${stage}/"
-  install -m 0644 "${repo}"/third_party/licenses/* "${stage}/third_party/licenses/"
+  install -m 0644 "${repo}/LICENSE" "${repo}/README.md" "${stage}/"
+  install -m 0644 "${license_corpus}"/* "${stage}/licenses/"
   cat >"${stage}/BUILD_INFO.json" <<EOF
 {
   "schema": 1,

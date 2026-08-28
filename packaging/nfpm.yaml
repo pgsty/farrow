@@ -85,9 +85,6 @@ contents:
   - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/README.md
     expand: true
     dst: /usr/share/doc/farrow/README.md
-  - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/THIRD_PARTY_LICENSES.md
-    expand: true
-    dst: /usr/share/doc/farrow/THIRD_PARTY_LICENSES.md
   - src: ${FARROW_PAYLOAD}/usr/share/doc/farrow/licenses/*
     expand: true
     dst: /usr/share/doc/farrow/licenses/

@@ -33,8 +33,9 @@ case ${output} in
 esac
 goreleaser_dist=${repo}/.goreleaser-dist
 companion_stage=${repo}/.goreleaser-companion
+license_stage=${repo}/.goreleaser-licenses
 case ${output} in
-  "${goreleaser_dist}"|"${goreleaser_dist}"/*|"${companion_stage}"|"${companion_stage}"/*)
+  "${goreleaser_dist}"|"${goreleaser_dist}"/*|"${companion_stage}"|"${companion_stage}"/*|"${license_stage}"|"${license_stage}"/*)
     printf 'release output must be outside GoReleaser temporary roots: %s\n' "${output}" >&2
     exit 2
     ;;
@@ -53,7 +54,7 @@ done
 resolved_parent=$(cd "${existing_parent}" && pwd -P)
 output=${resolved_parent}${output#"${existing_parent}"}
 case ${output} in
-  "${goreleaser_dist}"|"${goreleaser_dist}"/*|"${companion_stage}"|"${companion_stage}"/*)
+  "${goreleaser_dist}"|"${goreleaser_dist}"/*|"${companion_stage}"|"${companion_stage}"/*|"${license_stage}"|"${license_stage}"/*)
     printf 'release output resolves inside a GoReleaser temporary root: %s\n' "${output}" >&2
     exit 2
     ;;
@@ -63,8 +64,9 @@ command -v tr >/dev/null || { printf 'required local release tool is missing: tr
 folded_output=$(printf '%s' "${output}" | tr '[:upper:]' '[:lower:]')
 folded_dist=$(printf '%s' "${goreleaser_dist}" | tr '[:upper:]' '[:lower:]')
 folded_companion=$(printf '%s' "${companion_stage}" | tr '[:upper:]' '[:lower:]')
+folded_licenses=$(printf '%s' "${license_stage}" | tr '[:upper:]' '[:lower:]')
 case ${folded_output} in
-  "${folded_dist}"|"${folded_dist}"/*|"${folded_companion}"|"${folded_companion}"/*)
+  "${folded_dist}"|"${folded_dist}"/*|"${folded_companion}"|"${folded_companion}"/*|"${folded_licenses}"|"${folded_licenses}"/*)
     printf 'release output case-folds into a reserved GoReleaser root: %s\n' "${output}" >&2
     exit 2
     ;;
@@ -112,6 +114,10 @@ fi
   printf 'refuse existing GoReleaser companion stage: %s\n' "${companion_stage}" >&2
   exit 1
 }
+[[ ! -e ${license_stage} && ! -L ${license_stage} ]] || {
+  printf 'refuse existing generated license stage: %s\n' "${license_stage}" >&2
+  exit 1
+}
 cleanup() {
   if [[ -e ${goreleaser_dist} || -L ${goreleaser_dist} ]]; then
     case ${goreleaser_dist} in
@@ -123,6 +129,7 @@ cleanup() {
   "${repo}/packaging/goreleaser-companion.sh" cleanup darwin arm64 .goreleaser-companion
   "${repo}/packaging/goreleaser-companion.sh" cleanup linux amd64 .goreleaser-companion
   "${repo}/packaging/goreleaser-companion.sh" cleanup linux arm64 .goreleaser-companion
+  "${repo}/packaging/dependency-licenses.sh" clean .goreleaser-licenses
 }
 trap cleanup EXIT
 
@@ -143,7 +150,7 @@ resolved_parent=$(cd "${postbuild_parent}" && pwd -P)
 output=${resolved_parent}${output#"${postbuild_parent}"}
 folded_output=$(printf '%s' "${output}" | tr '[:upper:]' '[:lower:]')
 case ${folded_output} in
-  "${folded_dist}"|"${folded_dist}"/*|"${folded_companion}"|"${folded_companion}"/*)
+  "${folded_dist}"|"${folded_dist}"/*|"${folded_companion}"|"${folded_companion}"/*|"${folded_licenses}"|"${folded_licenses}"/*)
     printf 'release output resolves inside a live GoReleaser temporary root: %s\n' "${output}" >&2
     exit 2
     ;;

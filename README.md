@@ -16,5 +16,5 @@ farrow up
 Run the complete source gate with `make check`. Farrow is pre-1.0; a successful
 build is not evidence of a tag, package publication, or supported image.
 
-License: Apache-2.0. Dependency notices are recorded in
-`THIRD_PARTY_LICENSES.md` and `third_party/licenses/`.
+License: Apache-2.0. Release tooling reconstructs dependency license texts from
+the exact module versions pinned by `go.mod`.
