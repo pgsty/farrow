@@ -435,19 +435,69 @@ func statusCell(writer io.Writer, width int, value string) string {
 }
 
 type progress struct {
-	stderr  io.Writer
-	summary string
-	message string
-	started time.Time
-	cancel  context.CancelFunc
-	done    chan struct{}
-	once    sync.Once
-	enabled bool
-	verbose bool
-	tty     bool
-	mu      sync.Mutex
-	phase   string
-	last    time.Time
+	stderr       io.Writer
+	summary      string
+	message      string
+	started      time.Time
+	cancel       context.CancelFunc
+	done         chan struct{}
+	once         sync.Once
+	enabled      bool
+	verbose      bool
+	tty          bool
+	mu           sync.Mutex
+	phase        string
+	last         time.Time
+	currentBytes int64
+	totalBytes   int64
+	byteProgress bool
+}
+
+const terminalProgressBarWidth = 20
+
+// progressBar is determinate when a byte total exists and a bouncing segment
+// otherwise. The indeterminate form never invents a percentage for package
+// managers such as Homebrew, which do not expose a stable total-work API.
+func progressBar(current, total int64, width int, elapsed time.Duration) string {
+	if width < 4 {
+		width = 4
+	}
+	if total > 0 {
+		if current < 0 {
+			current = 0
+		}
+		if current > total {
+			current = total
+		}
+		filled := int(float64(current) / float64(total) * float64(width))
+		if filled >= width {
+			return "[" + strings.Repeat("=", width) + "]"
+		}
+		return "[" + strings.Repeat("=", filled) + ">" + strings.Repeat(".", width-filled-1) + "]"
+	}
+	segment := 4
+	travel := width - segment
+	step := int(elapsed / (250 * time.Millisecond))
+	cycle := travel * 2
+	position := 0
+	if cycle > 0 {
+		position = step % cycle
+		if position > travel {
+			position = cycle - position
+		}
+	}
+	return "[" + strings.Repeat(".", position) + strings.Repeat("=", segment) + strings.Repeat(".", width-position-segment) + "]"
+}
+
+// liveTTYMessage must be called while item.mu is held once the progress
+// goroutine has started.
+func (item *progress) liveTTYMessage(now time.Time) string {
+	current, total := int64(0), int64(0)
+	if item.byteProgress {
+		current, total = item.currentBytes, item.totalBytes
+	}
+	elapsed := now.Sub(item.started)
+	return fmt.Sprintf("%s %s %s", progressBar(current, total, terminalProgressBarWidth, elapsed), item.message, styled(item.stderr, ansiDim, elapsed.Round(time.Second).String()))
 }
 
 func progressBytes(value int64) string {
@@ -521,6 +571,15 @@ func (item *progress) Report(event activity.Event) {
 	item.mu.Lock()
 	defer item.mu.Unlock()
 	byteUpdate := event.TotalBytes > 0 || event.CurrentBytes > 0
+	if byteUpdate {
+		item.currentBytes = event.CurrentBytes
+		item.totalBytes = event.TotalBytes
+		item.byteProgress = true
+	} else if event.Phase != item.phase {
+		item.currentBytes = 0
+		item.totalBytes = 0
+		item.byteProgress = false
+	}
 	interval := 5 * time.Second
 	if item.tty {
 		interval = 250 * time.Millisecond
@@ -545,9 +604,12 @@ func (item *progress) Report(event activity.Event) {
 		// falls back to the overall command summary until the next phase.
 		fmt.Fprintf(item.stderr, "\r\x1b[2K%s %s\n", marker, message)
 		item.message = item.summary
+		item.currentBytes = 0
+		item.totalBytes = 0
+		item.byteProgress = false
 		return
 	}
-	fmt.Fprintf(item.stderr, "\r\x1b[2K%s %s", marker, message)
+	fmt.Fprintf(item.stderr, "\r\x1b[2K%s %s", marker, item.liveTTYMessage(now))
 }
 
 // tickf persists an already-satisfied step as a completed checklist row, so a
@@ -582,13 +644,13 @@ func startProgress(parent context.Context, stderr io.Writer, message string) *pr
 	ctx, cancel := context.WithCancel(parent)
 	item.cancel = cancel
 	if item.tty {
-		fmt.Fprintf(stderr, "%s %s", styled(stderr, ansiCyan, "→"), message)
+		fmt.Fprintf(stderr, "%s %s", styled(stderr, ansiCyan, "→"), item.liveTTYMessage(item.started))
 	} else {
 		fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiCyan, "→"), message)
 	}
 	interval := time.Minute
 	if item.tty {
-		interval = time.Second
+		interval = 250 * time.Millisecond
 	} else if item.verbose {
 		interval = 15 * time.Second
 	}
@@ -601,13 +663,13 @@ func startProgress(parent context.Context, stderr io.Writer, message string) *pr
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				elapsed := time.Since(item.started).Round(time.Second)
+				now := time.Now()
+				elapsed := now.Sub(item.started).Round(time.Second)
 				item.mu.Lock()
-				current := item.message
 				if item.tty {
-					fmt.Fprintf(stderr, "\r\x1b[2K%s %s %s", styled(stderr, ansiCyan, "→"), current, styled(stderr, ansiDim, elapsed.String()))
+					fmt.Fprintf(stderr, "\r\x1b[2K%s %s", styled(stderr, ansiCyan, "→"), item.liveTTYMessage(now))
 				} else {
-					fmt.Fprintf(stderr, "%s %s (%s elapsed)\n", styled(stderr, ansiDim, "·"), current, elapsed)
+					fmt.Fprintf(stderr, "%s %s (%s elapsed)\n", styled(stderr, ansiDim, "·"), item.message, elapsed)
 				}
 				item.mu.Unlock()
 			}

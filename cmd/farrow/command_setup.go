@@ -29,7 +29,7 @@ before any mutation and requests privilege only at the first privileged step.`,
 		},
 	}
 	command.Flags().StringVarP(&options.FilePath, "file", "f", "", "inventory to prepare (cannot be combined with a template)")
-	command.Flags().StringVar(&options.NetworkCIDR, "network-cidr", "", "generated template network as a canonical RFC1918 IPv4 /24")
+	command.Flags().StringVarP(&options.CIDR, "cidr", "c", "", "generated template network as a canonical RFC1918 IPv4 /24")
 	command.Flags().StringVar(&options.Repo, "repo", "", "artifact mirror URL or absolute directory for images and socket_vmnet (default: $FARROW_REPO)")
 	command.Flags().StringVar(&options.Mode, "mode", options.Mode, "macOS fixed-IP network backend: host or shared")
 	command.Flags().BoolVar(&options.DryRun, "dry-run", false, "show the resolved setup plan without changing anything")
@@ -60,7 +60,8 @@ inventory to stdout for inspection or composition.`,
 		Example: `  farrow init                    # write ./farrow.yml with one meta node
   farrow init full -o lab.yml    # write a four-node inventory elsewhere
   farrow init dual -o -          # print the two-node inventory to stdout
-  farrow init --force            # replace ./farrow.yml explicitly`,
+  farrow init -f                 # replace ./farrow.yml explicitly
+  farrow init full -c 10.20.30.0/24 # generate a lab on another private /24`,
 		Args:              templateArgs,
 		ValidArgsFunction: templateCompletion,
 		RunE: func(_ *cobra.Command, arguments []string) error {
@@ -70,9 +71,9 @@ inventory to stdout for inspection or composition.`,
 			return commandError(runInit(options, stdout, stderr))
 		},
 	}
-	command.Flags().StringVar(&options.NetworkCIDR, "network-cidr", "", "rebase the generated template to a canonical RFC1918 IPv4 /24")
+	command.Flags().StringVarP(&options.CIDR, "cidr", "c", "", "rebase the generated template to a canonical RFC1918 IPv4 /24")
 	command.Flags().StringVarP(&options.Output, "output", "o", "", "write to this path instead of ./farrow.yml; '-' writes to stdout")
-	command.Flags().BoolVar(&options.Force, "force", false, "overwrite an existing configuration file")
+	command.Flags().BoolVarP(&options.Force, "force", "f", false, "overwrite an existing configuration file")
 	return command
 }
 

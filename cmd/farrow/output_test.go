@@ -290,6 +290,20 @@ func TestFormatActivityShowsSafeDownloadDetails(t *testing.T) {
 	}
 }
 
+func TestProgressBarDistinguishesKnownAndUnknownWork(t *testing.T) {
+	if got, want := progressBar(50, 100, 20, 0), "[==========>.........]"; got != want {
+		t.Fatalf("determinate progress bar = %q, want %q", got, want)
+	}
+	if got, want := progressBar(100, 100, 20, 0), "[====================]"; got != want {
+		t.Fatalf("complete progress bar = %q, want %q", got, want)
+	}
+	first := progressBar(0, 0, 20, 0)
+	second := progressBar(0, 0, 20, time.Second)
+	if first == second || len(first) != 22 || len(second) != 22 || !strings.Contains(first, "====") || !strings.Contains(second, "====") {
+		t.Fatalf("indeterminate progress did not move: first=%q second=%q", first, second)
+	}
+}
+
 func TestProgressReportsDetailedStagesOnlyOnStderr(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

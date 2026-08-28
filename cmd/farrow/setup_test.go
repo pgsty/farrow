@@ -111,7 +111,7 @@ func TestGeneratedSetupProfileCanRebaseBeforePublish(t *testing.T) {
 func TestSetupFileCannotBeSilentlyRebased(t *testing.T) {
 	t.Parallel()
 	if _, err := resolveSetupSelection("", "/tmp/farrow.yaml", "172.31.251.0/24", t.TempDir()); err == nil {
-		t.Fatal("-f accepted --network-cidr")
+		t.Fatal("-f accepted --cidr")
 	}
 }
 
@@ -136,8 +136,8 @@ func TestSetupApplyCommandRemovesDryRunAndPreservesTypedArguments(t *testing.T) 
 	context := &outputContext{format: outputYAML, verbose: true}
 	stdout := &outputWriter{Writer: &bytes.Buffer{}, context: context}
 	stderr := &outputWriter{Writer: &bytes.Buffer{}, context: context, stderr: true}
-	next, argv := setupApplyCommand([]string{"full", "--mode=shared", "--dry-run=1", "--network-cidr", "172.31.251.0/24"}, stdout, stderr)
-	want := []string{"farrow", "setup", "full", "--mode=shared", "--network-cidr", "172.31.251.0/24", "--yaml", "--verbose"}
+	next, argv := setupApplyCommand([]string{"full", "--mode=shared", "--dry-run=1", "--cidr", "172.31.251.0/24"}, stdout, stderr)
+	want := []string{"farrow", "setup", "full", "--mode=shared", "--cidr", "172.31.251.0/24", "--yaml", "--verbose"}
 	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") || strings.Contains(next, "dry-run") {
 		t.Fatalf("next=%q argv=%#v", next, argv)
 	}
@@ -321,5 +321,56 @@ func TestSetupCommandFailureSeparatesChangedFromUncertain(t *testing.T) {
 				t.Fatalf("changed=%t uncertain=%t err=%v", changed, uncertain, err)
 			}
 		})
+	}
+}
+
+func TestSudoRunnerPreservesOnlyNamedProxyEnvironment(t *testing.T) {
+	runner := &recordingSetupRunner{}
+	wrapped := sudoRunner{
+		base:                runner,
+		preserveEnvironment: []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"},
+	}
+	if _, err := wrapped.Run(context.Background(), "/usr/bin/apt-get", "update"); err != nil {
+		t.Fatal(err)
+	}
+	want := "/usr/bin/sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY -- /usr/bin/apt-get update"
+	if len(runner.calls) != 1 || runner.calls[0] != want {
+		t.Fatalf("privileged package-manager call = %v, want %q", runner.calls, want)
+	}
+}
+
+func TestSetupPlanShowsProxyNamesWithoutValues(t *testing.T) {
+	for _, name := range []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+	} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("HTTPS_PROXY", "http://user:secret@127.0.0.1:9443")
+	selection, err := resolveSetupSelection("meta", "", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := setuphost.DependencyPlan{
+		Manager: "homebrew", Missing: []string{"qemu-system-aarch64"},
+		Commands: []setuphost.Command{{Name: "Install QEMU", Binary: "/opt/homebrew/bin/brew", Args: []string{"install", "qemu"}}},
+	}
+	report := netpreflight.Report{
+		OS: "darwin", CIDR: "10.10.10.0/24", Ready: true,
+		Installation: netpreflight.Installation{Status: "exact", Healthy: true, Mode: "host"},
+	}
+	var output bytes.Buffer
+	printSetupPlan(&output, plan, selection, &report, true)
+	got := output.String()
+	if !strings.Contains(got, "proxy environment: HTTPS_PROXY (values hidden)") {
+		t.Fatalf("setup plan omitted proxy evidence: %q", got)
+	}
+	for _, secret := range []string{"user", "secret", "127.0.0.1", "9443"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("setup plan exposed proxy value fragment %q: %q", secret, got)
+		}
+	}
+	if strings.Contains(got, "package installation (homebrew)") {
+		t.Fatalf("user-level Homebrew install was described as sudo work: %q", got)
 	}
 }

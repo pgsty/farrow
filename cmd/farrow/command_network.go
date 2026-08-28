@@ -37,7 +37,7 @@ read-only preflight findings used before lifecycle mutation.`,
 			return commandError(runNetwork(statusOptions, stdout, stderr))
 		},
 	}
-	status.Flags().StringVar(&statusOptions.CIDR, "cidr", "", "expected host-global RFC1918 IPv4 /24")
+	status.Flags().StringVarP(&statusOptions.CIDR, "cidr", "c", "", "expected host-global RFC1918 IPv4 /24")
 	parent.AddCommand(status)
 
 	installOptions := networkOptions{Action: "install", CIDR: subnet.DefaultCIDR, Mode: "host"}
@@ -67,7 +67,7 @@ manager backend. Without --yes the command is a read-only plan.`,
 			return commandError(runNetwork(installOptions, stdout, stderr))
 		},
 	}
-	install.Flags().StringVar(&installOptions.CIDR, "cidr", installOptions.CIDR, "host-global RFC1918 IPv4 /24")
+	install.Flags().StringVarP(&installOptions.CIDR, "cidr", "c", installOptions.CIDR, "host-global RFC1918 IPv4 /24")
 	install.Flags().StringVar(&installOptions.Mode, "mode", installOptions.Mode, "macOS vmnet mode: host or shared")
 	install.Flags().StringVar(&installOptions.Archive, "archive", "", "macOS: pinned socket_vmnet archive")
 	install.Flags().StringVar(&installOptions.InterfaceID, "interface-id", "", "macOS: persistent vmnet UUID")

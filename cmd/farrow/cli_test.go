@@ -210,6 +210,50 @@ func TestConfigFlagScopeAndDiscoveryHelp(t *testing.T) {
 	walk(root)
 }
 
+func TestCIDRAndInitForceUseScopedShorthands(t *testing.T) {
+	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	for _, test := range []struct {
+		path      []string
+		flag      string
+		shorthand string
+	}{
+		{path: []string{"setup"}, flag: "cidr", shorthand: "c"},
+		{path: []string{"init"}, flag: "cidr", shorthand: "c"},
+		{path: []string{"init"}, flag: "force", shorthand: "f"},
+		{path: []string{"network", "status"}, flag: "cidr", shorthand: "c"},
+		{path: []string{"network", "install"}, flag: "cidr", shorthand: "c"},
+	} {
+		command, _, err := root.Find(test.path)
+		if err != nil {
+			t.Fatalf("find %v: %v", test.path, err)
+		}
+		flag := command.LocalNonPersistentFlags().Lookup(test.flag)
+		if flag == nil {
+			t.Errorf("%s has no --%s flag", command.CommandPath(), test.flag)
+			continue
+		}
+		if flag.Shorthand != test.shorthand {
+			t.Errorf("%s --%s shorthand=%q, want %q", command.CommandPath(), test.flag, flag.Shorthand, test.shorthand)
+		}
+	}
+}
+
+func TestRetiredNetworkCIDRFlagIsRejected(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"init", "--network-cidr", "10.20.30.0/24"},
+		{"setup", "--network-cidr", "10.20.30.0/24", "--dry-run"},
+	} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		if code := run(arguments, &stdout, &stderr); code != exitUsage {
+			t.Fatalf("run(%v) code=%d stdout=%q stderr=%q", arguments, code, stdout.String(), stderr.String())
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), "unknown flag: --network-cidr") {
+			t.Fatalf("run(%v) stdout=%q stderr=%q", arguments, stdout.String(), stderr.String())
+		}
+	}
+}
+
 func TestOnlyRemotePassthroughDisablesCobraFlagParsing(t *testing.T) {
 	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
 	expected := map[string]bool{"farrow ssh": true, "farrow exec": true}

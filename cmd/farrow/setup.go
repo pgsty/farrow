@@ -76,7 +76,7 @@ type setupSelection struct {
 
 type setupCLIOptions struct {
 	FilePath     string
-	NetworkCIDR  string
+	CIDR         string
 	Mode         string
 	Repo         string
 	ModeExplicit bool
@@ -92,8 +92,8 @@ func (options setupCLIOptions) arguments(profileName string) []string {
 	if options.FilePath != "" {
 		arguments = append(arguments, "--file="+options.FilePath)
 	}
-	if options.NetworkCIDR != "" {
-		arguments = append(arguments, "--network-cidr="+options.NetworkCIDR)
+	if options.CIDR != "" {
+		arguments = append(arguments, "--cidr="+options.CIDR)
 	}
 	if options.Repo != "" {
 		arguments = append(arguments, "--repo="+options.Repo)
@@ -199,13 +199,13 @@ func discoverSetupConfig(cwd string) (string, error) {
 	return "", nil
 }
 
-func resolveSetupSelection(profileName, filePath, networkCIDR, cwd string) (setupSelection, error) {
+func resolveSetupSelection(profileName, filePath, cidr, cwd string) (setupSelection, error) {
 	target := filepath.Join(cwd, "farrow.yml")
 	if filePath != "" && profileName != "" {
 		return setupSelection{}, errors.New("setup accepts either a lab template or -f, not both")
 	}
-	if filePath != "" && networkCIDR != "" {
-		return setupSelection{}, errors.New("--network-cidr cannot silently rebase a user configuration; edit the file as one coordinated change")
+	if filePath != "" && cidr != "" {
+		return setupSelection{}, errors.New("--cidr cannot silently rebase a user configuration; edit the file as one coordinated change")
 	}
 	if filePath != "" {
 		absolute, err := filepath.Abs(filePath)
@@ -223,8 +223,8 @@ func resolveSetupSelection(profileName, filePath, networkCIDR, cwd string) (setu
 		return setupSelection{}, err
 	}
 	if discovered != "" && profileName == "" {
-		if networkCIDR != "" {
-			return setupSelection{}, errors.New("--network-cidr cannot silently rebase the discovered configuration; edit the file as one coordinated change")
+		if cidr != "" {
+			return setupSelection{}, errors.New("--cidr cannot silently rebase the discovered configuration; edit the file as one coordinated change")
 		}
 		file, resolved, err := loadSetupFile(discovered)
 		if err != nil {
@@ -243,7 +243,7 @@ func resolveSetupSelection(profileName, filePath, networkCIDR, cwd string) (setu
 		// idempotent; a different existing configuration is preserved.
 		target = discovered
 	}
-	selection, err := generatedSetupProfile(profileName, networkCIDR, target)
+	selection, err := generatedSetupProfile(profileName, cidr, target)
 	if err != nil {
 		return setupSelection{}, err
 	}
@@ -495,6 +495,16 @@ func setupRootRunner(base execx.Runner) execx.Runner {
 	return sudoRunner{base: base}
 }
 
+// setupPackageManagerRunner preserves only the standard proxy controls across
+// sudo. Homebrew runs as the invoking user and already inherits them directly;
+// APT/DNF otherwise commonly lose them at the privilege boundary.
+func setupPackageManagerRunner(base execx.Runner) execx.Runner {
+	if os.Geteuid() == 0 {
+		return base
+	}
+	return sudoRunner{base: base, preserveEnvironment: setuphost.ProxyEnvironmentNames()}
+}
+
 func runSetupCommands(ctx context.Context, commands []setuphost.Command, base execx.Runner, sudo *sudoSession, stderr io.Writer) (changed, mutationUncertain bool, err error) {
 	for _, command := range commands {
 		if err := command.Validate(); err != nil {
@@ -507,7 +517,7 @@ func runSetupCommands(ctx context.Context, commands []setuphost.Command, base ex
 		}
 		runner := base
 		if command.Root {
-			runner = setupRootRunner(base)
+			runner = setupPackageManagerRunner(base)
 		}
 		progressItem := startProgress(ctx, stderr, command.Name)
 		result, err := runner.Run(ctx, command.Binary, command.Args...)
@@ -828,7 +838,15 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 		planRow(stderr, "dependencies", "ready (QEMU, qemu-img, UEFI firmware, OpenSSH)")
 	} else {
 		planRow(stderr, "dependencies", "install via %s: %s", plan.Manager, strings.Join(plan.Missing, ", "))
-		sudoFor = append(sudoFor, "package installation ("+plan.Manager+")")
+		if proxyNames := setuphost.ProxyEnvironmentNames(); len(proxyNames) > 0 {
+			fmt.Fprintf(stderr, "                proxy environment: %s (values hidden)\n", strings.Join(proxyNames, ", "))
+		}
+		for _, command := range plan.Commands {
+			if command.Root {
+				sudoFor = append(sudoFor, "package installation ("+plan.Manager+")")
+				break
+			}
+		}
 	}
 
 	networkInstall := false
@@ -1037,7 +1055,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 	if err != nil {
 		return failSetup(&result, exitRuntime, err, stdout, stderr)
 	}
-	selection, err := resolveSetupSelection(profileName, options.FilePath, options.NetworkCIDR, cwd)
+	selection, err := resolveSetupSelection(profileName, options.FilePath, options.CIDR, cwd)
 	if err != nil {
 		if strings.Contains(err.Error(), "unknown lab template") {
 			return failSetup(&result, exitUsage, err, stdout, stderr)

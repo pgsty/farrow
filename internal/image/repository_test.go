@@ -25,6 +25,13 @@ func TestRepositorySources(t *testing.T) {
 	}
 }
 
+func TestSourceBuildHasNoPrivateDefaultRepository(t *testing.T) {
+	t.Parallel()
+	if DefaultRepositoryURL != "" {
+		t.Fatalf("source build unexpectedly probes a default repository: %q", DefaultRepositoryURL)
+	}
+}
+
 func TestRepositoryRejectsAmbiguousLocations(t *testing.T) {
 	t.Parallel()
 	for _, value := range []string{"relative/repo", "ftp://example.com/repo", "https://user@example.com/repo", "https://example.com/repo?q=1"} {

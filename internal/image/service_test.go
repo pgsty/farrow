@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+func TestListEmbeddedCatalogWithoutQEMUImg(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	entries, state, err := (Service{DataRoot: t.TempDir()}).List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Source != "embedded" || len(entries) != 17 {
+		t.Fatalf("manifest=%#v entries=%d", state, len(entries))
+	}
+}
+
 func TestLookupArchUsesEmbeddedCatalogWithoutDownloading(t *testing.T) {
 	t.Parallel()
 	service := Service{DataRoot: t.TempDir()}

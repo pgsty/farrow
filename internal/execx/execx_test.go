@@ -32,6 +32,21 @@ func TestOSRunnerBoundsOutput(t *testing.T) {
 	}
 }
 
+func TestOSRunnerInheritsProxyEnvironment(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9443")
+	printenv, err := exec.LookPath("printenv")
+	if err != nil {
+		t.Skip("printenv executable unavailable")
+	}
+	result, err := (OSRunner{Timeout: 5 * time.Second}).Run(context.Background(), printenv, "HTTPS_PROXY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(result.Stdout)); got != "http://127.0.0.1:9443" {
+		t.Fatalf("inherited HTTPS_PROXY = %q", got)
+	}
+}
+
 func TestOSRunnerPassesExtraFileAsFD3(t *testing.T) {
 	t.Parallel()
 	catPath, err := exec.LookPath("cat")

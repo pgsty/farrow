@@ -58,11 +58,39 @@ func TestVersion(t *testing.T) {
 	}
 }
 
-func TestInitInvalidNetworkCIDRIsUsageError(t *testing.T) {
+func TestInitInvalidCIDRIsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"init", "full", "--network-cidr", "not-a-cidr"}, &stdout, &stderr)
+	code := run([]string{"init", "full", "--cidr", "not-a-cidr"}, &stdout, &stderr)
 	if code != exitUsage || !strings.Contains(stderr.String(), "canonical IPv4 /24") || stdout.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestInitForceShorthandOverwritesExistingInventory(t *testing.T) {
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"init", "meta"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("initial init code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"init", "full", "-f"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("forced init code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	data, err := os.ReadFile("farrow.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("nodename: node-3")) {
+		t.Fatalf("-f did not replace the meta inventory with full: %s", data)
 	}
 }
 
@@ -225,6 +253,7 @@ func TestLoadPrivatePreflightConfigAcceptsRelativePath(t *testing.T) {
 
 func TestImageListJSON(t *testing.T) {
 	t.Setenv("FARROW_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"image", "list", "--json"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())

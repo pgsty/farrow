@@ -147,6 +147,16 @@ func (s Service) List(ctx context.Context) ([]Entry, ManifestState, error) {
 	if err != nil {
 		return nil, ManifestState{}, err
 	}
+	// Catalog-only listing is useful before host setup and must not require
+	// qemu-img. Defer constructing the byte-validating store until a local alias
+	// actually exists and therefore needs qcow2 validation.
+	registry, err := (Store{DataRoot: s.DataRoot}).readLocalAliases()
+	if err != nil {
+		return nil, ManifestState{}, err
+	}
+	if len(registry.Aliases) == 0 {
+		return entries, manifestState, nil
+	}
 	store, err := s.store(repository)
 	if err != nil {
 		return nil, ManifestState{}, err

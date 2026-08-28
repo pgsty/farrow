@@ -155,13 +155,21 @@ func loadPrivatePreflightConfig(path string) (spec.Resolved, error) {
 	return resolved, nil
 }
 
-type sudoRunner struct{ base execx.Runner }
+type sudoRunner struct {
+	base                execx.Runner
+	preserveEnvironment []string
+}
 
 func (r sudoRunner) Run(ctx context.Context, binary string, args ...string) (execx.Result, error) {
 	if r.base == nil {
 		return execx.Result{}, errors.New("sudo runner has no base runner")
 	}
-	sudoArgs := append([]string{"-n", "--", binary}, args...)
+	sudoArgs := []string{"-n"}
+	if len(r.preserveEnvironment) > 0 {
+		sudoArgs = append(sudoArgs, "--preserve-env="+strings.Join(r.preserveEnvironment, ","))
+	}
+	sudoArgs = append(sudoArgs, "--", binary)
+	sudoArgs = append(sudoArgs, args...)
 	return r.base.Run(ctx, "/usr/bin/sudo", sudoArgs...)
 }
 
@@ -1545,10 +1553,10 @@ func runValidate(filePath string, stdout, stderr io.Writer) int {
 }
 
 type initOptions struct {
-	Template    string
-	NetworkCIDR string
-	Output      string
-	Force       bool
+	Template string
+	CIDR     string
+	Output   string
+	Force    bool
 }
 
 func runInit(options initOptions, stdout, stderr io.Writer) int {
@@ -1556,13 +1564,13 @@ func runInit(options initOptions, stdout, stderr io.Writer) int {
 	if name == "" {
 		name = "meta"
 	}
-	data, err := config.Template(name, options.NetworkCIDR)
+	data, err := config.Template(name, options.CIDR)
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitUsage
 	}
-	if options.NetworkCIDR != "" {
-		if layout, parseErr := subnet.Parse(options.NetworkCIDR); parseErr == nil {
+	if options.CIDR != "" {
+		if layout, parseErr := subnet.Parse(options.CIDR); parseErr == nil {
 			if warning := layout.Warning(); warning != "" {
 				warningf(stderr, "%s", warning)
 			}
