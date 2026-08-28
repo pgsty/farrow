@@ -15,6 +15,7 @@ import (
 
 	"github.com/pgsty/farrow/internal/image"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
+	privatevm "github.com/pgsty/farrow/internal/private"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/sshconfig"
 	"github.com/pgsty/farrow/internal/sshkeys"
@@ -238,6 +239,216 @@ func TestLifecycleSequenceKeepsReloadDistinctFromRestart(t *testing.T) {
 	}
 	if got := strings.Join(lifecycleSequence("restart"), ","); got != "restart" {
 		t.Fatalf("restart sequence = %q", got)
+	}
+}
+
+type recordingSSHConfigReconciler struct {
+	installCalls int
+	removeCalls  int
+	name         string
+	home         string
+	err          error
+}
+
+func (reconciler *recordingSSHConfigReconciler) InstallSSHConfig(_ context.Context, name, home string) (sshconfig.Result, error) {
+	reconciler.installCalls++
+	reconciler.name = name
+	reconciler.home = home
+	return sshconfig.Result{Action: "install", Fragment: "/tmp/farrow_config", Changed: true}, reconciler.err
+}
+
+func (reconciler *recordingSSHConfigReconciler) RemoveSSHConfig(name, home string) (sshconfig.Result, error) {
+	reconciler.removeCalls++
+	reconciler.name = name
+	reconciler.home = home
+	return sshconfig.Result{Action: "remove", Fragment: "/tmp/farrow_config", Changed: true}, reconciler.err
+}
+
+func TestLifecycleSSHConfigReconciliationPolicy(t *testing.T) {
+	for _, test := range []struct {
+		command            string
+		deploymentHasNodes bool
+		action             string
+	}{
+		{command: "start", deploymentHasNodes: true},
+		{command: "up", deploymentHasNodes: true, action: "install"},
+		{command: "recreate", deploymentHasNodes: true, action: "install"},
+		{command: "destroy", deploymentHasNodes: true, action: "install"},
+		{command: "destroy", deploymentHasNodes: false, action: "remove"},
+	} {
+		t.Run(test.command+"_"+test.action, func(t *testing.T) {
+			reconciler := &recordingSSHConfigReconciler{}
+			result, err := reconcileLifecycleSSHConfig(context.Background(), test.command, test.deploymentHasNodes, reconciler)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.action == "" {
+				if result != nil || reconciler.installCalls != 0 || reconciler.removeCalls != 0 {
+					t.Fatalf("result=%#v reconciler=%#v", result, reconciler)
+				}
+				return
+			}
+			if result == nil || result.Action != test.action || reconciler.name != "farrow" || reconciler.home != "" {
+				t.Fatalf("result=%#v reconciler=%#v", result, reconciler)
+			}
+			if test.action == "install" && (reconciler.installCalls != 1 || reconciler.removeCalls != 0) {
+				t.Fatalf("install reconciler=%#v", reconciler)
+			}
+			if test.action == "remove" && (reconciler.removeCalls != 1 || reconciler.installCalls != 0) {
+				t.Fatalf("remove reconciler=%#v", reconciler)
+			}
+		})
+	}
+}
+
+func TestDestroySSHPolicyUsesThePreOperationNodeSet(t *testing.T) {
+	resolved := spec.Resolved{Nodes: []spec.Node{{Name: "meta"}, {Name: "node-1"}}}
+	for _, test := range []struct {
+		selected []string
+		want     bool
+	}{
+		{selected: nil, want: false},
+		{selected: []string{"meta"}, want: true},
+		{selected: []string{"meta", "node-1"}, want: false},
+	} {
+		if got := destroyLeavesDeploymentNodes(resolved, test.selected); got != test.want {
+			t.Errorf("selected=%v leaves nodes=%t, want %t", test.selected, got, test.want)
+		}
+	}
+}
+
+func TestLifecycleSSHConfigAlwaysUsesTheFullDeployment(t *testing.T) {
+	manager := fullDeploymentSSHManager(privatevm.Manager{Nodes: []string{"meta"}})
+	if len(manager.Nodes) != 0 {
+		t.Fatalf("full deployment manager retained selectors: %v", manager.Nodes)
+	}
+}
+
+func TestSelectedUpReconciliationKeepsEveryDeploymentSSHEntry(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "data")
+	home := filepath.Join(root, "home")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FARROW_HOME", dataRoot)
+	t.Setenv("HOME", home)
+	resolved := spec.Resolved{
+		Schema: 1, Name: "private", Image: "u24", Network: "private", SSHUser: "dba",
+		Private: &spec.PrivateNetwork{CIDR: "10.10.10.0/24", HostAddress: "10.10.10.1", DHCPEnd: "10.10.10.8"},
+		Nodes: []spec.Node{
+			{Name: "meta", Control: true, Address: "10.10.10.10", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+			{Name: "node-1", Address: "10.10.10.11", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+		},
+	}
+	hash, err := spec.Hash(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := state.Store{Root: dataRoot}
+	now := time.Now().UTC()
+	if err := store.WriteDeployment(state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash, Resolved: resolved, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	nodeHashes, err := spec.NodeHashes(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, node := range resolved.Nodes {
+		if err := store.WriteNode(state.NodeState{
+			Schema: state.NodeSchema, FarrowVersion: "test", Node: node.Name, VMUUID: "uuid-" + node.Name,
+			Phase: state.Stopped, Generation: 1, SpecHash: nodeHashes[node.Name], SSHPort: uint16(2222 + index), CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keysDir := filepath.Join(dataRoot, "keys")
+	if err := os.Mkdir(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"id_ed25519", "known_hosts"} {
+		if err := os.WriteFile(filepath.Join(keysDir, name), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selected := fullDeploymentSSHManager(privatevm.Manager{FarrowVersion: "test", Nodes: []string{"meta"}})
+	result, err := reconcileLifecycleSSHConfig(context.Background(), "up", true, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragment, err := os.ReadFile(result.Fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []string{"farrow-meta meta", "farrow-node-1 node-1"} {
+		if !strings.Contains(string(fragment), entry) {
+			t.Fatalf("selected up reconciliation dropped %q:\n%s", entry, fragment)
+		}
+	}
+	remaining := resolved
+	remaining.Nodes = append([]spec.Node(nil), resolved.Nodes[:1]...)
+	remainingHash, err := spec.Hash(remaining)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteDeployment(state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: remainingHash, Resolved: remaining, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = reconcileLifecycleSSHConfig(context.Background(), "destroy", true, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragment, err = os.ReadFile(result.Fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fragment), "farrow-meta meta") || strings.Contains(string(fragment), "node-1") {
+		t.Fatalf("node destroy did not reconcile the remaining deployment:\n%s", fragment)
+	}
+	result, err = reconcileLifecycleSSHConfig(context.Background(), "destroy", false, selected)
+	if err != nil || result.Action != "remove" {
+		t.Fatalf("whole destroy reconciliation result=%#v err=%v", result, err)
+	}
+	if _, err := os.Lstat(result.Fragment); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("whole destroy left the default SSH fragment: %v", err)
+	}
+}
+
+func TestLifecycleSSHConfigFailurePreservesThePartialResult(t *testing.T) {
+	reconciler := &recordingSSHConfigReconciler{err: errors.New("unsafe SSH directory")}
+	result, err := reconcileLifecycleSSHConfig(context.Background(), "up", true, reconciler)
+	if err == nil || result == nil || result.Action != "install" || !strings.Contains(err.Error(), "unsafe SSH directory") {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+func TestLifecycleSSHConfigFailureEmitsOneStructuredPartialResult(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	_, preparedStdout, preparedStderr, err := prepareOutput([]string{"--json"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := &lifecycleSSHConfigFailure{
+		Command: "recreate",
+		Result:  sshconfig.Result{Action: "install", Fragment: "/tmp/farrow_config", Changed: true},
+		Err:     errors.New("unsafe SSH directory"),
+	}
+	failure.Status.SpecHash = "spec-1"
+	if code := reportLifecycleSSHConfigFailure(failure, preparedStdout, preparedStderr); code != exitIntegrity {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var payload struct {
+		Error     string           `json:"error"`
+		Command   string           `json:"command"`
+		Partial   bool             `json:"partial"`
+		Status    map[string]any   `json:"status"`
+		SSHConfig sshconfig.Result `json:"ssh_config"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode partial result: %v\n%s", err, stdout.String())
+	}
+	if payload.Error != "ssh_config" || payload.Command != "recreate" || !payload.Partial || payload.Status["spec_hash"] != "spec-1" || payload.SSHConfig.Action != "install" || !strings.Contains(stderr.String(), "recreate completed its VM lifecycle step") {
+		t.Fatalf("payload=%#v stderr=%q", payload, stderr.String())
 	}
 }
 

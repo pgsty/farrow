@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/config"
 	"github.com/pgsty/farrow/internal/doctor"
 	"github.com/pgsty/farrow/internal/execx"
@@ -653,7 +654,7 @@ func provisionConnectionExit(err error) int {
 // purgeDeployment removes what destroy deliberately preserves: keys and the
 // deployment state document. Images stay cached; persistent disks were already
 // deleted by the forced --purge destroy.
-func purgeDeployment(ctx context.Context, stdout io.Writer) error {
+func purgeDeployment(ctx context.Context) error {
 	manager := privatevm.Manager{FarrowVersion: version.Version}
 	if _, err := manager.PurgeKeys(ctx, true); err != nil {
 		return err
@@ -672,7 +673,6 @@ func purgeDeployment(ctx context.Context, stdout io.Writer) error {
 			return err
 		}
 	}
-	fmt.Fprintln(stdout, "purged deployment keys and state; images remain cached")
 	return nil
 }
 
@@ -958,6 +958,80 @@ type lifecyclePartialFailure struct {
 	RolledBack  []string `json:"rolled_back"`
 }
 
+type sshConfigReconciler interface {
+	InstallSSHConfig(context.Context, string, string) (sshconfig.Result, error)
+	RemoveSSHConfig(string, string) (sshconfig.Result, error)
+}
+
+func lifecycleSSHConfigAction(command string, deploymentHasNodes bool) string {
+	switch command {
+	case "up", "recreate":
+		return "install"
+	case "destroy":
+		if deploymentHasNodes {
+			return "install"
+		}
+		return "remove"
+	default:
+		return ""
+	}
+}
+
+func destroyLeavesDeploymentNodes(resolved spec.Resolved, selected []string) bool {
+	return len(selected) != 0 && len(selected) < len(resolved.Nodes)
+}
+
+func reconcileLifecycleSSHConfig(ctx context.Context, command string, deploymentHasNodes bool, reconciler sshConfigReconciler) (*sshconfig.Result, error) {
+	switch lifecycleSSHConfigAction(command, deploymentHasNodes) {
+	case "install":
+		result, err := reconciler.InstallSSHConfig(ctx, "farrow", "")
+		return &result, err
+	case "remove":
+		result, err := reconciler.RemoveSSHConfig("farrow", "")
+		return &result, err
+	default:
+		return nil, nil
+	}
+}
+
+func fullDeploymentSSHManager(manager privatevm.Manager) privatevm.Manager {
+	manager.Nodes = nil
+	return manager
+}
+
+type lifecycleSSHConfigFailure struct {
+	Command string
+	Status  privatevm.Status
+	Result  sshconfig.Result
+	Err     error
+}
+
+func (failure *lifecycleSSHConfigFailure) Error() string {
+	return fmt.Sprintf("%s completed its VM lifecycle step, but the SSH client configuration could not be reconciled: %v", failure.Command, failure.Err)
+}
+
+func (failure *lifecycleSSHConfigFailure) Unwrap() error { return failure.Err }
+
+func reportLifecycleSSHConfigFailure(failure *lifecycleSSHConfigFailure, stdout, stderr io.Writer) int {
+	if structuredOutput(stdout) {
+		payload := struct {
+			Error     string           `json:"error"`
+			Message   string           `json:"message"`
+			Command   string           `json:"command"`
+			Partial   bool             `json:"partial"`
+			Status    privatevm.Status `json:"status"`
+			SSHConfig sshconfig.Result `json:"ssh_config"`
+		}{Error: "ssh_config", Message: failure.Error(), Command: failure.Command, Partial: true, Status: failure.Status, SSHConfig: failure.Result}
+		if code := encodeJSON(stdout, stderr, payload); code != exitOK {
+			return code
+		}
+	} else {
+		printPrivateStatus(stdout, failure.Status)
+	}
+	errorf(stderr, "%s", failure.Error())
+	return exitIntegrity
+}
+
 func reportPrivateLifecycleError(err error, operationID string, stdout, stderr io.Writer) int {
 	if errors.Is(err, privatevm.ErrRecreateRequired) {
 		return reportCommandFailure(stdout, stderr, "recreate_required", err.Error(), operationID, exitConflict)
@@ -1104,6 +1178,30 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		progressItem = startProgress(ctx, stderr, lifecycleMessage(command))
 	}
 	status, err := operation(ctx)
+	status.OperationID = operationID
+	lifecycleSucceeded := err == nil
+	var reconciledSSHConfig *sshconfig.Result
+	if err == nil {
+		deploymentHasNodes := true
+		if command == "destroy" {
+			// A successful destroy has already validated selectors as known and
+			// unique. Covering the complete pre-operation resolved set removes
+			// state.json, so decide removal from that known set instead of trying
+			// to read state that is intentionally gone.
+			deploymentHasNodes = destroyLeavesDeploymentNodes(resolved, nodes)
+		}
+		if action := lifecycleSSHConfigAction(command, deploymentHasNodes); err == nil && action != "" {
+			progressItem.Report(activity.Event{Phase: "ssh-config", Message: "Reconciling the marker-owned SSH client configuration"})
+			var integrationErr error
+			reconciler := fullDeploymentSSHManager(manager)
+			reconciledSSHConfig, integrationErr = reconcileLifecycleSSHConfig(ctx, command, deploymentHasNodes, reconciler)
+			if integrationErr != nil {
+				err = &lifecycleSSHConfigFailure{Command: command, Status: status, Result: *reconciledSSHConfig, Err: integrationErr}
+			} else {
+				progressItem.Report(activity.Event{Phase: "ssh-config", Message: "SSH client configuration is synchronized", Done: true})
+			}
+		}
+	}
 	if command != "status" {
 		level := "info"
 		message := status.Message
@@ -1116,20 +1214,31 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 			err = fmt.Errorf("private %s completed but its event could not be appended: %w", command, eventErr)
 		}
 	}
+	if lifecycleSucceeded && command == "destroy" && purge {
+		if purgeErr := purgeDeployment(ctx); purgeErr != nil {
+			var integrationFailure *lifecycleSSHConfigFailure
+			if errors.As(err, &integrationFailure) {
+				integrationFailure.Err = fmt.Errorf("%v; deployment purge also failed: %w", integrationFailure.Err, purgeErr)
+			} else if err == nil {
+				err = fmt.Errorf("destroy succeeded but purge failed: %w", purgeErr)
+			} else {
+				err = fmt.Errorf("%v; deployment purge also failed: %w", err, purgeErr)
+			}
+		} else {
+			status.Message = strings.TrimSpace(status.Message + "; purged deployment keys and state; images remain cached")
+		}
+	}
 	progressItem.Stop(err)
 	if err != nil {
-		return reportPrivateLifecycleError(err, operationID, stdout, stderr)
-	}
-	if command == "destroy" && purge {
-		if purgeErr := purgeDeployment(ctx, stdout); purgeErr != nil {
-			errorf(stderr, "destroy succeeded but purge failed: %v", purgeErr)
-			return exitIntegrity
+		var integrationFailure *lifecycleSSHConfigFailure
+		if errors.As(err, &integrationFailure) {
+			return reportLifecycleSSHConfigFailure(integrationFailure, stdout, stderr)
 		}
+		return reportPrivateLifecycleError(err, operationID, stdout, stderr)
 	}
 	if command == "up" {
 		suggestHostsPublication(resolved, stderr)
 	}
-	status.OperationID = operationID
 	if command == "up" || command == "start" || command == "restart" || command == "recreate" {
 		seen := make(map[string]struct{})
 		guestArch := lifecycleImageArch(resolved)
@@ -1150,9 +1259,16 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		}
 	}
 	if structuredOutput(stdout) {
-		return encodeJSON(stdout, stderr, status)
+		payload := struct {
+			privatevm.Status
+			SSHConfig *sshconfig.Result `json:"ssh_config,omitempty"`
+		}{Status: status, SSHConfig: reconciledSSHConfig}
+		return encodeJSON(stdout, stderr, payload)
 	}
 	printPrivateStatus(stdout, status)
+	if reconciledSSHConfig != nil {
+		textField(stdout, 12, "ssh config", fmt.Sprintf("%s (action=%s changed=%t)", reconciledSSHConfig.Fragment, reconciledSSHConfig.Action, reconciledSSHConfig.Changed))
+	}
 	return exitOK
 }
 
