@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Actions are pinned by commit SHA on purpose; Dependabot keeps the SHA and
+  # its version comment moving together instead of letting them drift apart.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build"
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build"
+    groups:
+      go-dependencies:
+        patterns: ["*"]
