@@ -9,3 +9,4 @@
 *.test
 *.out
 *.log
+/release-assets/

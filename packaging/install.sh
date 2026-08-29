@@ -3,6 +3,10 @@ set -euo pipefail
 
 # User-scoped release installer. It installs no package manager, never uses
 # sudo, and verifies the selected archive against the release checksum file.
+# When cosign happens to be installed it also verifies that checksum file
+# against the release workflow's own signing identity, so the trust root
+# improves for people who have the tool without becoming a requirement for
+# people who do not.
 
 is_semver() {
   local value=${1:-} base metadata prerelease core identifier
@@ -174,6 +178,23 @@ trap cleanup EXIT
 printf 'Downloading Farrow %s for %s/%s...\n' "${version}" "${goos}" "${goarch}"
 curl -fsSLo "${temporary}/${asset}" "${base}/${asset}"
 curl -fsSLo "${temporary}/checksums.txt" "${base}/checksums.txt"
+if command -v cosign >/dev/null 2>&1; then
+  identity="https://github.com/${repository}/.github/workflows/release.yml@refs/tags/v${version}"
+  if curl -fsSLo "${temporary}/checksums.txt.sigstore.json" "${base}/checksums.txt.sigstore.json"; then
+    if cosign verify-blob \
+      --bundle "${temporary}/checksums.txt.sigstore.json" \
+      --certificate-identity "${identity}" \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      "${temporary}/checksums.txt" >/dev/null 2>&1; then
+      printf 'Verified the release signature of %s\n' "${identity}"
+    else
+      printf 'release checksum signature did not verify against %s\n' "${identity}" >&2
+      exit 7
+    fi
+  else
+    printf 'cosign is installed but this release publishes no signature bundle; continuing with checksum verification only\n' >&2
+  fi
+fi
 expected=$(awk -v asset="${asset}" '$2 == asset {print $1}' "${temporary}/checksums.txt")
 [[ ${expected} =~ ^[0-9a-f]{64}$ ]] || { printf 'release checksum entry is missing or ambiguous: %s\n' "${asset}" >&2; exit 7; }
 actual=$(sha256_file "${temporary}/${asset}")

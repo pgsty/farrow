@@ -37,7 +37,7 @@ attested=${FARROW_RELEASE_ATTESTED:-false}
 [[ ${signed} == true || ${signed} == false ]]
 [[ ${attested} == true || ${attested} == false ]]
 channel=stable
-farrow_is_prerelease_semver "${version}" && channel=prerelease
+farrow_is_stable_release "${version}" || channel=prerelease
 install -d -m 0755 "${output}"
 
 for os_name in darwin linux; do

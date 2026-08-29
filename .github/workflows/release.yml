@@ -137,12 +137,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          source packaging/semver.sh
           notes_file=".github/releases/${FARROW_VERSION}.md"
           test -f "${notes_file}"
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             printf 'release already exists; refusing to overwrite %s\n' "${GITHUB_REF_NAME}" >&2
             exit 1
           fi
+          # One rule decides pre-1.0, shared with the channel recorded in
+          # release.json, so the Release page and the artifacts always agree.
+          prerelease=()
+          if ! farrow_is_stable_release "${FARROW_VERSION}"; then
+            prerelease=(--prerelease)
+            test "$(jq -r .channel release-assets/release.json)" = prerelease
+          else
+            test "$(jq -r .channel release-assets/release.json)" = stable
+          fi
           gh release create "${GITHUB_REF_NAME}" release-assets/* \
-            --verify-tag --draft --title "Farrow ${FARROW_VERSION}" \
+            --verify-tag --draft "${prerelease[@]}" --title "Farrow ${FARROW_VERSION}" \
             --notes-file "${notes_file}"

@@ -1,0 +1,99 @@
+name: packaging
+
+# The release workflow only ever runs on a tag, so without this job the entire
+# packaging path — GoReleaser, nFPM, Syft, the archive and Linux-package
+# verifiers — would first execute during a real release, with a pushed tag
+# already in the way. This runs exactly that path on demand and on every change
+# to the packaging surface, using the same pinned toolchain.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+    paths:
+      - ".goreleaser.yaml"
+      - "packaging/**"
+      - "Makefile"
+      - ".github/workflows/packaging.yml"
+  pull_request:
+    paths:
+      - ".goreleaser.yaml"
+      - "packaging/**"
+      - "Makefile"
+      - ".github/workflows/packaging.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    name: GoReleaser snapshot and package verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.0"
+          check-latest: false
+          cache: true
+
+      - name: Install pinned GoReleaser
+        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
+        with:
+          distribution: goreleaser
+          version: v2.16.0
+          install-only: true
+
+      - name: Install pinned standalone nFPM and Syft
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y rpm jq libarchive-tools ruby
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          install -d -m 0755 "${RUNNER_TEMP}/bin"
+          curl -fsSLo "${RUNNER_TEMP}/syft.tar.gz" \
+            https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_amd64.tar.gz
+          printf '%s  %s\n' \
+            8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3 \
+            "${RUNNER_TEMP}/syft.tar.gz" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/syft.tar.gz" -C "${RUNNER_TEMP}/bin" syft
+          printf '%s\n' "${RUNNER_TEMP}/bin" >>"${GITHUB_PATH}"
+
+      - name: Verify the packaging toolchain is exactly pinned
+        run: ./packaging/check-toolchain.sh packages && ./packaging/check-toolchain.sh goreleaser
+
+      - name: Build and verify a full snapshot release
+        run: make release-snapshot
+
+      - name: Assemble and checksum the snapshot asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(jq -er '.version' .goreleaser-snapshot/metadata.json)
+          source_epoch=$(git show -s --format=%ct HEAD)
+          ./packaging/assemble-release.sh "${version}" "$(git rev-parse --verify HEAD)" \
+            "${source_epoch}" "${GITHUB_WORKSPACE}/.goreleaser-snapshot" \
+            "${GITHUB_WORKSPACE}/.goreleaser-snapshot" "${GITHUB_WORKSPACE}/release-assets"
+          # A snapshot is never 1.0.0, so the shared pre-1.0 rule must classify it
+          # as a prerelease. This is the same check the release workflow runs.
+          test "$(jq -r .channel release-assets/release.json)" = prerelease
+
+      - name: Upload the snapshot asset set for inspection
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: farrow-snapshot-assets
+          path: release-assets/
+          retention-days: 7
