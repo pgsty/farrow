@@ -2,6 +2,7 @@ package private
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ func TestRenderSeedsPrivateContractAndKeyBoundary(t *testing.T) {
 	t.Parallel()
 	resolved := privateResolved()
 	resolved.Nodes[0].Disks = []spec.Disk{{Name: "data", Size: 4 * spec.GiB, Mount: "/data", Filesystem: "ext4"}}
-	plan, err := Build(resolved, 501, nil, nil)
+	plan, err := Build(resolved, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func TestRenderSeedsPrivateContractAndKeyBoundary(t *testing.T) {
 func TestRenderSeedsRequiresControlPrivateKeyAndEveryGeneration(t *testing.T) {
 	t.Parallel()
 	resolved := privateResolved()
-	plan, err := Build(resolved, 501, nil, nil)
+	plan, err := Build(resolved, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func TestSingleNodeControlReceivesLateralKeyForFutureScaleOut(t *testing.T) {
 	t.Parallel()
 	resolved := privateResolved()
 	resolved.Nodes = resolved.Nodes[:1]
-	plan, err := Build(resolved, 501, nil, nil)
+	plan, err := Build(resolved, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
