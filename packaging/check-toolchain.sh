@@ -29,7 +29,23 @@ check_goreleaser() {
 }
 check_nfpm() {
   command -v nfpm >/dev/null || { printf 'nfpm is missing\n' >&2; exit 3; }
-  require_version nfpm "$(nfpm --version | awk '/GitVersion:/ {gsub(/^v/, "", $2); print $2; exit}')" "${FARROW_NFPM_VERSION}"
+  command -v go >/dev/null || { printf 'go is required to identify nfpm\n' >&2; exit 3; }
+  local binary version
+  binary=$(command -v nfpm)
+  # `go install module@vX` does not apply nfpm's release ldflags, so the binary
+  # reports GitVersion "dev" while its module graph still records the exact tag.
+  # Trust the module first, and fall back to the stamped version for a binary
+  # built from an official nfpm release, where the module reads (devel) instead.
+  version=$(go version -m "${binary}" | awk '$1 == "mod" && $2 == "github.com/goreleaser/nfpm/v2" && $3 != "(devel)" {sub(/^v/, "", $3); print $3; exit}')
+  if [[ -z ${version} ]]; then
+    version=$(nfpm --version | awk '/GitVersion:/ && $2 != "dev" {gsub(/^v/, "", $2); print $2; exit}')
+  fi
+  [[ -n ${version} ]] || {
+    printf 'cannot identify the nfpm version of %s; install the pinned one with: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v%s\n' \
+      "${binary}" "${FARROW_NFPM_VERSION}" >&2
+    exit 3
+  }
+  require_version nfpm "${version}" "${FARROW_NFPM_VERSION}"
 }
 check_syft() {
   command -v syft >/dev/null || { printf 'syft is missing\n' >&2; exit 3; }
