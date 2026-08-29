@@ -514,6 +514,7 @@ func TestCobraRejectsInvalidTypedOptionsBeforeOperations(t *testing.T) {
 		{arguments: []string{"ssh-config", "--name", "bad/name"}, want: "invalid SSH config name"},
 		{arguments: []string{"ssh-config", "--remove", "meta"}, want: "does not accept node selectors"},
 		{arguments: []string{"image", "import", "missing.qcow2", "--name", "local-x", "--boot", "bad", "--source-user", "dba"}, want: "--boot must be one of"},
+		{arguments: []string{"image", "info", "d13", "--arch", "s390x"}, want: "--arch must be one of"},
 		{arguments: []string{"network", "install", "--mode", "bogus"}, want: "--mode must be one of"},
 	} {
 		var stdout bytes.Buffer
@@ -552,7 +553,7 @@ func TestCommandGroupWithoutSubcommandShowsExamples(t *testing.T) {
 	if code := run([]string{"image"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, want := range []string{"Available Commands:", "Examples:", "farrow image pull u24"} {
+	for _, want := range []string{"Available Commands:", "Examples:", "farrow image pull d13"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("image help missing %q:\n%s", want, stdout.String())
 		}

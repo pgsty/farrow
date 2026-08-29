@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pgsty/farrow/internal/disk"
@@ -110,5 +111,46 @@ func TestPruneDryRunAndApplyOrphanedStagingFiles(t *testing.T) {
 	}
 	if _, err := os.Lstat(unmanaged); err != nil {
 		t.Fatalf("unmanaged partial file was removed: %v", err)
+	}
+}
+
+func TestPruneProtectsActiveExplicitRepositoryCatalog(t *testing.T) {
+	t.Parallel()
+	dataRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataRoot, "locks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store := Store{DataRoot: dataRoot, QEMUImg: "/fake/qemu-img", Runner: pruneRunner{virtualSize: 1 << 30}}
+	keep, _ := writeCachedFixture(t, store, "d13", "d13-1-arm64.qcow2", "keep-custom-repo")
+	remove, _ := writeCachedFixture(t, store, "u22", "u22-1-arm64.qcow2", "remove-custom-repo")
+	repository := t.TempDir()
+	catalog := EmbeddedCatalog()
+	catalog.Version = 1
+	imageRecord := catalog.Images["d13"]
+	version := imageRecord.Versions["20260810.2566.0"]
+	artifact := version.Variants["arm64"]
+	artifact.File = "images/d13-1-arm64.qcow2"
+	artifact.SHA256 = keep.SHA256
+	artifact.ArtifactSize = int64(len("keep-custom-repo"))
+	artifact.VirtualSize = 1 << 30
+	version.Variants["arm64"] = artifact
+	imageRecord.Versions["20260810.2566.0"] = version
+	catalog.Images["d13"] = imageRecord
+	data, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(repository, CatalogFilename)
+	if err := os.WriteFile(source, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := ManifestManager{DataRoot: dataRoot, Repository: repository, AllowUnsigned: true}
+	if _, err := manager.Sync(context.Background(), source, false); err != nil {
+		t.Fatal(err)
+	}
+	service := Service{DataRoot: dataRoot, Repository: repository, QEMUImg: "/fake/qemu-img", Runner: pruneRunner{virtualSize: 1 << 30}}
+	report, err := service.PruneAll(context.Background(), false, nil)
+	if err != nil || len(report.Items) != 1 || report.Items[0].Digest != remove.SHA256 || strings.Contains(report.Items[0].ImagePath, "d13-1") {
+		t.Fatalf("custom repository prune = %#v, %v", report, err)
 	}
 }

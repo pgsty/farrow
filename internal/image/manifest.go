@@ -1,215 +1,37 @@
-// Package image owns the signed image catalog and the local image store.
+// Package image owns Farrow image references, signed catalogs, repository
+// authoring, and the verified local image store.
 package image
 
 import (
+	_ "embed"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type Entry struct {
-	Alias        string `json:"alias"`
-	Release      string `json:"release"`
-	Arch         string `json:"arch"`
-	File         string `json:"file"`
-	Upstream     string `json:"upstream"`
-	SHA256       string `json:"sha256"`
-	Format       string `json:"format"`
-	ArtifactSize int64  `json:"artifact_size"`
-	VirtualSize  int64  `json:"virtual_size"`
-	SourceUser   string `json:"source_user"`
-	Boot         string `json:"boot"`
-	Status       string `json:"status"`
-	Provenance   string `json:"provenance"`
+	Alias        string   `json:"alias"`
+	Channel      string   `json:"channel,omitempty"`
+	Channels     []string `json:"channels,omitempty"`
+	Release      string   `json:"release"`
+	Arch         string   `json:"arch"`
+	File         string   `json:"file"`
+	CacheFile    string   `json:"-"`
+	Upstream     string   `json:"upstream,omitempty"`
+	SHA256       string   `json:"sha256"`
+	Format       string   `json:"format"`
+	ArtifactSize int64    `json:"artifact_size"`
+	VirtualSize  int64    `json:"virtual_size"`
+	SourceUser   string   `json:"source_user,omitempty"`
+	Boot         string   `json:"boot"`
+	Status       string   `json:"status"`
+	Provenance   string   `json:"provenance,omitempty"`
 }
 
-// These distribution-owned, release-pinned sources are testing inputs until
-// Farrow has owner-provided image hosting/signing custody and every alias/arch
-// has passed the required native smoke matrix.
-var embedded = map[string]Entry{
-	"el7/amd64": {
-		Alias: "el7", Release: "7.9.20221112.0", Arch: "amd64",
-		Upstream:     "https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2",
-		SHA256:       "284aab2b23d91318f169ff464bce4d53404a15a0618ceb34562838c59af4adea",
-		Format:       "qcow2",
-		ArtifactSize: 902889472,
-		VirtualSize:  8589934592,
-		SourceUser:   "centos", Boot: "bios", Status: "deprecated",
-		Provenance: "CentOS Linux 7 GenericCloud 2211 archive; distribution-owned immutable artifact retained for EOL compatibility testing only; SHA-256, qcow2 metadata, MBR boot layout, and 4K XFS root verified 2026-08-28",
-	},
-	"el8/amd64": {
-		Alias: "el8", Release: "8.10.20240528.0", Arch: "amd64",
-		Upstream:     "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base-8.10-20240528.0.x86_64.qcow2",
-		SHA256:       "e56066c58606191e96184de9a9183a3af33c59bcbd8740d8b10ca054a7a89c14",
-		Format:       "qcow2",
-		ArtifactSize: 2065760256,
-		VirtualSize:  10737418240,
-		SourceUser:   "rocky", Boot: "uefi", Status: "testing",
-		Provenance: "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; native Linux/amd64 lifecycle passed and qcow2 metadata verified 2026-08-24",
-	},
-	"el8/arm64": {
-		Alias: "el8", Release: "8.10.20240528.0", Arch: "arm64",
-		Upstream:     "https://dl.rockylinux.org/pub/rocky/8/images/aarch64/Rocky-8-GenericCloud-Base-8.10-20240528.0.aarch64.qcow2",
-		SHA256:       "946b5b9845aa5e3ed98f1bc6ee9873201712a2aef01b87731aed16857e0ca13f",
-		Format:       "qcow2",
-		ArtifactSize: 1925644288,
-		VirtualSize:  10737418240,
-		SourceUser:   "rocky", Boot: "uefi", Status: "testing",
-		Provenance: "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; qcow2 metadata verified and TCG booted on Darwin/arm64 2026-08-28; Apple HVF is incompatible with its 64K-granule kernel",
-	},
-	"el9/amd64": {
-		Alias: "el9", Release: "9.8.20260525.0", Arch: "amd64",
-		Upstream:     "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
-		SHA256:       "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8",
-		Format:       "qcow2",
-		ArtifactSize: 645988352,
-		VirtualSize:  10737418240,
-		SourceUser:   "rocky", Boot: "uefi", Status: "testing",
-		Provenance: "Rocky Linux 9.8 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"el9/arm64": {
-		Alias: "el9", Release: "9.8.20260525.0", Arch: "arm64",
-		Upstream:     "https://dl.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base-9.8-20260525.0.aarch64.qcow2",
-		SHA256:       "24692a444f1f0b8bb95375c38c8b43f8099a115347623691be2c330b40c8a1fe",
-		Format:       "qcow2",
-		ArtifactSize: 519831552,
-		VirtualSize:  10737418240,
-		SourceUser:   "rocky", Boot: "uefi", Status: "testing",
-		Provenance: "Rocky Linux 9.8 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"el10/amd64": {
-		Alias: "el10", Release: "10.2.20260525.0", Arch: "amd64",
-		Upstream:     "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2",
-		SHA256:       "9fc9e9ff16888bb68ac39b0392e25c9c92684d50c85f1cce6ab549363bbc4b48",
-		Format:       "qcow2",
-		ArtifactSize: 544997376,
-		VirtualSize:  10737418240,
-		SourceUser:   "rocky", Boot: "uefi", Status: "testing",
-		Provenance: "Rocky Linux 10.2 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"el10/arm64": {
-		Alias: "el10", Release: "10.2.20260525.0", Arch: "arm64",
-		Upstream:     "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.2-20260525.0.aarch64.qcow2",
-		SHA256:       "457c8375e19496f43a25c4a6169fa11237536c53cef6f85a20ea3c5a751aa0f5",
-		Format:       "qcow2",
-		ArtifactSize: 469368832,
-		VirtualSize:  10737418240,
-		SourceUser:   "rocky", Boot: "uefi", Status: "testing",
-		Provenance: "Rocky Linux 10.2 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"d12/amd64": {
-		Alias: "d12", Release: "20260806.2562.0", Arch: "amd64",
-		Upstream:     "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-amd64-20260806-2562.qcow2",
-		SHA256:       "dd3dbd23a3965318cc9aae32592dcfde4abcb8f90a50ca760a9ca9e8f3ba6255",
-		Format:       "qcow2",
-		ArtifactSize: 448069632,
-		VirtualSize:  3221225472,
-		SourceUser:   "debian", Boot: "uefi", Status: "testing",
-		Provenance: "Debian 12 generic cloud image 20260806-2562; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"d12/arm64": {
-		Alias: "d12", Release: "20260806.2562.0", Arch: "arm64",
-		Upstream:     "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-arm64-20260806-2562.qcow2",
-		SHA256:       "8c6b8f81e571d530f6561c707538a4e807de8188c9a3f41af7b52b4e5ed010be",
-		Format:       "qcow2",
-		ArtifactSize: 434044928,
-		VirtualSize:  3221225472,
-		SourceUser:   "debian", Boot: "uefi", Status: "testing",
-		Provenance: "Debian 12 generic cloud image 20260806-2562; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"d13/amd64": {
-		Alias: "d13", Release: "20260810.2566.0", Arch: "amd64",
-		Upstream:     "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-amd64-20260810-2566.qcow2",
-		SHA256:       "d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc",
-		Format:       "qcow2",
-		ArtifactSize: 436404224,
-		VirtualSize:  3221225472,
-		SourceUser:   "debian", Boot: "uefi", Status: "testing",
-		Provenance: "Debian 13 generic cloud image 20260810-2566; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"d13/arm64": {
-		Alias: "d13", Release: "20260810.2566.0", Arch: "arm64",
-		Upstream:     "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-arm64-20260810-2566.qcow2",
-		SHA256:       "2c546c79ec199983a88e384f6e5d013ab7876353943f7aa614403e3028bbea99",
-		Format:       "qcow2",
-		ArtifactSize: 429195264,
-		VirtualSize:  3221225472,
-		SourceUser:   "debian", Boot: "uefi", Status: "testing",
-		Provenance: "Debian 13 generic cloud image 20260810-2566; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"u22/amd64": {
-		Alias: "u22", Release: "20260810.0.0", Arch: "amd64",
-		Upstream:     "https://cloud-images.ubuntu.com/jammy/20260810/jammy-server-cloudimg-amd64.img",
-		SHA256:       "6de0c42a98dc9a749917dfef34bf54e3595441bf67d39f103a61341560b3da8e",
-		Format:       "qcow2",
-		ArtifactSize: 734344192,
-		VirtualSize:  2361393152,
-		SourceUser:   "ubuntu", Boot: "uefi", Status: "testing",
-		Provenance: "Canonical Ubuntu Server 22.04 dated cloud image 20260810; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"u22/arm64": {
-		Alias: "u22", Release: "20260810.0.0", Arch: "arm64",
-		Upstream:     "https://cloud-images.ubuntu.com/jammy/20260810/jammy-server-cloudimg-arm64.img",
-		SHA256:       "b57a88a8d3b9f33d48f1b3d70a1aac7ae79760c9b507699d2601989eadac02b1",
-		Format:       "qcow2",
-		ArtifactSize: 703484928,
-		VirtualSize:  2361393152,
-		SourceUser:   "ubuntu", Boot: "uefi", Status: "testing",
-		Provenance: "Canonical Ubuntu Server 22.04 dated cloud image 20260810; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"u24/amd64": {
-		Alias: "u24", Release: "20260801.0.0", Arch: "amd64",
-		Upstream:     "https://cloud-images.ubuntu.com/noble/20260801/noble-server-cloudimg-amd64.img",
-		SHA256:       "0533b0655c32e68b31d792ecd6ccfca95abdbc536c4446874fe0513bd4140ffe",
-		Format:       "qcow2",
-		ArtifactSize: 624239616,
-		VirtualSize:  3758096384,
-		SourceUser:   "ubuntu", Boot: "uefi", Status: "testing",
-		Provenance: "Canonical Ubuntu Server 24.04 dated cloud image 20260801; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"u24/arm64": {
-		Alias: "u24", Release: "20260801.0.0", Arch: "arm64",
-		Upstream:     "https://cloud-images.ubuntu.com/noble/20260801/noble-server-cloudimg-arm64.img",
-		SHA256:       "aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476",
-		Format:       "qcow2",
-		ArtifactSize: 618417664,
-		VirtualSize:  3758096384,
-		SourceUser:   "ubuntu", Boot: "uefi", Status: "testing",
-		Provenance: "Canonical Ubuntu Server 24.04 dated cloud image 20260801; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"u26/amd64": {
-		Alias: "u26", Release: "20260731.0.0", Arch: "amd64",
-		Upstream:     "https://cloud-images.ubuntu.com/resolute/20260731/resolute-server-cloudimg-amd64.img",
-		SHA256:       "9dc7c5363c0146a08ba0c9aa834d82c2c6dfbb1c471ad9a2f0aba1189e21be05",
-		Format:       "qcow2",
-		ArtifactSize: 860447744,
-		VirtualSize:  3758096384,
-		SourceUser:   "ubuntu", Boot: "uefi", Status: "testing",
-		Provenance: "Canonical Ubuntu Server 26.04 dated cloud image 20260731; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-	"u26/arm64": {
-		Alias: "u26", Release: "20260731.0.0", Arch: "arm64",
-		Upstream:     "https://cloud-images.ubuntu.com/resolute/20260731/resolute-server-cloudimg-arm64.img",
-		SHA256:       "3e113fdd41f39e13729375173bb2ae793f87dc6db4294e5251ff2476971788ba",
-		Format:       "qcow2",
-		ArtifactSize: 940920832,
-		VirtualSize:  3758096384,
-		SourceUser:   "ubuntu", Boot: "uefi", Status: "testing",
-		Provenance: "Canonical Ubuntu Server 26.04 dated cloud image 20260731; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24",
-	},
-}
+//go:embed default-catalog.json
+var embeddedCatalogBytes []byte
 
-var aliases = map[string]string{
-	"c7": "el7", "centos7": "el7", "centos79": "el7",
-	"rocky8": "el8",
-	"rocky9": "el9", "rocky": "el9",
-	"rocky10":  "el10",
-	"debian12": "d12", "bookworm": "d12",
-	"debian13": "d13", "debian": "d13",
-	"trixie":   "d13",
-	"ubuntu22": "u22", "ubuntu2204": "u22", "jammy": "u22",
-	"ubuntu": "u24", "ubuntu24": "u24", "ubuntu2404": "u24", "noble": "u24",
-	"ubuntu26": "u26", "ubuntu2604": "u26", "resolute": "u26",
-}
+var embeddedManifestGeneratedAt = time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)
 
 var formalAliases = []string{"el7", "el8", "el9", "el10", "d12", "d13", "u22", "u24", "u26"}
 
@@ -225,23 +47,52 @@ var formalMatrix = []string{
 	"u26/amd64", "u26/arm64",
 }
 
-func CanonicalAlias(alias string) string {
-	alias = strings.ToLower(strings.TrimSpace(alias))
-	if canonical, ok := aliases[alias]; ok {
-		alias = canonical
+func EmbeddedCatalog() Catalog {
+	catalog, err := strictCatalog(embeddedCatalogBytes)
+	if err != nil {
+		panic(fmt.Sprintf("invalid embedded image catalog: %v", err))
 	}
-	return alias
+	return catalog
+}
+
+func EmbeddedCatalogBytes() ([]byte, error) {
+	return append([]byte(nil), embeddedCatalogBytes...), nil
 }
 
 func EmbeddedEntries() []Entry {
+	catalog := EmbeddedCatalog()
 	entries := make([]Entry, 0, len(formalMatrix))
 	for _, key := range formalMatrix {
-		entries = append(entries, withRepositoryFile(embedded[key]))
+		imageName, arch, _ := strings.Cut(key, "/")
+		entry, err := catalog.Entry(imageName, arch)
+		if err != nil {
+			panic(fmt.Sprintf("invalid embedded image matrix entry %s: %v", key, err))
+		}
+		entries = append(entries, entry)
 	}
 	return entries
 }
 
-func withRepositoryFile(entry Entry) Entry {
-	entry.File = fmt.Sprintf("%s/%s-%s-%s.qcow2", entry.Alias, entry.Alias, entry.Release, entry.Arch)
-	return entry
+func CanonicalAlias(alias string) string {
+	alias = strings.ToLower(strings.TrimSpace(alias))
+	canonical, _, err := EmbeddedCatalog().canonicalImage(alias)
+	if err == nil {
+		return canonical
+	}
+	return alias
+}
+
+// CanonicalReference normalizes a built-in alias while preserving its stable
+// channel or explicit version selector. Unknown custom-repository names remain
+// intact for runtime catalog resolution.
+func CanonicalReference(value string) (string, error) {
+	ref, err := ParseReference(value)
+	if err != nil {
+		return "", err
+	}
+	if ref.Image == "" {
+		ref.Image = EmbeddedCatalog().Defaults.Image
+	}
+	ref.Image = CanonicalAlias(ref.Image)
+	return ref.String(), nil
 }

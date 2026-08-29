@@ -469,7 +469,7 @@ func TestImageListJSON(t *testing.T) {
 	if code := run([]string{"image", "list", "--json"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{`"alias": "u24"`, `"arch": "arm64"`, `"status": "testing"`} {
+	for _, want := range []string{`"alias": "u24"`, `"arch": "arm64"`, `"channels": [`, `"stable"`, `"status": "testing"`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("image JSON missing %q: %s", want, stdout.String())
 		}
@@ -544,7 +544,7 @@ func TestCompletions(t *testing.T) {
 		{args: []string{"__complete", "setup", ""}, want: []string{"meta", "dual", "trio", "full"}},
 		{args: []string{"__complete", "setup", "--mode", ""}, want: []string{"host", "shared"}},
 		{args: []string{"__complete", "image", ""}, want: []string{"list", "pull", "sync"}},
-		{args: []string{"__complete", "image", "pull", "u"}, want: []string{"u24"}},
+		{args: []string{"__complete", "image", "pull", "u"}, want: []string{"u24", "u24:stable", "u24@20260801.0.0"}},
 		{args: []string{"__complete", "up", "--file", "../../tests/fixtures/private-two.yaml", ""}, want: []string{"meta", "node-1"}},
 	} {
 		var stdout, stderr bytes.Buffer

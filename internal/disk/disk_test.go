@@ -129,6 +129,21 @@ func TestValidateBaseRejectsExternalOrUnsafeFeatures(t *testing.T) {
 	}
 }
 
+type leakedClusterRunner struct{}
+
+func (leakedClusterRunner) Run(_ context.Context, binary string, args ...string) (execx.Result, error) {
+	result := execx.Result{Stdout: []byte(`{"corruptions":0,"check-errors":0,"leaks":1}`), ExitCode: 3}
+	return result, &execx.CommandError{Binary: binary, Args: args, ExitCode: 3, Cause: fmt.Errorf("leaked clusters")}
+}
+
+func TestCheckBaseParsesExitThreeLeakReport(t *testing.T) {
+	t.Parallel()
+	manager := Manager{QEMUImg: "qemu-img", Runner: leakedClusterRunner{}}
+	if err := manager.CheckBase(context.Background(), "/fixture/base.qcow2"); err != nil {
+		t.Fatalf("leak-only qemu-img check rejected: %v", err)
+	}
+}
+
 func TestCreateOverlayRejectsExistingTarget(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

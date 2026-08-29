@@ -1745,6 +1745,7 @@ type imageOptions struct {
 	Action         string
 	Repository     string
 	Alias          string
+	Arch           string
 	Source         string
 	Path           string
 	ExpectedSHA256 string
@@ -1781,14 +1782,14 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		textField(stdout, 12, "version", manifestState.ActiveVersion)
 		textField(stdout, 12, "highest", manifestState.HighestVersion)
 		for _, entry := range entries {
-			fmt.Fprintf(stdout, "%s %s %s %s %s\n", entry.Alias, entry.Release, entry.Arch, entry.Status, entry.SHA256)
+			channels := "-"
+			if len(entry.Channels) != 0 {
+				channels = strings.Join(entry.Channels, ",")
+			}
+			fmt.Fprintf(stdout, "%s %s %s channels=%s status=%s sha256:%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status, entry.SHA256)
 		}
 		return exitOK
 	case "info", "pull":
-		if options.Alias == "" {
-			errorf(stderr, "image %s requires an alias", options.Action)
-			return exitUsage
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		var progressItem *progress
@@ -1801,9 +1802,17 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		if options.Action == "pull" {
 			debugf(stderr, "image pull alias=%s timeout=%s", options.Alias, 30*time.Minute)
 			progressItem = startProgress(ctx, stderr, fmt.Sprintf("Pulling image %s", options.Alias))
-			info, err = service.PullAlias(ctx, options.Alias)
+			if options.Arch == "" {
+				info, err = service.PullAlias(ctx, options.Alias)
+			} else {
+				info, err = service.PullArch(ctx, options.Alias, options.Arch)
+			}
 		} else {
-			info, err = service.Info(ctx, options.Alias)
+			if options.Arch == "" {
+				info, err = service.Info(ctx, options.Alias)
+			} else {
+				info, err = service.InfoArch(ctx, options.Alias, options.Arch)
+			}
 		}
 		progressItem.Stop(err)
 		if err != nil {
@@ -1819,6 +1828,54 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "path: %s\n", info.Path)
 		}
 		return exitOK
+	case "repo-scan", "repo-build", "repo-verify":
+		root, err := filepath.Abs(options.Path)
+		if err != nil {
+			errorf(stderr, "%v", err)
+			return exitUsage
+		}
+		if options.Action == "repo-scan" {
+			report, scanErr := image.ScanRepository(root)
+			if scanErr != nil {
+				errorf(stderr, "%v", scanErr)
+				return exitIntegrity
+			}
+			if structuredOutput(stdout) {
+				return encodeJSON(stdout, stderr, report)
+			}
+			textField(stdout, 12, "root", report.Root)
+			textField(stdout, 12, "tracked", len(report.Tracked))
+			textField(stdout, 12, "missing", len(report.Missing))
+			textField(stdout, 12, "untracked", len(report.Untracked))
+			textField(stdout, 12, "unsafe", len(report.Unsafe))
+			return exitOK
+		}
+		qemuImg, err := exec.LookPath("qemu-img")
+		if err != nil {
+			errorf(stderr, "repository %s requires qemu-img: %v", strings.TrimPrefix(options.Action, "repo-"), err)
+			return exitCapability
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		builder := image.RepoBuilder{QEMUImg: qemuImg, Runner: execx.OSRunner{Timeout: 10 * time.Minute, OutputLimit: 1 << 20}}
+		var result image.RepoBuildResult
+		if options.Action == "repo-build" {
+			result, err = builder.Build(ctx, root)
+		} else {
+			result, err = builder.Verify(ctx, root)
+		}
+		if err != nil {
+			errorf(stderr, "%v", err)
+			return exitIntegrity
+		}
+		if structuredOutput(stdout) {
+			return encodeJSON(stdout, stderr, result)
+		}
+		textField(stdout, 12, "catalog", result.Path)
+		textField(stdout, 12, "revision", result.Catalog.Version)
+		textField(stdout, 12, "images", len(result.Catalog.Images))
+		textField(stdout, 12, "bytes", result.Bytes)
+		return exitOK
 	case "prune":
 		if options.DryRun && options.Apply {
 			errorf(stderr, "--dry-run and --yes are mutually exclusive")
@@ -1826,7 +1883,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		service, err := imageService("", nil)
+		service, err := imageService(options.Repository, nil)
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime
@@ -1867,7 +1924,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", options.Source, options.AllowDowngrade)
-		service, err := imageService("", nil)
+		service, err := imageService(options.Repository, nil)
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime
@@ -1888,7 +1945,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 	case "reset-manifest":
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		service, err := imageService("", nil)
+		service, err := imageService(options.Repository, nil)
 		if err != nil {
 			errorf(stderr, "%v", err)
 			return exitRuntime

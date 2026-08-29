@@ -1,0 +1,314 @@
+{
+  "schema": 2,
+  "version": 2026082801,
+  "generated_at": "2026-08-28T00:00:00Z",
+  "images": {
+    "d12": {
+      "aliases": [
+        "bookworm",
+        "debian12"
+      ],
+      "default": "20260806.2562.0",
+      "releases": {
+        "20260806.2562.0": {
+          "amd64": {
+            "file": "d12/d12-20260806.2562.0-amd64.qcow2",
+            "upstream": "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-amd64-20260806-2562.qcow2",
+            "sha256": "dd3dbd23a3965318cc9aae32592dcfde4abcb8f90a50ca760a9ca9e8f3ba6255",
+            "format": "qcow2",
+            "artifact_size": 448069632,
+            "virtual_size": 3221225472,
+            "source_user": "debian",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Debian 12 generic cloud image 20260806-2562; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          },
+          "arm64": {
+            "file": "d12/d12-20260806.2562.0-arm64.qcow2",
+            "upstream": "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-arm64-20260806-2562.qcow2",
+            "sha256": "8c6b8f81e571d530f6561c707538a4e807de8188c9a3f41af7b52b4e5ed010be",
+            "format": "qcow2",
+            "artifact_size": 434044928,
+            "virtual_size": 3221225472,
+            "source_user": "debian",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Debian 12 generic cloud image 20260806-2562; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          }
+        }
+      }
+    },
+    "d13": {
+      "aliases": [
+        "debian",
+        "debian13",
+        "trixie"
+      ],
+      "default": "20260810.2566.0",
+      "releases": {
+        "20260810.2566.0": {
+          "amd64": {
+            "file": "d13/d13-20260810.2566.0-amd64.qcow2",
+            "upstream": "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-amd64-20260810-2566.qcow2",
+            "sha256": "d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc",
+            "format": "qcow2",
+            "artifact_size": 436404224,
+            "virtual_size": 3221225472,
+            "source_user": "debian",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Debian 13 generic cloud image 20260810-2566; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          },
+          "arm64": {
+            "file": "d13/d13-20260810.2566.0-arm64.qcow2",
+            "upstream": "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-arm64-20260810-2566.qcow2",
+            "sha256": "2c546c79ec199983a88e384f6e5d013ab7876353943f7aa614403e3028bbea99",
+            "format": "qcow2",
+            "artifact_size": 429195264,
+            "virtual_size": 3221225472,
+            "source_user": "debian",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Debian 13 generic cloud image 20260810-2566; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          }
+        }
+      }
+    },
+    "el10": {
+      "aliases": [
+        "rocky10"
+      ],
+      "default": "10.2.20260525.0",
+      "releases": {
+        "10.2.20260525.0": {
+          "amd64": {
+            "file": "el10/el10-10.2.20260525.0-amd64.qcow2",
+            "upstream": "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2",
+            "sha256": "9fc9e9ff16888bb68ac39b0392e25c9c92684d50c85f1cce6ab549363bbc4b48",
+            "format": "qcow2",
+            "artifact_size": 544997376,
+            "virtual_size": 10737418240,
+            "source_user": "rocky",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Rocky Linux 10.2 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          },
+          "arm64": {
+            "file": "el10/el10-10.2.20260525.0-arm64.qcow2",
+            "upstream": "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.2-20260525.0.aarch64.qcow2",
+            "sha256": "457c8375e19496f43a25c4a6169fa11237536c53cef6f85a20ea3c5a751aa0f5",
+            "format": "qcow2",
+            "artifact_size": 469368832,
+            "virtual_size": 10737418240,
+            "source_user": "rocky",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Rocky Linux 10.2 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          }
+        }
+      }
+    },
+    "el7": {
+      "aliases": [
+        "c7",
+        "centos7",
+        "centos79"
+      ],
+      "default": "7.9.20221112.0",
+      "releases": {
+        "7.9.20221112.0": {
+          "amd64": {
+            "file": "el7/el7-7.9.20221112.0-amd64.qcow2",
+            "upstream": "https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2",
+            "sha256": "284aab2b23d91318f169ff464bce4d53404a15a0618ceb34562838c59af4adea",
+            "format": "qcow2",
+            "artifact_size": 902889472,
+            "virtual_size": 8589934592,
+            "source_user": "centos",
+            "boot": "bios",
+            "status": "deprecated",
+            "provenance": "CentOS Linux 7 GenericCloud 2211 archive; distribution-owned immutable artifact retained for EOL compatibility testing only; SHA-256, qcow2 metadata, MBR boot layout, and 4K XFS root verified 2026-08-28"
+          }
+        }
+      }
+    },
+    "el8": {
+      "aliases": [
+        "rocky8"
+      ],
+      "default": "8.10.20240528.0",
+      "releases": {
+        "8.10.20240528.0": {
+          "amd64": {
+            "file": "el8/el8-8.10.20240528.0-amd64.qcow2",
+            "upstream": "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base-8.10-20240528.0.x86_64.qcow2",
+            "sha256": "e56066c58606191e96184de9a9183a3af33c59bcbd8740d8b10ca054a7a89c14",
+            "format": "qcow2",
+            "artifact_size": 2065760256,
+            "virtual_size": 10737418240,
+            "source_user": "rocky",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; native Linux/amd64 lifecycle passed and qcow2 metadata verified 2026-08-24"
+          },
+          "arm64": {
+            "file": "el8/el8-8.10.20240528.0-arm64.qcow2",
+            "upstream": "https://dl.rockylinux.org/pub/rocky/8/images/aarch64/Rocky-8-GenericCloud-Base-8.10-20240528.0.aarch64.qcow2",
+            "sha256": "946b5b9845aa5e3ed98f1bc6ee9873201712a2aef01b87731aed16857e0ca13f",
+            "format": "qcow2",
+            "artifact_size": 1925644288,
+            "virtual_size": 10737418240,
+            "source_user": "rocky",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; qcow2 metadata verified and TCG booted on Darwin/arm64 2026-08-28; Apple HVF is incompatible with its 64K-granule kernel"
+          }
+        }
+      }
+    },
+    "el9": {
+      "aliases": [
+        "rocky",
+        "rocky9"
+      ],
+      "default": "9.8.20260525.0",
+      "releases": {
+        "9.8.20260525.0": {
+          "amd64": {
+            "file": "el9/el9-9.8.20260525.0-amd64.qcow2",
+            "upstream": "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
+            "sha256": "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8",
+            "format": "qcow2",
+            "artifact_size": 645988352,
+            "virtual_size": 10737418240,
+            "source_user": "rocky",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Rocky Linux 9.8 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          },
+          "arm64": {
+            "file": "el9/el9-9.8.20260525.0-arm64.qcow2",
+            "upstream": "https://dl.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base-9.8-20260525.0.aarch64.qcow2",
+            "sha256": "24692a444f1f0b8bb95375c38c8b43f8099a115347623691be2c330b40c8a1fe",
+            "format": "qcow2",
+            "artifact_size": 519831552,
+            "virtual_size": 10737418240,
+            "source_user": "rocky",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Rocky Linux 9.8 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          }
+        }
+      }
+    },
+    "u22": {
+      "aliases": [
+        "jammy",
+        "ubuntu22",
+        "ubuntu2204"
+      ],
+      "default": "20260810.0.0",
+      "releases": {
+        "20260810.0.0": {
+          "amd64": {
+            "file": "u22/u22-20260810.0.0-amd64.qcow2",
+            "upstream": "https://cloud-images.ubuntu.com/jammy/20260810/jammy-server-cloudimg-amd64.img",
+            "sha256": "6de0c42a98dc9a749917dfef34bf54e3595441bf67d39f103a61341560b3da8e",
+            "format": "qcow2",
+            "artifact_size": 734344192,
+            "virtual_size": 2361393152,
+            "source_user": "ubuntu",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Canonical Ubuntu Server 22.04 dated cloud image 20260810; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          },
+          "arm64": {
+            "file": "u22/u22-20260810.0.0-arm64.qcow2",
+            "upstream": "https://cloud-images.ubuntu.com/jammy/20260810/jammy-server-cloudimg-arm64.img",
+            "sha256": "b57a88a8d3b9f33d48f1b3d70a1aac7ae79760c9b507699d2601989eadac02b1",
+            "format": "qcow2",
+            "artifact_size": 703484928,
+            "virtual_size": 2361393152,
+            "source_user": "ubuntu",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Canonical Ubuntu Server 22.04 dated cloud image 20260810; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          }
+        }
+      }
+    },
+    "u24": {
+      "aliases": [
+        "noble",
+        "ubuntu",
+        "ubuntu24",
+        "ubuntu2404"
+      ],
+      "default": "20260801.0.0",
+      "releases": {
+        "20260801.0.0": {
+          "amd64": {
+            "file": "u24/u24-20260801.0.0-amd64.qcow2",
+            "upstream": "https://cloud-images.ubuntu.com/noble/20260801/noble-server-cloudimg-amd64.img",
+            "sha256": "0533b0655c32e68b31d792ecd6ccfca95abdbc536c4446874fe0513bd4140ffe",
+            "format": "qcow2",
+            "artifact_size": 624239616,
+            "virtual_size": 3758096384,
+            "source_user": "ubuntu",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Canonical Ubuntu Server 24.04 dated cloud image 20260801; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          },
+          "arm64": {
+            "file": "u24/u24-20260801.0.0-arm64.qcow2",
+            "upstream": "https://cloud-images.ubuntu.com/noble/20260801/noble-server-cloudimg-arm64.img",
+            "sha256": "aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476",
+            "format": "qcow2",
+            "artifact_size": 618417664,
+            "virtual_size": 3758096384,
+            "source_user": "ubuntu",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Canonical Ubuntu Server 24.04 dated cloud image 20260801; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          }
+        }
+      }
+    },
+    "u26": {
+      "aliases": [
+        "resolute",
+        "ubuntu26",
+        "ubuntu2604"
+      ],
+      "default": "20260731.0.0",
+      "releases": {
+        "20260731.0.0": {
+          "amd64": {
+            "file": "u26/u26-20260731.0.0-amd64.qcow2",
+            "upstream": "https://cloud-images.ubuntu.com/resolute/20260731/resolute-server-cloudimg-amd64.img",
+            "sha256": "9dc7c5363c0146a08ba0c9aa834d82c2c6dfbb1c471ad9a2f0aba1189e21be05",
+            "format": "qcow2",
+            "artifact_size": 860447744,
+            "virtual_size": 3758096384,
+            "source_user": "ubuntu",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Canonical Ubuntu Server 26.04 dated cloud image 20260731; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          },
+          "arm64": {
+            "file": "u26/u26-20260731.0.0-arm64.qcow2",
+            "upstream": "https://cloud-images.ubuntu.com/resolute/20260731/resolute-server-cloudimg-arm64.img",
+            "sha256": "3e113fdd41f39e13729375173bb2ae793f87dc6db4294e5251ff2476971788ba",
+            "format": "qcow2",
+            "artifact_size": 940920832,
+            "virtual_size": 3758096384,
+            "source_user": "ubuntu",
+            "boot": "uefi",
+            "status": "testing",
+            "provenance": "Canonical Ubuntu Server 26.04 dated cloud image 20260731; distribution-owned artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+          }
+        }
+      }
+    }
+  }
+}

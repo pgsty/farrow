@@ -37,10 +37,11 @@ const (
 	defaultMemMiB   = 4096
 	defaultDiskGiB  = 64
 	defaultDataGiB  = 128
-	defaultImage    = "u24"
 	defaultSSHUser  = "dba"
 	defaultAdminUID = 88
 )
+
+var defaultImage = image.EmbeddedCatalog().Defaults.Image
 
 var knownVMKeys = map[string]struct{}{
 	"vm_skip": {}, "vm_image": {}, "vm_arch": {}, "vm_cpu": {}, "vm_mem": {},
@@ -586,7 +587,10 @@ func ParseInventory(data []byte) (File, error) {
 		} else if found {
 			imageAlias = value
 		}
-		node.Image = image.CanonicalAlias(imageAlias)
+		node.Image, err = image.CanonicalReference(imageAlias)
+		if err != nil {
+			return File{}, fmt.Errorf("host %s vm_image: %w", host.address, err)
+		}
 
 		if value, found, err := host.lookupString("vm_arch"); err != nil {
 			return File{}, err

@@ -502,6 +502,14 @@ func aliases(value spec.Resolved) []string {
 	return result
 }
 
+func canonicalReferenceImage(value string) string {
+	ref, err := image.ParseReference(value)
+	if err != nil {
+		return value
+	}
+	return image.CanonicalAlias(ref.Image)
+}
+
 func ensureSSHAddressesUnused(nodes []spec.Node) error {
 	return ensureSSHAddressesUnusedWithDial(nodes, func(network, address string) (net.Conn, error) {
 		return net.DialTimeout(network, address, 500*time.Millisecond)
@@ -577,9 +585,10 @@ func (m Manager) resolveBases(ctx context.Context, profile platform.Profile, val
 		if err != nil {
 			return nil, "", err
 		}
-		bases[entry.Alias] = BaseImage{Path: path, Alias: entry.Alias, Release: entry.Release, Digest: entry.SHA256, VirtualSize: metadata.VirtualSize}
-		if alias != entry.Alias {
-			bases[alias] = bases[entry.Alias]
+		base := BaseImage{Path: path, Alias: entry.Alias, Release: entry.Release, Digest: entry.SHA256, VirtualSize: metadata.VirtualSize}
+		bases[alias] = base
+		if _, exists := bases[entry.Alias]; !exists {
+			bases[entry.Alias] = base
 		}
 	}
 	return bases, boot, nil
@@ -616,7 +625,7 @@ func selectRuntime(host platform.Profile, value spec.Resolved) (runtimeDecision,
 	}
 	hasEL7, hasEL8 := false, false
 	for _, name := range imageNames {
-		canonical := image.CanonicalAlias(name)
+		canonical := canonicalReferenceImage(name)
 		hasEL7 = hasEL7 || canonical == "el7"
 		hasEL8 = hasEL8 || canonical == "el8"
 	}

@@ -13,8 +13,8 @@ func newImageCommand(stdout, stderr io.Writer) *cobra.Command {
 		`Inspect signed image metadata, populate or prune the verified local cache,
 import local qcow2 files, and manage the active signed catalog.`,
 		`  farrow image list
-  farrow image info u24
-  farrow image pull u24
+  farrow image info d13
+  farrow image pull d13
   farrow image prune --dry-run`,
 		stdout, stderr,
 	)
@@ -46,22 +46,30 @@ and registered local image entries for the native host architecture.`,
 		}
 		long := `Show signed metadata, native-architecture selection, and verified local
 cache state for one image alias.`
-		example := "  farrow image info u24\n  farrow --json image info u24"
+		example := "  farrow image info d13\n  farrow image info d13:stable\n  farrow --json image info d13"
 		if action == "pull" {
 			long = `Download one native-architecture image from the configured repository or
 immutable upstream source, then verify its digest and qcow2 metadata before
 activation.`
-			example = "  farrow image pull u24\n  farrow image pull u24 --repo /srv/farrow-mirror"
+			example = "  farrow image pull\n  farrow image pull d13@20260810.2566.0\n  farrow image pull d13 --repo /srv/farrow"
 		}
 		command := &cobra.Command{
-			Use:               action + " <alias>",
+			Use:               action + " [image[:channel]|image@version]",
 			Short:             short,
 			Long:              long,
 			Example:           example,
-			Args:              cobra.ExactArgs(1),
+			Args:              cobra.MaximumNArgs(1),
 			ValidArgsFunction: imageAliasCompletion,
+			PreRunE: func(_ *cobra.Command, _ []string) error {
+				if options.Arch == "" {
+					return nil
+				}
+				return validateChoice("--arch", options.Arch, "amd64", "arm64")
+			},
 			RunE: func(_ *cobra.Command, arguments []string) error {
-				options.Alias = arguments[0]
+				if len(arguments) != 0 {
+					options.Alias = arguments[0]
+				}
 				return commandError(runImage(options, stdout, stderr))
 			},
 		}
@@ -70,6 +78,8 @@ activation.`
 		} else {
 			command.Aliases = []string{"p"}
 		}
+		command.Flags().StringVarP(&options.Arch, "arch", "a", "", "artifact architecture (default: native host)")
+		_ = command.RegisterFlagCompletionFunc("arch", enumFlagCompletion("amd64", "arm64"))
 		command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
 		parent.AddCommand(command)
 	}
@@ -92,6 +102,7 @@ staging files. The default and --dry-run are read-only; deletion requires
 	}
 	prune.Flags().BoolVarP(&pruneOptions.DryRun, "dry-run", "d", false, "show unreferenced images and stale staging files without deleting")
 	prune.Flags().BoolVarP(&pruneOptions.Apply, "yes", "y", false, "delete the displayed unreferenced images and stale staging files")
+	prune.Flags().StringVarP(&pruneOptions.Repository, "repo", "r", "", repositoryFlagHelp)
 	prune.MarkFlagsMutuallyExclusive("dry-run", "yes")
 	parent.AddCommand(prune)
 
@@ -113,6 +124,7 @@ atomically.`,
 		},
 	}
 	syncCommand.Flags().BoolVar(&syncOptions.AllowDowngrade, "allow-downgrade", false, "allow activation below the catalog high-water mark")
+	syncCommand.Flags().StringVarP(&syncOptions.Repository, "repo", "r", "", "repository whose independent high-water state is being synchronized")
 	parent.AddCommand(syncCommand)
 
 	resetOptions := imageOptions{Action: "reset-manifest"}
@@ -128,6 +140,7 @@ signed-catalog high-water mark used to prevent silent downgrade.`,
 			return commandError(runImage(resetOptions, stdout, stderr))
 		},
 	}
+	reset.Flags().StringVarP(&resetOptions.Repository, "repo", "r", "", "repository whose active catalog is reset to the embedded baseline")
 	parent.AddCommand(reset)
 
 	importOptions := imageOptions{Action: "import"}

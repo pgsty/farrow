@@ -59,7 +59,7 @@ func Template(name, cidr string) ([]byte, error) {
 	fmt.Fprintf(&output, "#   vm_cpu: 2                                cores\n")
 	fmt.Fprintf(&output, "#   vm_mem: 4096                             memory (MiB, or \"8GiB\")\n")
 	fmt.Fprintf(&output, "#   vm_disk: 64                              root disk (GiB)\n")
-	fmt.Fprintf(&output, "#   vm_image: u24                            guest image alias\n")
+	fmt.Fprintf(&output, "#   vm_image: %-6s                         image, image:channel, or image@version\n", defaultImage)
 	fmt.Fprintf(&output, "#   vm_disks: [{ path: /data, size: 128 }]   extra data disks\n")
 	fmt.Fprintf(&output, "#   vm_alias: [i.pigsty]                     /etc/hosts aliases\n")
 	fmt.Fprintf(&output, "#   vm_skip: true                            host not managed by farrow\n")

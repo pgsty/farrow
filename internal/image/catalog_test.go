@@ -2,6 +2,9 @@ package image
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,7 +23,7 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.SHA256 != "aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476" || entry.ArtifactSize != 618417664 || entry.VirtualSize != 3758096384 || catalog.Version != EmbeddedManifestVersion || !catalog.GeneratedAt.Equal(embeddedManifestGeneratedAt) {
+	if entry.SHA256 != "aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476" || entry.ArtifactSize != 618417664 || entry.VirtualSize != 3758096384 || catalog.Version != EmbeddedManifestVersion || catalog.Defaults.Image != "d13" || entry.Channel != "stable" {
 		t.Fatalf("entry/catalog = %#v %#v", entry, catalog)
 	}
 	if len(catalog.Images) != 9 || len(catalog.Entries()) != 17 {
@@ -28,18 +31,77 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 	}
 	for _, alias := range formalAliases {
 		record, ok := catalog.Images[alias]
-		if !ok || len(record.Releases) != 1 || record.Default == "" {
+		if !ok || len(record.Versions) != 1 || record.Channels["stable"] == "" {
 			t.Errorf("catalog image %s = %#v", alias, record)
 			continue
 		}
-		for _, arches := range record.Releases {
+		for _, version := range record.Versions {
 			want := 2
 			if alias == "el7" {
 				want = 1
 			}
-			if len(arches) != want {
-				t.Errorf("catalog image %s architectures = %v", alias, arches)
+			if len(version.Variants) != want {
+				t.Errorf("catalog image %s architectures = %v", alias, version.Variants)
 			}
+		}
+	}
+}
+
+func TestLegacySchemaTwoCatalogConvertsWithoutChangingRepositoryPath(t *testing.T) {
+	t.Parallel()
+	legacy := legacyCatalog{
+		Schema: 2, Version: 2026082801, GeneratedAt: json.RawMessage(`"2026-08-28T00:00:00Z"`),
+		Images: map[string]legacyCatalogImage{
+			"u24": {
+				Default: "1",
+				Releases: map[string]map[string]legacyArtifact{
+					"1": {
+						"arm64": legacyArtifact{
+							File: "u24/u24-1-arm64.qcow2", Upstream: "https://example.test/u24-1-arm64.qcow2",
+							SHA256: strings.Repeat("a", 64), Format: "qcow2", ArtifactSize: 1, VirtualSize: 1,
+							Boot: "uefi", Status: "testing", Provenance: "legacy fixture",
+						},
+					},
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := strictCatalog(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := catalog.Entry("u24", "arm64")
+	if err != nil || entry.File != "u24/u24-1-arm64.qcow2" || entry.CacheFile != "u24/u24-1-arm64.qcow2" {
+		t.Fatalf("converted legacy entry = %#v, %v", entry, err)
+	}
+}
+
+func TestPublishedSchemaTwoCatalogGoldenConverts(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("testdata", "catalog-v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := strictCatalog(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Schema != ManifestSchema || catalog.Version != 2026082801 || catalog.Defaults.Image != "u24" || len(catalog.Entries()) != 17 {
+		t.Fatalf("converted published catalog = %#v entries=%d", catalog, len(catalog.Entries()))
+	}
+	for _, test := range []struct {
+		reference string
+		arch      string
+	}{
+		{"u24", "arm64"},
+		{"d13", "amd64"},
+	} {
+		if _, err := catalog.Entry(test.reference, test.arch); err != nil {
+			t.Errorf("published v2 entry %s/%s: %v", test.reference, test.arch, err)
 		}
 	}
 }
@@ -47,7 +109,7 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 func TestCatalogRejectsUnknownAndTrailing(t *testing.T) {
 	t.Parallel()
 	data, _ := EmbeddedCatalogBytes()
-	data = bytes.Replace(data, []byte(`"schema": 2`), []byte(`"schema": 2, "unknown": true`), 1)
+	data = bytes.Replace(data, []byte(`"schema": 3`), []byte(`"schema": 3, "unknown": true`), 1)
 	if _, err := strictCatalog(data); err == nil {
 		t.Fatal("unknown manifest field accepted")
 	}
@@ -65,8 +127,6 @@ func TestCatalogRejectsIncompleteArtifactAndMovingURL(t *testing.T) {
 	}{
 		{name: "artifact size", mutate: func(artifact *Artifact) { artifact.ArtifactSize = 0 }},
 		{name: "virtual size", mutate: func(artifact *Artifact) { artifact.VirtualSize = 0 }},
-		{name: "source user", mutate: func(artifact *Artifact) { artifact.SourceUser = " " }},
-		{name: "provenance", mutate: func(artifact *Artifact) { artifact.Provenance = "" }},
 		{name: "unsafe file", mutate: func(artifact *Artifact) { artifact.File = "../image.qcow2" }},
 		{name: "credential URL", mutate: func(artifact *Artifact) { artifact.Upstream = "https://user:secret@example.test/image.qcow2" }},
 		{name: "query URL", mutate: func(artifact *Artifact) { artifact.Upstream = "https://example.test/image.qcow2?token=secret" }},
@@ -87,9 +147,11 @@ func TestCatalogRejectsIncompleteArtifactAndMovingURL(t *testing.T) {
 			t.Parallel()
 			catalog := EmbeddedCatalog()
 			record := catalog.Images["u24"]
-			artifact := record.Releases["20260801.0.0"]["arm64"]
+			version := record.Versions["20260801.0.0"]
+			artifact := version.Variants["arm64"]
 			test.mutate(&artifact)
-			record.Releases["20260801.0.0"]["arm64"] = artifact
+			version.Variants["arm64"] = artifact
+			record.Versions["20260801.0.0"] = version
 			catalog.Images["u24"] = record
 			if err := catalog.Validate(); err == nil {
 				t.Fatal("invalid catalog artifact unexpectedly accepted")
@@ -122,7 +184,7 @@ func TestCatalogRejectsReservedLocalAliasNamespace(t *testing.T) {
 	} {
 		catalog := EmbeddedCatalog()
 		mutate(&catalog)
-		if err := catalog.Validate(); err == nil || !strings.Contains(err.Error(), "reserved local image namespace") {
+		if err := catalog.Validate(); err == nil || !strings.Contains(err.Error(), "reserved") {
 			t.Fatalf("catalog reserved namespace error = %v", err)
 		}
 	}

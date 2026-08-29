@@ -177,9 +177,11 @@ func (f *File) defaults() {
 		f.Network.Mode = "private"
 	}
 	if f.Defaults.Image == "" {
-		f.Defaults.Image = "u24"
+		f.Defaults.Image = defaultImage
 	}
-	f.Defaults.Image = image.CanonicalAlias(f.Defaults.Image)
+	if normalized, err := image.CanonicalReference(f.Defaults.Image); err == nil {
+		f.Defaults.Image = normalized
+	}
 	if f.Defaults.CPUs == 0 {
 		f.Defaults.CPUs = 1
 	}
@@ -212,8 +214,8 @@ func (f *File) defaults() {
 		node := &f.Nodes[index]
 		if node.Image == "" {
 			node.Image = f.Defaults.Image
-		} else {
-			node.Image = image.CanonicalAlias(node.Image)
+		} else if normalized, err := image.CanonicalReference(node.Image); err == nil {
+			node.Image = normalized
 		}
 		if node.CPUs == 0 {
 			node.CPUs = f.Defaults.CPUs
@@ -248,6 +250,9 @@ func (f *File) Validate() error {
 	}
 	if !sshUser.MatchString(f.SSH.User) {
 		return fmt.Errorf("invalid SSH user %q", f.SSH.User)
+	}
+	if _, err := image.ParseReference(f.Defaults.Image); err != nil {
+		return fmt.Errorf("invalid default image reference: %w", err)
 	}
 	if len(f.Nodes) == 0 || len(f.Nodes) > 20 {
 		return errors.New("configuration requires 1..20 nodes")
@@ -285,6 +290,9 @@ func (f *File) Validate() error {
 	}
 	for nodeIndex := range f.Nodes {
 		node := &f.Nodes[nodeIndex]
+		if _, err := image.ParseReference(node.Image); err != nil {
+			return fmt.Errorf("node %s image reference: %w", node.Name, err)
+		}
 		if node.Control {
 			controls++
 		}

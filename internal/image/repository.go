@@ -17,6 +17,25 @@ const CatalogFilename = "catalog.json"
 // and --repo remain explicit runtime overrides.
 var DefaultRepositoryURL string
 
+// RepositoryAllowsUnsigned reports whether an explicitly selected repository
+// may rely on local ownership or HTTPS rather than a detached trusted
+// signature. The compiled default remains in the signed embedded trust domain
+// even when a user spells the same URL explicitly.
+func RepositoryAllowsUnsigned(value string) bool {
+	normalized, err := NormalizeRepository(value)
+	if err != nil || normalized == "" {
+		return false
+	}
+	if DefaultRepositoryURL != "" {
+		defaultRepository, defaultErr := NormalizeRepository(DefaultRepositoryURL)
+		if defaultErr == nil && normalized == defaultRepository {
+			return false
+		}
+	}
+	parsed, _ := url.Parse(normalized)
+	return parsed.Scheme == "" || parsed.Scheme == "https"
+}
+
 func NormalizeRepository(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -54,7 +73,7 @@ func RepositoryArtifactSource(repository, filename string) (string, error) {
 	if err != nil || repository == "" {
 		return "", err
 	}
-	if !validStoreFile(filename) {
+	if !safeRepositoryFile(filename) {
 		return "", errors.New("image repository artifact path is unsafe")
 	}
 	parsed, _ := url.Parse(repository)

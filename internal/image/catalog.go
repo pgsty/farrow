@@ -11,64 +11,165 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 )
 
 const (
-	ManifestSchema          = 2
-	EmbeddedManifestVersion = 2026082801
-	MaxManifestSize         = 1 << 20
+	ManifestSchema          = 3
+	EmbeddedManifestVersion = 2026082901
+	MaxManifestSize         = 4 << 20
 )
-
-var embeddedManifestGeneratedAt = time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
 
 func reservedLocalNamespace(value string) bool {
 	return value == "local" || strings.HasPrefix(value, localAliasPrefix)
 }
 
+type CatalogDefaults struct {
+	Image   string `json:"image" yaml:"image"`
+	Channel string `json:"channel" yaml:"channel"`
+	Arch    string `json:"arch" yaml:"arch"`
+	Boot    string `json:"boot" yaml:"boot"`
+}
+
 type Artifact struct {
-	File         string `json:"file"`
-	Upstream     string `json:"upstream"`
-	SHA256       string `json:"sha256"`
-	Format       string `json:"format"`
-	ArtifactSize int64  `json:"artifact_size"`
-	VirtualSize  int64  `json:"virtual_size"`
-	SourceUser   string `json:"source_user"`
-	Boot         string `json:"boot"`
-	Status       string `json:"status"`
-	Provenance   string `json:"provenance"`
+	File         string `json:"file" yaml:"file"`
+	Upstream     string `json:"upstream,omitempty" yaml:"upstream,omitempty"`
+	SHA256       string `json:"sha256" yaml:"sha256"`
+	Format       string `json:"format" yaml:"format"`
+	ArtifactSize int64  `json:"artifact_size" yaml:"artifact_size"`
+	VirtualSize  int64  `json:"virtual_size" yaml:"virtual_size"`
+	SourceUser   string `json:"source_user,omitempty" yaml:"source_user,omitempty"`
+	Boot         string `json:"boot,omitempty" yaml:"boot,omitempty"`
+	Status       string `json:"status,omitempty" yaml:"status,omitempty"`
+	Provenance   string `json:"provenance,omitempty" yaml:"provenance,omitempty"`
+}
+
+type CatalogVersion struct {
+	Status     string              `json:"status,omitempty" yaml:"status,omitempty"`
+	Provenance string              `json:"provenance,omitempty" yaml:"provenance,omitempty"`
+	Variants   map[string]Artifact `json:"variants" yaml:"variants"`
 }
 
 type CatalogImage struct {
-	Aliases  []string                       `json:"aliases,omitempty"`
-	Default  string                         `json:"default"`
-	Releases map[string]map[string]Artifact `json:"releases"`
+	Aliases  []string                  `json:"aliases,omitempty" yaml:"aliases,omitempty"`
+	Boot     string                    `json:"boot,omitempty" yaml:"boot,omitempty"`
+	Channels map[string]string         `json:"channels" yaml:"channels"`
+	Versions map[string]CatalogVersion `json:"versions" yaml:"versions"`
 }
 
 type Catalog struct {
-	Schema      int                     `json:"schema"`
-	Version     uint64                  `json:"version"`
-	GeneratedAt time.Time               `json:"generated_at"`
-	Images      map[string]CatalogImage `json:"images"`
+	Schema   int                     `json:"schema" yaml:"schema"`
+	Version  uint64                  `json:"revision" yaml:"revision"`
+	Defaults CatalogDefaults         `json:"defaults" yaml:"defaults"`
+	Images   map[string]CatalogImage `json:"images" yaml:"images"`
 }
 
-var catalogName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+var (
+	catalogName        = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	channelName        = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	releaseName        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
+	repositoryFilename = regexp.MustCompile(`^[a-z0-9][A-Za-z0-9._+-]{0,191}\.qcow2$`)
+	sourceUserName     = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+)
 
 const localAliasPrefix = "local-"
 
-func strictCatalog(data []byte) (Catalog, error) {
-	if len(data) == 0 || len(data) > MaxManifestSize {
-		return Catalog{}, fmt.Errorf("manifest size %d is outside 1..%d", len(data), MaxManifestSize)
-	}
+type legacyArtifact Artifact
+
+type legacyCatalogImage struct {
+	Aliases  []string                             `json:"aliases,omitempty"`
+	Default  string                               `json:"default"`
+	Releases map[string]map[string]legacyArtifact `json:"releases"`
+}
+
+type legacyCatalog struct {
+	Schema      int                           `json:"schema"`
+	Version     uint64                        `json:"version"`
+	GeneratedAt json.RawMessage               `json:"generated_at"`
+	Images      map[string]legacyCatalogImage `json:"images"`
+}
+
+func strictDecode(data []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	var catalog Catalog
-	if err := decoder.Decode(&catalog); err != nil {
-		return Catalog{}, fmt.Errorf("decode strict image manifest: %w", err)
+	if err := decoder.Decode(target); err != nil {
+		return err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return Catalog{}, errors.New("image manifest contains trailing JSON data")
+		return errors.New("image catalog contains trailing JSON data")
+	}
+	return nil
+}
+
+func convertLegacyCatalog(legacy legacyCatalog) Catalog {
+	defaultImage := "u24"
+	if _, ok := legacy.Images[defaultImage]; !ok {
+		if _, ok := legacy.Images["d13"]; ok {
+			defaultImage = "d13"
+		} else {
+			names := make([]string, 0, len(legacy.Images))
+			for name := range legacy.Images {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			if len(names) != 0 {
+				defaultImage = names[0]
+			}
+		}
+	}
+	result := Catalog{
+		Schema: ManifestSchema, Version: legacy.Version,
+		Defaults: CatalogDefaults{Image: defaultImage, Channel: "stable", Arch: "native", Boot: "uefi"},
+		Images:   make(map[string]CatalogImage, len(legacy.Images)),
+	}
+	for name, oldImage := range legacy.Images {
+		imageRecord := CatalogImage{
+			Aliases: oldImage.Aliases, Channels: map[string]string{"stable": oldImage.Default},
+			Versions: make(map[string]CatalogVersion, len(oldImage.Releases)),
+		}
+		for release, oldVariants := range oldImage.Releases {
+			version := CatalogVersion{Variants: make(map[string]Artifact, len(oldVariants))}
+			for arch, oldArtifact := range oldVariants {
+				artifact := Artifact(oldArtifact)
+				version.Variants[arch] = artifact
+				if version.Status == "" {
+					version.Status = artifact.Status
+				}
+				if version.Provenance == "" {
+					version.Provenance = artifact.Provenance
+				}
+			}
+			imageRecord.Versions[release] = version
+		}
+		result.Images[name] = imageRecord
+	}
+	return result
+}
+
+func strictCatalog(data []byte) (Catalog, error) {
+	if len(data) == 0 || len(data) > MaxManifestSize {
+		return Catalog{}, fmt.Errorf("catalog size %d is outside 1..%d", len(data), MaxManifestSize)
+	}
+	var header struct {
+		Schema int `json:"schema"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return Catalog{}, fmt.Errorf("decode image catalog header: %w", err)
+	}
+	var catalog Catalog
+	switch header.Schema {
+	case ManifestSchema:
+		if err := strictDecode(data, &catalog); err != nil {
+			return Catalog{}, fmt.Errorf("decode strict image catalog schema %d: %w", ManifestSchema, err)
+		}
+	case 2:
+		var legacy legacyCatalog
+		if err := strictDecode(data, &legacy); err != nil {
+			return Catalog{}, fmt.Errorf("decode legacy image catalog schema 2: %w", err)
+		}
+		catalog = convertLegacyCatalog(legacy)
+	default:
+		return Catalog{}, fmt.Errorf("unsupported image catalog schema %d; this Farrow supports schemas 2 and %d", header.Schema, ManifestSchema)
 	}
 	if err := catalog.Validate(); err != nil {
 		return Catalog{}, err
@@ -76,57 +177,109 @@ func strictCatalog(data []byte) (Catalog, error) {
 	return catalog, nil
 }
 
+func validStatus(value string) bool {
+	return value == "supported" || value == "testing" || value == "deprecated" || value == "unknown"
+}
+
+func validBoot(value string) bool { return value == "bios" || value == "uefi" }
+
+func safeRepositoryFile(filename string) bool {
+	if filename == "" || path.Clean(filename) != filename || strings.HasPrefix(filename, "/") || strings.Contains(filename, "\\") {
+		return false
+	}
+	parts := strings.Split(filename, "/")
+	if len(parts) != 2 || !repositoryFilename.MatchString(parts[1]) {
+		return false
+	}
+	return parts[0] == "images" || catalogName.MatchString(parts[0])
+}
+
+func validateUpstream(value string) error {
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || hasMovingReleasePath(parsed.Path) {
+		return errors.New("upstream must be empty or an immutable absolute HTTPS URL")
+	}
+	return nil
+}
+
 func (c Catalog) Validate() error {
-	if c.Schema != ManifestSchema || c.Version == 0 || c.GeneratedAt.IsZero() || len(c.Images) == 0 {
-		return errors.New("image manifest schema/version/time/images are invalid")
+	if c.Schema != ManifestSchema || c.Version == 0 || len(c.Images) == 0 {
+		return errors.New("image catalog schema/revision/images are invalid")
+	}
+	if !catalogName.MatchString(c.Defaults.Image) || !channelName.MatchString(c.Defaults.Channel) || c.Defaults.Arch != "native" || !validBoot(c.Defaults.Boot) {
+		return errors.New("image catalog defaults must name a valid image, channel, native architecture, and boot mode")
+	}
+	if _, ok := c.Images[c.Defaults.Image]; !ok {
+		return fmt.Errorf("default image %q does not exist", c.Defaults.Image)
 	}
 	allNames := make(map[string]struct{})
 	for name := range c.Images {
-		if !catalogName.MatchString(name) {
-			return fmt.Errorf("invalid image name %q", name)
-		}
-		if reservedLocalNamespace(name) {
-			return fmt.Errorf("image name %q uses the reserved local image namespace", name)
+		if !catalogName.MatchString(name) || reservedLocalNamespace(name) {
+			return fmt.Errorf("invalid or reserved image name %q", name)
 		}
 		allNames[name] = struct{}{}
 	}
 	for name, imageRecord := range c.Images {
-		if len(imageRecord.Releases) == 0 || strings.TrimSpace(imageRecord.Default) == "" {
-			return fmt.Errorf("image %s has no releases or default release", name)
+		if len(imageRecord.Channels) == 0 || len(imageRecord.Versions) == 0 {
+			return fmt.Errorf("image %s has no channels or versions", name)
 		}
-		if _, ok := imageRecord.Releases[imageRecord.Default]; !ok {
-			return fmt.Errorf("image %s default release %q does not exist", name, imageRecord.Default)
+		if imageRecord.Boot != "" && !validBoot(imageRecord.Boot) {
+			return fmt.Errorf("image %s has invalid boot mode %q", name, imageRecord.Boot)
 		}
 		for _, alias := range imageRecord.Aliases {
 			alias = strings.ToLower(strings.TrimSpace(alias))
-			if !catalogName.MatchString(alias) {
-				return fmt.Errorf("invalid image alias %q", alias)
-			}
-			if reservedLocalNamespace(alias) {
-				return fmt.Errorf("image alias %q uses the reserved local image namespace", alias)
+			if !catalogName.MatchString(alias) || reservedLocalNamespace(alias) {
+				return fmt.Errorf("invalid or reserved image alias %q", alias)
 			}
 			if _, exists := allNames[alias]; exists {
 				return fmt.Errorf("duplicate image name/alias %q", alias)
 			}
 			allNames[alias] = struct{}{}
 		}
-		for release, architectures := range imageRecord.Releases {
-			if strings.TrimSpace(release) == "" || len(architectures) == 0 {
-				return fmt.Errorf("image %s has invalid release", name)
+		for channel, release := range imageRecord.Channels {
+			if !channelName.MatchString(channel) || !releaseName.MatchString(release) {
+				return fmt.Errorf("image %s has invalid channel mapping %q -> %q", name, channel, release)
 			}
-			for arch, artifact := range architectures {
+			if _, ok := imageRecord.Versions[release]; !ok {
+				return fmt.Errorf("image %s channel %s targets missing version %s", name, channel, release)
+			}
+		}
+		if _, ok := imageRecord.Channels[c.Defaults.Channel]; !ok {
+			return fmt.Errorf("image %s has no default channel %s", name, c.Defaults.Channel)
+		}
+		for release, version := range imageRecord.Versions {
+			if !releaseName.MatchString(release) || len(version.Variants) == 0 {
+				return fmt.Errorf("image %s has invalid version %q", name, release)
+			}
+			if version.Status != "" && !validStatus(version.Status) {
+				return fmt.Errorf("image %s version %s has invalid status %q", name, release, version.Status)
+			}
+			for arch, artifact := range version.Variants {
 				if arch != "arm64" && arch != "amd64" {
-					return fmt.Errorf("image %s release %s has unsupported arch %s", name, release, arch)
+					return fmt.Errorf("image %s version %s has unsupported arch %s", name, release, arch)
 				}
-				if !digestPattern.MatchString(artifact.SHA256) || artifact.Format != "qcow2" || artifact.ArtifactSize <= 0 || artifact.ArtifactSize > MaxArtifactSize || artifact.VirtualSize <= 0 || strings.TrimSpace(artifact.SourceUser) == "" || (artifact.Boot != "bios" && artifact.Boot != "uefi") || (artifact.Status != "supported" && artifact.Status != "testing" && artifact.Status != "deprecated") || strings.TrimSpace(artifact.Provenance) == "" {
-					return fmt.Errorf("image %s release %s/%s has invalid artifact fields", name, release, arch)
+				boot := artifact.Boot
+				if boot == "" {
+					boot = imageRecord.Boot
 				}
-				if !validRepositoryFile(name, artifact.File) {
-					return fmt.Errorf("image %s release %s/%s has unsafe repository file %q", name, release, arch, artifact.File)
+				if boot == "" {
+					boot = c.Defaults.Boot
 				}
-				parsed, err := url.Parse(artifact.Upstream)
-				if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || hasMovingReleasePath(parsed.Path) {
-					return fmt.Errorf("image %s release %s/%s upstream must be immutable absolute HTTPS", name, release, arch)
+				status := artifact.Status
+				if status == "" {
+					status = version.Status
+				}
+				if !digestPattern.MatchString(artifact.SHA256) || artifact.Format != "qcow2" || artifact.ArtifactSize <= 0 || artifact.ArtifactSize > MaxArtifactSize || artifact.VirtualSize <= 0 || !validBoot(boot) || !validStatus(status) || !safeRepositoryFile(artifact.File) {
+					return fmt.Errorf("image %s version %s/%s has invalid artifact fields", name, release, arch)
+				}
+				if artifact.SourceUser != "" && !sourceUserName.MatchString(artifact.SourceUser) {
+					return fmt.Errorf("image %s version %s/%s has invalid source user %q", name, release, arch, artifact.SourceUser)
+				}
+				if err := validateUpstream(artifact.Upstream); err != nil {
+					return fmt.Errorf("image %s version %s/%s %w", name, release, arch, err)
 				}
 			}
 		}
@@ -134,18 +287,8 @@ func (c Catalog) Validate() error {
 	return nil
 }
 
-var repositoryFilename = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,159}\.qcow2$`)
-
-func validRepositoryFile(family, filename string) bool {
-	if filename == "" || path.Clean(filename) != filename || strings.HasPrefix(filename, "/") {
-		return false
-	}
-	parts := strings.Split(filename, "/")
-	return len(parts) == 2 && parts[0] == family && repositoryFilename.MatchString(parts[1])
-}
-
-func hasMovingReleasePath(path string) bool {
-	for _, segment := range strings.Split(strings.ToLower(path), "/") {
+func hasMovingReleasePath(pathname string) bool {
+	for _, segment := range strings.Split(strings.ToLower(pathname), "/") {
 		if segment == "latest" || segment == "current" || segment == "release" || strings.Contains(segment, ".latest.") {
 			return true
 		}
@@ -153,31 +296,81 @@ func hasMovingReleasePath(path string) bool {
 	return false
 }
 
-func (c Catalog) Entry(alias, arch string) (Entry, error) {
-	alias = strings.ToLower(strings.TrimSpace(alias))
-	canonical := ""
+func (c Catalog) canonicalImage(value string) (string, CatalogImage, error) {
+	if value == "" {
+		value = c.Defaults.Image
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if record, ok := c.Images[value]; ok {
+		return value, record, nil
+	}
 	for name, record := range c.Images {
-		if alias == name {
-			canonical = name
-			break
-		}
-		for _, candidate := range record.Aliases {
-			if alias == candidate {
-				canonical = name
-				break
+		for _, alias := range record.Aliases {
+			if value == alias {
+				return name, record, nil
 			}
 		}
 	}
-	if canonical == "" {
-		return Entry{}, fmt.Errorf("unknown image alias %q", alias)
+	return "", CatalogImage{}, fmt.Errorf("unknown image alias %q", value)
+}
+
+func cacheFile(alias, release, arch string) string {
+	return fmt.Sprintf("%s/%s-%s-%s.qcow2", alias, alias, release, arch)
+}
+
+func (c Catalog) Entry(reference, arch string) (Entry, error) {
+	ref, err := ParseReference(reference)
+	if err != nil {
+		return Entry{}, err
 	}
-	record := c.Images[canonical]
-	release := record.Default
-	artifact, ok := record.Releases[release][arch]
-	if ok {
-		return Entry{Alias: canonical, Release: release, Arch: arch, File: artifact.File, Upstream: artifact.Upstream, SHA256: artifact.SHA256, Format: artifact.Format, ArtifactSize: artifact.ArtifactSize, VirtualSize: artifact.VirtualSize, SourceUser: artifact.SourceUser, Boot: artifact.Boot, Status: artifact.Status, Provenance: artifact.Provenance}, nil
+	canonical, imageRecord, err := c.canonicalImage(ref.Image)
+	if err != nil {
+		return Entry{}, err
 	}
-	return Entry{}, fmt.Errorf("image %s has no %s artifact", canonical, arch)
+	if arch == "" || arch == "native" {
+		return Entry{}, errors.New("catalog entry resolution requires a concrete architecture")
+	}
+	release := ref.Version
+	channel := ref.Channel
+	if release == "" {
+		if channel == "" {
+			channel = c.Defaults.Channel
+		}
+		var ok bool
+		release, ok = imageRecord.Channels[channel]
+		if !ok {
+			return Entry{}, fmt.Errorf("image %s has no channel %q", canonical, channel)
+		}
+	}
+	version, ok := imageRecord.Versions[release]
+	if !ok {
+		return Entry{}, fmt.Errorf("image %s has no version %q", canonical, release)
+	}
+	artifact, ok := version.Variants[arch]
+	if !ok {
+		return Entry{}, fmt.Errorf("image %s version %s has no %s artifact", canonical, release, arch)
+	}
+	boot := artifact.Boot
+	if boot == "" {
+		boot = imageRecord.Boot
+	}
+	if boot == "" {
+		boot = c.Defaults.Boot
+	}
+	status := artifact.Status
+	if status == "" {
+		status = version.Status
+	}
+	provenance := artifact.Provenance
+	if provenance == "" {
+		provenance = version.Provenance
+	}
+	return Entry{
+		Alias: canonical, Channel: channel, Release: release, Arch: arch,
+		File: artifact.File, CacheFile: cacheFile(canonical, release, arch), Upstream: artifact.Upstream,
+		SHA256: artifact.SHA256, Format: artifact.Format, ArtifactSize: artifact.ArtifactSize, VirtualSize: artifact.VirtualSize,
+		SourceUser: artifact.SourceUser, Boot: boot, Status: status, Provenance: provenance,
+	}, nil
 }
 
 func (c Catalog) Entries() []Entry {
@@ -189,56 +382,30 @@ func (c Catalog) Entries() []Entry {
 	sort.Strings(imageNames)
 	for _, name := range imageNames {
 		record := c.Images[name]
-		releases := make([]string, 0, len(record.Releases))
-		for release := range record.Releases {
+		releases := make([]string, 0, len(record.Versions))
+		for release := range record.Versions {
 			releases = append(releases, release)
 		}
 		sort.Strings(releases)
 		for _, release := range releases {
-			architectures := make([]string, 0, len(record.Releases[release]))
-			for arch := range record.Releases[release] {
-				architectures = append(architectures, arch)
+			arches := make([]string, 0, len(record.Versions[release].Variants))
+			for arch := range record.Versions[release].Variants {
+				arches = append(arches, arch)
 			}
-			sort.Strings(architectures)
-			for _, arch := range architectures {
-				artifact := record.Releases[release][arch]
-				result = append(result, Entry{Alias: name, Release: release, Arch: arch, File: artifact.File, Upstream: artifact.Upstream, SHA256: artifact.SHA256, Format: artifact.Format, ArtifactSize: artifact.ArtifactSize, VirtualSize: artifact.VirtualSize, SourceUser: artifact.SourceUser, Boot: artifact.Boot, Status: artifact.Status, Provenance: artifact.Provenance})
+			sort.Strings(arches)
+			for _, arch := range arches {
+				entry, err := c.Entry(name+"@"+release, arch)
+				if err == nil {
+					for channel, target := range record.Channels {
+						if target == release {
+							entry.Channels = append(entry.Channels, channel)
+						}
+					}
+					sort.Strings(entry.Channels)
+					result = append(result, entry)
+				}
 			}
 		}
 	}
 	return result
-}
-
-func EmbeddedCatalog() Catalog {
-	catalog := Catalog{Schema: ManifestSchema, Version: EmbeddedManifestVersion, GeneratedAt: embeddedManifestGeneratedAt, Images: make(map[string]CatalogImage)}
-	for _, entry := range EmbeddedEntries() {
-		record := catalog.Images[entry.Alias]
-		if record.Releases == nil {
-			record.Releases = make(map[string]map[string]Artifact)
-		}
-		if record.Releases[entry.Release] == nil {
-			record.Releases[entry.Release] = make(map[string]Artifact)
-		}
-		record.Releases[entry.Release][entry.Arch] = Artifact{File: entry.File, Upstream: entry.Upstream, SHA256: entry.SHA256, Format: entry.Format, ArtifactSize: entry.ArtifactSize, VirtualSize: entry.VirtualSize, SourceUser: entry.SourceUser, Boot: entry.Boot, Status: entry.Status, Provenance: entry.Provenance}
-		record.Aliases = aliasesFor(entry.Alias)
-		record.Default = entry.Release
-		catalog.Images[entry.Alias] = record
-	}
-	return catalog
-}
-
-func aliasesFor(name string) []string {
-	result := make([]string, 0)
-	for alias, canonical := range aliases {
-		if canonical == name {
-			result = append(result, alias)
-		}
-	}
-	sort.Strings(result)
-	return result
-}
-
-func EmbeddedCatalogBytes() ([]byte, error) {
-	data, err := json.MarshalIndent(EmbeddedCatalog(), "", "  ")
-	return append(data, '\n'), err
 }

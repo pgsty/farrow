@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -174,11 +175,20 @@ func nodeCompletion(preferConfig, firstOnly bool) cobra.CompletionFunc {
 	}
 }
 
-func imageAliasCompletion(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
+func imageAliasCompletion(command *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
 	catalog := image.EmbeddedCatalog()
 	aliases := make([]string, 0, len(catalog.Images)*2)
 	if dataRoot, err := state.ResolveDataRoot(); err == nil {
-		if active, _, currentErr := (image.ManifestManager{DataRoot: dataRoot}).Current(); currentErr == nil {
+		repository, _ := command.Flags().GetString("repo")
+		explicit := repository != ""
+		if repository == "" {
+			repository = strings.TrimSpace(os.Getenv("FARROW_REPO"))
+			explicit = repository != ""
+		}
+		if repository == "" {
+			repository = image.DefaultRepositoryURL
+		}
+		if active, _, currentErr := (image.ManifestManager{DataRoot: dataRoot, Repository: repository, AllowUnsigned: explicit && image.RepositoryAllowsUnsigned(repository)}).Current(); currentErr == nil {
 			catalog = active
 		}
 		if localAliases, localErr := image.LocalAliasNames(dataRoot); localErr == nil {
@@ -188,6 +198,12 @@ func imageAliasCompletion(_ *cobra.Command, _ []string, prefix string) ([]string
 	for name, record := range catalog.Images {
 		aliases = append(aliases, name)
 		aliases = append(aliases, record.Aliases...)
+		for channel := range record.Channels {
+			aliases = append(aliases, name+":"+channel)
+		}
+		for version := range record.Versions {
+			aliases = append(aliases, name+"@"+version)
+		}
 	}
 	sort.Strings(aliases)
 	matches := make([]string, 0, len(aliases))

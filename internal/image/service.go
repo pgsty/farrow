@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -43,7 +44,11 @@ func (s Service) LookupArch(ctx context.Context, alias, arch string) (Entry, err
 	if arch != "amd64" && arch != "arm64" {
 		return Entry{}, fmt.Errorf("unsupported image architecture %q", arch)
 	}
-	catalog, _, repository, err := s.catalog(ctx, false)
+	_, explicit, err := s.configuredRepository()
+	if err != nil {
+		return Entry{}, err
+	}
+	catalog, _, repository, err := s.catalog(ctx, explicit)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -107,7 +112,7 @@ func (s Service) catalog(ctx context.Context, syncRepository bool) (Catalog, Man
 	if err != nil {
 		return Catalog{}, ManifestState{}, "", err
 	}
-	manager := ManifestManager{DataRoot: s.DataRoot}
+	manager := ManifestManager{DataRoot: s.DataRoot, Repository: repository, AllowUnsigned: explicit && RepositoryAllowsUnsigned(repository)}
 	defaultSyncFailed := false
 	if syncRepository && repository != "" {
 		source, sourceErr := RepositoryCatalogSource(repository)
@@ -138,39 +143,24 @@ func (s Service) catalog(ctx context.Context, syncRepository bool) (Catalog, Man
 
 // List returns every catalog entry plus registered local aliases.
 func (s Service) List(ctx context.Context) ([]Entry, ManifestState, error) {
-	catalog, manifestState, repository, err := s.catalog(ctx, true)
+	catalog, manifestState, _, err := s.catalog(ctx, true)
 	if err != nil {
 		return nil, ManifestState{}, err
 	}
 	entries := catalog.Entries()
-	profile, err := platform.Native()
-	if err != nil {
-		return nil, ManifestState{}, err
-	}
-	// Catalog-only listing is useful before host setup and must not require
-	// qemu-img. Defer constructing the byte-validating store until a local alias
-	// actually exists and therefore needs qcow2 validation.
+	// Listing is metadata-only. A stale or foreign-architecture local alias must
+	// not make the entire catalog undiscoverable; info/pull perform byte checks.
 	registry, err := (Store{DataRoot: s.DataRoot}).readLocalAliases()
 	if err != nil {
 		return nil, ManifestState{}, err
 	}
-	if len(registry.Aliases) == 0 {
-		return entries, manifestState, nil
+	localNames := make([]string, 0, len(registry.Aliases))
+	for name := range registry.Aliases {
+		localNames = append(localNames, name)
 	}
-	store, err := s.store(repository)
-	if err != nil {
-		return nil, ManifestState{}, err
-	}
-	locals, err := store.LocalEntries()
-	if err != nil {
-		return nil, ManifestState{}, err
-	}
-	for _, local := range locals {
-		entry, _, _, resolveErr := store.ResolveLocalAlias(ctx, local.Name, profile.Arch)
-		if resolveErr != nil {
-			return nil, ManifestState{}, resolveErr
-		}
-		entries = append(entries, entry)
+	sort.Strings(localNames)
+	for _, name := range localNames {
+		entries = append(entries, localEntry(registry.Aliases[name]))
 	}
 	return entries, manifestState, nil
 }
@@ -223,6 +213,14 @@ func (s Service) PullAlias(ctx context.Context, alias string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+	return s.PullArch(ctx, alias, profile.Arch)
+}
+
+// PullArch downloads and verifies one reference for an explicit architecture.
+func (s Service) PullArch(ctx context.Context, alias, arch string) (Info, error) {
+	if arch != "amd64" && arch != "arm64" {
+		return Info{}, fmt.Errorf("unsupported image architecture %q", arch)
+	}
 	catalog, manifestState, repository, err := s.catalog(ctx, true)
 	if err != nil {
 		return Info{}, err
@@ -231,9 +229,9 @@ func (s Service) PullAlias(ctx context.Context, alias string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	entry, entryErr := catalog.Entry(alias, profile.Arch)
+	entry, entryErr := catalog.Entry(alias, arch)
 	if entryErr != nil {
-		localEntry, path, metadata, localErr := store.ResolveLocalAlias(ctx, alias, profile.Arch)
+		localEntry, path, metadata, localErr := store.ResolveLocalAlias(ctx, alias, arch)
 		if localErr != nil {
 			return Info{}, entryErr
 		}
@@ -312,14 +310,34 @@ func (s Service) ImportNamed(ctx context.Context, source, expectedDigest, name, 
 	return store.RegisterLocalAlias(ctx, name, path, metadata, profile.Arch, boot, sourceUser)
 }
 
+func (s Service) manifestManager() (ManifestManager, error) {
+	repository, explicit, err := s.configuredRepository()
+	if err != nil {
+		return ManifestManager{}, err
+	}
+	return ManifestManager{
+		DataRoot:      s.DataRoot,
+		Repository:    repository,
+		AllowUnsigned: explicit && RepositoryAllowsUnsigned(repository),
+	}, nil
+}
+
 // SyncManifest activates a signed catalog from a URL or local path.
 func (s Service) SyncManifest(ctx context.Context, source string, allowDowngrade bool) (ManifestState, error) {
-	return (ManifestManager{DataRoot: s.DataRoot}).Sync(ctx, source, allowDowngrade)
+	manager, err := s.manifestManager()
+	if err != nil {
+		return ManifestState{}, err
+	}
+	return manager.Sync(ctx, source, allowDowngrade)
 }
 
 // ResetManifest restores the embedded bootstrap catalog.
 func (s Service) ResetManifest(ctx context.Context) (ManifestState, error) {
-	return (ManifestManager{DataRoot: s.DataRoot}).Reset(ctx)
+	manager, err := s.manifestManager()
+	if err != nil {
+		return ManifestState{}, err
+	}
+	return manager.Reset(ctx)
 }
 
 // PruneAll removes unreferenced images and stale staging files. The caller
@@ -339,7 +357,7 @@ func (s Service) PruneAll(ctx context.Context, apply bool, nodeRefs func(context
 		}
 		defer allocator.Release()
 		references := make(map[string]struct{})
-		catalog, _, err := (ManifestManager{DataRoot: s.DataRoot}).Current()
+		catalog, _, _, err := s.catalog(ctx, false)
 		if err != nil {
 			return nil, err
 		}

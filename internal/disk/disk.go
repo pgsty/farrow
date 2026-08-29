@@ -39,6 +39,11 @@ type FormatSpecificData struct {
 	IncompatibleFeatures []string `json:"incompatible-features"`
 }
 
+type CheckInfo struct {
+	CheckErrors int64 `json:"check-errors"`
+	Corruptions int64 `json:"corruptions"`
+}
+
 // Manager deliberately exposes only typed qcow2 operations.
 type Manager struct {
 	QEMUImg string
@@ -69,6 +74,30 @@ func (m Manager) Inspect(ctx context.Context, path string) (Info, error) {
 		return Info{}, fmt.Errorf("decode qemu-img info JSON: %w", err)
 	}
 	return info, nil
+}
+
+// CheckBase runs qemu-img's full structural check for a repository candidate.
+// Runtime cache reads use the cheaper typed metadata inspection plus digest;
+// publishing a catalog is the bounded point where a full check is required.
+func (m Manager) CheckBase(ctx context.Context, path string) error {
+	if err := m.validate(); err != nil {
+		return err
+	}
+	result, err := m.Runner.Run(ctx, m.QEMUImg, "check", "--output=json", "-f", "qcow2", path)
+	if err != nil {
+		var commandErr *execx.CommandError
+		if !errors.As(err, &commandErr) || commandErr.ExitCode != 3 {
+			return fmt.Errorf("qemu-img check: %w", err)
+		}
+	}
+	var check CheckInfo
+	if err := json.Unmarshal(result.Stdout, &check); err != nil {
+		return fmt.Errorf("decode qemu-img check JSON: %w", err)
+	}
+	if check.CheckErrors != 0 || check.Corruptions != 0 {
+		return fmt.Errorf("qemu-img check reported check-errors=%d corruptions=%d", check.CheckErrors, check.Corruptions)
+	}
+	return nil
 }
 
 func (m Manager) inspectChain(ctx context.Context, path string) ([]Info, error) {

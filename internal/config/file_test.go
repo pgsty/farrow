@@ -85,6 +85,18 @@ func TestExplicitGuestArchitectureResolves(t *testing.T) {
 	}
 }
 
+func TestChannelReferenceStaysStableInResolvedSpec(t *testing.T) {
+	t.Parallel()
+	file, err := decodeTestFile("version: 1\nname: channel\nnetwork: {mode: private}\ndefaults: {image: debian13:testing}\nnodes: [{name: meta, address: 10.10.10.10}]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := file.Resolve()
+	if err != nil || resolved.Image != "d13:testing" {
+		t.Fatalf("resolved channel reference = %q, %v", resolved.Image, err)
+	}
+}
+
 func TestStrictYAMLRejectsUnknownAndMultipleDocuments(t *testing.T) {
 	t.Parallel()
 	base := "version: 1\nname: quick\nnetwork: {mode: private}\nnodes: [{name: meta, address: 10.10.10.10}]\n"

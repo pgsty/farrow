@@ -128,7 +128,9 @@ could be mistaken for Farrow presentation flags.`,
 
 	images := newImageCommand(stdout, stderr)
 	images.GroupID = "images"
-	root.AddCommand(images)
+	repository := newRepoCommand(stdout, stderr)
+	repository.GroupID = "images"
+	root.AddCommand(images, repository)
 
 	doctor := &cobra.Command{
 		Use:     "doctor",

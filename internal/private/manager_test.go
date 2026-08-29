@@ -676,6 +676,7 @@ func TestSelectRuntimeCompatibilityPolicy(t *testing.T) {
 	}{
 		{name: "primary native", host: darwinArm, resolved: spec.Resolved{Image: "el9"}, arch: "arm64", accel: "hvf"},
 		{name: "EL8 Apple TCG", host: darwinArm, resolved: spec.Resolved{Image: "el8"}, arch: "arm64", accel: "tcg,thread=multi"},
+		{name: "EL8 channel keeps policy", host: darwinArm, resolved: spec.Resolved{Image: "el8:stable"}, arch: "arm64", accel: "tcg,thread=multi"},
 		{name: "explicit foreign arch", host: darwinArm, resolved: spec.Resolved{Image: "el9", Arch: "amd64"}, arch: "amd64", accel: "tcg,thread=single"},
 		{name: "EL8 Linux native", host: linuxAMD, resolved: spec.Resolved{Image: "el8"}, arch: "amd64", accel: "kvm"},
 		{name: "EL8 Linux arm native", host: linuxArm, resolved: spec.Resolved{Image: "el8"}, arch: "arm64", accel: "kvm"},
@@ -683,6 +684,7 @@ func TestSelectRuntimeCompatibilityPolicy(t *testing.T) {
 		{name: "EL7 Linux native", host: linuxAMD, resolved: spec.Resolved{Image: "el7"}, arch: "amd64", accel: "kvm"},
 		{name: "EL7 Linux arm refused", host: linuxArm, resolved: spec.Resolved{Image: "el7", Arch: "amd64"}, wantErr: true},
 		{name: "EL7 macOS refused", host: darwinArm, resolved: spec.Resolved{Image: "el7", Arch: "amd64"}, wantErr: true},
+		{name: "EL7 pinned alias refused", host: darwinArm, resolved: spec.Resolved{Image: "c7@7.9.20221112.0", Arch: "amd64"}, wantErr: true},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -694,5 +696,36 @@ func TestSelectRuntimeCompatibilityPolicy(t *testing.T) {
 				t.Fatalf("select runtime = %#v", decision)
 			}
 		})
+	}
+}
+
+func TestResolveBasesKeepsBareAndPinnedReferencesDistinct(t *testing.T) {
+	t.Parallel()
+	manager := Manager{ResolveImage: func(_ context.Context, reference, arch string) (image.Entry, string, image.Metadata, error) {
+		release := "new"
+		digest := strings.Repeat("a", 64)
+		if strings.Contains(reference, "@old") {
+			release = "old"
+			digest = strings.Repeat("b", 64)
+		}
+		return image.Entry{Alias: "d13", Release: release, Arch: arch, Boot: "uefi", SHA256: digest}, "/fixture/" + release + ".qcow2", image.Metadata{VirtualSize: 4 * spec.GiB}, nil
+	}}
+	profile, _ := platform.Resolve("linux", "arm64")
+	resolved := spec.Resolved{
+		Image: "d13",
+		Nodes: []spec.Node{
+			{Name: "current"},
+			{Name: "pinned", Image: "d13@old"},
+		},
+	}
+	bases, _, err := manager.resolveBases(context.Background(), profile, resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bases["d13"].Release != "new" || bases["d13"].Digest != strings.Repeat("a", 64) {
+		t.Fatalf("bare base was overwritten: %#v", bases["d13"])
+	}
+	if bases["d13@old"].Release != "old" || bases["d13@old"].Digest != strings.Repeat("b", 64) {
+		t.Fatalf("pinned base was lost: %#v", bases["d13@old"])
 	}
 }

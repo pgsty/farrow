@@ -31,7 +31,7 @@ const (
 
 var (
 	digestPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	localImageFilename = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,159}\.(?:qcow2|img)$`)
+	localImageFilename = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}\.(?:qcow2|img)$`)
 )
 
 // Metadata describes bytes verified during this operation. It is returned to
@@ -142,11 +142,21 @@ func validStoreFile(filename string) bool {
 	return len(parts) == 2 && catalogName.MatchString(parts[0]) && localImageFilename.MatchString(parts[1])
 }
 
-func (s Store) Path(entry Entry) (string, error) {
-	if !validStoreFile(entry.File) {
-		return "", fmt.Errorf("invalid local image path %q", entry.File)
+func localStoreFile(entry Entry) string {
+	if entry.CacheFile != "" {
+		return entry.CacheFile
 	}
-	return filepath.Join(s.imagesRoot(), filepath.FromSlash(entry.File)), nil
+	// Backward-compatible fallback for private local aliases and tests created
+	// before repository and cache paths became separate fields.
+	return entry.File
+}
+
+func (s Store) Path(entry Entry) (string, error) {
+	filename := localStoreFile(entry)
+	if !validStoreFile(filename) {
+		return "", fmt.Errorf("invalid local image path %q", filename)
+	}
+	return filepath.Join(s.imagesRoot(), filepath.FromSlash(filename)), nil
 }
 
 func (s Store) ensureImageDirectory(entry Entry) (string, error) {
@@ -196,8 +206,8 @@ func digestFile(pathname string) (string, int64, error) {
 func (s Store) manager() disk.Manager { return disk.Manager{QEMUImg: s.QEMUImg, Runner: s.Runner} }
 
 func validateEntryIdentity(entry Entry) error {
-	if !digestPattern.MatchString(entry.SHA256) || entry.Format != "qcow2" || !validStoreFile(entry.File) {
-		return errors.New("catalog image digest, format, or file is invalid")
+	if !digestPattern.MatchString(entry.SHA256) || entry.Format != "qcow2" || !validStoreFile(localStoreFile(entry)) {
+		return errors.New("catalog image digest, format, or local cache file is invalid")
 	}
 	if entry.ArtifactSize < 0 || entry.ArtifactSize > MaxArtifactSize || entry.VirtualSize < 0 {
 		return errors.New("catalog image size is invalid")
@@ -301,7 +311,7 @@ func (s Store) Import(ctx context.Context, source, expectedDigest string) (strin
 	if !localImageFilename.MatchString(basename) {
 		return "", Metadata{}, errors.New("local image basename must be a safe .qcow2 or .img filename")
 	}
-	entry := Entry{Alias: "local", Release: "local-" + digest[:12], File: "local/" + basename, SHA256: digest, Format: "qcow2", ArtifactSize: sourceSize}
+	entry := Entry{Alias: "local", Release: "local-" + digest[:12], CacheFile: "local/" + basename, SHA256: digest, Format: "qcow2", ArtifactSize: sourceSize}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	imageLock, err := lock.Acquire(lockContext, s.lockPath(), false)
@@ -459,9 +469,14 @@ func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) 
 	if err := validateEntryIdentity(entry); err != nil {
 		return "", Metadata{}, err
 	}
-	upstream, err := url.Parse(entry.Upstream)
-	if err != nil || upstream.Scheme != "https" || upstream.Host == "" || upstream.User != nil || upstream.RawQuery != "" || upstream.Fragment != "" {
-		return "", Metadata{}, errors.New("catalog upstream image URL must be absolute HTTPS")
+	if entry.Upstream != "" {
+		upstream, err := url.Parse(entry.Upstream)
+		if err != nil || upstream.Scheme != "https" || upstream.Host == "" || upstream.User != nil || upstream.RawQuery != "" || upstream.Fragment != "" {
+			return "", Metadata{}, errors.New("catalog upstream image URL must be empty or absolute HTTPS")
+		}
+	}
+	if s.Repository == "" && entry.Upstream == "" {
+		return "", Metadata{}, errors.New("catalog image has neither a repository nor an upstream source")
 	}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -482,7 +497,7 @@ func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) 
 	} else if !errors.Is(err, os.ErrNotExist) {
 		if target, pathErr := s.Path(entry); pathErr == nil {
 			if _, statErr := os.Lstat(target); statErr == nil {
-				return "", Metadata{}, err
+				return "", Metadata{}, fmt.Errorf("%w; remove the conflicting cache file %s or run farrow image prune --yes", err, target)
 			}
 		}
 	}
@@ -498,7 +513,9 @@ func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) 
 		}
 		candidates = append(candidates, candidate{kind: "repository", source: source})
 	}
-	candidates = append(candidates, candidate{kind: "upstream", source: entry.Upstream})
+	if entry.Upstream != "" {
+		candidates = append(candidates, candidate{kind: "upstream", source: entry.Upstream})
+	}
 	failures := make([]string, 0, len(candidates))
 	for index, candidate := range candidates {
 		tempPath, copied, stageErr := s.stageSource(ctx, candidate.source, directory, entry)

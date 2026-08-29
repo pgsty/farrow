@@ -97,7 +97,7 @@ func (s Store) readLocalAliases() (LocalAliases, error) {
 func localEntry(alias LocalAlias) Entry {
 	return Entry{
 		Alias: alias.Name, Release: "local-" + alias.Digest[:12], Arch: alias.Arch,
-		File: alias.File, SHA256: alias.Digest, Format: "qcow2", ArtifactSize: alias.ArtifactSize, VirtualSize: alias.VirtualSize,
+		CacheFile: alias.File, SHA256: alias.Digest, Format: "qcow2", ArtifactSize: alias.ArtifactSize, VirtualSize: alias.VirtualSize,
 		SourceUser: alias.SourceUser, Boot: alias.Boot, Status: "testing",
 		Provenance: "explicit local import into the Farrow image directory",
 	}

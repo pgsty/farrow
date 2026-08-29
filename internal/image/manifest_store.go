@@ -25,8 +25,9 @@ import (
 )
 
 const (
-	ManifestStateSchema = 1
-	MaxSignatureSize    = 64 << 10
+	ManifestStateSchema    = 1
+	ManifestRegistrySchema = 2
+	MaxSignatureSize       = 64 << 10
 )
 
 type ManifestState struct {
@@ -42,12 +43,20 @@ type ManifestState struct {
 }
 
 type ManifestManager struct {
-	DataRoot   string
-	Keys       []minisign.PublicKey
-	HTTPClient *http.Client
+	DataRoot      string
+	Repository    string
+	AllowUnsigned bool
+	Keys          []minisign.PublicKey
+	HTTPClient    *http.Client
 }
 
 var manifestFilename = regexp.MustCompile(`^v[0-9]+-[0-9a-f]{64}\.json$`)
+var manifestRepositoryKey = regexp.MustCompile(`^(?:default|repo-[0-9a-f]{64})$`)
+
+type ManifestRegistry struct {
+	Schema       int                      `json:"schema"`
+	Repositories map[string]ManifestState `json:"repositories"`
+}
 
 func (m ManifestManager) keys() ([]minisign.PublicKey, error) {
 	keys := m.Keys
@@ -84,6 +93,10 @@ func manifestDigest(data []byte) string {
 	return hex.EncodeToString(hash[:])
 }
 
+func versionSignaturePath(manifestPath, keyID string) string {
+	return manifestPath + "." + strings.ToLower(keyID) + ".minisig"
+}
+
 func verifyManifest(keys []minisign.PublicKey, data, signatureText []byte) (uint64, error) {
 	if len(signatureText) == 0 || len(signatureText) > MaxSignatureSize {
 		return 0, errors.New("manifest signature size is invalid")
@@ -115,28 +128,141 @@ func strictManifestState(data []byte) (ManifestState, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return ManifestState{}, errors.New("manifest state has trailing JSON")
 	}
-	if state.Schema != ManifestStateSchema || state.HighestVersion == 0 || state.ActiveVersion == 0 || state.HighestVersion < state.ActiveVersion || !digestPattern.MatchString(state.ActiveDigest) || state.Source == "" || state.AcceptedAt.IsZero() {
-		return ManifestState{}, errors.New("manifest state fields are invalid")
-	}
-	if state.Active != "embedded" && !manifestFilename.MatchString(state.Active) {
-		return ManifestState{}, errors.New("manifest state active filename is unsafe")
+	if err := validateManifestState(state); err != nil {
+		return ManifestState{}, err
 	}
 	return state, nil
 }
 
-func (m ManifestManager) readState() (ManifestState, error) {
+func validateManifestState(state ManifestState) error {
+	if state.Schema != ManifestStateSchema || state.HighestVersion == 0 || state.ActiveVersion == 0 || (state.Active != "embedded" && state.HighestVersion < state.ActiveVersion) || !digestPattern.MatchString(state.ActiveDigest) || state.Source == "" || state.AcceptedAt.IsZero() {
+		return errors.New("manifest state fields are invalid")
+	}
+	if state.Active != "embedded" && !manifestFilename.MatchString(state.Active) {
+		return errors.New("manifest state active filename is unsafe")
+	}
+	return nil
+}
+
+func (m ManifestManager) stateKey() (string, error) {
+	repository := strings.TrimSpace(m.Repository)
+	if repository == "" {
+		return "default", nil
+	}
+	normalized, err := NormalizeRepository(repository)
+	if err != nil {
+		return "", err
+	}
+	if DefaultRepositoryURL != "" {
+		defaultRepository, defaultErr := NormalizeRepository(DefaultRepositoryURL)
+		if defaultErr == nil && normalized == defaultRepository {
+			return "default", nil
+		}
+	}
+	digest := sha256.Sum256([]byte(normalized))
+	return "repo-" + hex.EncodeToString(digest[:]), nil
+}
+
+func (m ManifestManager) unsignedAllowed() bool {
+	return m.AllowUnsigned && RepositoryAllowsUnsigned(m.Repository)
+}
+
+func (m ManifestManager) unsignedSourceMatchesRepository(provenance string) bool {
+	expected, err := RepositoryCatalogSource(m.Repository)
+	if err != nil || expected == "" {
+		return false
+	}
+	if strings.HasPrefix(provenance, "local:") {
+		return expected == strings.TrimPrefix(provenance, "local:")
+	}
+	return expected == provenance
+}
+
+func (m ManifestManager) readRegistry() (ManifestRegistry, error) {
 	info, err := os.Lstat(m.statePath())
 	if err != nil {
-		return ManifestState{}, err
+		return ManifestRegistry{}, err
 	}
 	if !info.Mode().IsRegular() {
-		return ManifestState{}, errors.New("manifest state must be a regular non-symlink file")
+		return ManifestRegistry{}, errors.New("manifest state must be a regular non-symlink file")
 	}
 	data, err := os.ReadFile(m.statePath())
 	if err != nil {
+		return ManifestRegistry{}, err
+	}
+	var header struct {
+		Schema int `json:"schema"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return ManifestRegistry{}, err
+	}
+	if header.Schema == ManifestStateSchema {
+		legacy, err := strictManifestState(data)
+		if err != nil {
+			return ManifestRegistry{}, err
+		}
+		return ManifestRegistry{Schema: ManifestRegistrySchema, Repositories: map[string]ManifestState{"default": legacy}}, nil
+	}
+	if header.Schema != ManifestRegistrySchema {
+		return ManifestRegistry{}, fmt.Errorf("unsupported manifest registry schema %d", header.Schema)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var registry ManifestRegistry
+	if err := decoder.Decode(&registry); err != nil {
+		return ManifestRegistry{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return ManifestRegistry{}, errors.New("manifest registry has trailing JSON")
+	}
+	if registry.Repositories == nil {
+		return ManifestRegistry{}, errors.New("manifest registry repositories are missing")
+	}
+	for key, state := range registry.Repositories {
+		if !manifestRepositoryKey.MatchString(key) {
+			return ManifestRegistry{}, fmt.Errorf("manifest repository key %q is invalid", key)
+		}
+		if err := validateManifestState(state); err != nil {
+			return ManifestRegistry{}, fmt.Errorf("manifest repository %s: %w", key, err)
+		}
+	}
+	return registry, nil
+}
+
+func (m ManifestManager) readState() (ManifestState, error) {
+	registry, err := m.readRegistry()
+	if err != nil {
 		return ManifestState{}, err
 	}
-	return strictManifestState(data)
+	key, err := m.stateKey()
+	if err != nil {
+		return ManifestState{}, err
+	}
+	state, ok := registry.Repositories[key]
+	if !ok {
+		return ManifestState{}, os.ErrNotExist
+	}
+	return state, nil
+}
+
+func (m ManifestManager) writeState(state ManifestState) error {
+	registry, err := m.readRegistry()
+	if errors.Is(err, os.ErrNotExist) {
+		registry = ManifestRegistry{Schema: ManifestRegistrySchema, Repositories: make(map[string]ManifestState)}
+	} else if err != nil {
+		return err
+	}
+	key, err := m.stateKey()
+	if err != nil {
+		return err
+	}
+	registry.Repositories[key] = state
+	data, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsutil.AtomicWrite(m.statePath(), append(data, '\n'), 0o600)
 }
 
 func embeddedState() (ManifestState, error) {
@@ -192,36 +318,52 @@ func (m ManifestManager) Current() (Catalog, ManifestState, error) {
 	if err != nil {
 		return Catalog{}, ManifestState{}, err
 	}
-	state, err = currentBaselineState(state)
+	key, err := m.stateKey()
 	if err != nil {
 		return Catalog{}, ManifestState{}, err
+	}
+	if key == "default" {
+		state, err = currentBaselineState(state)
+		if err != nil {
+			return Catalog{}, ManifestState{}, err
+		}
 	}
 	if state.Active == "embedded" {
 		return EmbeddedCatalog(), state, nil
 	}
-	keys, err := m.keys()
-	if err != nil {
-		return Catalog{}, ManifestState{}, err
+	if state.KeyID == "" && !m.unsignedAllowed() {
+		return Catalog{}, ManifestState{}, errors.New("active repository catalog is unsigned but this repository requires a trusted signature")
 	}
 	manifestPath := filepath.Join(m.versions(), state.Active)
-	signaturePath := manifestPath + ".minisig"
 	data, err := readLimitedFile(manifestPath, MaxManifestSize)
 	if err != nil {
 		return Catalog{}, ManifestState{}, err
 	}
-	signatureText, err := readLimitedFile(signaturePath, MaxSignatureSize)
-	if err != nil {
-		return Catalog{}, ManifestState{}, err
-	}
-	keyID, err := verifyManifest(keys, data, signatureText)
-	if err != nil {
-		return Catalog{}, ManifestState{}, err
+	keyID := uint64(0)
+	if state.KeyID != "" {
+		keys, keyErr := m.keys()
+		if keyErr != nil {
+			return Catalog{}, ManifestState{}, keyErr
+		}
+		signatureText, signatureErr := readLimitedFile(versionSignaturePath(manifestPath, state.KeyID), MaxSignatureSize)
+		if errors.Is(signatureErr, os.ErrNotExist) {
+			// Schema-1 state stored one unqualified signature beside each
+			// catalog. Preserve that read path during migration.
+			signatureText, signatureErr = readLimitedFile(manifestPath+".minisig", MaxSignatureSize)
+		}
+		if signatureErr != nil {
+			return Catalog{}, ManifestState{}, signatureErr
+		}
+		keyID, err = verifyManifest(keys, data, signatureText)
+		if err != nil {
+			return Catalog{}, ManifestState{}, err
+		}
 	}
 	catalog, err := strictCatalog(data)
 	if err != nil {
 		return Catalog{}, ManifestState{}, err
 	}
-	if catalog.Version != state.ActiveVersion || manifestDigest(data) != state.ActiveDigest || strings.ToUpper(strconv.FormatUint(keyID, 16)) != state.KeyID {
+	if catalog.Version != state.ActiveVersion || manifestDigest(data) != state.ActiveDigest || (state.KeyID != "" && strings.ToUpper(strconv.FormatUint(keyID, 16)) != state.KeyID) {
 		return Catalog{}, ManifestState{}, errors.New("active manifest bytes/signature do not match state pointer")
 	}
 	return catalog, state, nil
@@ -229,7 +371,10 @@ func (m ManifestManager) Current() (Catalog, ManifestState, error) {
 
 func readLimitedFile(path string, limit int64) ([]byte, error) {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
+	if err != nil {
+		return nil, fmt.Errorf("inspect source %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, fmt.Errorf("source must be a regular file no larger than %d bytes: %s", limit, path)
 	}
 	return os.ReadFile(path)
@@ -295,6 +440,12 @@ func (m ManifestManager) readSource(ctx context.Context, source string) ([]byte,
 			return nil, nil, "", err
 		}
 		signatureText, err := m.download(ctx, signatureSource, MaxSignatureSize)
+		if err == nil && len(signatureText) == 0 {
+			err = errors.New("catalog signature body is empty")
+		}
+		if err != nil && m.AllowUnsigned && parsed.Scheme == "https" {
+			return data, nil, manifestSource, nil
+		}
 		return data, signatureText, manifestSource, err
 	}
 	absolute, err := filepath.Abs(source)
@@ -306,6 +457,12 @@ func (m ManifestManager) readSource(ctx context.Context, source string) ([]byte,
 		return nil, nil, "", err
 	}
 	signatureText, err := readLimitedFile(absolute+".minisig", MaxSignatureSize)
+	if err != nil && m.AllowUnsigned && errors.Is(err, os.ErrNotExist) {
+		return data, nil, "local:" + absolute, nil
+	}
+	if err == nil && len(signatureText) == 0 {
+		return nil, nil, "", errors.New("catalog signature file is empty")
+	}
 	return data, signatureText, "local:" + absolute, err
 }
 
@@ -313,17 +470,24 @@ func (m ManifestManager) Sync(ctx context.Context, source string, allowDowngrade
 	if err := m.validate(); err != nil {
 		return ManifestState{}, err
 	}
-	keys, err := m.keys()
-	if err != nil {
-		return ManifestState{}, err
-	}
 	data, signatureText, provenance, err := m.readSource(ctx, source)
 	if err != nil {
 		return ManifestState{}, err
 	}
-	keyID, err := verifyManifest(keys, data, signatureText)
-	if err != nil {
-		return ManifestState{}, err
+	keyID := uint64(0)
+	if len(signatureText) != 0 {
+		keys, keyErr := m.keys()
+		if keyErr != nil {
+			return ManifestState{}, keyErr
+		}
+		keyID, err = verifyManifest(keys, data, signatureText)
+		if err != nil {
+			return ManifestState{}, err
+		}
+	} else if !m.unsignedAllowed() {
+		return ManifestState{}, errors.New("image catalog has no detached signature")
+	} else if !m.unsignedSourceMatchesRepository(provenance) {
+		return ManifestState{}, errors.New("unsigned catalog source does not match the selected repository catalog.json")
 	}
 	catalog, err := strictCatalog(data)
 	if err != nil {
@@ -337,18 +501,32 @@ func (m ManifestManager) Sync(ctx context.Context, source string, allowDowngrade
 		return ManifestState{}, err
 	}
 	defer manifestLock.Release()
+	stateKey, err := m.stateKey()
+	if err != nil {
+		return ManifestState{}, err
+	}
 	current, err := m.readState()
 	if errors.Is(err, os.ErrNotExist) {
-		current, err = embeddedState()
+		if stateKey == "default" {
+			current, err = embeddedState()
+		} else {
+			current = ManifestState{}
+			err = nil
+		}
 	}
 	if err != nil {
 		return ManifestState{}, err
 	}
-	current, err = currentBaselineState(current)
-	if err != nil {
-		return ManifestState{}, err
+	if stateKey == "default" {
+		current, err = currentBaselineState(current)
+		if err != nil {
+			return ManifestState{}, err
+		}
 	}
-	if catalog.Version == current.ActiveVersion && digest != current.ActiveDigest {
+	if current.KeyID != "" && len(signatureText) == 0 && !allowDowngrade {
+		return ManifestState{}, errors.New("repository previously served a signed catalog; refusing an unsigned catalog without --allow-downgrade")
+	}
+	if current.ActiveVersion != 0 && catalog.Version == current.ActiveVersion && digest != current.ActiveDigest {
 		return ManifestState{}, errors.New("manifest version equivocation: same version has different bytes")
 	}
 	if catalog.Version < current.HighestVersion && !allowDowngrade {
@@ -367,28 +545,30 @@ func (m ManifestManager) Sync(ctx context.Context, source string, allowDowngrade
 	} else {
 		return ManifestState{}, err
 	}
-	signaturePath := manifestPath + ".minisig"
-	if existing, err := os.ReadFile(signaturePath); err == nil {
-		if !bytes.Equal(existing, signatureText) {
-			return ManifestState{}, errors.New("versioned signature path contains different bytes")
-		}
-	} else if errors.Is(err, os.ErrNotExist) {
-		if err := fsutil.AtomicWrite(signaturePath, signatureText, 0o600); err != nil {
+	if len(signatureText) != 0 {
+		signaturePath := versionSignaturePath(manifestPath, strings.ToUpper(strconv.FormatUint(keyID, 16)))
+		if existing, err := os.ReadFile(signaturePath); err == nil {
+			if !bytes.Equal(existing, signatureText) {
+				return ManifestState{}, errors.New("versioned signature path contains different bytes")
+			}
+		} else if errors.Is(err, os.ErrNotExist) {
+			if err := fsutil.AtomicWrite(signaturePath, signatureText, 0o600); err != nil {
+				return ManifestState{}, err
+			}
+		} else {
 			return ManifestState{}, err
 		}
-	} else {
-		return ManifestState{}, err
 	}
 	highest := current.HighestVersion
 	if catalog.Version > highest {
 		highest = catalog.Version
 	}
-	state := ManifestState{Schema: ManifestStateSchema, HighestVersion: highest, Active: filename, ActiveVersion: catalog.Version, ActiveDigest: digest, KeyID: strings.ToUpper(strconv.FormatUint(keyID, 16)), Source: provenance, AcceptedAt: time.Now().UTC(), Downgrade: catalog.Version < current.HighestVersion}
-	stateBytes, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return ManifestState{}, err
+	keyText := ""
+	if keyID != 0 {
+		keyText = strings.ToUpper(strconv.FormatUint(keyID, 16))
 	}
-	if err := fsutil.AtomicWrite(m.statePath(), append(stateBytes, '\n'), 0o600); err != nil {
+	state := ManifestState{Schema: ManifestStateSchema, HighestVersion: highest, Active: filename, ActiveVersion: catalog.Version, ActiveDigest: digest, KeyID: keyText, Source: provenance, AcceptedAt: time.Now().UTC(), Downgrade: current.HighestVersion != 0 && catalog.Version < current.HighestVersion}
+	if err := m.writeState(state); err != nil {
 		return ManifestState{}, err
 	}
 	return state, nil
@@ -405,6 +585,35 @@ func (m ManifestManager) Reset(ctx context.Context) (ManifestState, error) {
 		return ManifestState{}, err
 	}
 	defer manifestLock.Release()
+	stateKey, err := m.stateKey()
+	if err != nil {
+		return ManifestState{}, err
+	}
+	if stateKey != "default" {
+		current, readErr := m.readState()
+		if errors.Is(readErr, os.ErrNotExist) {
+			embedded, embeddedErr := embeddedState()
+			if embeddedErr != nil {
+				return ManifestState{}, embeddedErr
+			}
+			embedded.AcceptedAt = time.Now().UTC()
+			return embedded, nil
+		}
+		if readErr != nil {
+			return ManifestState{}, readErr
+		}
+		embedded, err := embeddedState()
+		if err != nil {
+			return ManifestState{}, err
+		}
+		embedded.HighestVersion = current.HighestVersion
+		embedded.KeyID = current.KeyID
+		embedded.AcceptedAt = time.Now().UTC()
+		if err := m.writeState(embedded); err != nil {
+			return ManifestState{}, err
+		}
+		return embedded, nil
+	}
 	current, err := m.readState()
 	if errors.Is(err, os.ErrNotExist) {
 		current, err = embeddedState()
@@ -420,11 +629,7 @@ func (m ManifestManager) Reset(ctx context.Context) (ManifestState, error) {
 		embedded.HighestVersion = current.HighestVersion
 	}
 	embedded.AcceptedAt = time.Now().UTC()
-	data, err := json.MarshalIndent(embedded, "", "  ")
-	if err != nil {
-		return ManifestState{}, err
-	}
-	if err := fsutil.AtomicWrite(m.statePath(), append(data, '\n'), 0o600); err != nil {
+	if err := m.writeState(embedded); err != nil {
 		return ManifestState{}, err
 	}
 	return embedded, nil
