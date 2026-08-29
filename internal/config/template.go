@@ -55,15 +55,26 @@ func Template(name, cidr string) ([]byte, error) {
 	fmt.Fprintf(&output, "# node_admin identity fields. Other variables stay opaque to farrow.\n")
 	fmt.Fprintf(&output, "#\n")
 	fmt.Fprintf(&output, "# Per-host or group-level knobs, all optional:\n")
-	fmt.Fprintf(&output, "#   vm_arch: arm64                          native, amd64, or arm64 (deployment-wide)\n")
-	fmt.Fprintf(&output, "#   vm_cpu: 2                                cores\n")
-	fmt.Fprintf(&output, "#   vm_mem: 4096                             memory (MiB, or \"8GiB\")\n")
-	fmt.Fprintf(&output, "#   vm_disk: 64                              root disk (GiB)\n")
-	fmt.Fprintf(&output, "#   vm_image: %-6s                         image family, channel, or image@version selector\n", defaultImage)
-	fmt.Fprintf(&output, "#   vm_version: 9.7                         newest matching numeric version prefix\n")
-	fmt.Fprintf(&output, "#   vm_disks: [{ path: /data, size: 128 }]   extra data disks\n")
-	fmt.Fprintf(&output, "#   vm_alias: [i.pigsty]                     /etc/hosts aliases\n")
-	fmt.Fprintf(&output, "#   vm_skip: true                            host not managed by farrow\n")
+	// The description column is computed, not hand-padded, so adding a knob or
+	// changing the default image can never leave the block visibly crooked.
+	knobs := [][2]string{
+		{"vm_arch: native", "native, amd64, or arm64 (deployment-wide)"},
+		{"vm_cpu: 2", "cores"},
+		{"vm_mem: 4096", `memory (MiB, or "8GiB")`},
+		{"vm_disk: 64", "root disk (GiB)"},
+		{"vm_image: " + defaultImage, "image family, channel, or image@version selector"},
+		{"vm_version: 9.7", "newest matching numeric version prefix"},
+		{"vm_disks: [{ path: /data, size: 128 }]", "extra data disks"},
+		{"vm_alias: [i.pigsty]", "/etc/hosts aliases"},
+		{"vm_skip: true", "host not managed by farrow"},
+	}
+	width := 0
+	for _, knob := range knobs {
+		width = max(width, len(knob[0]))
+	}
+	for _, knob := range knobs {
+		fmt.Fprintf(&output, "#   %-*s   %s\n", width, knob[0], knob[1])
+	}
 	fmt.Fprintf(&output, "all:\n")
 	fmt.Fprintf(&output, "  vars:\n")
 	fmt.Fprintf(&output, "    admin_ip: %s.%d\n", prefix, nodes[0].LastOctet)
