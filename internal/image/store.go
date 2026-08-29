@@ -93,12 +93,46 @@ func copyWithProgress(destination io.Writer, source io.Reader, limit int64, repo
 		event.StartedAt = time.Now()
 	}
 	reporter.Report(event)
-	tracked := &reportingReader{reader: io.LimitReader(source, limit), reporter: reporter, event: event, last: time.Now()}
+	// event.CurrentBytes seeds the counter so a resumed transfer reports absolute
+	// progress against TotalBytes rather than restarting the bar at zero.
+	tracked := &reportingReader{reader: io.LimitReader(source, limit), reporter: reporter, event: event, current: event.CurrentBytes, last: time.Now()}
 	written, err := io.Copy(destination, tracked)
-	event.CurrentBytes = written
+	event.CurrentBytes = tracked.current
 	event.Done = err == nil
 	reporter.Report(event)
 	return written, err
+}
+
+// errSourceGone marks a source that answered "this artifact is not here". It is
+// distinguished from a transport failure because the remedy is different: a
+// rotated-away upstream needs a newer catalog or a mirror, not a retry.
+var errSourceGone = errors.New("image source no longer publishes this artifact")
+
+// errImageStalled marks a transfer that stopped delivering bytes. It is a
+// distinct cause so the message can tell a stalled source apart from a refused
+// or cancelled one.
+var errImageStalled = errors.New("image source stopped sending data")
+
+// imageStallTimeout bounds inactivity, not total duration. A multi-gigabyte
+// artifact on a constrained link must be allowed to take as long as it honestly
+// needs; only a source that has genuinely stopped is a failure.
+const imageStallTimeout = 2 * time.Minute
+
+// stallReader re-arms a watchdog on every byte received. Paired with a
+// cancellable request context it replaces an overall client deadline, which
+// would abort a healthy but slow download partway through.
+type stallReader struct {
+	reader  io.Reader
+	timer   *time.Timer
+	timeout time.Duration
+}
+
+func (reader *stallReader) Read(buffer []byte) (int, error) {
+	read, err := reader.reader.Read(buffer)
+	if read > 0 {
+		reader.timer.Reset(reader.timeout)
+	}
+	return read, err
 }
 
 func (s Store) lockPath() string { return filepath.Join(s.DataRoot, "locks", "images.lock") }
@@ -350,12 +384,16 @@ func (s Store) Import(ctx context.Context, source, expectedDigest string) (strin
 }
 
 func (s Store) httpClient() *http.Client {
-	client := *webclient.New(30 * time.Minute)
+	// No overall client deadline: image transfers are bounded by the per-read
+	// stall watchdog instead, so a slow link finishes rather than failing at an
+	// arbitrary wall-clock limit with nothing to show for it. The response-header
+	// wait stays bounded so an unresponsive server still fails fast.
+	client := *webclient.New(0)
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		transport.ResponseHeaderTimeout = 60 * time.Second
+	}
 	if s.HTTPClient != nil {
 		client = *s.HTTPClient
-		if client.Timeout == 0 {
-			client.Timeout = 30 * time.Minute
-		}
 	}
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
@@ -373,72 +411,194 @@ func (s Store) httpClient() *http.Client {
 	return &client
 }
 
+// resumePartialPath names the staging file after the artifact digest so an
+// interrupted transfer can continue instead of restarting from zero. Prune still
+// recognises it: the name keeps the .download- prefix and .partial suffix.
+func resumePartialPath(directory string, entry Entry) string {
+	if entry.ArtifactSize <= 0 || !digestPattern.MatchString(entry.SHA256) {
+		return ""
+	}
+	return filepath.Join(directory, ".download-"+entry.SHA256+".partial")
+}
+
+// openStaging returns the staging handle, the byte offset already on disk, and
+// whether the file is safe to keep when the transfer fails. A resumable staging
+// file survives a transient failure; an anonymous one never does.
+func (s Store) openStaging(directory string, entry Entry) (*os.File, string, int64, error) {
+	resumable := resumePartialPath(directory, entry)
+	if resumable == "" {
+		handle, err := os.CreateTemp(directory, ".download-*.partial")
+		if err != nil {
+			return nil, "", 0, err
+		}
+		if err := handle.Chmod(0o600); err != nil {
+			_ = handle.Close()
+			_ = os.Remove(handle.Name())
+			return nil, "", 0, err
+		}
+		return handle, handle.Name(), 0, nil
+	}
+	info, err := os.Lstat(resumable)
+	switch {
+	case err == nil && (!info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > entry.ArtifactSize):
+		// Anything that is not our own private regular file of a plausible length
+		// is not evidence of our own interrupted transfer. Start clean.
+		if err := os.Remove(resumable); err != nil {
+			return nil, "", 0, err
+		}
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return nil, "", 0, err
+	}
+	handle, err := os.OpenFile(resumable, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	offset, err := handle.Seek(0, io.SeekEnd)
+	if err != nil {
+		_ = handle.Close()
+		return nil, "", 0, err
+	}
+	return handle, resumable, offset, nil
+}
+
 func (s Store) stageHTTP(ctx context.Context, source, directory string, entry Entry) (string, int64, error) {
 	parsed, err := url.Parse(source)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return "", 0, errors.New("repository image URL must be absolute HTTP(S)")
 	}
 	displaySource := displayActivitySource(source)
+	handle, stagingPath, resumeFrom, err := s.openStaging(directory, entry)
+	if err != nil {
+		return "", 0, err
+	}
+	// A staging file that contradicts the catalog is poisoned and must go. One
+	// that merely lost its connection is kept, because it is the resume point.
+	poisoned := false
+	complete := false
+	defer func() {
+		_ = handle.Close()
+		if poisoned || (!complete && resumePartialPath(directory, entry) != stagingPath) {
+			_ = os.Remove(stagingPath)
+		}
+	}()
+
+	if entry.ArtifactSize > 0 && resumeFrom == entry.ArtifactSize {
+		// The bytes are already here from an interrupted run; publish verifies the
+		// digest, so reusing them costs nothing and saves the whole transfer.
+		s.Progress.Report(activity.Event{
+			Phase: "image-download", Message: fmt.Sprintf("Reusing the complete staged download of %s %s (%s)", entry.Alias, entry.Release, entry.Arch),
+			Source: displaySource, CurrentBytes: resumeFrom, TotalBytes: resumeFrom, Done: true,
+		})
+		complete = true
+		return stagingPath, resumeFrom, nil
+	}
+
 	s.Progress.Report(activity.Event{
 		Phase: "image-source", Message: fmt.Sprintf("Connecting to an image source for %s %s (%s)", entry.Alias, entry.Release, entry.Arch), Source: displaySource,
 	})
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	downloadContext, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	watchdog := time.AfterFunc(imageStallTimeout, func() { cancel(errImageStalled) })
+	defer watchdog.Stop()
+
+	request, err := http.NewRequestWithContext(downloadContext, http.MethodGet, source, nil)
 	if err != nil {
 		return "", 0, err
+	}
+	if resumeFrom > 0 {
+		request.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeFrom))
 	}
 	response, err := s.httpClient().Do(request)
 	if err != nil {
-		return "", 0, err
+		return "", resumeFrom, stallAwareError(downloadContext, err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("download returned %s", response.Status)
+	switch response.StatusCode {
+	case http.StatusOK:
+		// The source ignored the range request, so the body starts at byte zero and
+		// the staged prefix has to go. If the reset itself fails the offset is no
+		// longer something we can reason about, so discard the file rather than
+		// leave a staging point nobody can trust.
+		if resumeFrom > 0 {
+			if err := handle.Truncate(0); err != nil {
+				poisoned = true
+				return "", 0, err
+			}
+			if _, err := handle.Seek(0, io.SeekStart); err != nil {
+				poisoned = true
+				return "", 0, err
+			}
+			resumeFrom = 0
+		}
+	case http.StatusPartialContent:
+		if !resumeMatchesRange(response.Header.Get("Content-Range"), resumeFrom, entry.ArtifactSize) {
+			poisoned = true
+			return "", resumeFrom, errors.New("image source answered the resume request with a mismatched byte range")
+		}
+		s.Progress.Report(activity.Event{
+			Phase: "image-download", Source: displaySource, CurrentBytes: resumeFrom, TotalBytes: entry.ArtifactSize,
+			Message: fmt.Sprintf("Resuming the interrupted download of %s %s (%s)", entry.Alias, entry.Release, entry.Arch),
+		})
+	case http.StatusNotFound, http.StatusGone:
+		return "", resumeFrom, fmt.Errorf("%w: %s", errSourceGone, response.Status)
+	default:
+		return "", resumeFrom, fmt.Errorf("download returned %s", response.Status)
 	}
 	if response.Request != nil && response.Request.URL != nil {
 		displaySource = displayActivitySource(response.Request.URL.String())
 	}
-	if response.ContentLength > MaxArtifactSize || (entry.ArtifactSize > 0 && response.ContentLength >= 0 && response.ContentLength != entry.ArtifactSize) {
-		return "", 0, errors.New("download Content-Length differs from catalog policy")
+	remaining := entry.ArtifactSize - resumeFrom
+	if response.ContentLength > MaxArtifactSize || (entry.ArtifactSize > 0 && response.ContentLength >= 0 && response.ContentLength != remaining) {
+		poisoned = true
+		return "", resumeFrom, errors.New("download Content-Length differs from catalog policy")
 	}
-	temp, err := os.CreateTemp(directory, ".download-*.partial")
-	if err != nil {
-		return "", 0, err
-	}
-	tempPath := temp.Name()
-	ok := false
-	defer func() {
-		_ = temp.Close()
-		if !ok {
-			_ = os.Remove(tempPath)
-		}
-	}()
-	if err := temp.Chmod(0o600); err != nil {
-		return "", 0, err
-	}
+
 	total := entry.ArtifactSize
-	if total <= 0 {
-		total = response.ContentLength
+	if total <= 0 && response.ContentLength >= 0 {
+		total = resumeFrom + response.ContentLength
 	}
-	written, err := copyWithProgress(temp, response.Body, MaxArtifactSize+1, s.Progress, activity.Event{
-		Phase:      "image-download",
-		Message:    fmt.Sprintf("Downloading image %s %s (%s)", entry.Alias, entry.Release, entry.Arch),
-		Source:     displaySource,
-		TotalBytes: total,
+	body := &stallReader{reader: response.Body, timer: watchdog, timeout: imageStallTimeout}
+	received, err := copyWithProgress(handle, body, MaxArtifactSize+1-resumeFrom, s.Progress, activity.Event{
+		Phase:        "image-download",
+		Message:      fmt.Sprintf("Downloading image %s %s (%s)", entry.Alias, entry.Release, entry.Arch),
+		Source:       displaySource,
+		CurrentBytes: resumeFrom,
+		TotalBytes:   total,
 	})
+	written := resumeFrom + received
 	if err != nil {
-		return "", written, fmt.Errorf("download image: %w", err)
+		return "", written, fmt.Errorf("download image: %w", stallAwareError(downloadContext, err))
 	}
-	if written > MaxArtifactSize || (response.ContentLength >= 0 && written != response.ContentLength) || (entry.ArtifactSize > 0 && written != entry.ArtifactSize) {
+	if written > MaxArtifactSize || (response.ContentLength >= 0 && received != response.ContentLength) || (entry.ArtifactSize > 0 && written != entry.ArtifactSize) {
+		poisoned = true
 		return "", written, errors.New("downloaded image size differs from catalog policy")
 	}
-	if err := temp.Sync(); err != nil {
+	if err := handle.Sync(); err != nil {
 		return "", written, err
 	}
-	if err := temp.Close(); err != nil {
+	if err := handle.Close(); err != nil {
 		return "", written, err
 	}
-	ok = true
-	return tempPath, written, nil
+	complete = true
+	return stagingPath, written, nil
+}
+
+// resumeMatchesRange proves a 206 answers exactly the range that was asked for,
+// against the total size the catalog promised.
+func resumeMatchesRange(header string, resumeFrom, artifactSize int64) bool {
+	if resumeFrom <= 0 || artifactSize <= 0 {
+		return false
+	}
+	return header == fmt.Sprintf("bytes %d-%d/%d", resumeFrom, artifactSize-1, artifactSize)
+}
+
+// stallAwareError reports a watchdog abort as a stall rather than as the generic
+// context cancellation the transport surfaces.
+func stallAwareError(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); errors.Is(cause, errImageStalled) {
+		return fmt.Errorf("%w after %s of no progress", errImageStalled, imageStallTimeout)
+	}
+	return err
 }
 
 func (s Store) stageSource(ctx context.Context, source, directory string, entry Entry) (string, int64, error) {
@@ -517,9 +677,11 @@ func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) 
 		candidates = append(candidates, candidate{kind: "upstream", source: entry.Upstream})
 	}
 	failures := make([]string, 0, len(candidates))
+	gone := len(candidates) > 0
 	for index, candidate := range candidates {
 		tempPath, copied, stageErr := s.stageSource(ctx, candidate.source, directory, entry)
 		if stageErr != nil {
+			gone = gone && errors.Is(stageErr, errSourceGone)
 			message := fmt.Sprintf("Image %s source %s failed", entry.Alias, candidate.kind)
 			if index+1 < len(candidates) {
 				message += "; trying the next source"
@@ -536,6 +698,7 @@ func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) 
 			return pathname, metadata, nil
 		}
 		_ = os.Remove(tempPath)
+		gone = false
 		message := fmt.Sprintf("Image %s source %s failed verification: %v", entry.Alias, candidate.kind, publishErr)
 		if index+1 < len(candidates) {
 			message += "; trying the next source"
@@ -543,5 +706,11 @@ func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) 
 		s.Progress.Report(activity.Event{Phase: "image-fallback", Message: message, Source: displayActivitySource(candidate.source)})
 		failures = append(failures, candidate.kind+": "+publishErr.Error())
 	}
-	return "", Metadata{}, fmt.Errorf("all image sources failed: %s", strings.Join(failures, "; "))
+	message := fmt.Errorf("all image sources failed: %s", strings.Join(failures, "; "))
+	if gone {
+		// Distribution mirrors prune dated artifacts. When every source agrees the
+		// bytes are simply gone, retrying is pointless; say what actually helps.
+		return "", Metadata{}, fmt.Errorf("%w\n\nThe pinned artifact is no longer published upstream. Refresh the catalog with a newer Farrow release or `farrow image sync <catalog-url>`, point --repo/$FARROW_REPO at a mirror that still carries it, or `farrow image import` a local copy", message)
+	}
+	return "", Metadata{}, message
 }

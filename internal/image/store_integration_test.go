@@ -270,3 +270,207 @@ func TestHTTPSPullRejectsChecksumAndDowngrade(t *testing.T) {
 		t.Fatal("HTTPS-to-HTTP redirect unexpectedly accepted")
 	}
 }
+
+// httpArtifact is one in-memory qcow2 plus the identity a catalog entry needs.
+type httpArtifact struct {
+	data   []byte
+	digest string
+}
+
+func testHTTPArtifact(t *testing.T) httpArtifact {
+	t.Helper()
+	source := filepath.Join(t.TempDir(), "source.qcow2")
+	makeQCOW2(t, source, "")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	return httpArtifact{data: data, digest: hex.EncodeToString(sum[:])}
+}
+
+func (a httpArtifact) entry(upstream string) Entry {
+	return Entry{
+		Alias: "test", Release: "1", Arch: "arm64", File: "test/test-1-arm64.qcow2",
+		Upstream: upstream, SHA256: a.digest, Format: "qcow2",
+		ArtifactSize: int64(len(a.data)), VirtualSize: 64 << 20,
+	}
+}
+
+func TestIntegrationInterruptedDownloadResumesWithRange(t *testing.T) {
+	t.Parallel()
+	store := testImageStore(t)
+	artifact := testHTTPArtifact(t)
+	var attempts atomic.Int64
+	var sawRange atomic.Bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if attempts.Add(1) == 1 {
+			// First attempt dies halfway through, exactly like a dropped link.
+			half := len(artifact.data) / 2
+			writer.Header().Set("Content-Length", strconv.Itoa(len(artifact.data)))
+			_, _ = writer.Write(artifact.data[:half])
+			if flusher, ok := writer.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			panic(http.ErrAbortHandler)
+		}
+		if request.Header.Get("Range") != "" {
+			sawRange.Store(true)
+		}
+		http.ServeContent(writer, request, "image.qcow2", time.Time{}, strings.NewReader(string(artifact.data)))
+	}))
+	defer server.Close()
+	store.HTTPClient = server.Client()
+	entry := artifact.entry(server.URL + "/image.qcow2")
+
+	if _, _, err := store.Pull(context.Background(), entry); err == nil {
+		t.Fatal("interrupted download unexpectedly succeeded")
+	}
+	staged := resumePartialPath(filepath.Join(store.DataRoot, "images", entry.Alias), entry)
+	info, err := os.Stat(staged)
+	if err != nil {
+		t.Fatalf("interrupted download did not leave a resume point: %v", err)
+	}
+	if info.Size() == 0 || info.Size() >= entry.ArtifactSize {
+		t.Fatalf("resume point size = %d, want a partial prefix of %d", info.Size(), entry.ArtifactSize)
+	}
+
+	path, _, err := store.Pull(context.Background(), entry)
+	if err != nil {
+		t.Fatalf("resumed download failed: %v", err)
+	}
+	if !sawRange.Load() {
+		t.Fatal("second attempt did not ask the source to resume")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatalf("resume point survived a published download: %v", err)
+	}
+}
+
+func TestIntegrationResumeRestartsWhenSourceIgnoresRange(t *testing.T) {
+	t.Parallel()
+	store := testImageStore(t)
+	artifact := testHTTPArtifact(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// A source that answers 200 to a Range request must restart cleanly
+		// rather than append a second copy onto the existing prefix.
+		writer.Header().Set("Content-Length", strconv.Itoa(len(artifact.data)))
+		_, _ = writer.Write(artifact.data)
+	}))
+	defer server.Close()
+	store.HTTPClient = server.Client()
+	entry := artifact.entry(server.URL + "/image.qcow2")
+
+	directory := filepath.Join(store.DataRoot, "images", entry.Alias)
+	if err := ensurePrivateDir(directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resumePartialPath(directory, entry), artifact.data[:64], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Pull(context.Background(), entry); err != nil {
+		t.Fatalf("range-ignoring source failed: %v", err)
+	}
+}
+
+func TestIntegrationCompleteStagedDownloadIsReusedWithoutNetwork(t *testing.T) {
+	t.Parallel()
+	store := testImageStore(t)
+	artifact := testHTTPArtifact(t)
+	var requests atomic.Int64
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	store.HTTPClient = server.Client()
+	entry := artifact.entry(server.URL + "/image.qcow2")
+
+	directory := filepath.Join(store.DataRoot, "images", entry.Alias)
+	if err := ensurePrivateDir(directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resumePartialPath(directory, entry), artifact.data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Pull(context.Background(), entry); err != nil {
+		t.Fatalf("complete staged download was not reused: %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("reused download still contacted the source %d time(s)", requests.Load())
+	}
+}
+
+func TestIntegrationStagedDownloadThatFailsVerificationIsDiscarded(t *testing.T) {
+	t.Parallel()
+	store := testImageStore(t)
+	artifact := testHTTPArtifact(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	store.HTTPClient = server.Client()
+	entry := artifact.entry(server.URL + "/image.qcow2")
+
+	directory := filepath.Join(store.DataRoot, "images", entry.Alias)
+	if err := ensurePrivateDir(directory); err != nil {
+		t.Fatal(err)
+	}
+	// Right length, wrong bytes: the resume point must not survive the digest
+	// check, or every later attempt would keep reusing the same poison.
+	corrupt := append([]byte(nil), artifact.data...)
+	corrupt[len(corrupt)-1] ^= 0xff
+	staged := resumePartialPath(directory, entry)
+	if err := os.WriteFile(staged, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Pull(context.Background(), entry); err == nil {
+		t.Fatal("corrupt staged download was accepted")
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatalf("corrupt resume point survived: %v", err)
+	}
+}
+
+func TestIntegrationRotatedAwayUpstreamExplainsTheRemedy(t *testing.T) {
+	t.Parallel()
+	store := testImageStore(t)
+	artifact := testHTTPArtifact(t)
+	// Distribution mirrors prune dated artifacts. A pinned catalog entry that has
+	// aged out must say what fixes it, not just report a status line.
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	defer server.Close()
+	store.HTTPClient = server.Client()
+
+	_, _, err := store.Pull(context.Background(), artifact.entry(server.URL+"/image.qcow2"))
+	if err == nil {
+		t.Fatal("missing upstream artifact was accepted")
+	}
+	for _, want := range []string{"no longer published upstream", "farrow image sync", "FARROW_REPO", "farrow image import"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("rotated-away upstream error is missing %q:\n%v", want, err)
+		}
+	}
+}
+
+func TestIntegrationTransportFailureIsNotReportedAsRotatedAway(t *testing.T) {
+	t.Parallel()
+	store := testImageStore(t)
+	artifact := testHTTPArtifact(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	store.HTTPClient = server.Client()
+
+	_, _, err := store.Pull(context.Background(), artifact.entry(server.URL+"/image.qcow2"))
+	if err == nil {
+		t.Fatal("failing upstream was accepted")
+	}
+	if strings.Contains(err.Error(), "no longer published upstream") {
+		t.Errorf("a retryable transport failure was reported as a rotated-away artifact:\n%v", err)
+	}
+}
