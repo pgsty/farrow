@@ -1,6 +1,6 @@
 {
   "schema": 3,
-  "revision": 2026082901,
+  "revision": 2026082903,
   "defaults": {
     "image": "d13",
     "channel": "stable",
@@ -8,131 +8,18 @@
     "boot": "uefi"
   },
   "images": {
-    "el7": {
-      "aliases": ["c7", "centos7", "centos79"],
-      "boot": "bios",
-      "channels": {"stable": "7.9.20221112.0"},
-      "versions": {
-        "7.9.20221112.0": {
-          "status": "deprecated",
-          "variants": {
-            "amd64": {
-              "file": "images/el7-7.9.20221112.0-amd64.qcow2",
-              "upstream": "https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2",
-              "sha256": "284aab2b23d91318f169ff464bce4d53404a15a0618ceb34562838c59af4adea",
-              "format": "qcow2",
-              "artifact_size": 902889472,
-              "virtual_size": 8589934592,
-              "source_user": "centos",
-              "provenance": "CentOS Linux 7 GenericCloud 2211 archive; distribution-owned immutable artifact retained for EOL compatibility testing only; SHA-256, qcow2 metadata, MBR boot layout, and 4K XFS root verified 2026-08-28"
-            }
-          }
-        }
-      }
-    },
-    "el8": {
-      "aliases": ["rocky8"],
-      "boot": "uefi",
-      "channels": {"stable": "8.10.20240528.0"},
-      "versions": {
-        "8.10.20240528.0": {
-          "status": "testing",
-          "variants": {
-            "amd64": {
-              "file": "images/el8-8.10.20240528.0-amd64.qcow2",
-              "upstream": "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base-8.10-20240528.0.x86_64.qcow2",
-              "sha256": "e56066c58606191e96184de9a9183a3af33c59bcbd8740d8b10ca054a7a89c14",
-              "format": "qcow2",
-              "artifact_size": 2065760256,
-              "virtual_size": 10737418240,
-              "source_user": "rocky",
-              "provenance": "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; native Linux/amd64 lifecycle passed and qcow2 metadata verified 2026-08-24"
-            },
-            "arm64": {
-              "file": "images/el8-8.10.20240528.0-arm64.qcow2",
-              "upstream": "https://dl.rockylinux.org/pub/rocky/8/images/aarch64/Rocky-8-GenericCloud-Base-8.10-20240528.0.aarch64.qcow2",
-              "sha256": "946b5b9845aa5e3ed98f1bc6ee9873201712a2aef01b87731aed16857e0ca13f",
-              "format": "qcow2",
-              "artifact_size": 1925644288,
-              "virtual_size": 10737418240,
-              "source_user": "rocky",
-              "provenance": "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; qcow2 metadata verified and TCG booted on Darwin/arm64 2026-08-28; Apple HVF is incompatible with its 64K-granule kernel"
-            }
-          }
-        }
-      }
-    },
-    "el9": {
-      "aliases": ["rocky9", "rocky"],
-      "boot": "uefi",
-      "channels": {"stable": "9.8.20260525.0"},
-      "versions": {
-        "9.8.20260525.0": {
-          "status": "testing",
-          "variants": {
-            "amd64": {
-              "file": "images/el9-9.8.20260525.0-amd64.qcow2",
-              "upstream": "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
-              "sha256": "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8",
-              "format": "qcow2",
-              "artifact_size": 645988352,
-              "virtual_size": 10737418240,
-              "source_user": "rocky",
-              "provenance": "Rocky Linux 9.8 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
-            },
-            "arm64": {
-              "file": "images/el9-9.8.20260525.0-arm64.qcow2",
-              "upstream": "https://dl.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base-9.8-20260525.0.aarch64.qcow2",
-              "sha256": "24692a444f1f0b8bb95375c38c8b43f8099a115347623691be2c330b40c8a1fe",
-              "format": "qcow2",
-              "artifact_size": 519831552,
-              "virtual_size": 10737418240,
-              "source_user": "rocky",
-              "provenance": "Rocky Linux 9.8 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
-            }
-          }
-        }
-      }
-    },
-    "el10": {
-      "aliases": ["rocky10"],
-      "boot": "uefi",
-      "channels": {"stable": "10.2.20260525.0"},
-      "versions": {
-        "10.2.20260525.0": {
-          "status": "testing",
-          "variants": {
-            "amd64": {
-              "file": "images/el10-10.2.20260525.0-amd64.qcow2",
-              "upstream": "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2",
-              "sha256": "9fc9e9ff16888bb68ac39b0392e25c9c92684d50c85f1cce6ab549363bbc4b48",
-              "format": "qcow2",
-              "artifact_size": 544997376,
-              "virtual_size": 10737418240,
-              "source_user": "rocky",
-              "provenance": "Rocky Linux 10.2 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
-            },
-            "arm64": {
-              "file": "images/el10-10.2.20260525.0-arm64.qcow2",
-              "upstream": "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.2-20260525.0.aarch64.qcow2",
-              "sha256": "457c8375e19496f43a25c4a6169fa11237536c53cef6f85a20ea3c5a751aa0f5",
-              "format": "qcow2",
-              "artifact_size": 469368832,
-              "virtual_size": 10737418240,
-              "source_user": "rocky",
-              "provenance": "Rocky Linux 10.2 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
-            }
-          }
-        }
-      }
-    },
     "d12": {
-      "aliases": ["debian12", "bookworm"],
+      "aliases": [
+        "debian12",
+        "bookworm"
+      ],
       "boot": "uefi",
-      "channels": {"stable": "20260806.2562.0"},
+      "channels": {
+        "stable": "20260806.2562.0"
+      },
       "versions": {
         "20260806.2562.0": {
-          "status": "testing",
+          "status": "supported",
           "variants": {
             "amd64": {
               "file": "images/d12-20260806.2562.0-amd64.qcow2",
@@ -159,12 +46,18 @@
       }
     },
     "d13": {
-      "aliases": ["debian13", "debian", "trixie"],
+      "aliases": [
+        "debian13",
+        "debian",
+        "trixie"
+      ],
       "boot": "uefi",
-      "channels": {"stable": "20260810.2566.0"},
+      "channels": {
+        "stable": "20260810.2566.0"
+      },
       "versions": {
         "20260810.2566.0": {
-          "status": "testing",
+          "status": "supported",
           "variants": {
             "amd64": {
               "file": "images/d13-20260810.2566.0-amd64.qcow2",
@@ -190,13 +83,281 @@
         }
       }
     },
-    "u22": {
-      "aliases": ["ubuntu22", "ubuntu2204", "jammy"],
+    "el10": {
+      "aliases": [
+        "rocky10"
+      ],
       "boot": "uefi",
-      "channels": {"stable": "20260810.0.0"},
+      "channels": {
+        "stable": "10.2.20260525.0"
+      },
+      "versions": {
+        "10.0.20250609.1": {
+          "status": "deprecated",
+          "variants": {
+            "amd64": {
+              "file": "images/el10-10.0.20250609.1-amd64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base-10.0-20250609.1.x86_64.qcow2",
+              "sha256": "20e771c654724e002c32fb92a05fdfdd7ac878c192f50e2fc21f53e8f098b8f9",
+              "format": "qcow2",
+              "artifact_size": 520355840,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 10.0 GenericCloud Base 20250609.1; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            },
+            "arm64": {
+              "file": "images/el10-10.0.20250609.1-arm64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/10.0/images/aarch64/Rocky-10-GenericCloud-Base-10.0-20250609.1.aarch64.qcow2",
+              "sha256": "326264421955473a3576feff35076b7a7ef4bf2a14b5f6d238b7ec65c0426fbc",
+              "format": "qcow2",
+              "artifact_size": 468189184,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 10.0 GenericCloud Base 20250609.1; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            }
+          }
+        },
+        "10.1.20251116.0": {
+          "status": "supported",
+          "variants": {
+            "amd64": {
+              "file": "images/el10-10.1.20251116.0-amd64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/10.1/images/x86_64/Rocky-10-GenericCloud-Base-10.1-20251116.0.x86_64.qcow2",
+              "sha256": "28628abf08a134c6f9e1eccbcac3f2898715919a6da294ae2c6cd66d6bc347ad",
+              "format": "qcow2",
+              "artifact_size": 575406080,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 10.1 GenericCloud Base 20251116.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            },
+            "arm64": {
+              "file": "images/el10-10.1.20251116.0-arm64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/10.1/images/aarch64/Rocky-10-GenericCloud-Base-10.1-20251116.0.aarch64.qcow2",
+              "sha256": "abc0023cf8fb415532138fa735a79bc254ba0d13f4d79b032a09431d438ee36d",
+              "format": "qcow2",
+              "artifact_size": 507248640,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 10.1 GenericCloud Base 20251116.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            }
+          }
+        },
+        "10.2.20260525.0": {
+          "status": "supported",
+          "variants": {
+            "amd64": {
+              "file": "images/el10-10.2.20260525.0-amd64.qcow2",
+              "upstream": "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2",
+              "sha256": "9fc9e9ff16888bb68ac39b0392e25c9c92684d50c85f1cce6ab549363bbc4b48",
+              "format": "qcow2",
+              "artifact_size": 544997376,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 10.2 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+            },
+            "arm64": {
+              "file": "images/el10-10.2.20260525.0-arm64.qcow2",
+              "upstream": "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.2-20260525.0.aarch64.qcow2",
+              "sha256": "457c8375e19496f43a25c4a6169fa11237536c53cef6f85a20ea3c5a751aa0f5",
+              "format": "qcow2",
+              "artifact_size": 469368832,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 10.2 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+            }
+          }
+        }
+      }
+    },
+    "el7": {
+      "aliases": [
+        "c7",
+        "centos7",
+        "centos79"
+      ],
+      "boot": "bios",
+      "channels": {
+        "stable": "7.9.20221112.0"
+      },
+      "versions": {
+        "7.9.20221112.0": {
+          "status": "deprecated",
+          "variants": {
+            "amd64": {
+              "file": "images/el7-7.9.20221112.0-amd64.qcow2",
+              "upstream": "https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2",
+              "sha256": "284aab2b23d91318f169ff464bce4d53404a15a0618ceb34562838c59af4adea",
+              "format": "qcow2",
+              "artifact_size": 902889472,
+              "virtual_size": 8589934592,
+              "source_user": "centos",
+              "provenance": "CentOS Linux 7 GenericCloud 2211 archive; distribution-owned immutable artifact retained for EOL compatibility testing only; SHA-256, qcow2 metadata, MBR boot layout, and 4K XFS root verified 2026-08-28"
+            }
+          }
+        }
+      }
+    },
+    "el8": {
+      "aliases": [
+        "rocky8"
+      ],
+      "boot": "uefi",
+      "channels": {
+        "stable": "8.10.20240528.0"
+      },
+      "versions": {
+        "8.10.20240528.0": {
+          "status": "supported",
+          "variants": {
+            "amd64": {
+              "file": "images/el8-8.10.20240528.0-amd64.qcow2",
+              "upstream": "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base-8.10-20240528.0.x86_64.qcow2",
+              "sha256": "e56066c58606191e96184de9a9183a3af33c59bcbd8740d8b10ca054a7a89c14",
+              "format": "qcow2",
+              "artifact_size": 2065760256,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; native Linux/amd64 lifecycle passed and qcow2 metadata verified 2026-08-24"
+            },
+            "arm64": {
+              "file": "images/el8-8.10.20240528.0-arm64.qcow2",
+              "upstream": "https://dl.rockylinux.org/pub/rocky/8/images/aarch64/Rocky-8-GenericCloud-Base-8.10-20240528.0.aarch64.qcow2",
+              "sha256": "946b5b9845aa5e3ed98f1bc6ee9873201712a2aef01b87731aed16857e0ca13f",
+              "format": "qcow2",
+              "artifact_size": 1925644288,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 8.10 GenericCloud Base 20240528.0; distribution-owned immutable artifact; qcow2 metadata verified and TCG booted on Darwin/arm64 2026-08-28; Apple HVF is incompatible with its 64K-granule kernel"
+            }
+          }
+        }
+      }
+    },
+    "el9": {
+      "aliases": [
+        "rocky9",
+        "rocky"
+      ],
+      "boot": "uefi",
+      "channels": {
+        "stable": "9.8.20260525.0"
+      },
+      "versions": {
+        "9.3.20231113.0": {
+          "status": "deprecated",
+          "variants": {
+            "amd64": {
+              "file": "images/el9-9.3.20231113.0-amd64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/9.3/images/x86_64/Rocky-9-GenericCloud-Base-9.3-20231113.0.x86_64.qcow2",
+              "sha256": "7713278c37f29b0341b0a841ca3ec5c3724df86b4d97e7ee4a2a85def9b2e651",
+              "format": "qcow2",
+              "artifact_size": 1083965440,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 9.3 GenericCloud Base 20231113.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            },
+            "arm64": {
+              "file": "images/el9-9.3.20231113.0-arm64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/9.3/images/aarch64/Rocky-9-GenericCloud-Base-9.3-20231113.0.aarch64.qcow2",
+              "sha256": "1948a5e00786dbf3230335339cf96491659e17444f5d00dabac0f095a7354cc1",
+              "format": "qcow2",
+              "artifact_size": 974323712,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 9.3 GenericCloud Base 20231113.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            }
+          }
+        },
+        "9.6.20250531.0": {
+          "status": "deprecated",
+          "variants": {
+            "amd64": {
+              "file": "images/el9-9.6.20250531.0-amd64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/9.6/images/x86_64/Rocky-9-GenericCloud-Base-9.6-20250531.0.x86_64.qcow2",
+              "sha256": "2c72815bb83cadccbede4704780e9b52033722db8a45c3fb02130aa380690a3d",
+              "format": "qcow2",
+              "artifact_size": 627507200,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 9.6 GenericCloud Base 20250531.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            },
+            "arm64": {
+              "file": "images/el9-9.6.20250531.0-arm64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/9.6/images/aarch64/Rocky-9-GenericCloud-Base-9.6-20250531.0.aarch64.qcow2",
+              "sha256": "3776b2c17cc011c28e2ab440c49dfba8d2be214d8b85df2b5edc97ebdeb30e4a",
+              "format": "qcow2",
+              "artifact_size": 524943360,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 9.6 GenericCloud Base 20250531.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            }
+          }
+        },
+        "9.7.20251123.2": {
+          "status": "supported",
+          "variants": {
+            "amd64": {
+              "file": "images/el9-9.7.20251123.2-amd64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/9.7/images/x86_64/Rocky-9-GenericCloud-Base-9.7-20251123.2.x86_64.qcow2",
+              "sha256": "15d81d3434b298142b2fdd8fb54aef2662684db5c082cc191c3c79762ed6360c",
+              "format": "qcow2",
+              "artifact_size": 648806400,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 9.7 GenericCloud Base 20251123.2; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            },
+            "arm64": {
+              "file": "images/el9-9.7.20251123.2-arm64.qcow2",
+              "upstream": "https://dl.rockylinux.org/vault/rocky/9.7/images/aarch64/Rocky-9-GenericCloud-Base-9.7-20251123.2.aarch64.qcow2",
+              "sha256": "fc67069636d7c8afa5b71d1497f8c6628d026a0781d7ac743ec5f25995c72ee1",
+              "format": "qcow2",
+              "artifact_size": 529268736,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 9.7 GenericCloud Base 20251123.2; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+            }
+          }
+        },
+        "9.8.20260525.0": {
+          "status": "supported",
+          "variants": {
+            "amd64": {
+              "file": "images/el9-9.8.20260525.0-amd64.qcow2",
+              "upstream": "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
+              "sha256": "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8",
+              "format": "qcow2",
+              "artifact_size": 645988352,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 9.8 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+            },
+            "arm64": {
+              "file": "images/el9-9.8.20260525.0-arm64.qcow2",
+              "upstream": "https://dl.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base-9.8-20260525.0.aarch64.qcow2",
+              "sha256": "24692a444f1f0b8bb95375c38c8b43f8099a115347623691be2c330b40c8a1fe",
+              "format": "qcow2",
+              "artifact_size": 519831552,
+              "virtual_size": 10737418240,
+              "source_user": "rocky",
+              "provenance": "Rocky Linux 9.8 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+            }
+          }
+        }
+      }
+    },
+    "u22": {
+      "aliases": [
+        "ubuntu22",
+        "ubuntu2204",
+        "jammy"
+      ],
+      "boot": "uefi",
+      "channels": {
+        "stable": "20260810.0.0"
+      },
       "versions": {
         "20260810.0.0": {
-          "status": "testing",
+          "status": "supported",
           "variants": {
             "amd64": {
               "file": "images/u22-20260810.0.0-amd64.qcow2",
@@ -223,12 +384,19 @@
       }
     },
     "u24": {
-      "aliases": ["ubuntu", "ubuntu24", "ubuntu2404", "noble"],
+      "aliases": [
+        "ubuntu",
+        "ubuntu24",
+        "ubuntu2404",
+        "noble"
+      ],
       "boot": "uefi",
-      "channels": {"stable": "20260801.0.0"},
+      "channels": {
+        "stable": "20260801.0.0"
+      },
       "versions": {
         "20260801.0.0": {
-          "status": "testing",
+          "status": "supported",
           "variants": {
             "amd64": {
               "file": "images/u24-20260801.0.0-amd64.qcow2",
@@ -255,12 +423,18 @@
       }
     },
     "u26": {
-      "aliases": ["ubuntu26", "ubuntu2604", "resolute"],
+      "aliases": [
+        "ubuntu26",
+        "ubuntu2604",
+        "resolute"
+      ],
       "boot": "uefi",
-      "channels": {"stable": "20260731.0.0"},
+      "channels": {
+        "stable": "20260731.0.0"
+      },
       "versions": {
         "20260731.0.0": {
-          "status": "testing",
+          "status": "supported",
           "variants": {
             "amd64": {
               "file": "images/u26-20260731.0.0-amd64.qcow2",

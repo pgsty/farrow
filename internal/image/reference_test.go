@@ -40,4 +40,62 @@ func TestCatalogResolvesDefaultChannelExactVersionAndAlias(t *testing.T) {
 	if got, err := CanonicalReference("Ubuntu:stable"); err != nil || got != "u24:stable" {
 		t.Fatalf("canonical reference = %q, %v", got, err)
 	}
+	for _, test := range []struct {
+		reference string
+		arch      string
+		release   string
+	}{
+		{"el10@10.0.20250609.1", "amd64", "10.0.20250609.1"},
+		{"rocky10@10.1.20251116.0", "arm64", "10.1.20251116.0"},
+		{"el9@9.3.20231113.0", "amd64", "9.3.20231113.0"},
+		{"rocky@9.6.20250531.0", "arm64", "9.6.20250531.0"},
+		{"rocky9@9.7.20251123.2", "amd64", "9.7.20251123.2"},
+	} {
+		entry, err := catalog.Entry(test.reference, test.arch)
+		if err != nil || entry.Release != test.release || entry.Channel != "" {
+			t.Errorf("exact entry %s/%s = %#v, %v", test.reference, test.arch, entry, err)
+		}
+	}
+	for _, test := range []struct {
+		reference string
+		arch      string
+		release   string
+	}{
+		{"el9@9", "arm64", "9.8.20260525.0"},
+		{"rocky9@9.7", "amd64", "9.7.20251123.2"},
+		{"el10@10", "amd64", "10.2.20260525.0"},
+		{"rocky10@10.0", "arm64", "10.0.20250609.1"},
+	} {
+		entry, err := catalog.Entry(test.reference, test.arch)
+		if err != nil || entry.Release != test.release || entry.Channel != "" {
+			t.Errorf("prefix entry %s/%s = %#v, %v", test.reference, test.arch, entry, err)
+		}
+	}
+}
+
+func TestNumericVersionPrefixSelectsSemanticLatestOnComponentBoundary(t *testing.T) {
+	versions := map[string]CatalogVersion{
+		"9.7.20251123.1": {},
+		"9.7.20251123.2": {},
+		"9.8.20260525.0": {},
+		"9.10.2.0":       {},
+	}
+	for selector, want := range map[string]string{
+		"9.7.20251123.1": "9.7.20251123.1",
+		"9.7":            "9.7.20251123.2",
+		"9":              "9.10.2.0",
+	} {
+		got, err := resolveVersion(versions, selector)
+		if err != nil || got != want {
+			t.Errorf("resolveVersion(%q) = %q, %v; want %q", selector, got, err, want)
+		}
+	}
+	if got, err := resolveVersion(map[string]CatalogVersion{"9.7.1": {}, "9.70.1": {}}, "9.7"); err != nil || got != "9.7.1" {
+		t.Fatalf("component-boundary resolution = %q, %v", got, err)
+	}
+	for _, selector := range []string{"8", "9.x"} {
+		if _, err := resolveVersion(versions, selector); err == nil {
+			t.Errorf("invalid/unmatched selector %q was accepted", selector)
+		}
+	}
 }

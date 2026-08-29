@@ -16,7 +16,7 @@ func TestListEmbeddedCatalogWithoutQEMUImg(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Source != "embedded" || len(entries) != 17 {
+	if state.Source != "embedded" || len(entries) != 27 {
 		t.Fatalf("manifest=%#v entries=%d", state, len(entries))
 	}
 }
@@ -52,7 +52,7 @@ func TestExplicitUnsignedLocalRepositoryIsSelfContained(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 17 || state.ActiveVersion != 1 || state.KeyID != "" || state.Source != "local:"+filepath.Join(repository, CatalogFilename) {
+	if len(entries) != 27 || state.ActiveVersion != 1 || state.KeyID != "" || state.Source != "local:"+filepath.Join(repository, CatalogFilename) {
 		t.Fatalf("local repository list = %d entries, state %#v", len(entries), state)
 	}
 }

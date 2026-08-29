@@ -6,17 +6,18 @@ import (
 	"strings"
 )
 
-// Reference is stable user intent. A channel remains movable here; resolving
-// it to an immutable release is deliberately a catalog operation and never
-// changes the deployment spec hash.
+// Reference is stable user intent. Channels and numeric version prefixes are
+// movable here; resolving either to an immutable release is deliberately a
+// catalog operation and never changes the deployment spec hash.
 type Reference struct {
 	Image   string `json:"image"`
 	Channel string `json:"channel,omitempty"`
 	Version string `json:"version,omitempty"`
 }
 
-// ParseReference accepts image, image:channel, or image@version. Architecture
-// stays orthogonal because Farrow already models it as deployment-wide vm_arch.
+// ParseReference accepts image, image:channel, or image@version-selector.
+// Architecture stays orthogonal because Farrow already models it as
+// deployment-wide vm_arch.
 func ParseReference(value string) (Reference, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -26,7 +27,7 @@ func ParseReference(value string) (Reference, error) {
 		return Reference{}, errors.New("image reference contains an unsafe path or control character")
 	}
 	if strings.Count(value, "@") > 1 || strings.Count(value, ":") > 1 || (strings.Contains(value, "@") && strings.Contains(value, ":")) {
-		return Reference{}, errors.New("image reference must use at most one channel (:name) or exact version (@version)")
+		return Reference{}, errors.New("image reference must use at most one channel (:name) or version selector (@version)")
 	}
 	ref := Reference{}
 	switch {
@@ -56,6 +57,26 @@ func ParseReference(value string) (Reference, error) {
 		return Reference{}, fmt.Errorf("invalid image version %q", ref.Version)
 	}
 	return ref, nil
+}
+
+// CanonicalVersionReference combines a bare image name with a numeric version
+// selector such as 9 or 9.7. Catalog resolution later chooses the numerically
+// newest release on that dot-component prefix.
+func CanonicalVersionReference(value, selector string) (string, error) {
+	ref, err := ParseReference(value)
+	if err != nil {
+		return "", err
+	}
+	if ref.Channel != "" || ref.Version != "" {
+		return "", errors.New("a separate version selector requires a bare image without :channel or @version")
+	}
+	selector = strings.TrimSpace(selector)
+	if _, err := numericVersionParts(selector); err != nil {
+		return "", err
+	}
+	ref.Image = CanonicalAlias(ref.Image)
+	ref.Version = selector
+	return ref.String(), nil
 }
 
 func (r Reference) String() string {

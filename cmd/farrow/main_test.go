@@ -469,7 +469,7 @@ func TestImageListJSON(t *testing.T) {
 	if code := run([]string{"image", "list", "--json"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{`"alias": "u24"`, `"arch": "arm64"`, `"channels": [`, `"stable"`, `"status": "testing"`} {
+	for _, want := range []string{`"alias": "u24"`, `"arch": "arm64"`, `"channels": [`, `"stable"`, `"status": "supported"`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("image JSON missing %q: %s", want, stdout.String())
 		}

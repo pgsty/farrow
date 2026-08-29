@@ -26,8 +26,11 @@ const (
 )
 
 type RepoVariant struct {
-	File       string `yaml:"file,omitempty"`
-	Upstream   string `yaml:"upstream,omitempty"`
+	File     string `yaml:"file,omitempty"`
+	Upstream string `yaml:"upstream,omitempty"`
+	// SourceUser is the distribution image's original guest login identity.
+	// It records normalization/import provenance; Farrow provisions and uses
+	// the deployment SSH user separately.
 	SourceUser string `yaml:"source_user,omitempty"`
 	Boot       string `yaml:"boot,omitempty"`
 	Status     string `yaml:"status,omitempty"`

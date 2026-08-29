@@ -44,7 +44,7 @@ const (
 var defaultImage = image.EmbeddedCatalog().Defaults.Image
 
 var knownVMKeys = map[string]struct{}{
-	"vm_skip": {}, "vm_image": {}, "vm_arch": {}, "vm_cpu": {}, "vm_mem": {},
+	"vm_skip": {}, "vm_image": {}, "vm_version": {}, "vm_arch": {}, "vm_cpu": {}, "vm_mem": {},
 	"vm_disk": {}, "vm_disks": {}, "vm_alias": {}, "vm_shares": {},
 }
 
@@ -168,9 +168,17 @@ func (host inventoryHost) lookup(key string) (*yaml.Node, string, bool, error) {
 			origin = source.origin
 			conflictOrigins = conflictOrigins[:0]
 		case source.depth == bestDepth:
-			currentValue, currentErr := decodeAny(winner)
-			candidateValue, candidateErr := decodeAny(node)
-			if currentErr != nil || candidateErr != nil || !reflect.DeepEqual(currentValue, candidateValue) {
+			equal := false
+			if key == "vm_version" && winner.Kind == yaml.ScalarNode && node.Kind == yaml.ScalarNode {
+				// YAML would decode both unquoted 9.10 and 9.1 to the same
+				// float. Version selectors compare their preserved spelling.
+				equal = strings.TrimSpace(winner.Value) == strings.TrimSpace(node.Value)
+			} else {
+				currentValue, currentErr := decodeAny(winner)
+				candidateValue, candidateErr := decodeAny(node)
+				equal = currentErr == nil && candidateErr == nil && reflect.DeepEqual(currentValue, candidateValue)
+			}
+			if !equal {
 				conflictOrigins = append(conflictOrigins, source.origin)
 			}
 		}
@@ -199,6 +207,24 @@ func (host inventoryHost) lookupString(key string) (string, bool, error) {
 	var value string
 	if decodeErr := node.Decode(&value); decodeErr != nil {
 		return "", true, fmt.Errorf("host %s variable %q from %s must be a string", host.address, key, origin)
+	}
+	return value, true, nil
+}
+
+// lookupVersionSelector preserves the scalar spelling so natural inventory
+// forms such as vm_version: 9 and vm_version: 9.7 do not pass through floating
+// point conversion. Quoted forms are accepted as well.
+func (host inventoryHost) lookupVersionSelector(key string) (string, bool, error) {
+	node, origin, found, err := host.lookup(key)
+	if err != nil || !found {
+		return "", found, err
+	}
+	if node.Kind != yaml.ScalarNode || (node.Tag != "!!str" && node.Tag != "!!int" && node.Tag != "!!float") {
+		return "", true, fmt.Errorf("host %s variable %q from %s must be a numeric version scalar such as 9 or 9.7", host.address, key, origin)
+	}
+	value := strings.TrimSpace(node.Value)
+	if value == "" {
+		return "", true, fmt.Errorf("host %s variable %q from %s must not be empty", host.address, key, origin)
 	}
 	return value, true, nil
 }
@@ -587,9 +613,17 @@ func ParseInventory(data []byte) (File, error) {
 		} else if found {
 			imageAlias = value
 		}
-		node.Image, err = image.CanonicalReference(imageAlias)
+		versionSelector, versionFound, err := host.lookupVersionSelector("vm_version")
 		if err != nil {
-			return File{}, fmt.Errorf("host %s vm_image: %w", host.address, err)
+			return File{}, err
+		}
+		if versionFound {
+			node.Image, err = image.CanonicalVersionReference(imageAlias, versionSelector)
+		} else {
+			node.Image, err = image.CanonicalReference(imageAlias)
+		}
+		if err != nil {
+			return File{}, fmt.Errorf("host %s vm_image/vm_version: %w", host.address, err)
 		}
 
 		if value, found, err := host.lookupString("vm_arch"); err != nil {

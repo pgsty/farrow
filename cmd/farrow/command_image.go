@@ -54,7 +54,7 @@ activation.`
 			example = "  farrow image pull\n  farrow image pull d13@20260810.2566.0\n  farrow image pull d13 --repo /srv/farrow"
 		}
 		command := &cobra.Command{
-			Use:               action + " [image[:channel]|image@version]",
+			Use:               action + " [image[:channel]|image@version-prefix]",
 			Short:             short,
 			Long:              long,
 			Example:           example,

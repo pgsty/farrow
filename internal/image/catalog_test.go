@@ -26,12 +26,19 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 	if entry.SHA256 != "aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476" || entry.ArtifactSize != 618417664 || entry.VirtualSize != 3758096384 || catalog.Version != EmbeddedManifestVersion || catalog.Defaults.Image != "d13" || entry.Channel != "stable" {
 		t.Fatalf("entry/catalog = %#v %#v", entry, catalog)
 	}
-	if len(catalog.Images) != 9 || len(catalog.Entries()) != 17 {
+	if len(catalog.Images) != 9 || len(catalog.Entries()) != 27 {
 		t.Fatalf("embedded catalog matrix = %d images / %d entries", len(catalog.Images), len(catalog.Entries()))
 	}
 	for _, alias := range formalAliases {
 		record, ok := catalog.Images[alias]
-		if !ok || len(record.Versions) != 1 || record.Channels["stable"] == "" {
+		wantVersions := 1
+		switch alias {
+		case "el9":
+			wantVersions = 4
+		case "el10":
+			wantVersions = 3
+		}
+		if !ok || len(record.Versions) != wantVersions || record.Channels["stable"] == "" {
 			t.Errorf("catalog image %s = %#v", alias, record)
 			continue
 		}
@@ -43,6 +50,36 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 			if len(version.Variants) != want {
 				t.Errorf("catalog image %s architectures = %v", alias, version.Variants)
 			}
+		}
+	}
+}
+
+func TestEmbeddedCatalogSupportPolicy(t *testing.T) {
+	t.Parallel()
+	catalog := EmbeddedCatalog()
+	for _, test := range []struct {
+		reference string
+		arch      string
+		status    string
+	}{
+		{"d12", "amd64", "supported"},
+		{"d13", "arm64", "supported"},
+		{"el8", "amd64", "supported"},
+		{"el9@9.8", "arm64", "supported"},
+		{"el9@9.7", "amd64", "supported"},
+		{"el9@9.6", "arm64", "deprecated"},
+		{"el9@9.3", "amd64", "deprecated"},
+		{"el10@10.2", "arm64", "supported"},
+		{"el10@10.1", "amd64", "supported"},
+		{"el10@10.0", "arm64", "deprecated"},
+		{"el7", "amd64", "deprecated"},
+		{"u22", "arm64", "supported"},
+		{"u24", "amd64", "supported"},
+		{"u26", "arm64", "supported"},
+	} {
+		entry, err := catalog.Entry(test.reference, test.arch)
+		if err != nil || entry.Status != test.status {
+			t.Errorf("catalog status %s/%s = %q, %v; want %q", test.reference, test.arch, entry.Status, err, test.status)
 		}
 	}
 }

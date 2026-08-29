@@ -10,12 +10,13 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 const (
 	ManifestSchema          = 3
-	EmbeddedManifestVersion = 2026082901
+	EmbeddedManifestVersion = 2026082903
 	MaxManifestSize         = 4 << 20
 )
 
@@ -67,6 +68,7 @@ var (
 	catalogName        = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	channelName        = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	releaseName        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
+	numericVersion     = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)*$`)
 	repositoryFilename = regexp.MustCompile(`^[a-z0-9][A-Za-z0-9._+-]{0,191}\.qcow2$`)
 	sourceUserName     = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 )
@@ -177,6 +179,9 @@ func strictCatalog(data []byte) (Catalog, error) {
 	return catalog, nil
 }
 
+// Status is advisory rather than an activation switch: supported suppresses
+// risk warnings; testing and unknown remain runnable but warn; deprecated gets
+// the stronger EOL warning.
 func validStatus(value string) bool {
 	return value == "supported" || value == "testing" || value == "deprecated" || value == "unknown"
 }
@@ -318,6 +323,85 @@ func cacheFile(alias, release, arch string) string {
 	return fmt.Sprintf("%s/%s-%s-%s.qcow2", alias, alias, release, arch)
 }
 
+func numericVersionParts(value string) ([]uint64, error) {
+	if !numericVersion.MatchString(value) {
+		return nil, fmt.Errorf("version selector %q must contain only dot-separated non-negative integers", value)
+	}
+	parts := strings.Split(value, ".")
+	result := make([]uint64, len(parts))
+	for index, part := range parts {
+		parsed, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("version component %q is outside the supported integer range", part)
+		}
+		result[index] = parsed
+	}
+	return result, nil
+}
+
+func compareNumericVersions(first, second []uint64) int {
+	length := len(first)
+	if len(second) > length {
+		length = len(second)
+	}
+	for index := 0; index < length; index++ {
+		var left, right uint64
+		if index < len(first) {
+			left = first[index]
+		}
+		if index < len(second) {
+			right = second[index]
+		}
+		switch {
+		case left < right:
+			return -1
+		case left > right:
+			return 1
+		}
+	}
+	return 0
+}
+
+// resolveVersion gives an exact catalog key priority. Otherwise a numeric
+// selector matches only on a dot-component boundary and resolves to the
+// numerically newest matching release (9.10 sorts after 9.9).
+func resolveVersion(versions map[string]CatalogVersion, selector string) (string, error) {
+	if _, exact := versions[selector]; exact {
+		return selector, nil
+	}
+	if _, err := numericVersionParts(selector); err != nil {
+		return "", err
+	}
+	type candidate struct {
+		name  string
+		parts []uint64
+	}
+	matches := make([]candidate, 0)
+	for version := range versions {
+		if !strings.HasPrefix(version, selector+".") {
+			continue
+		}
+		parts, err := numericVersionParts(version)
+		if err != nil {
+			return "", fmt.Errorf("matching catalog version %q cannot be ranked: %w", version, err)
+		}
+		matches = append(matches, candidate{name: version, parts: parts})
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no catalog version matches numeric prefix %q", selector)
+	}
+	best := matches[0]
+	for _, current := range matches[1:] {
+		switch comparison := compareNumericVersions(current.parts, best.parts); {
+		case comparison > 0:
+			best = current
+		case comparison == 0 && current.name != best.name:
+			return "", fmt.Errorf("numeric prefix %q is ambiguous between semantically equal versions %q and %q", selector, best.name, current.name)
+		}
+	}
+	return best.name, nil
+}
+
 func (c Catalog) Entry(reference, arch string) (Entry, error) {
 	ref, err := ParseReference(reference)
 	if err != nil {
@@ -332,7 +416,12 @@ func (c Catalog) Entry(reference, arch string) (Entry, error) {
 	}
 	release := ref.Version
 	channel := ref.Channel
-	if release == "" {
+	if release != "" {
+		release, err = resolveVersion(imageRecord.Versions, release)
+		if err != nil {
+			return Entry{}, fmt.Errorf("image %s: %w", canonical, err)
+		}
+	} else {
 		if channel == "" {
 			channel = c.Defaults.Channel
 		}

@@ -1,5 +1,5 @@
 schema: 1
-revision: 2026082901
+revision: 2026082903
 defaults:
   image: "d13"
   channel: "stable"
@@ -13,7 +13,7 @@ images:
       stable: "20260806.2562.0"
     versions:
       "20260806.2562.0":
-        status: "testing"
+        status: "supported"
         variants:
           amd64:
             upstream: "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-amd64-20260806-2562.qcow2"
@@ -30,7 +30,7 @@ images:
       stable: "20260810.2566.0"
     versions:
       "20260810.2566.0":
-        status: "testing"
+        status: "supported"
         variants:
           amd64:
             upstream: "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-amd64-20260810-2566.qcow2"
@@ -47,7 +47,7 @@ images:
       stable: "10.2.20260525.0"
     versions:
       "10.2.20260525.0":
-        status: "testing"
+        status: "supported"
         variants:
           amd64:
             upstream: "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2"
@@ -57,6 +57,28 @@ images:
             upstream: "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.2-20260525.0.aarch64.qcow2"
             source_user: "rocky"
             provenance: "Rocky Linux 10.2 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+      "10.1.20251116.0":
+        status: "supported"
+        variants:
+          amd64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/10.1/images/x86_64/Rocky-10-GenericCloud-Base-10.1-20251116.0.x86_64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 10.1 GenericCloud Base 20251116.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+          arm64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/10.1/images/aarch64/Rocky-10-GenericCloud-Base-10.1-20251116.0.aarch64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 10.1 GenericCloud Base 20251116.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+      "10.0.20250609.1":
+        status: "deprecated"
+        variants:
+          amd64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/10.0/images/x86_64/Rocky-10-GenericCloud-Base-10.0-20250609.1.x86_64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 10.0 GenericCloud Base 20250609.1; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+          arm64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/10.0/images/aarch64/Rocky-10-GenericCloud-Base-10.0-20250609.1.aarch64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 10.0 GenericCloud Base 20250609.1; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
   el7:
     aliases: ["c7", "centos7", "centos79"]
     boot: "bios"
@@ -77,7 +99,7 @@ images:
       stable: "8.10.20240528.0"
     versions:
       "8.10.20240528.0":
-        status: "testing"
+        status: "supported"
         variants:
           amd64:
             upstream: "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base-8.10-20240528.0.x86_64.qcow2"
@@ -94,7 +116,7 @@ images:
       stable: "9.8.20260525.0"
     versions:
       "9.8.20260525.0":
-        status: "testing"
+        status: "supported"
         variants:
           amd64:
             upstream: "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2"
@@ -104,6 +126,39 @@ images:
             upstream: "https://dl.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base-9.8-20260525.0.aarch64.qcow2"
             source_user: "rocky"
             provenance: "Rocky Linux 9.8 GenericCloud Base 20260525.0; distribution-owned dated artifact; local bytes, SHA-256, qcow2 metadata, and EFI system partition verified 2026-08-24"
+      "9.7.20251123.2":
+        status: "supported"
+        variants:
+          amd64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/9.7/images/x86_64/Rocky-9-GenericCloud-Base-9.7-20251123.2.x86_64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 9.7 GenericCloud Base 20251123.2; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+          arm64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/9.7/images/aarch64/Rocky-9-GenericCloud-Base-9.7-20251123.2.aarch64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 9.7 GenericCloud Base 20251123.2; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+      "9.6.20250531.0":
+        status: "deprecated"
+        variants:
+          amd64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/9.6/images/x86_64/Rocky-9-GenericCloud-Base-9.6-20250531.0.x86_64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 9.6 GenericCloud Base 20250531.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+          arm64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/9.6/images/aarch64/Rocky-9-GenericCloud-Base-9.6-20250531.0.aarch64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 9.6 GenericCloud Base 20250531.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+      "9.3.20231113.0":
+        status: "deprecated"
+        variants:
+          amd64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/9.3/images/x86_64/Rocky-9-GenericCloud-Base-9.3-20231113.0.x86_64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 9.3 GenericCloud Base 20231113.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
+          arm64:
+            upstream: "https://dl.rockylinux.org/vault/rocky/9.3/images/aarch64/Rocky-9-GenericCloud-Base-9.3-20231113.0.aarch64.qcow2"
+            source_user: "rocky"
+            provenance: "Rocky Linux 9.3 GenericCloud Base 20231113.0; distribution-owned immutable vault artifact; upstream SHA-256, local bytes, and qcow2 metadata verified 2026-08-29"
   u22:
     aliases: ["ubuntu22", "ubuntu2204", "jammy"]
     boot: "uefi"
@@ -111,7 +166,7 @@ images:
       stable: "20260810.0.0"
     versions:
       "20260810.0.0":
-        status: "testing"
+        status: "supported"
         variants:
           amd64:
             upstream: "https://cloud-images.ubuntu.com/jammy/20260810/jammy-server-cloudimg-amd64.img"
@@ -128,7 +183,7 @@ images:
       stable: "20260801.0.0"
     versions:
       "20260801.0.0":
-        status: "testing"
+        status: "supported"
         variants:
           amd64:
             upstream: "https://cloud-images.ubuntu.com/noble/20260801/noble-server-cloudimg-amd64.img"
@@ -145,7 +200,7 @@ images:
       stable: "20260731.0.0"
     versions:
       "20260731.0.0":
-        status: "testing"
+        status: "supported"
         variants:
           amd64:
             upstream: "https://cloud-images.ubuntu.com/resolute/20260731/resolute-server-cloudimg-amd64.img"

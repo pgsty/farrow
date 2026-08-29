@@ -108,7 +108,7 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 		if entry.Release != want.release || entry.Upstream != want.url || entry.SHA256 != want.sha256 || entry.ArtifactSize != want.artifactSize || entry.VirtualSize != want.virtualSize || entry.SourceUser != want.sourceUser {
 			t.Errorf("%s metadata mismatch:\n got %#v\nwant %#v", key, entry, want)
 		}
-		wantBoot, wantStatus := "uefi", "testing"
+		wantBoot, wantStatus := "uefi", "supported"
 		if entry.Alias == "el7" {
 			wantBoot, wantStatus = "bios", "deprecated"
 		}

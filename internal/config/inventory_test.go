@@ -130,6 +130,66 @@ all:
 	}
 }
 
+func TestParseInventoryVersionPrefixPreservesNaturalScalars(t *testing.T) {
+	file := mustParseInventory(t, `
+all:
+  vars:
+    vm_image: el9
+    vm_version: 9.7
+  children:
+    nodes:
+      hosts:
+        10.10.10.10: {}
+        10.10.10.11: { vm_version: 9 }
+        10.10.10.12: { vm_version: 9.10 }
+`)
+	if file.Nodes[0].Image != "el9@9.7" || file.Nodes[1].Image != "el9@9" || file.Nodes[2].Image != "el9@9.10" {
+		t.Fatalf("version-prefix image references = %#v", file.Nodes)
+	}
+}
+
+func TestParseInventoryRejectsInvalidOrConflictingVersionSelectors(t *testing.T) {
+	for name, text := range map[string]string{
+		"non-numeric": `
+all:
+  vars: { vm_image: el9, vm_version: 9.x }
+  children: { nodes: { hosts: { 10.10.10.10: {} } } }
+`,
+		"wrong type": `
+all:
+  vars: { vm_image: el9, vm_version: true }
+  children: { nodes: { hosts: { 10.10.10.10: {} } } }
+`,
+		"combined selector": `
+all:
+  vars: { vm_image: "el9:stable", vm_version: 9 }
+  children: { nodes: { hosts: { 10.10.10.10: {} } } }
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseInventory([]byte(text)); err == nil || !strings.Contains(err.Error(), "vm_version") {
+				t.Fatalf("invalid vm_version error = %v", err)
+			}
+		})
+	}
+}
+
+func TestParseInventoryVersionConflictPreservesTrailingZero(t *testing.T) {
+	_, err := ParseInventory([]byte(`
+all:
+  children:
+    one:
+      hosts: { 10.10.10.10: {} }
+      vars: { vm_image: el9, vm_version: 9.10 }
+    two:
+      hosts: { 10.10.10.10: {} }
+      vars: { vm_image: el9, vm_version: 9.1 }
+`))
+	if err == nil || !strings.Contains(err.Error(), "conflicting values") || !strings.Contains(err.Error(), "vm_version") {
+		t.Fatalf("version spelling conflict error = %v", err)
+	}
+}
+
 func TestParseInventoryDeploymentArchitecture(t *testing.T) {
 	file := mustParseInventory(t, `
 all:
