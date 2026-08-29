@@ -4,6 +4,8 @@ set -euo pipefail
 script_directory=$(cd "$(dirname "$0")" && pwd -P)
 # shellcheck disable=SC1091
 source "${script_directory}/semver.sh"
+# shellcheck disable=SC1091
+source "${script_directory}/binary-format.sh"
 
 version=${1:-}
 directory=${2:-}
@@ -91,14 +93,8 @@ for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
     case ${path} in bin/farrow|bin/farrow-hosts-helper) continue ;; esac
     [[ $(file_mode "${root}/${path}") == 644 ]] || { printf 'unexpected mode for %s in %s\n' "${path}" "${archive}" >&2; exit 1; }
   done
-  case ${target} in
-    darwin/amd64) architecture_pattern='Mach-O 64-bit executable x86_64' ;;
-    darwin/arm64) architecture_pattern='Mach-O 64-bit executable arm64' ;;
-    linux/amd64) architecture_pattern='ELF 64-bit LSB executable, x86-64' ;;
-    linux/arm64) architecture_pattern='ELF 64-bit LSB executable, ARM aarch64' ;;
-  esac
-  file -b "${root}/bin/farrow" | grep -F "${architecture_pattern}" >/dev/null
-  file -b "${root}/bin/farrow-hosts-helper" | grep -F "${architecture_pattern}" >/dev/null
+  farrow_verify_binary_format "${root}/bin/farrow" "${target}"
+  farrow_verify_binary_format "${root}/bin/farrow-hosts-helper" "${target}"
   go version -m "${root}/bin/farrow" | sed -n '1p' | grep -F "go${FARROW_GO_VERSION}" >/dev/null
   go version -m "${root}/bin/farrow-hosts-helper" | sed -n '1p' | grep -F "go${FARROW_GO_VERSION}" >/dev/null
   farrow_sha=$(shasum -a 256 "${root}/bin/farrow" | awk '{print $1}')
