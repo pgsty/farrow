@@ -391,21 +391,24 @@ func TestDetectFormat(t *testing.T) {
 	if format, err := DetectFormat([]byte(fullInventory)); err != nil || format != "inventory" {
 		t.Fatalf("inventory detection: %q %v", format, err)
 	}
-	legacy := []byte("version: 1\nname: full\nnetwork: {mode: private}\nnodes: [{name: meta}]\n")
-	if format, err := DetectFormat(legacy); err != nil || format != "legacy" {
-		t.Fatalf("legacy detection: %q %v", format, err)
-	}
-	if _, err := DetectFormat([]byte("just: text\n")); err == nil {
-		t.Fatalf("expected unrecognized-format error")
+	// Only a Pigsty-compatible inventory is a configuration. Any other document
+	// shape, including the retired version:/nodes: sketch, is simply not one.
+	for _, unrecognized := range []string{
+		"version: 1\nname: full\nnetwork: {mode: private}\nnodes: [{name: meta}]\n",
+		"just: text\n",
+	} {
+		if format, err := DetectFormat([]byte(unrecognized)); err == nil {
+			t.Fatalf("DetectFormat(%q) = %q, want an unrecognized-format error", unrecognized, format)
+		}
 	}
 }
 
-func TestDiscoverLegacyConfigFails(t *testing.T) {
+func TestDiscoverRejectsANonInventoryDocument(t *testing.T) {
 	directory := t.TempDir()
 	writeTestFile(t, directory, "farrow.yaml", "version: 1\nname: x\nnetwork: {mode: user}\nnodes: [{name: meta}]\n")
 	_, _, err := Discover(directory, "")
-	if !errors.Is(err, ErrLegacyConfig) {
-		t.Fatalf("expected ErrLegacyConfig, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "unrecognized configuration") {
+		t.Fatalf("Discover error = %v, want an unrecognized-configuration failure", err)
 	}
 }
 

@@ -741,8 +741,5 @@ func DetectFormat(data []byte) (string, error) {
 	if mappingLookup(root, "all") != nil {
 		return "inventory", nil
 	}
-	if mappingLookup(root, "version") != nil && mappingLookup(root, "nodes") != nil {
-		return "legacy", nil
-	}
 	return "", errors.New("unrecognized configuration: expected a Pigsty-compatible inventory with a top-level all: group")
 }

@@ -37,7 +37,7 @@ func commitFixture(t *testing.T, disks DiskOps) (Deployment, PrepareConfig, []Pr
 
 func TestCommitPreparedStateAndFinalization(t *testing.T) {
 	projectValue, config, outcomes := commitFixture(t, &fakePrivateDisks{})
-	result, err := CommitPrepared(context.Background(), projectValue, config, outcomes, "test-version")
+	result, err := CommitPrepared(projectValue, config, outcomes, "test-version")
 	if err != nil || len(result.Nodes) != 2 || len(result.Failed) != 0 || result.Project.Resolved.Network != "private" {
 		t.Fatalf("commit result = %#v, %v", result, err)
 	}
@@ -54,7 +54,7 @@ func TestCommitPreparedStateAndFinalization(t *testing.T) {
 		}
 	}
 	// State commit is idempotent before the finalizer removes the journal.
-	second, err := CommitPrepared(context.Background(), projectValue, config, outcomes, "test-version")
+	second, err := CommitPrepared(projectValue, config, outcomes, "test-version")
 	if err != nil || len(second.Nodes) != 2 {
 		t.Fatalf("idempotent commit = %#v, %v", second, err)
 	}
@@ -70,7 +70,7 @@ func TestCommitPreparedStateAndFinalization(t *testing.T) {
 
 func TestCommitPreparedPreservesSuccessfulNodeOnPeerFailure(t *testing.T) {
 	projectValue, config, outcomes := commitFixture(t, &fakePrivateDisks{failSubstring: "node-1/root.qcow2"})
-	result, err := CommitPrepared(context.Background(), projectValue, config, outcomes, "test-version")
+	result, err := CommitPrepared(projectValue, config, outcomes, "test-version")
 	if err != nil || len(result.Nodes) != 1 || len(result.Failed) != 1 || result.Nodes[0].Node != "meta" || result.Failed[0] != "node-1" {
 		t.Fatalf("partial commit = %#v, %v", result, err)
 	}

@@ -90,7 +90,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 	result.Prepare = PrepareSelected(ctx, controller.Prepare, createNames, controller.Concurrency)
 	controller.Progress.Report(activity.Event{Phase: "prepare", Message: fmt.Sprintf("Prepared %d of %d node(s)", len(PreparedNames(result.Prepare)), len(createNames)), Done: true})
 	controller.Progress.Report(activity.Event{Phase: "commit", Message: "Committing prepared node state"})
-	result.Commit, err = CommitPrepared(ctx, controller.Project, controller.Prepare, result.Prepare, controller.Version)
+	result.Commit, err = CommitPrepared(controller.Project, controller.Prepare, result.Prepare, controller.Version)
 	if err != nil {
 		return result, err
 	}

@@ -1,7 +1,6 @@
 package private
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -136,8 +135,11 @@ func stateForArtifacts(config PrepareConfig, projectValue Deployment, artifacts 
 	}, nil
 }
 
-func CommitPrepared(ctx context.Context, projectValue Deployment, config PrepareConfig, outcomes []PrepareOutcome, version string) (CommitResult, error) {
-	_ = ctx
+// CommitPrepared makes the prepared transaction durable. It takes no context on
+// purpose: a commit interrupted between two node writes would leave the
+// deployment half-recorded, so this phase always runs to completion and reports
+// per-node outcomes instead of accepting cancellation.
+func CommitPrepared(projectValue Deployment, config PrepareConfig, outcomes []PrepareOutcome, version string) (CommitResult, error) {
 	if projectValue.Root != config.ProjectRoot || version == "" {
 		return CommitResult{}, errors.New("private commit config/version identity mismatch")
 	}

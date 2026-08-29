@@ -729,7 +729,6 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 	selectedSet := nodeNameSet(selected)
 	result := Status{OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message, Nodes: make([]NodeStatus, 0, len(projectState.Resolved.Nodes))}
 	lifecycle := vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}
-	nodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
 	convergenceCandidates := make([]state.NodeState, 0)
 	for _, definition := range projectState.Resolved.Nodes {
 		node, err := store.ReadNode(definition.Name)
@@ -798,7 +797,6 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 				convergenceCandidates = append(convergenceCandidates, node)
 			}
 		}
-		nodes = append(nodes, node)
 		if _, include := selectedSet[node.Node]; include {
 			result.Nodes = append(result.Nodes, NodeStatus{
 				Name: node.Node, Address: definition.Address, State: node.Phase, Runtime: runtimeState,
@@ -812,7 +810,6 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 			return Status{}, err
 		}
 	}
-	_ = nodes
 	return result, nil
 }
 

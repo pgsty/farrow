@@ -73,7 +73,7 @@ func TestStartPreparedNoWaitStopsAtVerifiedProcessStart(t *testing.T) {
 func preparedStartFixture(t *testing.T) (StartConfig, []state.NodeState) {
 	t.Helper()
 	projectValue, prepareConfig, outcomes := commitFixture(t, &fakePrivateDisks{})
-	committed, err := CommitPrepared(context.Background(), projectValue, prepareConfig, outcomes, "test-version")
+	committed, err := CommitPrepared(projectValue, prepareConfig, outcomes, "test-version")
 	if err != nil {
 		t.Fatal(err)
 	}

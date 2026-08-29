@@ -8,9 +8,6 @@ import (
 	"path/filepath"
 )
 
-// ErrLegacyConfig marks the retired farrow.yaml v1 document format.
-var ErrLegacyConfig = errors.New("the version:/nodes: farrow.yaml format was retired; describe the lab as a Pigsty-compatible inventory (vm_* host variables) instead — run `farrow init` for a template")
-
 // ErrNoConfig marks a project directory with no discoverable configuration.
 var ErrNoConfig = errors.New("no configuration found; run `farrow setup` to create one, or pass -f")
 
@@ -43,9 +40,8 @@ func readBounded(path string) ([]byte, error) {
 	return data, nil
 }
 
-// LoadPath parses one configuration file. The content decides the format:
-// an inventory (all:) parses; the retired v1 format fails with migration
-// guidance.
+// LoadPath parses one configuration file. The content decides the format: a
+// Pigsty-compatible inventory (all:) parses and anything else is rejected.
 func LoadPath(path string) (File, error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return File{}, errors.New("configuration path must be absolute")
@@ -54,12 +50,8 @@ func LoadPath(path string) (File, error) {
 	if err != nil {
 		return File{}, err
 	}
-	format, err := DetectFormat(data)
-	if err != nil {
+	if _, err := DetectFormat(data); err != nil {
 		return File{}, fmt.Errorf("%s: %w", path, err)
-	}
-	if format == "legacy" {
-		return File{}, fmt.Errorf("%s: %w", path, ErrLegacyConfig)
 	}
 	file, err := ParseInventory(data)
 	if err != nil {

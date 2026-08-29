@@ -1,7 +1,6 @@
 package private
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,7 +45,7 @@ func TestRollbackPreparedPreflightPreservesAllOnUnexpectedEntry(t *testing.T) {
 
 func TestRollbackPreparedRefusesCommittedStateAndRuntimeArtifact(t *testing.T) {
 	projectValue, config, outcomes := commitFixture(t, &fakePrivateDisks{})
-	if _, err := CommitPrepared(context.Background(), projectValue, config, outcomes, "test-version"); err != nil {
+	if _, err := CommitPrepared(projectValue, config, outcomes, "test-version"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RollbackPrepared(projectValue, outcomes[0].Node, true); err == nil {
