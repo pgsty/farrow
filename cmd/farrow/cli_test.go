@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/pgsty/farrow/internal/doctor"
 )
 
 func TestCobraRootAndContextualHelp(t *testing.T) {
@@ -172,17 +174,6 @@ func TestMisleadingAliasesAreRejected(t *testing.T) {
 		if code := run(arguments, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "unknown command") {
 			t.Errorf("run %v code=%d stdout=%q stderr=%q", arguments, code, stdout.String(), stderr.String())
 		}
-	}
-}
-
-func TestHaltIsHiddenDeprecatedCompatibilityCommand(t *testing.T) {
-	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
-	halt, remaining, err := root.Find([]string{"halt"})
-	if err != nil || halt == nil || halt.Name() != "halt" || len(remaining) != 0 {
-		t.Fatalf("halt command=%v remaining=%v err=%v", halt, remaining, err)
-	}
-	if !halt.Hidden || halt.Deprecated == "" {
-		t.Fatalf("halt hidden=%t deprecated=%q", halt.Hidden, halt.Deprecated)
 	}
 }
 
@@ -550,7 +541,9 @@ func TestUnknownCommandsOfferContextualSuggestions(t *testing.T) {
 func TestCommandGroupWithoutSubcommandShowsExamples(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := run([]string{"image"}, &stdout, &stderr); code != exitOK {
+	// A namespace with no subcommand is a usage error, but the person who typed
+	// it still gets the full help on stdout rather than a bare complaint.
+	if code := run([]string{"image"}, &stdout, &stderr); code != exitUsage {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	for _, want := range []string{"Available Commands:", "Examples:", "farrow image pull d13"} {
@@ -561,8 +554,8 @@ func TestCommandGroupWithoutSubcommandShowsExamples(t *testing.T) {
 	if strings.Contains(stdout.String(), "Usage:\n  farrow image\n") {
 		t.Fatalf("namespace help contains duplicate bare-command usage:\n%s", stdout.String())
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("namespace help wrote stderr: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "farrow image requires a subcommand") {
+		t.Fatalf("namespace help did not explain the usage error: %q", stderr.String())
 	}
 }
 
@@ -679,5 +672,52 @@ func TestStructuredBusinessFailureGetsFallbackPayload(t *testing.T) {
 		if failure.Error != test.category || !strings.Contains(failure.Message, test.message) || !strings.HasPrefix(stderr.String(), "error: ") {
 			t.Fatalf("run(%v) failure=%#v stderr=%q", test.arguments, failure, stderr.String())
 		}
+	}
+}
+
+func TestUsageExitStatusDoesNotDependOnPresentation(t *testing.T) {
+	// A display flag selects a rendering; it must never change the outcome. Every
+	// pair below is the same invocation with and without --json.
+	for _, arguments := range [][]string{nil, {"image"}, {"repo"}, {"network"}} {
+		var plainOut, plainErr bytes.Buffer
+		plain := run(arguments, &plainOut, &plainErr)
+		var jsonOut, jsonErr bytes.Buffer
+		structured := run(append([]string{"--json"}, arguments...), &jsonOut, &jsonErr)
+		if plain != structured {
+			t.Errorf("run(%v) exited %d plain but %d with --json", arguments, plain, structured)
+		}
+		if plain != exitUsage {
+			t.Errorf("run(%v) exited %d, want %d for a missing command", arguments, plain, exitUsage)
+		}
+	}
+	// Asking for help on purpose is not an error in either presentation.
+	for _, arguments := range [][]string{{"--help"}, {"image", "--help"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(arguments, &stdout, &stderr); code != exitOK {
+			t.Errorf("run(%v) exited %d, want %d", arguments, code, exitOK)
+		}
+	}
+}
+
+func TestDoctorLabelsMatchTheirConsequence(t *testing.T) {
+	t.Parallel()
+	// The label a person reads must agree with whether the check can fail the
+	// command. doctor.Report.HasErrors is the authority on that.
+	capability := doctor.Check{Name: "qemu", Status: doctor.Error}
+	network := doctor.Check{Name: "network-address.in_use", Status: doctor.Error, Class: doctor.ClassNetwork}
+	if got := doctorCheckLabel(capability); got != "error" {
+		t.Errorf("capability failure label = %q, want error", got)
+	}
+	if got := doctorCheckLabel(network); got != "blocked" {
+		t.Errorf("network finding label = %q, want blocked", got)
+	}
+	if got := doctorCheckLabel(doctor.Check{Name: "ssh", Status: doctor.OK}); got != "ok" {
+		t.Errorf("passing check label = %q, want ok", got)
+	}
+	if (doctor.Report{Checks: []doctor.Check{network}}).HasErrors() {
+		t.Error("a network finding must not fail doctor, which is why it is not labelled an error")
+	}
+	if !(doctor.Report{Checks: []doctor.Check{capability}}).HasErrors() {
+		t.Error("a capability failure must fail doctor, which is why it is labelled an error")
 	}
 }

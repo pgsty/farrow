@@ -2021,6 +2021,17 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 	}
 }
 
+// doctorCheckLabel is the word a person reads, chosen to match the consequence
+// rather than the raw severity. A network finding is real, but it never changes
+// the exit status, and printing "error" next to a successful exit is the kind of
+// contradiction that teaches people to stop reading the output.
+func doctorCheckLabel(check doctor.Check) string {
+	if check.Class == doctor.ClassNetwork && check.Status == doctor.Error {
+		return "blocked"
+	}
+	return string(check.Status)
+}
+
 func runDoctor(stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -2035,10 +2046,15 @@ func runDoctor(stdout, stderr io.Writer) int {
 		textField(stdout, 10, "host", fmt.Sprintf("%s/%s", report.OS, report.Arch))
 		textField(stdout, 10, "tier", report.Tier)
 		for _, check := range report.Checks {
-			fmt.Fprintf(stdout, "%s %-20s %s\n", statusCell(stdout, 10, string(check.Status)), check.Name, check.Evidence)
+			fmt.Fprintf(stdout, "%s %-20s %s\n", statusCell(stdout, 10, doctorCheckLabel(check)), check.Name, check.Evidence)
 			if check.Fix != "" {
 				fmt.Fprintf(stdout, "  fix: %s\n", check.Fix)
 			}
+		}
+		if report.HasErrors() {
+			fmt.Fprintln(stdout, "this host cannot run Farrow guests until the errors above are resolved")
+		} else {
+			fmt.Fprintln(stdout, "host compute capability is ready")
 		}
 		if !report.NetworkReady() {
 			fmt.Fprintln(stdout, "the host-global network is not ready; run `farrow setup` to prepare it")

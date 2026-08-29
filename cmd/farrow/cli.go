@@ -228,6 +228,11 @@ func templateCompletion(_ *cobra.Command, _ []string, prefix string) ([]string, 
 func configureHelpOnly(command *cobra.Command, message string, stdout, stderr io.Writer) {
 	command.Args = suggestingNoArgs
 	command.RunE = func(command *cobra.Command, _ []string) error {
+		// A namespace invoked without a subcommand is a usage error, and a
+		// presentation flag must never change that. Only the rendering differs:
+		// --json emits the machine-readable failure, while the plain form still
+		// prints the full help on stdout because that is what a person came for.
+		// `farrow --help` remains the deliberate, successful way to ask for help.
 		if structuredOutput(stdout) {
 			if code := emitCommandFailure(stdout, stderr, "usage", message, ""); code != exitOK {
 				return commandError(code)
@@ -235,7 +240,11 @@ func configureHelpOnly(command *cobra.Command, message string, stdout, stderr io
 			errorf(stderr, "%s", message)
 			return commandExitError{code: exitUsage}
 		}
-		return command.Help()
+		if err := command.Help(); err != nil {
+			return err
+		}
+		errorf(stderr, "%s", message)
+		return commandExitError{code: exitUsage}
 	}
 
 	// RunE makes a namespace runnable so Cobra validates misspelled children.

@@ -78,12 +78,6 @@ specification; validate always requires an inventory.`,
 		command.GroupID = "lifecycle"
 		root.AddCommand(command)
 	}
-	halt := newLifecycleCommand("stop", "Deprecated compatibility command for stop", stdout, stderr)
-	halt.Use = "halt [node...]"
-	halt.Hidden = true
-	halt.Deprecated = "use 'farrow stop'"
-	root.AddCommand(halt)
-
 	ssh := rawOperation(
 		"ssh [node] [--] [command [args...]]",
 		"Open SSH or run a command in a guest",
