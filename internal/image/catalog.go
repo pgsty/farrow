@@ -75,19 +75,15 @@ var (
 
 const localAliasPrefix = "local-"
 
-type legacyArtifact Artifact
-
-type legacyCatalogImage struct {
-	Aliases  []string                             `json:"aliases,omitempty"`
-	Default  string                               `json:"default"`
-	Releases map[string]map[string]legacyArtifact `json:"releases"`
-}
-
-type legacyCatalog struct {
-	Schema      int                           `json:"schema"`
-	Version     uint64                        `json:"version"`
-	GeneratedAt json.RawMessage               `json:"generated_at"`
-	Images      map[string]legacyCatalogImage `json:"images"`
+// sortedKeys walks a map in a stable order. Catalog validation, ranking, and
+// listing all use it so identical input always yields identical output.
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func strictDecode(data []byte, target any) error {
@@ -103,51 +99,6 @@ func strictDecode(data []byte, target any) error {
 	return nil
 }
 
-func convertLegacyCatalog(legacy legacyCatalog) Catalog {
-	defaultImage := "u24"
-	if _, ok := legacy.Images[defaultImage]; !ok {
-		if _, ok := legacy.Images["d13"]; ok {
-			defaultImage = "d13"
-		} else {
-			names := make([]string, 0, len(legacy.Images))
-			for name := range legacy.Images {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			if len(names) != 0 {
-				defaultImage = names[0]
-			}
-		}
-	}
-	result := Catalog{
-		Schema: ManifestSchema, Version: legacy.Version,
-		Defaults: CatalogDefaults{Image: defaultImage, Channel: "stable", Arch: "native", Boot: "uefi"},
-		Images:   make(map[string]CatalogImage, len(legacy.Images)),
-	}
-	for name, oldImage := range legacy.Images {
-		imageRecord := CatalogImage{
-			Aliases: oldImage.Aliases, Channels: map[string]string{"stable": oldImage.Default},
-			Versions: make(map[string]CatalogVersion, len(oldImage.Releases)),
-		}
-		for release, oldVariants := range oldImage.Releases {
-			version := CatalogVersion{Variants: make(map[string]Artifact, len(oldVariants))}
-			for arch, oldArtifact := range oldVariants {
-				artifact := Artifact(oldArtifact)
-				version.Variants[arch] = artifact
-				if version.Status == "" {
-					version.Status = artifact.Status
-				}
-				if version.Provenance == "" {
-					version.Provenance = artifact.Provenance
-				}
-			}
-			imageRecord.Versions[release] = version
-		}
-		result.Images[name] = imageRecord
-	}
-	return result
-}
-
 func strictCatalog(data []byte) (Catalog, error) {
 	if len(data) == 0 || len(data) > MaxManifestSize {
 		return Catalog{}, fmt.Errorf("catalog size %d is outside 1..%d", len(data), MaxManifestSize)
@@ -158,20 +109,12 @@ func strictCatalog(data []byte) (Catalog, error) {
 	if err := json.Unmarshal(data, &header); err != nil {
 		return Catalog{}, fmt.Errorf("decode image catalog header: %w", err)
 	}
+	if header.Schema != ManifestSchema {
+		return Catalog{}, fmt.Errorf("unsupported image catalog schema %d; this Farrow reads schema %d", header.Schema, ManifestSchema)
+	}
 	var catalog Catalog
-	switch header.Schema {
-	case ManifestSchema:
-		if err := strictDecode(data, &catalog); err != nil {
-			return Catalog{}, fmt.Errorf("decode strict image catalog schema %d: %w", ManifestSchema, err)
-		}
-	case 2:
-		var legacy legacyCatalog
-		if err := strictDecode(data, &legacy); err != nil {
-			return Catalog{}, fmt.Errorf("decode legacy image catalog schema 2: %w", err)
-		}
-		catalog = convertLegacyCatalog(legacy)
-	default:
-		return Catalog{}, fmt.Errorf("unsupported image catalog schema %d; this Farrow supports schemas 2 and %d", header.Schema, ManifestSchema)
+	if err := strictDecode(data, &catalog); err != nil {
+		return Catalog{}, fmt.Errorf("decode strict image catalog schema %d: %w", ManifestSchema, err)
 	}
 	if err := catalog.Validate(); err != nil {
 		return Catalog{}, err
@@ -220,14 +163,22 @@ func (c Catalog) Validate() error {
 	if _, ok := c.Images[c.Defaults.Image]; !ok {
 		return fmt.Errorf("default image %q does not exist", c.Defaults.Image)
 	}
-	allNames := make(map[string]struct{})
+	// Validation walks the catalog in sorted order so one invalid catalog always
+	// produces the same first error instead of a map-order lottery.
+	imageNames := make([]string, 0, len(c.Images))
 	for name := range c.Images {
+		imageNames = append(imageNames, name)
+	}
+	sort.Strings(imageNames)
+	allNames := make(map[string]struct{})
+	for _, name := range imageNames {
 		if !catalogName.MatchString(name) || reservedLocalNamespace(name) {
 			return fmt.Errorf("invalid or reserved image name %q", name)
 		}
 		allNames[name] = struct{}{}
 	}
-	for name, imageRecord := range c.Images {
+	for _, name := range imageNames {
+		imageRecord := c.Images[name]
 		if len(imageRecord.Channels) == 0 || len(imageRecord.Versions) == 0 {
 			return fmt.Errorf("image %s has no channels or versions", name)
 		}
@@ -244,7 +195,8 @@ func (c Catalog) Validate() error {
 			}
 			allNames[alias] = struct{}{}
 		}
-		for channel, release := range imageRecord.Channels {
+		for _, channel := range sortedKeys(imageRecord.Channels) {
+			release := imageRecord.Channels[channel]
 			if !channelName.MatchString(channel) || !releaseName.MatchString(release) {
 				return fmt.Errorf("image %s has invalid channel mapping %q -> %q", name, channel, release)
 			}
@@ -255,14 +207,32 @@ func (c Catalog) Validate() error {
 		if _, ok := imageRecord.Channels[c.Defaults.Channel]; !ok {
 			return fmt.Errorf("image %s has no default channel %s", name, c.Defaults.Channel)
 		}
-		for release, version := range imageRecord.Versions {
+		// Two version keys that differ textually but rank identically would make
+		// numeric prefix selection ambiguous at resolve time. Reject them at the
+		// catalog boundary so `vm_version: 9` can never become a runtime coin flip.
+		rankedVersions := make(map[string]string, len(imageRecord.Versions))
+		for _, release := range sortedKeys(imageRecord.Versions) {
+			parts, err := numericVersionParts(release)
+			if err != nil {
+				// Non-numeric keys are only ever matched exactly, never ranked.
+				continue
+			}
+			key := canonicalNumericKey(parts)
+			if previous, clash := rankedVersions[key]; clash {
+				return fmt.Errorf("image %s versions %q and %q rank identically; numeric version selection would be ambiguous", name, previous, release)
+			}
+			rankedVersions[key] = release
+		}
+		for _, release := range sortedKeys(imageRecord.Versions) {
+			version := imageRecord.Versions[release]
 			if !releaseName.MatchString(release) || len(version.Variants) == 0 {
 				return fmt.Errorf("image %s has invalid version %q", name, release)
 			}
 			if version.Status != "" && !validStatus(version.Status) {
 				return fmt.Errorf("image %s version %s has invalid status %q", name, release, version.Status)
 			}
-			for arch, artifact := range version.Variants {
+			for _, arch := range sortedKeys(version.Variants) {
+				artifact := version.Variants[arch]
 				if arch != "arm64" && arch != "amd64" {
 					return fmt.Errorf("image %s version %s has unsupported arch %s", name, release, arch)
 				}
@@ -390,16 +360,33 @@ func resolveVersion(versions map[string]CatalogVersion, selector string) (string
 	if len(matches) == 0 {
 		return "", fmt.Errorf("no catalog version matches numeric prefix %q", selector)
 	}
-	best := matches[0]
-	for _, current := range matches[1:] {
-		switch comparison := compareNumericVersions(current.parts, best.parts); {
-		case comparison > 0:
-			best = current
-		case comparison == 0 && current.name != best.name:
-			return "", fmt.Errorf("numeric prefix %q is ambiguous between semantically equal versions %q and %q", selector, best.name, current.name)
+	// Map iteration order must never reach the result. Rank by numeric value and
+	// break every remaining tie on the catalog key itself, so one catalog and one
+	// selector always resolve to the same release, or always to the same error.
+	sort.Slice(matches, func(first, second int) bool {
+		if comparison := compareNumericVersions(matches[first].parts, matches[second].parts); comparison != 0 {
+			return comparison > 0
 		}
+		return matches[first].name < matches[second].name
+	})
+	if len(matches) > 1 && compareNumericVersions(matches[0].parts, matches[1].parts) == 0 {
+		return "", fmt.Errorf("numeric prefix %q is ambiguous between semantically equal versions %q and %q", selector, matches[0].name, matches[1].name)
 	}
-	return best.name, nil
+	return matches[0].name, nil
+}
+
+// canonicalNumericKey renders a numeric version without its trailing zero
+// components, so 9.7 and 9.7.0 collapse onto one key.
+func canonicalNumericKey(parts []uint64) string {
+	end := len(parts)
+	for end > 1 && parts[end-1] == 0 {
+		end--
+	}
+	rendered := make([]string, end)
+	for index := 0; index < end; index++ {
+		rendered[index] = strconv.FormatUint(parts[index], 10)
+	}
+	return strings.Join(rendered, ".")
 }
 
 func (c Catalog) Entry(reference, arch string) (Entry, error) {
@@ -464,35 +451,20 @@ func (c Catalog) Entry(reference, arch string) (Entry, error) {
 
 func (c Catalog) Entries() []Entry {
 	result := make([]Entry, 0)
-	imageNames := make([]string, 0, len(c.Images))
-	for name := range c.Images {
-		imageNames = append(imageNames, name)
-	}
-	sort.Strings(imageNames)
-	for _, name := range imageNames {
+	for _, name := range sortedKeys(c.Images) {
 		record := c.Images[name]
-		releases := make([]string, 0, len(record.Versions))
-		for release := range record.Versions {
-			releases = append(releases, release)
-		}
-		sort.Strings(releases)
-		for _, release := range releases {
-			arches := make([]string, 0, len(record.Versions[release].Variants))
-			for arch := range record.Versions[release].Variants {
-				arches = append(arches, arch)
-			}
-			sort.Strings(arches)
-			for _, arch := range arches {
+		for _, release := range sortedKeys(record.Versions) {
+			for _, arch := range sortedKeys(record.Versions[release].Variants) {
 				entry, err := c.Entry(name+"@"+release, arch)
-				if err == nil {
-					for channel, target := range record.Channels {
-						if target == release {
-							entry.Channels = append(entry.Channels, channel)
-						}
-					}
-					sort.Strings(entry.Channels)
-					result = append(result, entry)
+				if err != nil {
+					continue
 				}
+				for _, channel := range sortedKeys(record.Channels) {
+					if record.Channels[channel] == release {
+						entry.Channels = append(entry.Channels, channel)
+					}
+				}
+				result = append(result, entry)
 			}
 		}
 	}

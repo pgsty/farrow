@@ -2,9 +2,6 @@ package image
 
 import (
 	"bytes"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -80,65 +77,6 @@ func TestEmbeddedCatalogSupportPolicy(t *testing.T) {
 		entry, err := catalog.Entry(test.reference, test.arch)
 		if err != nil || entry.Status != test.status {
 			t.Errorf("catalog status %s/%s = %q, %v; want %q", test.reference, test.arch, entry.Status, err, test.status)
-		}
-	}
-}
-
-func TestLegacySchemaTwoCatalogConvertsWithoutChangingRepositoryPath(t *testing.T) {
-	t.Parallel()
-	legacy := legacyCatalog{
-		Schema: 2, Version: 2026082801, GeneratedAt: json.RawMessage(`"2026-08-28T00:00:00Z"`),
-		Images: map[string]legacyCatalogImage{
-			"u24": {
-				Default: "1",
-				Releases: map[string]map[string]legacyArtifact{
-					"1": {
-						"arm64": legacyArtifact{
-							File: "u24/u24-1-arm64.qcow2", Upstream: "https://example.test/u24-1-arm64.qcow2",
-							SHA256: strings.Repeat("a", 64), Format: "qcow2", ArtifactSize: 1, VirtualSize: 1,
-							Boot: "uefi", Status: "testing", Provenance: "legacy fixture",
-						},
-					},
-				},
-			},
-		},
-	}
-	data, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := strictCatalog(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry, err := catalog.Entry("u24", "arm64")
-	if err != nil || entry.File != "u24/u24-1-arm64.qcow2" || entry.CacheFile != "u24/u24-1-arm64.qcow2" {
-		t.Fatalf("converted legacy entry = %#v, %v", entry, err)
-	}
-}
-
-func TestPublishedSchemaTwoCatalogGoldenConverts(t *testing.T) {
-	t.Parallel()
-	data, err := os.ReadFile(filepath.Join("testdata", "catalog-v2.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := strictCatalog(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if catalog.Schema != ManifestSchema || catalog.Version != 2026082801 || catalog.Defaults.Image != "u24" || len(catalog.Entries()) != 17 {
-		t.Fatalf("converted published catalog = %#v entries=%d", catalog, len(catalog.Entries()))
-	}
-	for _, test := range []struct {
-		reference string
-		arch      string
-	}{
-		{"u24", "arm64"},
-		{"d13", "amd64"},
-	} {
-		if _, err := catalog.Entry(test.reference, test.arch); err != nil {
-			t.Errorf("published v2 entry %s/%s: %v", test.reference, test.arch, err)
 		}
 	}
 }
@@ -224,5 +162,53 @@ func TestCatalogRejectsReservedLocalAliasNamespace(t *testing.T) {
 		if err := catalog.Validate(); err == nil || !strings.Contains(err.Error(), "reserved") {
 			t.Fatalf("catalog reserved namespace error = %v", err)
 		}
+	}
+}
+
+func TestResolveVersionIsDeterministicUnderMapOrder(t *testing.T) {
+	t.Parallel()
+	versions := map[string]CatalogVersion{"9.7": {}, "9.8": {}, "9.10": {}}
+	for attempt := 0; attempt < 200; attempt++ {
+		got, err := resolveVersion(versions, "9")
+		if err != nil || got != "9.10" {
+			t.Fatalf("attempt %d: resolveVersion = %q, %v; want 9.10", attempt, got, err)
+		}
+	}
+	// A clear winner stays a clear winner: an equal-ranking pair further down the
+	// list is irrelevant to the answer and must not turn into a sporadic error.
+	shadowed := map[string]CatalogVersion{"9.7": {}, "9.7.0": {}, "9.8": {}}
+	for attempt := 0; attempt < 200; attempt++ {
+		got, err := resolveVersion(shadowed, "9")
+		if err != nil || got != "9.8" {
+			t.Fatalf("attempt %d: resolveVersion = %q, %v; want 9.8", attempt, got, err)
+		}
+	}
+	// Only a tie for first place is genuinely ambiguous, and it must name the
+	// same two versions every time.
+	tied := map[string]CatalogVersion{"9.7": {}, "9.7.0": {}}
+	for attempt := 0; attempt < 200; attempt++ {
+		got, err := resolveVersion(tied, "9")
+		if err == nil || !strings.Contains(err.Error(), `ambiguous between semantically equal versions "9.7" and "9.7.0"`) {
+			t.Fatalf("attempt %d: resolveVersion = %q, %v; want a stable ambiguity error", attempt, got, err)
+		}
+	}
+}
+
+func TestCatalogRejectsIdenticallyRankedVersions(t *testing.T) {
+	t.Parallel()
+	catalog := EmbeddedCatalog()
+	record := catalog.Images["el9"]
+	versions := make(map[string]CatalogVersion, len(record.Versions)+1)
+	for release, version := range record.Versions {
+		versions[release] = version
+	}
+	// 9.8.20260525.0 and 9.8.20260525 rank identically; the catalog boundary must
+	// reject the pair instead of letting resolution report a runtime ambiguity.
+	versions["9.8.20260525"] = versions["9.8.20260525.0"]
+	record.Versions = versions
+	catalog.Images["el9"] = record
+	err := catalog.Validate()
+	if err == nil || !strings.Contains(err.Error(), "rank identically") {
+		t.Fatalf("Validate accepted identically ranked versions: %v", err)
 	}
 }
