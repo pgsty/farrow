@@ -24,10 +24,10 @@ expected=$(printf '%s\n' \
   $'github.com/spf13/viper\tv1.21.0' \
   $'github.com/subosito/gotenv\tv1.6.0' \
   $'go.yaml.in/yaml/v3\tv3.0.5' \
-  $'golang.org/x/crypto\tv0.52.0' \
-  $'golang.org/x/sys\tv0.45.0' \
-  $'golang.org/x/term\tv0.43.0' \
-  $'golang.org/x/text\tv0.39.0' | LC_ALL=C sort)
+  $'golang.org/x/crypto\tv0.55.0' \
+  $'golang.org/x/sys\tv0.47.0' \
+  $'golang.org/x/term\tv0.45.0' \
+  $'golang.org/x/text\tv0.41.0' | LC_ALL=C sort)
 actual=$(
   cd "${repo}"
   go list -deps -json ./cmd/farrow ./cmd/farrow-hosts-helper |
