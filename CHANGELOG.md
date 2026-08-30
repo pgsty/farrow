@@ -24,6 +24,9 @@ Pigsty-compatible local labs.
 - Static image repositories: a source-controlled `repo.yaml`, a generated
   schema-3 `catalog.json`, immutable artifact names, and
   `farrow repo scan/build/verify`.
+- The signed public repository at `https://repo.pigsty.cc/farrow` is the default
+  catalog and artifact mirror; `--repo` and `FARROW_REPO` remain explicit
+  overrides, and immutable distribution upstreams remain the fallback.
 - Image selection by family, channel, exact release, or numeric version prefix,
   so a Pigsty inventory can keep `vm_image: el9` and pick the newest matching
   9.x build with `vm_version`.

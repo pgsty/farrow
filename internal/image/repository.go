@@ -10,12 +10,11 @@ import (
 
 const CatalogFilename = "catalog.json"
 
-// DefaultRepositoryURL is intentionally empty in ordinary public builds. They
-// start from the signed embedded catalog and fetch its immutable HTTPS upstream
-// artifacts without first probing a private development host. A release may
-// override this with -ldflags -X only after a public mirror is live; FARROW_REPO
-// and --repo remain explicit runtime overrides.
-var DefaultRepositoryURL string
+// DefaultRepositoryURL is the public signed-catalog and artifact mirror used
+// when neither --repo nor FARROW_REPO selects another repository. If this
+// repository is unavailable, Service falls back to the signed embedded catalog
+// and its immutable HTTPS upstream artifacts.
+var DefaultRepositoryURL = "https://repo.pigsty.cc/farrow"
 
 // RepositoryAllowsUnsigned reports whether an explicitly selected repository
 // may rely on local ownership or HTTPS rather than a detached trusted

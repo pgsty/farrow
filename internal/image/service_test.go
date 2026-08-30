@@ -3,6 +3,8 @@ package image
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +12,19 @@ import (
 	"time"
 )
 
-func TestListEmbeddedCatalogWithoutQEMUImg(t *testing.T) {
+func withoutDefaultRepository(t *testing.T) {
+	t.Helper()
+	defaultRepository := DefaultRepositoryURL
+	DefaultRepositoryURL = ""
+	t.Cleanup(func() { DefaultRepositoryURL = defaultRepository })
+}
+
+func TestListFallsBackToEmbeddedCatalogWhenDefaultUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	defaultRepository := DefaultRepositoryURL
+	DefaultRepositoryURL = server.URL
+	t.Cleanup(func() { DefaultRepositoryURL = defaultRepository })
 	t.Setenv("PATH", t.TempDir())
 	entries, state, err := (Service{DataRoot: t.TempDir()}).List(context.Background())
 	if err != nil {
@@ -18,6 +32,27 @@ func TestListEmbeddedCatalogWithoutQEMUImg(t *testing.T) {
 	}
 	if state.Source != "embedded" || len(entries) != 27 {
 		t.Fatalf("manifest=%#v entries=%d", state, len(entries))
+	}
+}
+
+func TestConfiguredRepositoryPrecedence(t *testing.T) {
+	t.Setenv("FARROW_REPO", "")
+	service := Service{}
+	repository, explicit, err := service.configuredRepository()
+	if err != nil || repository != DefaultRepositoryURL || explicit {
+		t.Fatalf("default repository = %q explicit=%v err=%v", repository, explicit, err)
+	}
+
+	t.Setenv("FARROW_REPO", "https://environment.example/farrow")
+	repository, explicit, err = service.configuredRepository()
+	if err != nil || repository != "https://environment.example/farrow" || !explicit {
+		t.Fatalf("environment repository = %q explicit=%v err=%v", repository, explicit, err)
+	}
+
+	service.Repository = "https://command.example/farrow"
+	repository, explicit, err = service.configuredRepository()
+	if err != nil || repository != "https://command.example/farrow" || !explicit {
+		t.Fatalf("command repository = %q explicit=%v err=%v", repository, explicit, err)
 	}
 }
 
@@ -58,6 +93,7 @@ func TestExplicitUnsignedLocalRepositoryIsSelfContained(t *testing.T) {
 }
 
 func TestListIncludesStaleForeignLocalAliasWithoutQEMUImg(t *testing.T) {
+	withoutDefaultRepository(t)
 	dataRoot := t.TempDir()
 	t.Setenv("PATH", t.TempDir())
 	imagesRoot := filepath.Join(dataRoot, "images")

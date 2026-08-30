@@ -29,10 +29,14 @@ func TestRepositorySources(t *testing.T) {
 	}
 }
 
-func TestSourceBuildHasNoPrivateDefaultRepository(t *testing.T) {
+func TestPublicDefaultRepository(t *testing.T) {
 	t.Parallel()
-	if DefaultRepositoryURL != "" {
-		t.Fatalf("source build unexpectedly probes a default repository: %q", DefaultRepositoryURL)
+	const expected = "https://repo.pigsty.cc/farrow"
+	if DefaultRepositoryURL != expected {
+		t.Fatalf("default repository = %q, want %q", DefaultRepositoryURL, expected)
+	}
+	if RepositoryAllowsUnsigned(DefaultRepositoryURL) {
+		t.Fatal("the compiled default repository unexpectedly permits an unsigned catalog")
 	}
 }
 
