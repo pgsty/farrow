@@ -42,6 +42,11 @@ repository=${FARROW_RELEASE_REPOSITORY:-pgsty/farrow}
 home_directory=$(cd "${HOME:?HOME is required}" && pwd -P)
 install_directory=${FARROW_INSTALL_DIR:-${home_directory}/.local/bin}
 version=${FARROW_VERSION:-}
+allow_unsigned=${FARROW_INSTALL_ALLOW_UNSIGNED:-}
+if [[ -n ${allow_unsigned} && ${allow_unsigned} != 1 ]]; then
+  printf 'FARROW_INSTALL_ALLOW_UNSIGNED must be empty or 1\n' >&2
+  exit 2
+fi
 case /${install_directory}/ in
   */../*|*/./*)
   printf 'FARROW_INSTALL_DIR must not contain dot path segments\n' >&2
@@ -125,15 +130,24 @@ else
   exit 3
 fi
 
+resolved_latest=false
 if [[ -z ${version} ]]; then
-  latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${repository}/releases/latest")
+  resolved_latest=true
+  if ! latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${repository}/releases/latest"); then
+    printf 'no stable Farrow release is published at https://github.com/%s/releases/latest; set FARROW_VERSION explicitly for a pre-release\n' "${repository}" >&2
+    exit 2
+  fi
   tag=${latest##*/}
   version=${tag#v}
 fi
-is_semver "${version}" || {
-  printf 'cannot resolve a valid Farrow release version: %s\n' "${version}" >&2
+if ! is_semver "${version}"; then
+  if [[ ${resolved_latest} == true ]]; then
+    printf 'no stable Farrow release is published at https://github.com/%s/releases/latest (pre-1.0 versions are GitHub pre-releases); set FARROW_VERSION explicitly, for example FARROW_VERSION=0.1.0\n' "${repository}" >&2
+  else
+    printf 'cannot resolve a valid Farrow release version: %s\n' "${version}" >&2
+  fi
   exit 2
-}
+fi
 
 asset=farrow_${version}_${goos}_${goarch}.tar.gz
 base=https://github.com/${repository}/releases/download/v${version}
@@ -178,6 +192,7 @@ trap cleanup EXIT
 printf 'Downloading Farrow %s for %s/%s...\n' "${version}" "${goos}" "${goarch}"
 curl -fsSLo "${temporary}/${asset}" "${base}/${asset}"
 curl -fsSLo "${temporary}/checksums.txt" "${base}/checksums.txt"
+signature_bypassed=false
 if command -v cosign >/dev/null 2>&1; then
   identity="https://github.com/${repository}/.github/workflows/release.yml@refs/tags/v${version}"
   if curl -fsSLo "${temporary}/checksums.txt.sigstore.json" "${base}/checksums.txt.sigstore.json"; then
@@ -191,9 +206,18 @@ if command -v cosign >/dev/null 2>&1; then
       printf 'release checksum signature did not verify against %s\n' "${identity}" >&2
       exit 7
     fi
+  elif [[ ${allow_unsigned} == 1 ]]; then
+    signature_bypassed=true
+    printf 'WARNING: RELEASE SIGNATURE BUNDLE IS MISSING\n' >&2
+    printf 'WARNING: FARROW_INSTALL_ALLOW_UNSIGNED=1 permits checksum-only installation from %s\n' "${base}" >&2
+    printf 'WARNING: signature identity %s was NOT verified\n' "${identity}" >&2
   else
-    printf 'cosign is installed but this release publishes no signature bundle; continuing with checksum verification only\n' >&2
+    printf 'cosign is installed but the required release signature bundle is missing: %s/checksums.txt.sigstore.json\n' "${base}" >&2
+    printf 'refusing checksum-only downgrade; retry the release or explicitly set FARROW_INSTALL_ALLOW_UNSIGNED=1 for a trusted development/fork release\n' >&2
+    exit 7
   fi
+else
+  printf 'cosign is not installed; release signature was not verified (archive checksum verification remains mandatory)\n' >&2
 fi
 expected=$(awk -v asset="${asset}" '$2 == asset {print $1}' "${temporary}/checksums.txt")
 [[ ${expected} =~ ^[0-9a-f]{64}$ ]] || { printf 'release checksum entry is missing or ambiguous: %s\n' "${asset}" >&2; exit 7; }
@@ -334,7 +358,11 @@ for name in farrow farrow-hosts-helper; do
     exit 7
   }
 done
-printf 'Installed Farrow %s in %s\n' "${version}" "${install_directory}"
+if [[ ${signature_bypassed} == true ]]; then
+  printf 'Installed Farrow %s in %s (signature NOT verified)\n' "${version}" "${install_directory}"
+else
+  printf 'Installed Farrow %s in %s\n' "${version}" "${install_directory}"
+fi
 case :${PATH}: in
   *:"${install_directory}":*) ;;
   *) printf "For this shell, run: export PATH=%q:\"\$PATH\"\n" "${install_directory}" ;;

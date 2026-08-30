@@ -29,6 +29,7 @@ type Lifecycle struct {
 	// callers leave them nil and use the conservative process package plus the
 	// operating system's signal primitive.
 	matchesProcess func(context.Context, execx.Runner, process.Identity, qemu.Invocation) bool
+	captureProcess func(context.Context, execx.Runner, qemu.Invocation, int) (process.Identity, error)
 	processAlive   func(int) bool
 	signalProcess  func(int, syscall.Signal) error
 	waitProcess    func(context.Context, int, time.Duration) (bool, error)
@@ -53,6 +54,7 @@ const (
 	defaultQMPQuitTimeout      = 10 * time.Second
 	defaultSIGTERMTimeout      = 10 * time.Second
 	defaultSIGKILLTimeout      = 5 * time.Second
+	defaultStartAbortTimeout   = 30 * time.Second
 	// GracefulGuestShutdownTimeout covers ordinary systemd shutdown on a
 	// provisioned Pigsty node. Services such as Vector may use a 90-second
 	// stop timeout; forcing QEMU at the former 60-second boundary risks an
@@ -119,6 +121,13 @@ func (l Lifecycle) WaitQMP(ctx context.Context, socket, name, uuid string, timeo
 }
 
 func readPID(path string) (int, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > 32 {
+		return 0, errors.New("QEMU pidfile is unsafe")
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err
@@ -154,23 +163,154 @@ func (l Lifecycle) start(ctx context.Context, invocation qemu.Invocation, socket
 		return process.Identity{}, errors.New("VM lifecycle runner cannot pass inherited files")
 	}
 	if runErr != nil {
-		return process.Identity{}, runErr
+		return process.Identity{}, l.compensateStartFailure(ctx, socket, pidfile, name, uuid, invocation, runErr)
 	}
 	if err := l.WaitQMP(ctx, socket, name, uuid, 15*time.Second); err != nil {
-		return process.Identity{}, err
+		return process.Identity{}, l.compensateStartFailure(ctx, socket, pidfile, name, uuid, invocation, err)
 	}
 	pid, err := readPID(pidfile)
 	if err != nil {
-		return process.Identity{}, err
+		return process.Identity{}, l.compensateStartFailure(ctx, socket, pidfile, name, uuid, invocation, err)
 	}
-	identity, err := process.Capture(ctx, l.Runner, invocation, pid)
+	identity, err := l.capture(ctx, invocation, pid)
 	if err != nil {
-		return process.Identity{}, err
+		return process.Identity{}, l.compensateStartFailure(ctx, socket, pidfile, name, uuid, invocation, err)
 	}
-	if !process.MatchesLive(ctx, l.Runner, identity, invocation) {
-		return process.Identity{}, errors.New("started QEMU process identity did not match invocation")
+	if identity.ArgvHash != process.ExpectedArgvHash(invocation) || !l.matchesLive(ctx, identity, invocation) {
+		err := errors.New("started QEMU process identity did not match invocation")
+		return process.Identity{}, l.compensateStartFailure(ctx, socket, pidfile, name, uuid, invocation, err)
 	}
 	return identity, nil
+}
+
+func (l Lifecycle) compensateStartFailure(ctx context.Context, socket, pidfile, name, uuid string, invocation qemu.Invocation, startErr error) error {
+	if abortErr := l.Abort(ctx, socket, pidfile, name, uuid, invocation); abortErr != nil {
+		return fmt.Errorf("%w; start compensation failed: %v", startErr, abortErr)
+	}
+	return fmt.Errorf("%w; start compensation completed", startErr)
+}
+
+func (l Lifecycle) capture(ctx context.Context, invocation qemu.Invocation, pid int) (process.Identity, error) {
+	if l.captureProcess != nil {
+		return l.captureProcess(ctx, l.Runner, invocation, pid)
+	}
+	return process.Capture(ctx, l.Runner, invocation, pid)
+}
+
+func (l Lifecycle) captureAbortIdentity(ctx context.Context, pidfile string, invocation qemu.Invocation) (*process.Identity, error) {
+	pid, err := readPID(pidfile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !l.alive(pid) {
+		return nil, nil
+	}
+	identity, err := l.capture(ctx, invocation, pid)
+	if err != nil {
+		return nil, err
+	}
+	if identity.ArgvHash != process.ExpectedArgvHash(invocation) {
+		return nil, errors.New("QEMU pidfile process does not match the persisted invocation")
+	}
+	second, err := l.capture(ctx, invocation, pid)
+	if err != nil || second != identity {
+		return nil, errors.New("QEMU pidfile process identity changed during compensation")
+	}
+	return &identity, nil
+}
+
+func (l Lifecycle) waitForQMPGone(ctx context.Context, socket, name, uuid string, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(defaultProcessPollInterval)
+	defer ticker.Stop()
+	for {
+		identityErr := l.ValidateIdentity(ctx, socket, name, uuid)
+		if identityErr != nil {
+			if errors.Is(identityErr, ErrQMPIdentityMismatch) {
+				return fmt.Errorf("QMP identity changed during start compensation: %w", identityErr)
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		case <-timer.C:
+			return errors.New("matching QMP remained available after start compensation quit")
+		}
+	}
+}
+
+func (l Lifecycle) abortStarted(ctx context.Context, socket, name, uuid string, identity *process.Identity, invocation qemu.Invocation) error {
+	qmpErr := l.ValidateIdentity(ctx, socket, name, uuid)
+	if qmpErr == nil {
+		if err := l.QMP.Quit(ctx, socket); err != nil {
+			return fmt.Errorf("quit matching QMP during start compensation: %w", err)
+		}
+		if identity == nil {
+			return l.waitForQMPGone(ctx, socket, name, uuid, l.duration(l.quitTimeout, defaultQMPQuitTimeout))
+		}
+		exited, err := l.waitForExit(ctx, identity.PID, l.duration(l.quitTimeout, defaultQMPQuitTimeout))
+		if err != nil || exited {
+			return err
+		}
+		identityErr := l.ValidateIdentity(ctx, socket, name, uuid)
+		if identityErr == nil {
+			return fmt.Errorf("QEMU pid %d remained after start compensation quit while matching QMP was still available", identity.PID)
+		}
+		if errors.Is(identityErr, ErrQMPIdentityMismatch) {
+			return fmt.Errorf("QMP identity changed after start compensation quit: %w", identityErr)
+		}
+		return l.stopWithSignals(ctx, *identity, invocation, errors.New("QMP disappeared after start compensation quit"))
+	}
+	if errors.Is(qmpErr, ErrQMPIdentityMismatch) {
+		return fmt.Errorf("refuse start compensation with mismatched QMP identity: %w", qmpErr)
+	}
+	if identity == nil {
+		return nil
+	}
+	return l.stopWithSignals(ctx, *identity, invocation, fmt.Errorf("QMP unavailable during start compensation: %w", qmpErr))
+}
+
+// Abort compensates a failed start from the exact QMP identity and, when QMP
+// is unavailable, a stable pidfile process bound to the persisted invocation.
+func (l Lifecycle) Abort(ctx context.Context, socket, pidfile, name, uuid string, invocation qemu.Invocation) error {
+	if err := l.validate(); err != nil {
+		return err
+	}
+	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultStartAbortTimeout)
+	defer cancel()
+	identity, identityErr := l.captureAbortIdentity(abortCtx, pidfile, invocation)
+	if identityErr != nil {
+		// Matching QMP remains sufficient authority to quit the just-started VM;
+		// retain the pidfile error if QMP cannot establish that authority.
+		if qmpErr := l.ValidateIdentity(abortCtx, socket, name, uuid); qmpErr != nil {
+			return fmt.Errorf("capture start compensation process: %v; QMP identity: %w", identityErr, qmpErr)
+		}
+		if err := l.QMP.Quit(abortCtx, socket); err != nil {
+			return fmt.Errorf("quit matching QMP with unavailable process evidence: %w", err)
+		}
+		return l.waitForQMPGone(abortCtx, socket, name, uuid, l.duration(l.quitTimeout, defaultQMPQuitTimeout))
+	}
+	return l.abortStarted(abortCtx, socket, name, uuid, identity, invocation)
+}
+
+// AbortIdentity compensates after the caller captured an exact process but
+// failed to persist it. The invocation hash is checked before any signal path.
+func (l Lifecycle) AbortIdentity(ctx context.Context, socket, name, uuid string, identity process.Identity, invocation qemu.Invocation) error {
+	if err := l.validate(); err != nil {
+		return err
+	}
+	if identity.ArgvHash != process.ExpectedArgvHash(invocation) {
+		return errors.New("refuse start compensation for a process outside the persisted invocation")
+	}
+	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultStartAbortTimeout)
+	defer cancel()
+	return l.abortStarted(abortCtx, socket, name, uuid, &identity, invocation)
 }
 
 func (l Lifecycle) Stop(ctx context.Context, socket, name, uuid string, identity process.Identity, invocation qemu.Invocation, guestTimeout time.Duration) error {

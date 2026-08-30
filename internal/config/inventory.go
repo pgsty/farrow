@@ -67,39 +67,128 @@ type inventoryHost struct {
 
 func isMapping(node *yaml.Node) bool { return node != nil && node.Kind == yaml.MappingNode }
 
-func resolveAlias(node *yaml.Node) *yaml.Node {
-	for node != nil && node.Kind == yaml.AliasNode {
+func resolveAlias(node *yaml.Node) (*yaml.Node, error) {
+	seen := make(map[*yaml.Node]struct{})
+	for depth := 0; node != nil && node.Kind == yaml.AliasNode; depth++ {
+		if depth >= 32 {
+			return nil, fmt.Errorf("YAML alias chain exceeds 32 links at line %d", node.Line)
+		}
+		if _, duplicate := seen[node]; duplicate || node.Alias == nil {
+			return nil, fmt.Errorf("YAML alias cycle at line %d", node.Line)
+		}
+		seen[node] = struct{}{}
 		node = node.Alias
 	}
-	return node
+	return node, nil
 }
 
 func mappingEntries(node *yaml.Node) ([][2]*yaml.Node, error) {
-	node = resolveAlias(node)
+	return effectiveMappingEntries(node, make(map[*yaml.Node]bool))
+}
+
+func isMergeKey(node *yaml.Node) bool {
+	return node != nil && node.Kind == yaml.ScalarNode && node.Value == "<<" && (node.Tag == "" || node.Tag == "!!merge")
+}
+
+func effectiveMappingEntries(node *yaml.Node, visiting map[*yaml.Node]bool) ([][2]*yaml.Node, error) {
+	var err error
+	node, err = resolveAlias(node)
+	if err != nil {
+		return nil, err
+	}
 	if node == nil || node.Kind == 0 || node.Tag == "!!null" {
 		return nil, nil
 	}
 	if node.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("expected a YAML mapping at line %d", node.Line)
 	}
-	entries := make([][2]*yaml.Node, 0, len(node.Content)/2)
+	if visiting[node] {
+		return nil, fmt.Errorf("YAML mapping/alias cycle at line %d", node.Line)
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+
+	explicit := make([][2]*yaml.Node, 0, len(node.Content)/2)
+	lines := make(map[string]int, len(node.Content)/2)
+	var merge *yaml.Node
+	mergeLine := 0
 	for index := 0; index+1 < len(node.Content); index += 2 {
-		entries = append(entries, [2]*yaml.Node{node.Content[index], resolveAlias(node.Content[index+1])})
+		key := node.Content[index]
+		if key.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("YAML mapping key at line %d must be a scalar", key.Line)
+		}
+		if isMergeKey(key) {
+			if merge != nil {
+				return nil, fmt.Errorf("mapping at line %d repeats merge key << at line %d", node.Line, key.Line)
+			}
+			merge, mergeLine = node.Content[index+1], key.Line
+			continue
+		}
+		if firstLine, duplicate := lines[key.Value]; duplicate {
+			return nil, fmt.Errorf("duplicate key %q at line %d (already defined at line %d)", key.Value, key.Line, firstLine)
+		}
+		value, err := resolveAlias(node.Content[index+1])
+		if err != nil {
+			return nil, err
+		}
+		lines[key.Value] = key.Line
+		explicit = append(explicit, [2]*yaml.Node{key, value})
+	}
+	entries := append([][2]*yaml.Node(nil), explicit...)
+	if merge == nil {
+		return entries, nil
+	}
+	merge, err = resolveAlias(merge)
+	if err != nil {
+		return nil, err
+	}
+	sources := []*yaml.Node{}
+	switch {
+	case merge != nil && merge.Kind == yaml.MappingNode:
+		sources = append(sources, merge)
+	case merge != nil && merge.Kind == yaml.SequenceNode:
+		for _, item := range merge.Content {
+			item, err = resolveAlias(item)
+			if err != nil {
+				return nil, err
+			}
+			if item == nil || item.Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("merge sequence item at line %d must be a mapping", mergeLine)
+			}
+			sources = append(sources, item)
+		}
+	default:
+		return nil, fmt.Errorf("merge key at line %d must name a mapping or sequence of mappings", mergeLine)
+	}
+	// Explicit keys win over merged keys. In a merge sequence, the first source
+	// wins over later sources, matching YAML/Ansible merge precedence.
+	for _, source := range sources {
+		merged, err := effectiveMappingEntries(source, visiting)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range merged {
+			if _, exists := lines[entry[0].Value]; exists {
+				continue
+			}
+			lines[entry[0].Value] = entry[0].Line
+			entries = append(entries, entry)
+		}
 	}
 	return entries, nil
 }
 
-func mappingLookup(node *yaml.Node, key string) *yaml.Node {
+func mappingLookup(node *yaml.Node, key string) (*yaml.Node, error) {
 	entries, err := mappingEntries(node)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	for _, entry := range entries {
 		if entry[0].Value == key {
-			return entry[1]
+			return entry[1], nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func varsOf(node *yaml.Node, origin string) (map[string]*yaml.Node, error) {
@@ -437,8 +526,28 @@ func (host inventoryHost) nodeName() (string, error) {
 	return fmt.Sprintf("node-%d", octets[3]), nil
 }
 
-func collectHosts(group *yaml.Node, origin string, depth int, inherited []varSource, hosts *[]inventoryHost, index map[string]int) error {
-	groupVars, err := varsOf(mappingLookup(group, "vars"), origin)
+func collectHosts(group *yaml.Node, origin string, depth int, inherited []varSource, hosts *[]inventoryHost, index map[string]int, visiting map[*yaml.Node]bool) error {
+	if depth > 64 {
+		return fmt.Errorf("inventory group nesting exceeds 64 levels at %s", origin)
+	}
+	var err error
+	group, err = resolveAlias(group)
+	if err != nil {
+		return err
+	}
+	if group == nil || group.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s must be a YAML mapping", origin)
+	}
+	if visiting[group] {
+		return fmt.Errorf("inventory group/alias cycle at line %d", group.Line)
+	}
+	visiting[group] = true
+	defer delete(visiting, group)
+	varsNode, err := mappingLookup(group, "vars")
+	if err != nil {
+		return fmt.Errorf("%s: %w", origin, err)
+	}
+	groupVars, err := varsOf(varsNode, origin)
 	if err != nil {
 		return err
 	}
@@ -446,7 +555,11 @@ func collectHosts(group *yaml.Node, origin string, depth int, inherited []varSou
 	if len(groupVars) != 0 {
 		sources = append(append([]varSource(nil), inherited...), varSource{origin: origin, depth: depth, vars: groupVars})
 	}
-	hostEntries, err := mappingEntries(mappingLookup(group, "hosts"))
+	hostsNode, err := mappingLookup(group, "hosts")
+	if err != nil {
+		return fmt.Errorf("%s: %w", origin, err)
+	}
+	hostEntries, err := mappingEntries(hostsNode)
 	if err != nil {
 		return fmt.Errorf("%s hosts: %w", origin, err)
 	}
@@ -471,12 +584,16 @@ func collectHosts(group *yaml.Node, origin string, depth int, inherited []varSou
 			host.sources = append(host.sources, varSource{origin: origin + " host " + address, depth: 1 << 20, vars: hostVars})
 		}
 	}
-	childEntries, err := mappingEntries(mappingLookup(group, "children"))
+	childrenNode, err := mappingLookup(group, "children")
+	if err != nil {
+		return fmt.Errorf("%s: %w", origin, err)
+	}
+	childEntries, err := mappingEntries(childrenNode)
 	if err != nil {
 		return fmt.Errorf("%s children: %w", origin, err)
 	}
 	for _, child := range childEntries {
-		if err := collectHosts(child[1], "group "+child[0].Value, depth+1, sources, hosts, index); err != nil {
+		if err := collectHosts(child[1], "group "+child[0].Value, depth+1, sources, hosts, index, visiting); err != nil {
 			return err
 		}
 	}
@@ -539,11 +656,18 @@ func ParseInventory(data []byte) (File, error) {
 	if !isMapping(root) {
 		return File{}, errors.New("inventory root must be a mapping with an all: group")
 	}
-	all := mappingLookup(root, "all")
+	all, err := mappingLookup(root, "all")
+	if err != nil {
+		return File{}, err
+	}
 	if all == nil {
 		return File{}, errors.New("inventory has no all: group")
 	}
-	globalVars, err := varsOf(mappingLookup(all, "vars"), "all.vars")
+	globalVarsNode, err := mappingLookup(all, "vars")
+	if err != nil {
+		return File{}, fmt.Errorf("all: %w", err)
+	}
+	globalVars, err := varsOf(globalVarsNode, "all.vars")
 	if err != nil {
 		return File{}, err
 	}
@@ -553,7 +677,7 @@ func ParseInventory(data []byte) (File, error) {
 	if len(globalVars) != 0 {
 		inherited = append(inherited, varSource{origin: "all.vars", depth: 0, vars: globalVars})
 	}
-	if err := collectHosts(all, "all", 0, inherited, &hosts, index); err != nil {
+	if err := collectHosts(all, "all", 0, inherited, &hosts, index, make(map[*yaml.Node]bool)); err != nil {
 		return File{}, err
 	}
 	if len(hosts) == 0 {
@@ -738,7 +862,11 @@ func DetectFormat(data []byte) (string, error) {
 	if !isMapping(root) {
 		return "", errors.New("configuration root must be a YAML mapping")
 	}
-	if mappingLookup(root, "all") != nil {
+	all, err := mappingLookup(root, "all")
+	if err != nil {
+		return "", err
+	}
+	if all != nil {
 		return "inventory", nil
 	}
 	return "", errors.New("unrecognized configuration: expected a Pigsty-compatible inventory with a top-level all: group")

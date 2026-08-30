@@ -71,8 +71,9 @@ complete default SSH configuration.`,
   farrow recreate -f pigsty.yml meta`,
 	},
 	"status": {
-		long: `Show recorded deployment state and live runtime identity for selected nodes.
-Status reads applied state only, so it works outside the inventory directory.`,
+		long: `Show recorded applied state and live runtime identity for selected nodes.
+Status works outside the inventory directory and safely converges dead or
+QMP-bound interrupted transitions before reporting them.`,
 		example: `  farrow status                  # show every node
   farrow status meta             # show one node
   farrow --json status           # stable machine-readable status`,

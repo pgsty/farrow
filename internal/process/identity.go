@@ -3,14 +3,17 @@
 package process
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,40 +29,106 @@ type Identity struct {
 	ArgvHash   string `json:"argv_hash"`
 }
 
-func Capture(ctx context.Context, runner execx.Runner, invocation qemu.Invocation, pid int) (Identity, error) {
+var numericStartPattern = regexp.MustCompile(`^(?:procstat:[0-9]+|kinfo:[0-9]+\.[0-9]{6})$`)
+
+// ExpectedArgvHash binds one native, NUL-delimited process argv to the exact
+// typed invocation Farrow persisted before launch; no locale rendering or
+// shell parsing is involved.
+func ExpectedArgvHash(invocation qemu.Invocation) string {
+	parts := make([]string, 0, len(invocation.Args)+1)
+	parts = append(parts, invocation.Binary)
+	parts = append(parts, invocation.Args...)
+	return hashArgv(parts)
+}
+
+// IsLegacyStart reports the pre-0.1 process birth encoding produced by
+// `ps -o lstart`. Known-but-malformed numeric prefixes fail closed instead of
+// being reinterpreted as locale-dependent legacy text.
+func IsLegacyStart(started string) bool {
+	return started != "" && !numericStartPattern.MatchString(started) &&
+		!strings.HasPrefix(started, "procstat:") && !strings.HasPrefix(started, "kinfo:")
+}
+
+func hashArgv(argv []string) string {
+	var encoded bytes.Buffer
+	for _, argument := range argv {
+		encoded.WriteString(argument)
+		encoded.WriteByte(0)
+	}
+	digest := sha256.Sum256(encoded.Bytes())
+	return hex.EncodeToString(digest[:])
+}
+
+func observeLegacyCommand(ctx context.Context, runner execx.Runner, invocation qemu.Invocation, pid int) (string, string, error) {
 	if runner == nil || pid <= 0 {
-		return Identity{}, errors.New("process runner and positive PID are required")
+		return "", "", errors.New("process runner and positive PID are required")
+	}
+	psPath, err := exec.LookPath("ps")
+	if err != nil {
+		return "", "", err
+	}
+	result, err := runner.Run(ctx, psPath, "-ww", "-p", strconv.Itoa(pid), "-o", "command=")
+	if err != nil {
+		return "", "", err
+	}
+	commandLine := strings.TrimSpace(string(result.Stdout))
+	fields := strings.Fields(commandLine)
+	if len(fields) == 0 {
+		return "", "", errors.New("process command line is empty")
+	}
+	executable := fields[0]
+	hash := sha256.Sum256([]byte(commandLine))
+	if filepath.Base(executable) != filepath.Base(invocation.Binary) {
+		return "", "", fmt.Errorf("process executable %q does not match QEMU %q", executable, invocation.Binary)
+	}
+	return executable, hex.EncodeToString(hash[:]), nil
+}
+
+func captureLegacy(ctx context.Context, runner execx.Runner, invocation qemu.Invocation, pid int) (Identity, error) {
+	executable, argvHash, err := observeLegacyCommand(ctx, runner, invocation, pid)
+	if err != nil {
+		return Identity{}, err
 	}
 	psPath, err := exec.LookPath("ps")
 	if err != nil {
 		return Identity{}, err
 	}
-	query := func(field string) (string, error) {
-		result, runErr := runner.Run(ctx, psPath, "-p", strconv.Itoa(pid), "-o", field+"=")
-		if runErr != nil {
-			return "", runErr
-		}
-		return strings.TrimSpace(string(result.Stdout)), nil
-	}
-	commandLine, err := query("command")
+	result, err := runner.Run(ctx, psPath, "-ww", "-p", strconv.Itoa(pid), "-o", "lstart=")
 	if err != nil {
 		return Identity{}, err
 	}
-	fields := strings.Fields(commandLine)
-	if len(fields) == 0 {
-		return Identity{}, errors.New("process command line is empty")
+	started := strings.TrimSpace(string(result.Stdout))
+	if started == "" {
+		return Identity{}, errors.New("process start time is empty")
 	}
-	executable := fields[0]
-	started, err := query("lstart")
+	return Identity{PID: pid, Executable: executable, Started: started, ArgvHash: argvHash}, nil
+}
+
+// Capture records a locale- and timezone-independent process birth identity.
+func Capture(ctx context.Context, runner execx.Runner, invocation qemu.Invocation, pid int) (Identity, error) {
+	if runner == nil || pid <= 0 {
+		return Identity{}, errors.New("process runner and positive PID are required")
+	}
+	argv, err := processArgv(pid)
 	if err != nil {
 		return Identity{}, err
 	}
-	hash := sha256.Sum256([]byte(commandLine))
-	identity := Identity{PID: pid, Executable: executable, Started: started, ArgvHash: hex.EncodeToString(hash[:])}
-	if filepath.Base(identity.Executable) != filepath.Base(invocation.Binary) {
-		return Identity{}, fmt.Errorf("process executable %q does not match QEMU %q", identity.Executable, invocation.Binary)
+	if len(argv) == 0 || argv[0] == "" {
+		return Identity{}, errors.New("process argv is empty")
 	}
-	return identity, nil
+	executable := argv[0]
+	if filepath.Base(executable) != filepath.Base(invocation.Binary) {
+		return Identity{}, fmt.Errorf("process executable %q does not match QEMU %q", executable, invocation.Binary)
+	}
+	argvHash := hashArgv(argv)
+	started, err := processStarted(pid)
+	if err != nil {
+		return Identity{}, err
+	}
+	if !numericStartPattern.MatchString(started) {
+		return Identity{}, errors.New("process start identity is malformed")
+	}
+	return Identity{PID: pid, Executable: executable, Started: started, ArgvHash: argvHash}, nil
 }
 
 func Alive(pid int) bool {
@@ -78,6 +147,62 @@ func MatchesLive(ctx context.Context, runner execx.Runner, identity Identity, in
 	if !Alive(identity.PID) || identity.Executable == "" || identity.Started == "" || identity.ArgvHash == "" {
 		return false
 	}
-	current, err := Capture(ctx, runner, invocation, identity.PID)
+	var current Identity
+	var err error
+	if IsLegacyStart(identity.Started) {
+		current, err = captureLegacy(ctx, runner, invocation, identity.PID)
+	} else {
+		current, err = Capture(ctx, runner, invocation, identity.PID)
+	}
 	return err == nil && current == identity
+}
+
+func parseProcStatStart(data []byte) (string, error) {
+	line := strings.TrimSpace(string(data))
+	closing := strings.LastIndexByte(line, ')')
+	if closing < 0 || closing+1 >= len(line) {
+		return "", errors.New("process stat lacks a complete command field")
+	}
+	fields := strings.Fields(line[closing+1:])
+	// fields[0] is stat field 3 (state); field 22 (starttime) is index 19.
+	if len(fields) <= 19 {
+		return "", errors.New("process stat lacks starttime field 22")
+	}
+	start, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil || start == 0 {
+		return "", errors.New("process stat starttime is invalid")
+	}
+	return "procstat:" + strconv.FormatUint(start, 10), nil
+}
+
+func parseDarwinProcArgs(data []byte) ([]string, error) {
+	if len(data) < 4 {
+		return nil, errors.New("darwin process arguments lack argc")
+	}
+	argc := int(int32(binary.LittleEndian.Uint32(data[:4])))
+	if argc <= 0 || argc > 4096 {
+		return nil, errors.New("darwin process argc is invalid")
+	}
+	data = data[4:]
+	executableEnd := bytes.IndexByte(data, 0)
+	if executableEnd < 0 {
+		return nil, errors.New("darwin process arguments lack executable terminator")
+	}
+	data = data[executableEnd+1:]
+	for len(data) > 0 && data[0] == 0 {
+		data = data[1:]
+	}
+	argv := make([]string, 0, argc)
+	for len(argv) < argc {
+		end := bytes.IndexByte(data, 0)
+		if end < 0 {
+			return nil, errors.New("darwin process arguments end before argc")
+		}
+		argv = append(argv, string(data[:end]))
+		data = data[end+1:]
+	}
+	if len(argv) == 0 || argv[0] == "" {
+		return nil, errors.New("darwin process argv has no executable")
+	}
+	return argv, nil
 }

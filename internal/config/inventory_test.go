@@ -319,6 +319,108 @@ all:
 	}
 }
 
+func TestParseInventoryRejectsDuplicateMappingKeys(t *testing.T) {
+	for name, text := range map[string]string{
+		"children": `
+all:
+  children: { one: { hosts: { 10.10.10.10: {} } } }
+  children: { two: { hosts: { 10.10.10.11: {} } } }
+`,
+		"host": `
+all:
+  children:
+    nodes:
+      hosts:
+        10.10.10.10: { nodename: meta }
+        10.10.10.10: { nodename: other }
+`,
+		"vm_cpu": `
+all:
+  children:
+    nodes:
+      hosts:
+        10.10.10.10:
+          vm_cpu: 2
+          vm_cpu: 8
+`,
+		"nodename": `
+all:
+  children:
+    nodes:
+      hosts:
+        10.10.10.10:
+          nodename: meta
+          nodename: other
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseInventory([]byte(text))
+			if err == nil || !strings.Contains(err.Error(), "duplicate key") || !strings.Contains(err.Error(), "line") {
+				t.Fatalf("duplicate mapping error = %v", err)
+			}
+		})
+	}
+}
+
+func TestParseInventoryExpandsYAMLMergeKeysWithAnsiblePrecedence(t *testing.T) {
+	file := mustParseInventory(t, `
+defaults: &defaults
+  vm_cpu: 8
+  vm_mem: 8192
+  opaque_pigsty_value: kept
+all:
+  children:
+    nodes:
+      hosts:
+        10.10.10.10:
+          <<: *defaults
+          nodename: meta
+`)
+	if file.Nodes[0].CPUs != 8 || int64(file.Nodes[0].Memory) != 8192<<20 {
+		t.Fatalf("merged resources = %+v", file.Nodes[0])
+	}
+
+	file = mustParseInventory(t, `
+first: &first { vm_cpu: 4 }
+second: &second { vm_cpu: 8, vm_mem: 6144 }
+all:
+  children:
+    nodes:
+      hosts:
+        10.10.10.10:
+          <<: [*first, *second]
+          vm_mem: 2048
+`)
+	if file.Nodes[0].CPUs != 4 || int64(file.Nodes[0].Memory) != 2048<<20 {
+		t.Fatalf("merge sequence/explicit precedence = %+v", file.Nodes[0])
+	}
+}
+
+func TestParseInventoryRejectsMergeAndGroupAliasCycles(t *testing.T) {
+	for name, text := range map[string]string{
+		"merge-self": `
+all:
+  children:
+    nodes:
+      hosts:
+        10.10.10.10: &host
+          <<: *host
+`,
+		"group-self": `
+all: &all
+  children:
+    loop: *all
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseInventory([]byte(text))
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "cycle") {
+				t.Fatalf("alias cycle error = %v", err)
+			}
+		})
+	}
+}
+
 func TestParseInventoryTemplateValueFails(t *testing.T) {
 	_, err := ParseInventory([]byte(`
 all:

@@ -34,5 +34,21 @@ Pigsty-compatible local labs.
   dependency licenses, SPDX SBOMs, checksums, a Homebrew formula, a user-scoped
   installer, and keyless Sigstore signature and provenance bundles.
 
+### Fixed
+
+- Inventory parsing now rejects duplicate mapping keys, expands YAML merge keys
+  with Ansible-compatible precedence, and refuses alias cycles instead of
+  silently resolving a different deployment from the same Pigsty inventory.
+- Process birth identity is numeric and independent of locale/timezone; matching
+  pre-release development state migrates in place, interrupted QEMU starts are
+  adopted only from QMP/UUID/pidfile/invocation proof, and failed starts perform
+  bounded compensation.
+- Selected `status`, `ssh`, `start`, `stop`, and `restart` operations no longer
+  fail because an unrelated peer is degraded; whole-deployment operations retain
+  full identity auditing.
+- The release installer refuses a missing or invalid Sigstore bundle when
+  Cosign is available, and explains that pre-1.0 GitHub pre-releases require an
+  explicit `FARROW_VERSION`.
+
 [Unreleased]: https://github.com/pgsty/farrow/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/pgsty/farrow/releases/tag/v0.1.0

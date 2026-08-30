@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -80,6 +81,12 @@ type lifecycleRunner struct{}
 
 func (lifecycleRunner) Run(context.Context, string, ...string) (execx.Result, error) {
 	return execx.Result{}, errors.New("unexpected runner call")
+}
+
+type startErrorRunner struct{ err error }
+
+func (runner startErrorRunner) Run(context.Context, string, ...string) (execx.Result, error) {
+	return execx.Result{}, runner.err
 }
 
 type qmpResult[T any] struct {
@@ -221,6 +228,90 @@ func testStopLifecycle(fake QMPClient, recorder *stopRecorder) Lifecycle {
 		quitTimeout:    23 * time.Millisecond,
 		termTimeout:    29 * time.Millisecond,
 		killTimeout:    31 * time.Millisecond,
+	}
+}
+
+func TestAbortMatchingQMPQuitsWithoutProcessEvidence(t *testing.T) {
+	t.Parallel()
+	names, uuids := matchingQMPIdentities(1)
+	names = append(names, qmpResult[qmp.Name]{err: errors.New("socket gone")})
+	fake := &lifecycleQMP{names: names, uuids: uuids}
+	lifecycle := Lifecycle{Runner: lifecycleRunner{}, QMP: fake, quitTimeout: 50 * time.Millisecond}
+	missingPIDFile := filepath.Join(t.TempDir(), "qemu.pid")
+	if err := lifecycle.Abort(context.Background(), "/qmp", missingPIDFile, testVMName, testVMUUID, testInvocation); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(fake.recordedCalls(), ","); got != "query-name,query-uuid,quit,query-name" {
+		t.Fatalf("QMP calls = %s", got)
+	}
+}
+
+func TestAbortUnavailableQMPUsesInvocationBoundSignals(t *testing.T) {
+	t.Parallel()
+	fake := &lifecycleQMP{names: []qmpResult[qmp.Name]{{err: errors.New("socket unavailable")}}}
+	recorder := &stopRecorder{matches: []bool{true, true}, waits: []bool{false, true}}
+	identity := testIdentity
+	identity.Started = "kinfo:1.000000"
+	identity.ArgvHash = process.ExpectedArgvHash(testInvocation)
+	lifecycle := testStopLifecycle(fake, recorder)
+	lifecycle.captureProcess = func(context.Context, execx.Runner, qemu.Invocation, int) (process.Identity, error) {
+		return identity, nil
+	}
+	pidfile := filepath.Join(t.TempDir(), "qemu.pid")
+	if err := os.WriteFile(pidfile, []byte("4242\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.Abort(context.Background(), "/qmp", pidfile, testVMName, testVMUUID, testInvocation); err != nil {
+		t.Fatal(err)
+	}
+	if signals := recorder.recordedSignals(); len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
+		t.Fatalf("signals = %v", signals)
+	}
+}
+
+func TestAbortIdentityIgnoresCanceledCallerContext(t *testing.T) {
+	t.Parallel()
+	names, uuids := matchingQMPIdentities(1)
+	fake := &lifecycleQMP{names: names, uuids: uuids}
+	recorder := &stopRecorder{waits: []bool{true}}
+	identity := testIdentity
+	identity.Started = "kinfo:1.000000"
+	identity.ArgvHash = process.ExpectedArgvHash(testInvocation)
+	lifecycle := testStopLifecycle(fake, recorder)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := lifecycle.AbortIdentity(ctx, "/qmp", testVMName, testVMUUID, identity, testInvocation); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(fake.recordedCalls(), ","); got != "query-name,query-uuid,quit" {
+		t.Fatalf("QMP calls = %s", got)
+	}
+}
+
+func TestAbortRefusesMismatchedQMPWithoutSignal(t *testing.T) {
+	t.Parallel()
+	fake := &lifecycleQMP{
+		names: []qmpResult[qmp.Name]{{value: qmp.Name{Name: "other"}}},
+		uuids: []qmpResult[qmp.UUID]{{value: qmp.UUID{UUID: testVMUUID}}},
+	}
+	lifecycle := Lifecycle{Runner: lifecycleRunner{}, QMP: fake}
+	err := lifecycle.Abort(context.Background(), "/qmp", filepath.Join(t.TempDir(), "qemu.pid"), testVMName, testVMUUID, testInvocation)
+	if err == nil || !errors.Is(err, ErrQMPIdentityMismatch) {
+		t.Fatalf("error = %v", err)
+	}
+	if got := strings.Join(fake.recordedCalls(), ","); got != "query-name,query-uuid" {
+		t.Fatalf("QMP calls = %s", got)
+	}
+}
+
+func TestStartRunnerFailureStillRunsBoundedCompensation(t *testing.T) {
+	t.Parallel()
+	runErr := errors.New("injected launch failure")
+	fake := &lifecycleQMP{names: []qmpResult[qmp.Name]{{err: errors.New("socket unavailable")}}}
+	lifecycle := Lifecycle{Runner: startErrorRunner{err: runErr}, QMP: fake}
+	_, err := lifecycle.Start(context.Background(), testInvocation, "/qmp", filepath.Join(t.TempDir(), "qemu.pid"), testVMName, testVMUUID)
+	if !errors.Is(err, runErr) || !strings.Contains(err.Error(), "start compensation completed") {
+		t.Fatalf("start error = %v", err)
 	}
 }
 

@@ -180,6 +180,18 @@ type Status struct {
 	Message     string       `json:"message,omitempty"`
 }
 
+func appendStatusMessage(current, addition string) string {
+	current = strings.TrimSpace(current)
+	addition = strings.TrimSpace(addition)
+	if current == "" {
+		return addition
+	}
+	if addition == "" {
+		return current
+	}
+	return current + "; " + addition
+}
+
 type Connection struct {
 	Node       string `json:"node"`
 	User       string `json:"user"`
@@ -727,13 +739,43 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 		return Status{}, err
 	}
 	selectedSet := nodeNameSet(selected)
-	result := Status{OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message, Nodes: make([]NodeStatus, 0, len(projectState.Resolved.Nodes))}
+	result := Status{OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message, Nodes: make([]NodeStatus, 0, len(selected))}
 	lifecycle := vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}
 	convergenceCandidates := make([]state.NodeState, 0)
+	nodes := make(map[string]state.NodeState, len(selected))
+	// Pre-0.1 development states stored locale- and timezone-dependent ps lstart
+	// text. Migrate only an identity that still matches every legacy fact in the
+	// caller's current environment; a mismatch remains fail-closed.
 	for _, definition := range projectState.Resolved.Nodes {
+		if _, include := selectedSet[definition.Name]; !include {
+			continue
+		}
 		node, err := store.ReadNode(definition.Name)
 		if err != nil {
 			return Status{}, err
+		}
+		if completeProcess(node.Process) && process.IsLegacyStart(node.Process.Started) {
+			recorded := process.Identity{PID: node.Process.PID, Executable: node.Process.Executable, Started: node.Process.Started, ArgvHash: node.Process.ArgvHash}
+			if process.MatchesLive(ctx, m.runner(), recorded, node.Invocation) {
+				fresh, captureErr := process.Capture(ctx, m.runner(), node.Invocation, node.Process.PID)
+				if captureErr != nil || fresh.PID != recorded.PID || fresh.ArgvHash != process.ExpectedArgvHash(node.Invocation) {
+					result.Message = appendStatusMessage(result.Message, "kept legacy process identity for "+node.Node+" because native argv binding was unavailable or did not match")
+				} else {
+					node.Process = state.ProcessIdentity{PID: fresh.PID, Executable: fresh.Executable, Started: fresh.Started, ArgvHash: fresh.ArgvHash}
+					node.UpdatedAt = time.Now().UTC()
+					if err := store.WriteNode(node); err != nil {
+						return Status{}, fmt.Errorf("migrate private node %s process identity: %w", node.Node, err)
+					}
+					result.Message = appendStatusMessage(result.Message, "migrated legacy process identity for "+node.Node)
+				}
+			}
+		}
+		nodes[node.Node] = node
+	}
+	for _, definition := range projectState.Resolved.Nodes {
+		node, include := nodes[definition.Name]
+		if !include {
+			continue
 		}
 		runtimeState := "inactive"
 		if node.Phase == state.Running {
@@ -754,7 +796,7 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 			case errors.Is(qmpErr, vm.ErrQMPIdentityMismatch):
 				return Status{}, fmt.Errorf("private node %s has mismatched QMP identity; recreate --force it: %w", node.Node, qmpErr)
 			case processMatches:
-				return Status{}, fmt.Errorf("private node %s process identity matches but QMP is unavailable; run `farrow stop` to converge it", node.Node)
+				return Status{}, fmt.Errorf("private node %s process identity matches but QMP is unavailable; inspect its logs, then run `farrow stop` to converge it (shutdown uses verified process signals, not guest powerdown)", node.Node)
 			case node.Runtime.Directory == "" || node.Runtime.QMP == "" || node.Runtime.PIDFile == "":
 				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete runtime identity; recreate is required", node.Node)
 			case !completeProcess(node.Process):
@@ -773,8 +815,12 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 				if observation.Live || observation.Authority != "dead" {
 					return Status{}, fmt.Errorf("private node %s runtime became live during death audit: %s", node.Node, observation.Evidence)
 				}
-				// This is the safe self-halt case. Converge durable state without
-				// touching stale runtime files.
+				// This is the safe self-halt case. The death audit proved both QMP
+				// and every recorded PID dead, so remove the bounded runtime residue
+				// before publishing a startable stopped state.
+				if err := cleanupRuntime(node); err != nil {
+					return Status{}, fmt.Errorf("clean dead private runtime for %s: %w", node.Node, err)
+				}
 				node.Phase = state.Stopped
 				node.Process = state.ProcessIdentity{}
 				node.UpdatedAt = time.Now().UTC()
@@ -782,28 +828,46 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 			}
 		} else if node.Phase == state.Stopping || node.Phase == state.Starting || node.Phase == state.Destroying {
 			// An interrupted transition (a killed CLI mid-stop/start/destroy).
-			// Prove the runtime dead before converging; a live runtime is
-			// reported honestly and finished by `farrow stop`.
+			// Prove the runtime dead before converging. A QMP-bound starting
+			// process can be adopted above; other live transitions remain visible
+			// and are re-driven only with complete process identity.
 			observation, auditErr := RuntimeIdentityAuditor(m.runner(), time.Second)(ctx, node)
 			if auditErr != nil {
 				return Status{}, fmt.Errorf("private node %s was interrupted mid-%s and its runtime death audit is inconclusive: %w", node.Node, node.Phase, auditErr)
 			}
-			if observation.Live {
+			if observation.Live && node.Phase == state.Starting && !completeProcess(node.Process) {
+				if observation.Authority != "qmp" {
+					return Status{}, fmt.Errorf("private node %s interrupted start lacks matching QMP authority", node.Node)
+				}
+				identityValue, captureErr := captureRuntimeProcess(ctx, m.runner(), node)
+				if captureErr != nil {
+					return Status{}, fmt.Errorf("adopt interrupted private start for %s: %w", node.Node, captureErr)
+				}
+				node.Process = state.ProcessIdentity{PID: identityValue.PID, Executable: identityValue.Executable, Started: identityValue.Started, ArgvHash: identityValue.ArgvHash}
+				node.Phase = state.Running
+				node.UpdatedAt = time.Now().UTC()
+				convergenceCandidates = append(convergenceCandidates, node)
+				result.Message = appendStatusMessage(result.Message, fmt.Sprintf("adopted interrupted start for %s (pid %d)", node.Node, identityValue.PID))
+				runtimeState = "running"
+			} else if observation.Live {
 				runtimeState = "running"
 			} else {
+				if node.Runtime.Directory != "" {
+					if err := cleanupRuntime(node); err != nil {
+						return Status{}, fmt.Errorf("clean dead private runtime for %s: %w", node.Node, err)
+					}
+				}
 				node.Phase = state.Stopped
 				node.Process = state.ProcessIdentity{}
 				node.UpdatedAt = time.Now().UTC()
 				convergenceCandidates = append(convergenceCandidates, node)
 			}
 		}
-		if _, include := selectedSet[node.Node]; include {
-			result.Nodes = append(result.Nodes, NodeStatus{
-				Name: node.Node, Address: definition.Address, State: node.Phase, Runtime: runtimeState,
-				GuestArch: invocationGuestArch(node.Invocation.Binary, node.Invocation.Args), Accel: invocationOption(node.Invocation.Args, "-accel"),
-				SSHHost: "127.0.0.1", SSHPort: node.SSHPort, ProcessID: node.Process.PID,
-			})
-		}
+		result.Nodes = append(result.Nodes, NodeStatus{
+			Name: node.Node, Address: definition.Address, State: node.Phase, Runtime: runtimeState,
+			GuestArch: invocationGuestArch(node.Invocation.Binary, node.Invocation.Args), Accel: invocationOption(node.Invocation.Args, "-accel"),
+			SSHHost: "127.0.0.1", SSHPort: node.SSHPort, ProcessID: node.Process.PID,
+		})
 	}
 	for _, node := range convergenceCandidates {
 		if err := store.WriteNode(node); err != nil {
@@ -859,6 +923,7 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 	if !knownNode {
 		return Connection{}, fmt.Errorf("the deployment has no node %q", requestedNode)
 	}
+	m.Nodes = []string{requestedNode}
 	status, err := m.statusFor(ctx, projectValue, "")
 	if err != nil {
 		return Connection{}, err
@@ -1310,7 +1375,7 @@ func (m Manager) startExisting(ctx context.Context, projectValue Deployment, pro
 		case state.Prepared, state.Stopped:
 			names = append(names, node.Node)
 		default:
-			return Status{}, fmt.Errorf("private node %s phase %s requires repair before start", node.Node, node.Phase)
+			return Status{}, fmt.Errorf("private node %s phase %s requires `farrow status` convergence before start", node.Node, node.Phase)
 		}
 	}
 	if len(names) == 0 {

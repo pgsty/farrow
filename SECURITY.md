@@ -64,6 +64,14 @@ into that exact Farrow build, so a mismatched or substituted helper is not run.
   govulncheck are all version-pinned in `packaging/toolchain.env` and verified
   at release time.
 
+The user-scoped installer always verifies the selected archive against
+`checksums.txt`. When Cosign is installed it additionally requires and verifies
+`checksums.txt.sigstore.json`; a missing or invalid bundle is fatal. The narrow
+`FARROW_INSTALL_ALLOW_UNSIGNED=1` escape hatch applies only to a missing bundle
+for an explicitly trusted development/fork release. It never overrides a
+signature-verification failure, and the installer prints an unmissable warning
+plus an unsigned result label when used.
+
 Verify a release before trusting it:
 
 ```bash

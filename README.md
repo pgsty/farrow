@@ -49,9 +49,10 @@ package-verified against the narrower status published at
 <https://farrow.pgsty.com/docs/about/status/>. You also need `qemu-img`, UEFI
 firmware for arm64 guests, and an OpenSSH client.
 
-`farrow doctor` reports exactly what is present, what is missing, and how to fix
-it. `farrow setup` installs what it can and asks for administrator access only
-when a host transaction genuinely needs it.
+`farrow doctor` reports host dependencies, persisted state, and network setup;
+`farrow status` audits live QMP/process identity and safely converges interrupted
+transitions. `farrow setup` installs what it can and asks for administrator
+access only when a host transaction genuinely needs it.
 
 ## Install
 
@@ -70,6 +71,11 @@ sudo apt install ./farrow_<version>_linux_amd64.deb
 sudo dnf install ./farrow_<version>_linux_amd64.rpm
 ```
 
+GitHub does not expose pre-1.0 prereleases through `/releases/latest`, so
+`FARROW_VERSION` is required until a stable release exists. If Cosign is
+installed, the installer requires the workflow's signature bundle and refuses
+to downgrade silently to same-origin checksums.
+
 From source:
 
 ```bash
@@ -84,7 +90,7 @@ farrow init full             # a four-node inventory instead of one
 farrow validate              # parse and resolve without touching anything
 farrow plan                  # what would change, and why
 farrow up                    # converge
-farrow status                # applied state, from any directory
+farrow status                # audit/converge selected runtime state, from anywhere
 farrow ssh meta -- uptime    # run something in a guest
 farrow ss                    # teach plain `ssh` about the nodes
 farrow hosts install         # publish node names into the host hosts file
@@ -125,8 +131,8 @@ make check     # the complete source gate CI runs
 ```
 
 `make check` covers module integrity, shell syntax, unit and race tests, `vet`,
-Staticcheck, `govulncheck`, cross-compilation for all four targets, the image
-pipeline boundaries, and the dependency-license inventory. See
+Staticcheck, `govulncheck`, cross-compilation for all four targets, image and
+installer trust boundaries, and the dependency-license inventory. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security

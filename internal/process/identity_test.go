@@ -2,8 +2,11 @@ package process
 
 import (
 	"context"
+	"encoding/binary"
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +15,21 @@ import (
 )
 
 func testRunner() execx.Runner { return execx.OSRunner{Timeout: 10 * time.Second} }
+
+func waitForProcessArgv(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if argv, err := processArgv(pid); err == nil && len(argv) > 0 {
+			return
+		} else {
+			lastErr = err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("process argv did not become readable: %v", lastErr)
+}
 
 // liveProcess starts a long-lived child and returns its PID and the invocation
 // a caller would have recorded for it.
@@ -27,6 +45,7 @@ func liveProcess(t *testing.T, seconds string) (int, qemu.Invocation) {
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
+	waitForProcessArgv(t, command.Process.Pid)
 	t.Cleanup(func() {
 		_ = command.Process.Kill()
 		_, _ = command.Process.Wait()
@@ -62,6 +81,12 @@ func TestCaptureRecordsStableIdentityAndRejectsAForeignBinary(t *testing.T) {
 	if identity.PID != pid || identity.Executable == "" || identity.Started == "" || len(identity.ArgvHash) != 64 {
 		t.Fatalf("identity = %#v", identity)
 	}
+	if IsLegacyStart(identity.Started) {
+		t.Fatalf("Capture produced legacy start identity %q", identity.Started)
+	}
+	if identity.ArgvHash != ExpectedArgvHash(invocation) {
+		t.Fatalf("argv hash = %s, want %s", identity.ArgvHash, ExpectedArgvHash(invocation))
+	}
 	// Capture must be a pure observation: two reads of an unchanged process have
 	// to agree, or every later liveness check would report a false mismatch.
 	second, err := Capture(context.Background(), testRunner(), invocation, pid)
@@ -74,6 +99,98 @@ func TestCaptureRecordsStableIdentityAndRejectsAForeignBinary(t *testing.T) {
 	foreign := qemu.Invocation{Binary: "/usr/local/bin/qemu-system-aarch64", Args: invocation.Args}
 	if _, err := Capture(context.Background(), testRunner(), foreign, pid); err == nil {
 		t.Fatal("Capture accepted a process running a different executable")
+	}
+}
+
+func TestNumericIdentitySurvivesLocaleAndTimezoneChanges(t *testing.T) {
+	t.Setenv("LC_ALL", "C")
+	t.Setenv("TZ", "UTC")
+	pid, invocation := liveProcess(t, "121")
+	identity, err := Capture(context.Background(), testRunner(), invocation, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LC_ALL", "fr_FR.UTF-8")
+	t.Setenv("TZ", "Pacific/Honolulu")
+	if !MatchesLive(context.Background(), testRunner(), identity, invocation) {
+		t.Fatalf("numeric identity changed across locale/timezone: %#v", identity)
+	}
+}
+
+func TestLegacyIdentityRemainsReadableWithoutWeakMigration(t *testing.T) {
+	t.Setenv("LC_ALL", "C")
+	t.Setenv("TZ", "UTC")
+	pid, invocation := liveProcess(t, "121")
+	legacy, err := captureLegacy(context.Background(), testRunner(), invocation, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsLegacyStart(legacy.Started) || !MatchesLive(context.Background(), testRunner(), legacy, invocation) {
+		t.Fatalf("legacy identity was not accepted in its original environment: %#v", legacy)
+	}
+	t.Setenv("TZ", "Pacific/Honolulu")
+	if MatchesLive(context.Background(), testRunner(), legacy, invocation) {
+		t.Fatal("legacy locale/timezone identity unexpectedly matched after timezone change")
+	}
+}
+
+func TestParseProcStatStartHandlesClosingParenthesisInCommand(t *testing.T) {
+	fields := []string{"S"}
+	for value := 1; value <= 18; value++ {
+		fields = append(fields, fmt.Sprintf("%d", value))
+	}
+	fields = append(fields, "424242", "0", "0")
+	data := []byte("123 (worker ) with spaces) " + strings.Join(fields, " ") + "\n")
+	started, err := parseProcStatStart(data)
+	if err != nil || started != "procstat:424242" {
+		t.Fatalf("parsed start = %q, %v", started, err)
+	}
+	for _, malformed := range [][]byte{[]byte("123 worker S 1"), []byte("123 (worker) S 1 2"), []byte("123 (worker) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 nope")} {
+		if _, err := parseProcStatStart(malformed); err == nil {
+			t.Fatalf("malformed proc stat accepted: %q", malformed)
+		}
+	}
+}
+
+func TestExpectedArgvHashPreservesArgumentBoundaries(t *testing.T) {
+	invocation := qemu.Invocation{Binary: "/opt/qemu", Args: []string{"-name", "node 1", "-uuid", "abc"}}
+	digest := ExpectedArgvHash(invocation)
+	if len(digest) != 64 || digest == ExpectedArgvHash(qemu.Invocation{Binary: invocation.Binary, Args: []string{"-name", "other"}}) {
+		t.Fatalf("unexpected invocation digest %q", digest)
+	}
+}
+
+func TestDarwinProcArgsParserPreservesArgumentBoundaries(t *testing.T) {
+	data := make([]byte, 4)
+	binary.LittleEndian.PutUint32(data, 3)
+	data = append(data, []byte("/usr/bin/tool\x00\x00\x00")...)
+	data = append(data, []byte("/usr/bin/tool\x00中文 path\x00\x00")...)
+	argv, err := parseDarwinProcArgs(data)
+	if err != nil || len(argv) != 3 || argv[0] != "/usr/bin/tool" || argv[1] != "中文 path" || argv[2] != "" {
+		t.Fatalf("Darwin argv = %#v, %v", argv, err)
+	}
+}
+
+func TestNumericIdentityBindsNonASCIIArgvInCLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "C")
+	t.Setenv("TZ", "UTC")
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh is not installed")
+	}
+	invocation := qemu.Invocation{Binary: shell, Args: []string{"-c", "sleep 30; :", "中文参数"}}
+	command := exec.Command(invocation.Binary, invocation.Args...)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForProcessArgv(t, command.Process.Pid)
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_, _ = command.Process.Wait()
+	})
+	identity, err := Capture(context.Background(), testRunner(), invocation, command.Process.Pid)
+	if err != nil || identity.ArgvHash != ExpectedArgvHash(invocation) || !MatchesLive(context.Background(), testRunner(), identity, invocation) {
+		t.Fatalf("non-ASCII argv identity = %#v, %v", identity, err)
 	}
 }
 

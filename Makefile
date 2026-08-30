@@ -2,7 +2,7 @@
 	build-darwin-amd64 build-darwin-arm64 build-linux-amd64 build-linux-arm64 \
 	amd arm cross build-cross cross-check \
 	module-check shell-check test race vet staticcheck vuln check license-check \
-	image-pipeline-test image-pipeline-native-test \
+	image-pipeline-test image-pipeline-native-test install-test \
 	release-check release-snapshot release-local gr-check gr-snapshot gr-local release-dev
 
 SNAPSHOT_DIST ?= .goreleaser-snapshot
@@ -58,7 +58,7 @@ cross-check:
 	GOOS=linux GOARCH=amd64 go build ./...
 	GOOS=linux GOARCH=arm64 go build ./...
 
-check: module-check shell-check test race vet staticcheck vuln cross-check image-pipeline-test license-check
+check: module-check shell-check test race vet staticcheck vuln cross-check image-pipeline-test install-test license-check
 
 license-check:
 	./packaging/verify-licenses.sh
@@ -68,6 +68,9 @@ image-pipeline-test:
 
 image-pipeline-native-test:
 	FARROW_IMAGE_PIPELINE_NATIVE_REQUIRED=1 ./tests/image-pipeline-native-test.sh
+
+install-test:
+	./tests/install-test.sh
 
 release-check:
 	./packaging/check-toolchain.sh goreleaser

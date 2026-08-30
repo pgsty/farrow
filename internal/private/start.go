@@ -21,6 +21,10 @@ type NodeLifecycle interface {
 	WaitReady(context.Context, state.NodeState, time.Duration) error
 }
 
+type StartAborter interface {
+	AbortStart(context.Context, state.NodeState, process.Identity) error
+}
+
 type NativeLifecycle struct {
 	VM           vm.Lifecycle
 	Project      Deployment
@@ -94,6 +98,13 @@ func (l NativeLifecycle) Start(ctx context.Context, node state.NodeState) (proce
 	return identityValue, nil
 }
 
+func (l NativeLifecycle) AbortStart(ctx context.Context, node state.NodeState, identity process.Identity) error {
+	if err := l.VM.AbortIdentity(ctx, node.Runtime.QMP, node.Node, node.VMUUID, identity, node.Invocation); err != nil {
+		return err
+	}
+	return cleanupRuntime(node)
+}
+
 func (l NativeLifecycle) WaitReady(ctx context.Context, node state.NodeState, timeout time.Duration) error {
 	return l.VM.WaitReady(ctx, l.SSHPath, l.PrivateKey, l.KnownHosts, node.SSHPort, vm.ReadyMarker{Node: node.Node, Generation: node.Generation, SpecHash: node.SpecHash}, timeout)
 }
@@ -136,7 +147,7 @@ func setupRuntime(path string) error {
 		return err
 	}
 	if len(entries) != 0 {
-		return errors.New("private runtime directory is not empty; run repair before start")
+		return errors.New("private runtime directory is not empty; run farrow status to converge it, then retry")
 	}
 	return nil
 }
@@ -241,7 +252,17 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, err
 				node.Phase = state.Running
 				node.UpdatedAt = config.now()
 				if err := store.WriteNode(node); err != nil {
-					outcomes[index].Error = err.Error()
+					message := fmt.Sprintf("persist running state for %s: %v", node.Node, err)
+					if aborter, ok := config.Lifecycle.(StartAborter); ok {
+						if abortErr := aborter.AbortStart(ctx, node, identityValue); abortErr != nil {
+							message += "; compensation failed: " + abortErr.Error() + "; the QEMU process may still be running; run farrow status"
+						} else {
+							message += "; compensation stopped QEMU and removed its runtime files"
+						}
+					} else {
+						message += "; lifecycle cannot compensate the started process; run farrow status"
+					}
+					outcomes[index].Error = message
 					continue
 				}
 				nodes[index] = node

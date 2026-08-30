@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/runtimepath"
 	"github.com/pgsty/farrow/internal/state"
 )
 
@@ -29,6 +31,42 @@ type RuntimeAuditor func(context.Context, state.NodeState) (Observation, error)
 
 func completeProcess(value state.ProcessIdentity) bool {
 	return value.PID > 0 && value.Executable != "" && value.Started != "" && value.ArgvHash != ""
+}
+
+func captureRuntimeProcess(ctx context.Context, runner execx.Runner, node state.NodeState) (process.Identity, error) {
+	if runner == nil {
+		return process.Identity{}, errors.New("runtime process capture requires a command runner")
+	}
+	if err := runtimepath.Validate(node.Runtime.Directory, node.Node, os.Getuid()); err != nil {
+		return process.Identity{}, err
+	}
+	if node.Runtime.QMP != filepath.Join(node.Runtime.Directory, "qmp.sock") || node.Runtime.PIDFile != filepath.Join(node.Runtime.Directory, "qemu.pid") {
+		return process.Identity{}, errors.New("runtime process paths do not match the node directory")
+	}
+	info, err := os.Lstat(node.Runtime.PIDFile)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > 32 {
+		return process.Identity{}, errors.New("runtime pidfile is missing or unsafe")
+	}
+	data, err := os.ReadFile(node.Runtime.PIDFile)
+	if err != nil {
+		return process.Identity{}, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 || !process.Alive(pid) {
+		return process.Identity{}, errors.New("runtime pidfile does not identify a live process")
+	}
+	identity, err := process.Capture(ctx, runner, node.Invocation, pid)
+	if err != nil {
+		return process.Identity{}, err
+	}
+	if identity.ArgvHash != process.ExpectedArgvHash(node.Invocation) {
+		return process.Identity{}, errors.New("runtime process command does not match the persisted invocation")
+	}
+	second, err := process.Capture(ctx, runner, node.Invocation, pid)
+	if err != nil || second != identity {
+		return process.Identity{}, errors.New("runtime process identity changed during capture")
+	}
+	return identity, nil
 }
 
 // RuntimeIdentityAuditor audits by authority order: matching QMP name+UUID,

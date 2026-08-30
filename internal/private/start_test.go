@@ -3,6 +3,9 @@ package private
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,12 +15,15 @@ import (
 )
 
 type fakeNodeLifecycle struct {
-	mu        sync.Mutex
-	active    int
-	maxActive int
-	failStart map[string]bool
-	failReady map[string]bool
-	waitCalls int
+	mu           sync.Mutex
+	active       int
+	maxActive    int
+	failStart    map[string]bool
+	failReady    map[string]bool
+	waitCalls    int
+	abortCalls   []string
+	abortError   error
+	beforeReturn func(state.NodeState)
 }
 
 func (fake *fakeNodeLifecycle) Start(_ context.Context, node state.NodeState) (process.Identity, error) {
@@ -36,11 +42,21 @@ func (fake *fakeNodeLifecycle) Start(_ context.Context, node state.NodeState) (p
 	if fake.failStart[node.Node] {
 		return process.Identity{}, errors.New("injected QEMU start failure")
 	}
+	if fake.beforeReturn != nil {
+		fake.beforeReturn(node)
+	}
 	pid := 100
 	if node.Node != "meta" {
 		pid++
 	}
 	return process.Identity{PID: pid, Executable: node.Invocation.Binary, Started: "test-start", ArgvHash: "test-argv-hash"}, nil
+}
+
+func (fake *fakeNodeLifecycle) AbortStart(_ context.Context, node state.NodeState, _ process.Identity) error {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.abortCalls = append(fake.abortCalls, node.Node)
+	return fake.abortError
 }
 
 func (fake *fakeNodeLifecycle) WaitReady(_ context.Context, node state.NodeState, _ time.Duration) error {
@@ -141,5 +157,35 @@ func TestStartPreparedLeavesFailedStartRecorded(t *testing.T) {
 	failed, failedErr := store.ReadNode("node-1")
 	if failedErr != nil || failed.Phase != state.Starting || failed.Process != (state.ProcessIdentity{}) {
 		t.Fatalf("failed start not left in starting phase: %#v, %v", failed, failedErr)
+	}
+}
+
+func TestStartPreparedCompensatesRunningStateWriteFailure(t *testing.T) {
+	config, _ := preparedStartFixture(t)
+	config.Nodes = []string{"node-1"}
+	statePath := filepath.Join(config.Project.Root, "nodes", "node-1", "state.json")
+	fake := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
+	fake.beforeReturn = func(state.NodeState) {
+		if err := os.Remove(statePath); err != nil {
+			t.Errorf("remove state fixture: %v", err)
+			return
+		}
+		if err := os.Mkdir(statePath, 0o700); err != nil {
+			t.Errorf("replace state with directory: %v", err)
+		}
+	}
+	config.Lifecycle = fake
+	outcomes, err := StartPrepared(context.Background(), config)
+	if err != nil || len(outcomes) != 1 || outcomes[0].Error == "" {
+		t.Fatalf("write-failure outcomes=%#v err=%v", outcomes, err)
+	}
+	if !strings.Contains(outcomes[0].Error, "persist running state for node-1") || !strings.Contains(outcomes[0].Error, "compensation stopped QEMU") {
+		t.Fatalf("write-failure message = %q", outcomes[0].Error)
+	}
+	fake.mu.Lock()
+	abortCalls := append([]string(nil), fake.abortCalls...)
+	fake.mu.Unlock()
+	if len(abortCalls) != 1 || abortCalls[0] != "node-1" {
+		t.Fatalf("abort calls = %v", abortCalls)
 	}
 }
