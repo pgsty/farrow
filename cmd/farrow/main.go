@@ -1565,22 +1565,25 @@ func runLogs(options logOptions, requestedNode string, stdout, stderr io.Writer)
 		return exitConflict
 	}
 	node := requestedNode
-	path, err := (privatevm.Manager{FarrowVersion: version.Version}).LogPath(node, options.Source)
-	if node == "" {
-		if options.Source == "events" {
-			node = "deployment"
-		} else {
-			for _, candidate := range resolved.Nodes {
-				if candidate.Control {
-					node = candidate.Name
-					break
-				}
-			}
+	if options.Source == "events" {
+		if node != "" {
+			errorf(stderr, "--source events is the deployment-wide event log and does not accept a node")
+			return exitUsage
 		}
+		node = "deployment"
 	}
+	path, err := (privatevm.Manager{FarrowVersion: version.Version}).LogPath(requestedNode, options.Source)
 	if err != nil {
 		errorf(stderr, "%v", err)
 		return exitRuntime
+	}
+	if node == "" {
+		for _, candidate := range resolved.Nodes {
+			if candidate.Control {
+				node = candidate.Name
+				break
+			}
+		}
 	}
 	handle, err := os.Open(path)
 	if err != nil {

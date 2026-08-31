@@ -121,12 +121,13 @@ func newLogsCommand(stdout, stderr io.Writer) *cobra.Command {
 		Use:     "logs [node]",
 		Aliases: []string{"l"},
 		Short:   "Read or follow deployment logs",
-		Long: `Read the selected node's serial, QEMU, or Farrow event log. With --follow,
-text mode streams bytes and structured modes emit a record stream (NDJSON for
-JSON) so stdout remains machine-readable.`,
+		Long: `Read the selected node's serial or QEMU log, or the deployment-wide Farrow
+event log (--source events takes no node). With --follow, text mode streams
+bytes and structured modes emit a record stream (NDJSON for JSON) so stdout
+remains machine-readable.`,
 		Example: `  farrow logs meta                   # read the serial log
   farrow logs meta --source qemu     # read QEMU diagnostics
-  farrow logs meta --source events -f
+  farrow logs --source events -f     # follow the deployment event log
   farrow --json logs meta --follow   # stream structured records`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: nodeCompletion(false, true),

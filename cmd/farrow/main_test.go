@@ -646,6 +646,37 @@ func TestDeploymentDestroyUsesPersistedStateWithoutConfiguration(t *testing.T) {
 	}
 }
 
+func TestDeploymentEventLogRejectsNodeSelector(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	resolved := spec.Resolved{
+		Schema: 1, Name: "private", Image: "u24", Network: "private", SSHUser: "dba",
+		Private: &spec.PrivateNetwork{CIDR: "10.10.10.0/24", HostAddress: "10.10.10.1", DHCPEnd: "10.10.10.8"},
+		Nodes:   []spec.Node{{Name: "meta", Control: true, Address: "10.10.10.10", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB}},
+	}
+	hash, err := spec.Hash(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (state.Store{Root: root}).WriteDeployment(state.DeploymentState{
+		Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash,
+		Resolved: resolved, UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--json", "logs", "meta", "--source", "events"}, &stdout, &stderr); code != exitUsage {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var failure commandFailure
+	if err := json.Unmarshal(stdout.Bytes(), &failure); err != nil {
+		t.Fatalf("failure JSON: %v\n%s", err, stdout.String())
+	}
+	if failure.Error != "usage" || !strings.Contains(failure.Message, "deployment-wide event log") {
+		t.Fatalf("failure=%#v stderr=%q", failure, stderr.String())
+	}
+}
+
 func TestLegacyDeploymentDiagnosticsDistinguishExistingState(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("FARROW_HOME", root)
