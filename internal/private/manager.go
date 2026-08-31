@@ -743,6 +743,7 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 	lifecycle := vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}
 	convergenceCandidates := make([]state.NodeState, 0)
 	nodes := make(map[string]state.NodeState, len(selected))
+	// Compatibility expiry: process-start-v0 in CONTRIBUTING.md#compatibility-expiry.
 	// Pre-0.1 development states stored locale- and timezone-dependent ps lstart
 	// text. Migrate only an identity that still matches every legacy fact in the
 	// caller's current environment; a mismatch remains fail-closed.

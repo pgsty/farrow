@@ -41,6 +41,7 @@ func ExpectedArgvHash(invocation qemu.Invocation) string {
 	return hashArgv(parts)
 }
 
+// Compatibility expiry: process-start-v0 in CONTRIBUTING.md#compatibility-expiry.
 // IsLegacyStart reports the pre-0.1 process birth encoding produced by
 // `ps -o lstart`. Known-but-malformed numeric prefixes fail closed instead of
 // being reinterpreted as locale-dependent legacy text.

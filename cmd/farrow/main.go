@@ -50,6 +50,7 @@ const (
 	exitResource   = 6
 	exitIntegrity  = 7
 
+	// Compatibility expiry: user-network-state-v0 in CONTRIBUTING.md#compatibility-expiry.
 	legacyDeploymentMessage = "this deployment predates the fixed-IP redesign; preserve any needed disks, then move or remove the selected FARROW_HOME and run `farrow setup && farrow up`"
 )
 

@@ -71,6 +71,27 @@ The code aims to read as one voice. Match what is already there.
 - Prefer testing the contract over the implementation. Assert the behaviour a
   user or a script would observe.
 
+## Compatibility expiry
+
+Farrow tolerates old local state only when a released build or a pre-0.1
+development build wrote it. It never guesses at formats that Farrow never
+wrote. Every exception has an expiry gate; reaching the version alone is not
+enough unless the migration or refusal condition is also satisfied.
+
+| ID | Path and old form | Last writer | Must remain supported through | Removal gate |
+| --- | --- | --- | --- | --- |
+| `process-start-v0` | `internal/process/identity.go`, `internal/private/manager.go`: locale-dependent `ps lstart` birth text and its legacy argv binding | pre-0.1 development builds | 0.2.x | Earliest 0.3.0, after 0.2 release notes require `farrow status` while each retained VM is live and migration tests prove the persisted identity was rewritten to `procstat:`/`kinfo:` plus the native argv hash. |
+| `user-network-state-v0` | `cmd/farrow/main.go`: a deployment whose resolved network is `user` gets the fixed-IP redesign refusal instead of being interpreted as current state | pre-0.1 development builds | 0.2.x | Earliest 0.3.0, after the 0.2 migration window and release notes have told users to preserve disks and rebuild; never add a parser for another user-NAT shape. |
+| `manifest-state-v1` | `internal/image/manifest_store.go`: the single-repository manifest state is wrapped as the `default` entry in the registry | pre-0.1 development builds | 0.2.x | Earliest 0.3.0, after a 0.2 release rewrites the registry in place on successful sync/reset and the real legacy fixture proves that migration. |
+| `linux-network-backend-v0` | `internal/network/linux/plan.go`: a root-owned network manifest without `backend` means `systemd-networkd` | pre-0.1 development builds | 0.2.x | Earliest 0.3.0, after 0.2 has rewritten or explicitly uninstalled every accepted backend-less manifest and the uninstall fixture no longer needs the default. |
+| `guest-hosts-marker-v0` | `internal/cloudinit/render.go`: marker-owned guest `/etc/hosts` rows use `# farrow-project-host` | 0.1.x | 0.3.x | Freeze the old writer before 0.2.0, have 0.2.x and 0.3.x remove both old and replacement markers, and remove the old marker no earlier than 0.4.0 after two minor release lines have converged guests. |
+| `inherited-files-v0` | `internal/private/shares.go`: an empty typed inherited-file list may still describe the Darwin network FD in argv; shares never use that representation | pre-0.1 development builds | 0.2.x | Earliest 0.3.0, after recreate has rewritten retained invocations with typed inherited files and the legacy network-FD fixture has been retired; never accept an untyped share. |
+
+## Release checklist
+
+- Review this table and remove expired compatibility entries only when both the
+  version window and the row-specific migration gate have passed.
+
 ## Commits and pull requests
 
 - One logical change per commit, with a subject in the imperative mood:

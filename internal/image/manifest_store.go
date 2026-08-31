@@ -196,6 +196,7 @@ func (m ManifestManager) readRegistry() (ManifestRegistry, error) {
 	if err := json.Unmarshal(data, &header); err != nil {
 		return ManifestRegistry{}, err
 	}
+	// Compatibility expiry: manifest-state-v1 in CONTRIBUTING.md#compatibility-expiry.
 	if header.Schema == ManifestStateSchema {
 		legacy, err := strictManifestState(data)
 		if err != nil {
@@ -273,6 +274,7 @@ func embeddedState() (ManifestState, error) {
 	return ManifestState{Schema: ManifestStateSchema, HighestVersion: EmbeddedManifestVersion, Active: "embedded", ActiveVersion: EmbeddedManifestVersion, ActiveDigest: manifestDigest(data), Source: "embedded", AcceptedAt: embeddedManifestGeneratedAt}, nil
 }
 
+// Compatibility expiry: manifest-state-v1 in CONTRIBUTING.md#compatibility-expiry.
 // currentBaselineState advances any state whose accepted high-water mark
 // predates this binary. The compiled catalog is trusted, strictly newer data;
 // older signed files remain on disk and can be selected again only through an

@@ -511,6 +511,7 @@ init_share() {
 	return out.String()
 }
 
+// Compatibility expiry: guest-hosts-marker-v0 in CONTRIBUTING.md#compatibility-expiry.
 func renderHostsScript(hosts []Host) string {
 	sorted := append([]Host(nil), hosts...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })

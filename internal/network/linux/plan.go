@@ -32,6 +32,7 @@ const (
 	markerBegin        = "# BEGIN FARROW MANAGED: farrow0"
 	markerEnd          = "# END FARROW MANAGED: farrow0"
 
+	// Compatibility expiry: linux-network-backend-v0 in CONTRIBUTING.md#compatibility-expiry.
 	// The backend is selected by the active host-network owner: NetworkManager
 	// when it is running, otherwise systemd-networkd. Legacy manifests carry no
 	// backend field and mean networkd.
@@ -413,6 +414,7 @@ func validateHelper(facts Facts) (*Override, []Command, []string, error) {
 	}
 }
 
+// Compatibility expiry: linux-network-backend-v0 in CONTRIBUTING.md#compatibility-expiry.
 // ManifestBackend normalizes the backend of a manifest; legacy manifests
 // without the field are systemd-networkd installations.
 func ManifestBackend(manifest Manifest) string {

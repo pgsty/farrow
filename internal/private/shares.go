@@ -42,6 +42,7 @@ func openPrivateNodeShares(value Deployment, sharesByNode map[string][]spec.Shar
 func validatePrivateInheritedLayout(node state.NodeState, prefixFiles, shareFiles int) error {
 	files := node.Invocation.InheritedFiles
 	if len(files) == 0 {
+		// Compatibility expiry: inherited-files-v0 in CONTRIBUTING.md#compatibility-expiry.
 		// State written before inherited files became typed may still describe
 		// the Darwin network FD in argv. Shares have never used that legacy
 		// representation and are rejected by Bundle.ValidateInvocation.
