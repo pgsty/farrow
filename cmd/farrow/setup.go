@@ -455,16 +455,12 @@ func (session *sudoSession) ensure(ctx context.Context, reason string) error {
 		return nil
 	}
 	if reason != "" {
-		if err := writeText(session.stderr, "%s sudo needed: %s\n", styled(session.stderr, ansiCyan, "→"), reason); err != nil {
-			return fmt.Errorf("write sudo explanation: %w", err)
-		}
+		bestEffortf(session.stderr, "%s sudo needed: %s\n", styled(session.stderr, ansiCyan, "→"), reason)
 		scope := session.scope
 		if scope == "" {
 			scope = "command"
 		}
-		if err := writeText(session.stderr, "  one password prompt covers this whole %s\n", scope); err != nil {
-			return fmt.Errorf("write sudo scope: %w", err)
-		}
+		bestEffortf(session.stderr, "  one password prompt covers this whole %s\n", scope)
 	}
 	const sudo = "/usr/bin/sudo"
 	if term.IsTerminal(int(os.Stdin.Fd())) {
@@ -833,28 +829,10 @@ func planRow(stderr io.Writer, label, format string, arguments ...any) {
 	bestEffortf(stderr, "  %s %s\n", styled(stderr, ansiDim, fmt.Sprintf("%-13s", label)), fmt.Sprintf(format, arguments...))
 }
 
-type setupPlanWriter struct {
-	io.Writer
-	err error
-}
-
-func (writer *setupPlanWriter) Write(data []byte) (int, error) {
-	if writer.err != nil {
-		return 0, writer.err
-	}
-	written, err := writer.Writer.Write(data)
-	if err != nil {
-		writer.err = err
-	}
-	return written, err
-}
-
 // printSetupPlan tells the user exactly what will happen, which parts need
 // root and why, and where any download would come from — before the single
 // confirmation prompt.
-func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection setupSelection, report *netpreflight.Report, dryRun bool) error {
-	tracked := &setupPlanWriter{Writer: stderr}
-	stderr = tracked
+func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection setupSelection, report *netpreflight.Report, dryRun bool) {
 	if dryRun {
 		bestEffortf(stderr, "%s setup plan (dry run, no changes)\n", styled(stderr, ansiCyan, "→"))
 	} else {
@@ -938,7 +916,6 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 		planRow(stderr, "privileges", "sudo used for: %s", strings.Join(sudoFor, "; "))
 		bestEffortln(stderr, "                at most one password prompt; the first privileged step explains itself")
 	}
-	return tracked.err
 }
 
 func setupOutcome(result setupResult) commandOutcome {
@@ -1135,9 +1112,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 		result.Network = networkReport
 		result.NetworkMode = networkMode
 	}
-	if err := printSetupPlan(stderr, dependencyPlan, selection, networkReport, options.DryRun); err != nil {
-		return failSetup(&result, exitRuntime, fmt.Errorf("write setup plan: %w", err))
-	}
+	printSetupPlan(stderr, dependencyPlan, selection, networkReport, options.DryRun)
 	result.Config = selection.ConfigPath
 	result.Dependencies = dependencyPlan
 	result.Network = networkReport

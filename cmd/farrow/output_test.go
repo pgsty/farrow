@@ -31,9 +31,6 @@ func TestWriterFailureBoundaries(t *testing.T) {
 	if err := confirmDestructive(false, true, "destroy", strings.NewReader("destroy\n"), failingWriter{}); err == nil || !strings.Contains(err.Error(), "confirmation prompt") {
 		t.Fatalf("confirmation writer failure = %v", err)
 	}
-	if err := writeText(failingWriter{}, "result"); err == nil {
-		t.Fatal("command result writer failure was discarded")
-	}
 	_, out, _, err := prepareOutput(nil, failingWriter{}, io.Discard)
 	if err != nil {
 		t.Fatal(err)

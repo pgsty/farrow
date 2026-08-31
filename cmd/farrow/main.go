@@ -233,9 +233,7 @@ func runNetwork(parent context.Context, options networkOptions, stderr io.Writer
 				err := errors.New("host network preflight is not ready")
 				return commandOutcome{}, newSilentRenderedCommandError("network_preflight", preflightReport.ExitCode, err, preflightReport, func(_ io.Writer, stderr io.Writer) error {
 					for _, finding := range preflightReport.Findings {
-						if _, writeErr := fmt.Fprintf(stderr, "%s %s: %s\n", finding.Severity, finding.Code, finding.Evidence); writeErr != nil {
-							return writeErr
-						}
+						bestEffortf(stderr, "%s %s: %s\n", finding.Severity, finding.Code, finding.Evidence)
 					}
 					return nil
 				})
@@ -270,17 +268,13 @@ func runNetwork(parent context.Context, options networkOptions, stderr io.Writer
 					warningf(stderr, "%s", warning)
 				}
 				return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
-					if _, err := fmt.Fprintf(stdout, "action: %s\napplied: %t\n", report.Action, report.Applied); err != nil {
-						return err
-					}
+					bestEffortf(stdout, "action: %s\napplied: %t\n", report.Action, report.Applied)
 					for _, path := range sortedMapKeys(report.Targets) {
-						if _, err := fmt.Fprintf(stdout, "%s %s\n", path, report.Targets[path]); err != nil {
-							return err
-						}
+						bestEffortf(stdout, "%s %s\n", path, report.Targets[path])
 					}
 					if !report.Applied && report.Action != "none" {
-						_, err := fmt.Fprintln(stdout, "rerun with --yes using the same --archive and --interface-id; Farrow will request sudo when needed")
-						return err
+						bestEffortln(stdout, "rerun with --yes using the same --archive and --interface-id; Farrow will request sudo when needed")
+						return nil
 					}
 					return nil
 				}}, nil
@@ -299,17 +293,13 @@ func runNetwork(parent context.Context, options networkOptions, stderr io.Writer
 			}
 			return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
 				for _, path := range report.RemoveFiles {
-					if _, err := fmt.Fprintf(stdout, "remove file %s\n", path); err != nil {
-						return err
-					}
+					bestEffortf(stdout, "remove file %s\n", path)
 				}
 				for _, path := range report.RemoveDirs {
-					if _, err := fmt.Fprintf(stdout, "rmdir %s\n", path); err != nil {
-						return err
-					}
+					bestEffortf(stdout, "rmdir %s\n", path)
 				}
-				_, err := fmt.Fprintf(stdout, "applied: %t\n", report.Applied)
-				return err
+				bestEffortf(stdout, "applied: %t\n", report.Applied)
+				return nil
 			}}, nil
 		}
 		executor := linuxnet.Executor{User: baseRunner, Root: rootRunner, InUse: deploymentInUse}
@@ -332,31 +322,21 @@ func runNetwork(parent context.Context, options networkOptions, stderr io.Writer
 			}
 			return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
 				for _, directory := range report.Plan.Directories {
-					if err := writeText(stdout, "directory %s %s %s\n", directory.Path, directory.Owner, directory.Mode); err != nil {
-						return err
-					}
+					bestEffortf(stdout, "directory %s %s %s\n", directory.Path, directory.Owner, directory.Mode)
 				}
 				for _, file := range report.Plan.Files {
-					if err := writeText(stdout, "file %s %s %s\n", file.Path, file.Owner, file.Mode); err != nil {
-						return err
-					}
+					bestEffortf(stdout, "file %s %s %s\n", file.Path, file.Owner, file.Mode)
 				}
 				for _, phase := range report.Plan.Phases {
-					if err := writeText(stdout, "phase %s\n", phase.Name); err != nil {
-						return err
-					}
+					bestEffortf(stdout, "phase %s\n", phase.Name)
 					for _, action := range phase.Commands {
-						if err := writeText(stdout, "  %s\n", execx.Display(action.Binary, action.Args...)); err != nil {
-							return err
-						}
+						bestEffortf(stdout, "  %s\n", execx.Display(action.Binary, action.Args...))
 					}
 				}
-				if err := writeText(stdout, "applied: %t\n", report.Applied); err != nil {
-					return err
-				}
+				bestEffortf(stdout, "applied: %t\n", report.Applied)
 				if !report.Applied {
-					_, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
-					return err
+					bestEffortln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
+					return nil
 				}
 				return nil
 			}}, nil
@@ -372,21 +352,15 @@ func runNetwork(parent context.Context, options networkOptions, stderr io.Writer
 		}
 		return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
 			for _, path := range report.Plan.RemoveFiles {
-				if err := writeText(stdout, "remove file %s\n", path); err != nil {
-					return err
-				}
+				bestEffortf(stdout, "remove file %s\n", path)
 			}
 			for _, directory := range report.Plan.RemoveDirectories {
-				if err := writeText(stdout, "rmdir %s\n", directory); err != nil {
-					return err
-				}
+				bestEffortf(stdout, "rmdir %s\n", directory)
 			}
-			if err := writeText(stdout, "applied: %t\n", report.Applied); err != nil {
-				return err
-			}
+			bestEffortf(stdout, "applied: %t\n", report.Applied)
 			if !report.Applied {
-				_, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
-				return err
+				bestEffortln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
+				return nil
 			}
 			return nil
 		}}, nil
@@ -436,18 +410,12 @@ func runNetwork(parent context.Context, options networkOptions, stderr io.Writer
 		Checks    []doctor.Check      `json:"checks,omitempty"`
 	}{OS: doctorReport.OS, Arch: doctorReport.Arch, Preflight: preflightReport, Checks: checks}
 	renderText := func(stdout, _ io.Writer) error {
-		if err := writeText(stdout, "network: %s ready=%t installation=%s\n", preflightReport.CIDR, preflightReport.Ready, preflightReport.Installation.Status); err != nil {
-			return err
-		}
+		bestEffortf(stdout, "network: %s ready=%t installation=%s\n", preflightReport.CIDR, preflightReport.Ready, preflightReport.Installation.Status)
 		for _, finding := range preflightReport.Findings {
-			if err := writeText(stdout, "[%s] %s: %s\n", finding.Severity, finding.Code, finding.Evidence); err != nil {
-				return err
-			}
+			bestEffortf(stdout, "[%s] %s: %s\n", finding.Severity, finding.Code, finding.Evidence)
 		}
 		for _, check := range checks {
-			if err := writeText(stdout, "[%s] %s: %s\n", check.Status, check.Name, check.Evidence); err != nil {
-				return err
-			}
+			bestEffortf(stdout, "[%s] %s: %s\n", check.Status, check.Name, check.Evidence)
 		}
 		return nil
 	}
@@ -660,7 +628,7 @@ func runSSH(ctx context.Context, commandName string, args []string, stdout, stde
 	return runPrivateSSH(ctx, commandName, args, resolved, stdout, stderr)
 }
 
-func printProvisionReport(stdout, stderr io.Writer, report provision.Report) error {
+func printProvisionReport(stdout, stderr io.Writer, report provision.Report) {
 	textField(stdout, 10, "script", report.Script.Name)
 	textField(stdout, 10, "sha256", report.Script.SHA256)
 	textField(stdout, 10, "bytes", report.Script.Size)
@@ -671,46 +639,30 @@ func printProvisionReport(stdout, stderr io.Writer, report provision.Report) err
 		if result.Success {
 			state = "success"
 		}
-		if err := writeText(stdout, "%-16s %s  exit=%d  duration=%dms\n", result.Node, statusValue(stdout, state), result.ExitCode, result.DurationMS); err != nil {
-			return fmt.Errorf("write provision result: %w", err)
-		}
+		bestEffortf(stdout, "%-16s %s  exit=%d  duration=%dms\n", result.Node, statusValue(stdout, state), result.ExitCode, result.DurationMS)
 		if result.Stdout != "" {
-			if err := writeText(stdout, "--- %s stdout ---\n%s", result.Node, result.Stdout); err != nil {
-				return fmt.Errorf("write provision stdout: %w", err)
-			}
+			bestEffortf(stdout, "--- %s stdout ---\n%s", result.Node, result.Stdout)
 			if !strings.HasSuffix(result.Stdout, "\n") {
-				if _, err := fmt.Fprintln(stdout); err != nil {
-					return fmt.Errorf("write provision stdout separator: %w", err)
-				}
+				bestEffortln(stdout)
 			}
 		}
 		if result.Stderr != "" {
-			if err := writeText(stderr, "--- %s stderr ---\n%s", result.Node, result.Stderr); err != nil {
-				return fmt.Errorf("write provision stderr: %w", err)
-			}
+			bestEffortf(stderr, "--- %s stderr ---\n%s", result.Node, result.Stderr)
 			if !strings.HasSuffix(result.Stderr, "\n") {
-				if _, err := fmt.Fprintln(stderr); err != nil {
-					return fmt.Errorf("write provision stderr separator: %w", err)
-				}
+				bestEffortln(stderr)
 			}
 		}
 		if result.StdoutTruncated {
-			if err := writeText(stderr, "[%s] stdout was truncated at the bounded capture limit\n", result.Node); err != nil {
-				return fmt.Errorf("write provision truncation warning: %w", err)
-			}
+			bestEffortf(stderr, "[%s] stdout was truncated at the bounded capture limit\n", result.Node)
 		}
 		if result.StderrTruncated {
-			if err := writeText(stderr, "[%s] stderr was truncated at the bounded capture limit\n", result.Node); err != nil {
-				return fmt.Errorf("write provision truncation warning: %w", err)
-			}
+			bestEffortf(stderr, "[%s] stderr was truncated at the bounded capture limit\n", result.Node)
 		}
 		if result.Error != "" {
-			if err := writeText(stderr, "[%s] %s\n", result.Node, result.Error); err != nil {
-				return fmt.Errorf("write provision error: %w", err)
-			}
+			bestEffortf(stderr, "[%s] %s\n", result.Node, result.Error)
 		}
 	}
-	return writeText(stdout, "%s %d successful, %d failed, %dms total\n", styled(stdout, ansiBold, "provisioned"), report.Successful, report.Failed, report.DurationMS)
+	bestEffortf(stdout, "%s %d successful, %d failed, %dms total\n", styled(stdout, ansiBold, "provisioned"), report.Successful, report.Failed, report.DurationMS)
 }
 
 func provisionConnectionExit(err error) int {
@@ -921,7 +873,7 @@ func runProvision(parent context.Context, options provisionOptions, nodes []stri
 		}
 		report.AuditError += "release deployment lock: " + releaseErr.Error()
 	}
-	renderText := func(stdout, stderr io.Writer) error { return printProvisionReport(stdout, stderr, report) }
+	renderText := func(stdout, stderr io.Writer) error { printProvisionReport(stdout, stderr, report); return nil }
 	outcome := commandOutcome{payload: report, text: renderText}
 	if report.AuditError != "" {
 		return commandOutcome{}, newRenderedCommandError("integrity", exitIntegrity, errors.New(report.AuditError), operationID, report, renderText)
@@ -975,27 +927,18 @@ func currentDeploymentResolved() (spec.Resolved, error) {
 	return deploymentState.Resolved, nil
 }
 
-func printPrivateStatus(out io.Writer, status privatevm.Status) error {
+func printPrivateStatus(out io.Writer, status privatevm.Status) {
 	textField(out, 12, "spec hash", status.SpecHash)
 	for _, node := range status.Nodes {
-		if _, err := fmt.Fprintf(out, "%-16s %s  runtime=%s  arch=%s  accel=%s  address=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.GuestArch, node.Accel, node.Address, node.SSHHost, node.SSHPort); err != nil {
-			return err
-		}
+		bestEffortf(out, "%-16s %s  runtime=%s  arch=%s  accel=%s  address=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.GuestArch, node.Accel, node.Address, node.SSHHost, node.SSHPort)
 		if node.ProcessID > 0 {
-			if _, err := fmt.Fprintf(out, " pid=%d", node.ProcessID); err != nil {
-				return err
-			}
+			bestEffortf(out, " pid=%d", node.ProcessID)
 		}
-		if _, err := fmt.Fprintln(out); err != nil {
-			return err
-		}
+		bestEffortln(out)
 	}
 	if status.Message != "" {
-		if _, err := fmt.Fprintln(out, status.Message); err != nil {
-			return err
-		}
+		bestEffortln(out, status.Message)
 	}
-	return nil
 }
 
 type persistentDeleteError struct{ err error }
@@ -1080,7 +1023,8 @@ func classifyLifecycleSSHConfigFailure(failure *lifecycleSSHConfigFailure) error
 		Partial: true, Status: failure.Status, SSHConfig: failure.Result,
 	}
 	return newRenderedCommandError("ssh_config", exitIntegrity, failure, failure.Status.OperationID, payload, func(stdout, _ io.Writer) error {
-		return printPrivateStatus(stdout, failure.Status)
+		printPrivateStatus(stdout, failure.Status)
+		return nil
 	})
 }
 
@@ -1184,9 +1128,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		}
 		if !force {
 			// State the exact scope before the typed confirmation.
-			if _, err := fmt.Fprintln(stderr, destroyScope(resolved, nodes, deletePersistent, purge)); err != nil {
-				return commandOutcome{}, newRuntimeError(err)
-			}
+			bestEffortln(stderr, destroyScope(resolved, nodes, deletePersistent, purge))
 		}
 		if err := confirmCLIAction(force, "destroy", stderr); err != nil {
 			if errors.Is(err, ErrCancelled) {
@@ -1312,9 +1254,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	}
 	result := lifecycleResult{Status: status, SSHConfig: reconciledSSHConfig}
 	return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
-		if err := printPrivateStatus(stdout, status); err != nil {
-			return err
-		}
+		printPrivateStatus(stdout, status)
 		if reconciledSSHConfig != nil {
 			textField(stdout, 12, "ssh config", fmt.Sprintf("%s (action=%s changed=%t)", reconciledSSHConfig.Fragment, reconciledSSHConfig.Action, reconciledSSHConfig.Changed))
 		}
@@ -1429,7 +1369,8 @@ type sshConfigOptions struct {
 
 func sshConfigOutcome(result sshconfig.Result, name string) commandOutcome {
 	return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
-		return writeText(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, name, result.Changed, result.Fragment, result.Config)
+		bestEffortf(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, name, result.Changed, result.Fragment, result.Config)
+		return nil
 	}}
 }
 
@@ -1476,8 +1417,8 @@ func runSSHConfig(parent context.Context, options sshConfigOptions, nodes []stri
 		return commandOutcome{}, newRuntimeError(err)
 	}
 	return commandOutcome{payload: map[string]string{"config": text}, text: func(stdout, _ io.Writer) error {
-		_, err := fmt.Fprint(stdout, text)
-		return err
+		bestEffortf(stdout, "%s", text)
+		return nil
 	}}, nil
 }
 
@@ -1557,13 +1498,11 @@ func runHosts(parent context.Context, action string, apply bool, stderr io.Write
 		textField(stdout, 16, "helper", report.Plan.HelperPath)
 		textField(stdout, 16, "helper sha256", report.Plan.HelperSHA256)
 		for _, line := range report.Plan.Lines {
-			if _, err := fmt.Fprintln(stdout, line); err != nil {
-				return err
-			}
+			bestEffortln(stdout, line)
 		}
 		if report.Plan.Changed && !report.Applied {
-			_, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact marker-owned plan; Farrow will request sudo when needed")
-			return err
+			bestEffortln(stdout, "rerun with --yes after reviewing this exact marker-owned plan; Farrow will request sudo when needed")
+			return nil
 		}
 		return nil
 	}}, nil
@@ -1698,8 +1637,8 @@ func runLogs(parent context.Context, options logOptions, requestedNode string, s
 		}
 		result := logResult{Node: node, Source: options.Source, Path: path, Content: string(content), Bytes: len(content), TotalBytes: int64(len(content))}
 		return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
-			_, err := stdout.Write(content)
-			return err
+			_, _ = stdout.Write(content)
+			return nil
 		}}, nil
 	}
 	if _, err := io.Copy(stdout, handle); err != nil {
@@ -1789,8 +1728,8 @@ func runInit(options initOptions) (commandOutcome, error) {
 		result := initResult{Template: name, Content: string(data)}
 		return commandOutcome{payload: result, text: func(stdout, stderr io.Writer) error {
 			printWarnings(stderr, warnings)
-			_, err := stdout.Write(data)
-			return err
+			_, _ = stdout.Write(data)
+			return nil
 		}}, nil
 	}
 	target := options.Output
@@ -1868,9 +1807,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 				if len(entry.Channels) != 0 {
 					channels = strings.Join(entry.Channels, ",")
 				}
-				if err := writeText(stdout, "%s %s %s channels=%s status=%s sha256:%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status, entry.SHA256); err != nil {
-					return err
-				}
+				bestEffortf(stdout, "%s %s %s channels=%s status=%s sha256:%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status, entry.SHA256)
 			}
 			return nil
 		}}, nil
@@ -1907,11 +1844,10 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		}
 		printImageStatusWarning(stderr, info.Entry)
 		return commandOutcome{payload: info, text: func(stdout, _ io.Writer) error {
-			if err := writeText(stdout, "%s %s %s status=%s sha256:%s cached=%t\n", info.Entry.Alias, info.Entry.Release, info.Entry.Arch, info.Entry.Status, info.Entry.SHA256, info.Cached); err != nil {
-				return err
-			}
+			bestEffortf(stdout, "%s %s %s status=%s sha256:%s cached=%t\n", info.Entry.Alias, info.Entry.Release, info.Entry.Arch, info.Entry.Status, info.Entry.SHA256, info.Cached)
 			if info.Path != "" {
-				return writeText(stdout, "path: %s\n", info.Path)
+				bestEffortf(stdout, "path: %s\n", info.Path)
+				return nil
 			}
 			return nil
 		}}, nil
@@ -1980,21 +1916,18 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		}
 		return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
 			if len(report.Items) == 0 {
-				return writeText(stdout, "no unreferenced cache images\n")
+				bestEffortf(stdout, "no unreferenced cache images\n")
+				return nil
 			}
 			for _, item := range report.Items {
 				action := "would delete"
 				if item.Applied {
 					action = "deleted"
 				}
-				var err error
 				if item.Digest == "" {
-					err = writeText(stdout, "%s %s (%d bytes, %s)\n", action, item.ImagePath, item.Bytes, item.Kind)
+					bestEffortf(stdout, "%s %s (%d bytes, %s)\n", action, item.ImagePath, item.Bytes, item.Kind)
 				} else {
-					err = writeText(stdout, "%s %s sha256:%s (%d bytes)\n", action, item.ImagePath, item.Digest, item.Bytes)
-				}
-				if err != nil {
-					return err
+					bestEffortf(stdout, "%s %s sha256:%s (%d bytes)\n", action, item.ImagePath, item.Digest, item.Bytes)
 				}
 			}
 			return nil
@@ -2020,7 +1953,8 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 			return commandOutcome{}, newRuntimeError(err)
 		}
 		return commandOutcome{payload: state, text: func(stdout, _ io.Writer) error {
-			return writeText(stdout, "activated manifest version %d digest %s key %s\n", state.ActiveVersion, state.ActiveDigest, state.KeyID)
+			bestEffortf(stdout, "activated manifest version %d digest %s key %s\n", state.ActiveVersion, state.ActiveDigest, state.KeyID)
+			return nil
 		}}, nil
 	case "reset-manifest":
 		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
@@ -2034,7 +1968,8 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 			return commandOutcome{}, newRuntimeError(err)
 		}
 		return commandOutcome{payload: state, text: func(stdout, _ io.Writer) error {
-			return writeText(stdout, "active manifest reset to embedded version %d; high-water mark %d preserved\n", state.ActiveVersion, state.HighestVersion)
+			bestEffortf(stdout, "active manifest reset to embedded version %d; high-water mark %d preserved\n", state.ActiveVersion, state.HighestVersion)
+			return nil
 		}}, nil
 	case "import":
 		if options.Path == "" {
@@ -2081,7 +2016,8 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		}
 		renderText := func(stdout, _ io.Writer) error {
 			if path != "" {
-				return writeText(stdout, "imported %s\nsha256 %s\n", path, metadata.Digest)
+				bestEffortf(stdout, "imported %s\nsha256 %s\n", path, metadata.Digest)
+				return nil
 			}
 			return nil
 		}
@@ -2118,28 +2054,18 @@ func runDoctor(parent context.Context, stderr io.Writer) (commandOutcome, error)
 		textField(stdout, 10, "host", fmt.Sprintf("%s/%s", report.OS, report.Arch))
 		textField(stdout, 10, "tier", report.Tier)
 		for _, check := range report.Checks {
-			if err := writeText(stdout, "%s %-20s %s\n", statusCell(stdout, 10, doctorCheckLabel(check)), check.Name, check.Evidence); err != nil {
-				return err
-			}
+			bestEffortf(stdout, "%s %-20s %s\n", statusCell(stdout, 10, doctorCheckLabel(check)), check.Name, check.Evidence)
 			if check.Fix != "" {
-				if err := writeText(stdout, "  fix: %s\n", check.Fix); err != nil {
-					return err
-				}
+				bestEffortf(stdout, "  fix: %s\n", check.Fix)
 			}
 		}
 		if report.HasErrors() {
-			if err := writeText(stdout, "this host cannot run Farrow guests until the errors above are resolved\n"); err != nil {
-				return err
-			}
+			bestEffortf(stdout, "this host cannot run Farrow guests until the errors above are resolved\n")
 		} else {
-			if err := writeText(stdout, "host compute capability is ready\n"); err != nil {
-				return err
-			}
+			bestEffortf(stdout, "host compute capability is ready\n")
 		}
 		if !report.NetworkReady() {
-			if err := writeText(stdout, "the host-global network is not ready; run `farrow setup` to prepare it\n"); err != nil {
-				return err
-			}
+			bestEffortf(stdout, "the host-global network is not ready; run `farrow setup` to prepare it\n")
 		}
 		return nil
 	}

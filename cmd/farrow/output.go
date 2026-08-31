@@ -398,20 +398,18 @@ func styled(writer io.Writer, style, text string) string {
 	return style + text + ansiReset
 }
 
-// bestEffortf and bestEffortln are limited to diagnostics and progress. A
-// failure to decorate stderr must not replace the business result or its exit
-// status; command result renderers handle their writer errors directly.
+// bestEffortf and bestEffortln are how every line of text output is written,
+// diagnostics and results alike. A single line never decides an exit status:
+// stdout failures are recorded by outputWriter and turned into exit 1 once,
+// at the root boundary (renderCommandOutcome, executeCLI), so a lost result
+// is still reported without every renderer carrying its own error plumbing.
+// stderr decoration is genuinely best effort.
 func bestEffortf(writer io.Writer, format string, arguments ...any) {
 	_, _ = fmt.Fprintf(writer, format, arguments...)
 }
 
 func bestEffortln(writer io.Writer, arguments ...any) {
 	_, _ = fmt.Fprintln(writer, arguments...)
-}
-
-func writeText(writer io.Writer, format string, arguments ...any) error {
-	_, err := fmt.Fprintf(writer, format, arguments...)
-	return err
 }
 
 func debugf(stderr io.Writer, format string, arguments ...any) {
