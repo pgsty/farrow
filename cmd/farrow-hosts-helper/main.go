@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -19,6 +20,9 @@ func run(args []string) error {
 	before := flags.String("before-sha256", "", "reviewed target digest")
 	after := flags.String("after-sha256", "", "reviewed result digest")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return fmt.Errorf("invalid helper arguments: %w", err)
 	}
 	if flags.NArg() != 0 {
