@@ -1061,6 +1061,66 @@ func (m Manager) RecordEvent(ctx context.Context, action, level, message string)
 	return nil
 }
 
+// refuseDrift is the one converge boundary: up and reload apply additions
+// and starts, and both report definition drift or removed nodes for the
+// explicit recreate/destroy paths instead of acting on them.
+func refuseDrift(diff resolvedDiff) error {
+	if diff.EnvelopeChanged {
+		return fmt.Errorf("%w: deployment-level settings changed; run farrow plan, then farrow recreate -f <config> --force", ErrRecreateRequired)
+	}
+	if len(diff.Removed) != 0 {
+		return fmt.Errorf("%w: %s; farrow never destroys from absence — run `farrow destroy %s --force` to remove them, or restore them in the configuration", ErrNodesRemoved, strings.Join(diff.Removed, ", "), strings.Join(diff.Removed, " "))
+	}
+	if len(diff.Changed) != 0 {
+		return fmt.Errorf("%w for node(s) %s; run farrow plan, then `farrow recreate --force %s` with this configuration", ErrRecreateRequired, strings.Join(diff.Changed, ", "), strings.Join(diff.Changed, " "))
+	}
+	return nil
+}
+
+// Reload is the stop/boot cycle that re-reads the desired inventory. The
+// drift that up would refuse is refused here before any node stops, so a
+// configuration that needs recreate or destroy never takes a healthy lab down.
+func (m Manager) Reload(ctx context.Context, requested spec.Resolved) (Status, error) {
+	if err := validateResolved(requested); err != nil {
+		return Status{}, err
+	}
+	projectValue, err := m.openProject(false)
+	if err != nil {
+		return Status{}, err
+	}
+	store := state.Store{Root: projectValue.Root}
+	persisted, err := store.ReadDeployment()
+	if err != nil || persisted.Resolved.Network != "private" {
+		return Status{}, errors.New("the deployment has no valid private state")
+	}
+	selected, err := selectedNodeNames(requested, m.Nodes)
+	if err != nil {
+		return Status{}, err
+	}
+	hasState := func(name string) bool {
+		_, readErr := store.ReadNode(name)
+		return readErr == nil
+	}
+	if err := refuseDrift(diffResolved(persisted.Resolved, materializeExistingForwardPorts(requested, persisted.Resolved), hasState)); err != nil {
+		return Status{}, err
+	}
+	// Only nodes the deployment already records can stop; a selected node
+	// that exists solely in the desired inventory is created on the way up.
+	stopper := m
+	stopper.Nodes = make([]string, 0, len(selected))
+	for _, name := range selected {
+		if hasState(name) {
+			stopper.Nodes = append(stopper.Nodes, name)
+		}
+	}
+	if len(stopper.Nodes) != 0 {
+		if _, err := stopper.Stop(ctx); err != nil {
+			return Status{}, err
+		}
+	}
+	return m.Up(ctx, requested)
+}
+
 func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error) {
 	m.report("preflight", "Checking the fixed-IP network and QEMU capabilities")
 	var err error
@@ -1100,14 +1160,8 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 				return readErr == nil
 			}
 			diff := diffResolved(persisted.Resolved, requested, hasState)
-			if diff.EnvelopeChanged {
-				return Status{}, fmt.Errorf("%w: deployment-level settings changed; run farrow plan, then farrow recreate -f <config> --force", ErrRecreateRequired)
-			}
-			if len(diff.Removed) != 0 {
-				return Status{}, fmt.Errorf("%w: %s; farrow never destroys from absence — run `farrow destroy %s --force` to remove them, or restore them in the configuration", ErrNodesRemoved, strings.Join(diff.Removed, ", "), strings.Join(diff.Removed, " "))
-			}
-			if len(diff.Changed) != 0 {
-				return Status{}, fmt.Errorf("%w for node(s) %s; run farrow plan, then `farrow recreate --force %s` with this configuration", ErrRecreateRequired, strings.Join(diff.Changed, ", "), strings.Join(diff.Changed, " "))
+			if err := refuseDrift(diff); err != nil {
+				return Status{}, err
 			}
 			allRunning, allRunnable := true, true
 			for _, definition := range requested.Nodes {

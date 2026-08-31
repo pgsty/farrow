@@ -53,8 +53,9 @@ Use reload when the desired inventory may contain additions or changed fields.`,
 	},
 	"reload": {
 		long: `Stop selected nodes, re-read the desired inventory, and run the safe up
-convergence path. Additions can be created; definition changes still require
-an explicit recreate and removed nodes still require an explicit destroy.`,
+convergence path as one operation. Additions can be created; definition
+changes still require an explicit recreate and removed nodes still require an
+explicit destroy, and either is refused before any node stops.`,
 		example: `  farrow reload                  # re-read the discovered inventory
   farrow reload -f pigsty.yml    # reload from an explicit desired inventory
   farrow reload meta             # reload one selected node`,

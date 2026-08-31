@@ -83,7 +83,9 @@ specification; validate always requires an inventory.`,
 		"Open SSH or run a command in a guest",
 		`Open an interactive SSH session to a selected node, or run a remote command.
 The optional -- protects command arguments from Farrow: presentation flags
-before -- belong to Farrow and flags after -- belong to the remote command.`,
+before -- belong to Farrow and flags after -- belong to the remote command.
+Everything before -- must be nothing or one known node, so a misspelled node
+is refused instead of being run as a command on the control node.`,
 		`  farrow ssh                  # open the default/control node
   farrow ssh meta             # open one named node
   farrow ssh meta -- uptime   # run a remote command
@@ -98,7 +100,8 @@ before -- belong to Farrow and flags after -- belong to the remote command.`,
 		"Run a command in a guest",
 		`Run a required remote command over the verified deployment SSH connection and
 pass through its exit status. Use -- when the remote command or its arguments
-could be mistaken for Farrow presentation flags.`,
+could be mistaken for Farrow presentation flags; everything before -- must be
+nothing or one known node.`,
 		`  farrow exec -- hostname
   farrow exec meta -- systemctl is-active postgresql
   farrow --json exec meta -- uname -a`,

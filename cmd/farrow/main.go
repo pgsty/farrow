@@ -514,23 +514,49 @@ func executeSSHProcess(ctx context.Context, commandName, node, user, host string
 	return result, err
 }
 
-func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, stdout, stderr io.Writer) int {
-	node := ""
-	command := args
-	if len(command) > 0 && command[0] != "--" {
+// splitRemoteInvocation separates the optional node selector from the remote
+// command. With a literal --, everything before it is the selector and must
+// be nothing or one known node, so a misspelled node is a usage error rather
+// than a command run on the control node. Without --, the first argument is
+// the node only when it names one; anything else is the remote command.
+func splitRemoteInvocation(arguments []string, resolved spec.Resolved) (string, []string, error) {
+	known := func(name string) bool {
 		for _, candidate := range resolved.Nodes {
-			if candidate.Name == command[0] {
-				node = command[0]
-				command = command[1:]
-				break
+			if candidate.Name == name {
+				return true
 			}
 		}
+		return false
 	}
-	if len(command) > 0 && command[0] == "--" {
-		command = command[1:]
+	for index, argument := range arguments {
+		if argument != "--" {
+			continue
+		}
+		head, command := arguments[:index], arguments[index+1:]
+		switch {
+		case len(head) == 0:
+			return "", command, nil
+		case len(head) > 1:
+			return "", nil, fmt.Errorf("at most one node may precede --, got %s", strings.Join(head, " "))
+		case !known(head[0]):
+			return "", nil, fmt.Errorf("the deployment has no node %q", head[0])
+		}
+		return head[0], command, nil
+	}
+	if len(arguments) > 0 && known(arguments[0]) {
+		return arguments[0], arguments[1:], nil
+	}
+	return "", arguments, nil
+}
+
+func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, stdout, stderr io.Writer) int {
+	node, command, err := splitRemoteInvocation(args, resolved)
+	if err != nil {
+		errorf(stderr, "%v", err)
+		return exitUsage
 	}
 	if commandName == "exec" && len(command) == 0 {
-		fmt.Fprintln(stderr, "usage: farrow exec [node] -- command [args...]")
+		errorf(stderr, "exec requires a remote command: farrow exec [node] -- command [args...]")
 		return exitUsage
 	}
 	manager := privatevm.Manager{FarrowVersion: version.Version}
@@ -548,7 +574,7 @@ func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, st
 	}
 	sshArgs := vm.SSHArgsForUser(connection.User, connection.PrivateKey, connection.KnownHosts, connection.Port, command...)
 	if sshArgs == nil {
-		fmt.Fprintln(stderr, "resolved private SSH user is unsafe")
+		errorf(stderr, "resolved private SSH user is unsafe")
 		return exitIntegrity
 	}
 	debugf(stderr, "ssh mode=private node=%s user=%s host=%s port=%d arguments=%d", connection.Node, connection.User, connection.Host, connection.Port, len(command))
@@ -946,7 +972,7 @@ type sshConfigReconciler interface {
 
 func lifecycleSSHConfigAction(command string, deploymentHasNodes bool) string {
 	switch command {
-	case "up", "recreate":
+	case "up", "reload", "recreate":
 		return "install"
 	case "destroy":
 		if deploymentHasNodes {
@@ -1102,6 +1128,9 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		timeout, operation = 5*time.Minute, manager.Stop
 	case "restart":
 		timeout, operation = withReadinessTimeout(15*time.Minute, resolved), manager.Restart
+	case "reload":
+		timeout = withReadinessTimeout(20*time.Minute, resolved)
+		operation = func(ctx context.Context) (privatevm.Status, error) { return manager.Reload(ctx, resolved) }
 	case "recreate":
 		if err := confirmCLIAction(force, "recreate", stderr); err != nil {
 			errorf(stderr, "%v", err)
@@ -1112,23 +1141,15 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	case "status":
 		operation = manager.Status
 	case "destroy":
-		action := "destroy"
-		if len(nodes) != 0 {
-			action = "node destroy"
-			if deletePersistent || purge {
-				fmt.Fprintln(stderr, "--delete-persistent and --purge apply to whole-deployment destroy only")
-				return exitUsage
-			}
+		if len(nodes) != 0 && (deletePersistent || purge) {
+			errorf(stderr, "--delete-persistent and --purge apply to whole-deployment destroy only")
+			return exitUsage
 		}
 		if !force {
-			// State the widened scope before the typed confirmation.
-			if purge {
-				fmt.Fprintln(stderr, "purge: also deletes persistent data disks, the deployment keys, and the deployment state (images stay cached)")
-			} else if deletePersistent {
-				fmt.Fprintln(stderr, "delete-persistent: also deletes persistent data disks")
-			}
+			// State the exact scope before the typed confirmation.
+			fmt.Fprintln(stderr, destroyScope(resolved, nodes, deletePersistent, purge))
 		}
-		if err := confirmCLIAction(force, action, stderr); err != nil {
+		if err := confirmCLIAction(force, "destroy", stderr); err != nil {
 			errorf(stderr, "%v", err)
 			return exitUsage
 		}
@@ -1217,10 +1238,10 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		}
 		return reportPrivateLifecycleError(err, operationID, stdout, stderr)
 	}
-	if command == "up" {
+	if command == "up" || command == "reload" {
 		suggestHostsPublication(resolved, stderr)
 	}
-	if command == "up" || command == "start" || command == "restart" || command == "recreate" {
+	if command == "up" || command == "reload" || command == "start" || command == "restart" || command == "recreate" {
 		seen := make(map[string]struct{})
 		guestArch := lifecycleImageArch(resolved)
 		for _, node := range resolved.Nodes {
@@ -1285,25 +1306,53 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 		}
 		return reportCommandFailure(stdout, stderr, "conflict", message, "", exitConflict)
 	}
-	printWarnings(stderr, configurationWarnings(resolvedFile))
-	sequence := lifecycleSequence(command)
-	if len(sequence) == 2 {
-		// Vagrant-style reload: a stop/boot cycle that re-reads the
-		// configuration. Additive changes apply on the way up; destructive
-		// ones report their per-node recreate path exactly like plain up.
-		if code := runPrivateCommand(sequence[0], resolvedFile, nodes, options.Repository, options.Force, false, false, options.NoWait, false, stdout, stderr); code != exitOK {
-			return code
-		}
-		command = sequence[1]
+	// Selectors are checked against the same specification the engine will
+	// use, before host preflight, confirmation prompts, or any change.
+	if err := validateNodeSelectors(resolvedFile, nodes); err != nil {
+		return reportCommandFailure(stdout, stderr, "usage", err.Error(), "", exitUsage)
 	}
+	printWarnings(stderr, configurationWarnings(resolvedFile))
 	return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stdout, stderr)
 }
 
-func lifecycleSequence(command string) []string {
-	if command == "reload" {
-		return []string{"stop", "up"}
+func validateNodeSelectors(resolved spec.Resolved, nodes []string) error {
+	known := make(map[string]struct{}, len(resolved.Nodes))
+	for _, node := range resolved.Nodes {
+		known[node.Name] = struct{}{}
 	}
-	return []string{command}
+	seen := make(map[string]struct{}, len(nodes))
+	for _, name := range nodes {
+		if _, ok := known[name]; !ok {
+			return fmt.Errorf("the deployment has no node %q", name)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("node %q is selected more than once", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
+// destroyScope states exactly what a destroy will remove so the typed
+// confirmation covers a reviewed scope rather than a bare verb.
+func destroyScope(resolved spec.Resolved, nodes []string, deletePersistent, purge bool) string {
+	names := make([]string, 0, len(resolved.Nodes))
+	for _, node := range resolved.Nodes {
+		names = append(names, node.Name)
+	}
+	if len(nodes) != 0 {
+		return fmt.Sprintf("destroy scope: node(s) %s are removed from the deployment; the other nodes stay", strings.Join(nodes, ", "))
+	}
+	scope := fmt.Sprintf("destroy scope: the whole deployment (%d node(s): %s)", len(names), strings.Join(names, ", "))
+	switch {
+	case purge:
+		scope += "; also deletes persistent data disks, the deployment keys, and the deployment state (images stay cached)"
+	case deletePersistent:
+		scope += "; also deletes persistent data disks (keys and state are preserved)"
+	default:
+		scope += "; persistent data disks, keys, and state are preserved"
+	}
+	return scope
 }
 
 type sshConfigOptions struct {

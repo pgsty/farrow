@@ -126,8 +126,21 @@ func TestPrivateDriftPlansRecreateAndUpReturnsTypedConflict(t *testing.T) {
 	if _, err := manager.Up(context.Background(), requested); !errors.Is(err, ErrRecreateRequired) {
 		t.Fatalf("drift up error=%T %v, want ErrRecreateRequired", err, err)
 	}
+	// Reload is stop + up; it must refuse the same drift before anything
+	// stops, and refuse removed nodes the same way up does.
+	if _, err := manager.Reload(context.Background(), requested); !errors.Is(err, ErrRecreateRequired) {
+		t.Fatalf("drift reload error=%T %v, want ErrRecreateRequired", err, err)
+	}
+	removed := cloneResolved(persisted)
+	removed.Nodes = []spec.Node{{Name: "node-1", Control: true, Address: "10.10.10.11", CPUs: 1, Memory: 512 << 20, RootDisk: 1 << 30}}
+	if _, err := manager.Reload(context.Background(), removed); !errors.Is(err, ErrNodesRemoved) {
+		t.Fatalf("removed-node reload error=%T %v, want ErrNodesRemoved", err, err)
+	}
 	if after, err := store.ReadDeployment(); err != nil || after.SpecHash != persistedHash {
-		t.Fatalf("drift planning/up mutated deployment: %#v err=%v", after, err)
+		t.Fatalf("drift planning/up/reload mutated deployment: %#v err=%v", after, err)
+	}
+	if node, err := store.ReadNode("meta"); err != nil || node.Phase != state.Stopped || node.Generation != 1 {
+		t.Fatalf("drift reload touched node state: %#v err=%v", node, err)
 	}
 }
 

@@ -715,6 +715,8 @@ func lifecycleMessage(command string) string {
 		return "Stopping the deployment"
 	case "restart":
 		return "Restarting the deployment"
+	case "reload":
+		return "Stopping, re-reading the inventory, and converging the deployment"
 	case "recreate":
 		return "Recreating the deployment"
 	case "destroy":

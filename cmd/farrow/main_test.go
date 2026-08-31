@@ -233,12 +233,76 @@ func TestCommandTimeoutHonorsResolvedReadiness(t *testing.T) {
 	}
 }
 
-func TestLifecycleSequenceKeepsReloadDistinctFromRestart(t *testing.T) {
-	if got := strings.Join(lifecycleSequence("reload"), ","); got != "stop,up" {
-		t.Fatalf("reload sequence = %q", got)
+func TestSplitRemoteInvocationValidatesNodesBeforeSeparator(t *testing.T) {
+	t.Parallel()
+	resolved := spec.Resolved{Nodes: []spec.Node{{Name: "meta"}, {Name: "node-1"}}}
+	for _, test := range []struct {
+		arguments []string
+		node      string
+		command   string
+		wantErr   string
+	}{
+		{arguments: nil},
+		{arguments: []string{"meta"}, node: "meta"},
+		{arguments: []string{"meta", "uptime"}, node: "meta", command: "uptime"},
+		{arguments: []string{"uptime", "-p"}, command: "uptime -p"},
+		{arguments: []string{"--", "uptime"}, command: "uptime"},
+		{arguments: []string{"meta", "--", "ls", "--", "-l"}, node: "meta", command: "ls -- -l"},
+		{arguments: []string{"metaa", "--", "uptime"}, wantErr: `the deployment has no node "metaa"`},
+		{arguments: []string{"meta", "node-1", "--", "uptime"}, wantErr: "at most one node may precede --"},
+	} {
+		node, command, err := splitRemoteInvocation(test.arguments, resolved)
+		if test.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Errorf("split(%v) err = %v, want %q", test.arguments, err, test.wantErr)
+			}
+			continue
+		}
+		if err != nil || node != test.node || strings.Join(command, " ") != test.command {
+			t.Errorf("split(%v) = %q, %q, %v; want %q, %q", test.arguments, node, strings.Join(command, " "), err, test.node, test.command)
+		}
 	}
-	if got := strings.Join(lifecycleSequence("restart"), ","); got != "restart" {
-		t.Fatalf("restart sequence = %q", got)
+}
+
+func TestNodeSelectorsAreValidatedBeforeAnyOperation(t *testing.T) {
+	resolved := spec.Resolved{Nodes: []spec.Node{{Name: "meta"}, {Name: "node-1"}}}
+	if err := validateNodeSelectors(resolved, []string{"node-1", "meta"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateNodeSelectors(resolved, []string{"meta", "definitely-not-a-node"}); err == nil || !strings.Contains(err.Error(), `no node "definitely-not-a-node"`) {
+		t.Fatalf("unknown selector err = %v", err)
+	}
+	if err := validateNodeSelectors(resolved, []string{"meta", "meta"}); err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("duplicate selector err = %v", err)
+	}
+	// Every inventory-reading command rejects the selector as a usage error
+	// before host preflight or a confirmation prompt; recreate would
+	// otherwise demand --force first, and up/plan would probe the network.
+	t.Setenv("FARROW_HOME", t.TempDir())
+	for _, command := range []string{"plan", "up", "reload", "recreate"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"--json", command, "-f", "../../tests/fixtures/private-two.yaml", "definitely-not-a-node"}, &stdout, &stderr)
+		if code != exitUsage || !strings.Contains(stdout.String(), `"error": "usage"`) || !strings.Contains(stdout.String(), "definitely-not-a-node") {
+			t.Errorf("%s unknown node code=%d stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestDestroyScopeStatesWhatIsRemoved(t *testing.T) {
+	t.Parallel()
+	resolved := spec.Resolved{Nodes: []spec.Node{{Name: "meta"}, {Name: "node-1"}}}
+	if got := destroyScope(resolved, []string{"node-1"}, false, false); !strings.Contains(got, "node(s) node-1 are removed") {
+		t.Fatalf("node scope = %q", got)
+	}
+	whole := destroyScope(resolved, nil, false, false)
+	if !strings.Contains(whole, "2 node(s): meta, node-1") || !strings.Contains(whole, "are preserved") {
+		t.Fatalf("whole scope = %q", whole)
+	}
+	if got := destroyScope(resolved, nil, true, false); !strings.Contains(got, "also deletes persistent data disks (keys and state are preserved)") {
+		t.Fatalf("delete-persistent scope = %q", got)
+	}
+	if got := destroyScope(resolved, nil, true, true); !strings.Contains(got, "deployment keys, and the deployment state") {
+		t.Fatalf("purge scope = %q", got)
 	}
 }
 
@@ -272,6 +336,7 @@ func TestLifecycleSSHConfigReconciliationPolicy(t *testing.T) {
 	}{
 		{command: "start", deploymentHasNodes: true},
 		{command: "up", deploymentHasNodes: true, action: "install"},
+		{command: "reload", deploymentHasNodes: true, action: "install"},
 		{command: "recreate", deploymentHasNodes: true, action: "install"},
 		{command: "destroy", deploymentHasNodes: true, action: "install"},
 		{command: "destroy", deploymentHasNodes: false, action: "remove"},
