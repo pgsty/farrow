@@ -75,7 +75,7 @@ func TestPrepareOutputYAML(t *testing.T) {
 	}
 }
 
-func TestPresentationFlagsOverrideViperEnvironment(t *testing.T) {
+func TestPresentationFlagsOverrideEnvironment(t *testing.T) {
 	t.Setenv("FARROW_OUTPUT", "json")
 	t.Setenv("FARROW_VERBOSE", "true")
 	var stdout bytes.Buffer

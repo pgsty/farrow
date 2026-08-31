@@ -9,12 +9,12 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pgsty/farrow/internal/activity"
-	"github.com/spf13/viper"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/term"
 )
@@ -30,7 +30,6 @@ const (
 type outputContext struct {
 	format      outputFormat
 	verbose     bool
-	settings    *viper.Viper
 	stdoutTTY   bool
 	stderrTTY   bool
 	stderrFile  bool
@@ -161,6 +160,14 @@ func verboseOutput(writer io.Writer) bool {
 	return state != nil && state.verbose
 }
 
+// enableVerbose turns on diagnostics after argument preparation, for the
+// forms only Cobra sees: a combined shorthand such as -nv, or a repeated -vv.
+func enableVerbose(writer io.Writer) {
+	if state := outputContextFrom(writer); state != nil {
+		state.verbose = true
+	}
+}
+
 func parseBooleanOption(argument, name string) (matched, enabled bool, err error) {
 	if argument == name {
 		return true, true, nil
@@ -188,23 +195,39 @@ func rejectedPresentationAlias(argument string) bool {
 	return false
 }
 
+// environmentDefaults reads the two presentation environment variables that
+// command-line flags override: FARROW_OUTPUT (text, json, yaml) and
+// FARROW_VERBOSE (a boolean).
+func environmentDefaults() (outputFormat, bool, error) {
+	format := outputText
+	if value, set := os.LookupEnv("FARROW_OUTPUT"); set && strings.TrimSpace(value) != "" {
+		format = outputFormat(strings.ToLower(strings.TrimSpace(value)))
+		switch format {
+		case outputText, outputJSON, outputYAML:
+		default:
+			return "", false, fmt.Errorf("FARROW_OUTPUT must be text, json, or yaml, got %q", format)
+		}
+	}
+	verbose := false
+	if value, set := os.LookupEnv("FARROW_VERBOSE"); set && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return "", false, fmt.Errorf("FARROW_VERBOSE must be true or false, got %q", value)
+		}
+		verbose = parsed
+	}
+	return format, verbose, nil
+}
+
 // prepareOutput removes the cross-command presentation flags before the
 // existing command-local flag parsers run. A literal -- ends presentation flag
 // parsing so remote command arguments remain byte-for-byte untouched.
 func prepareOutput(args []string, stdout, stderr io.Writer) ([]string, io.Writer, io.Writer, error) {
 	clean := make([]string, 0, len(args))
-	settings := viper.New()
-	settings.SetDefault("output.format", string(outputText))
-	settings.SetDefault("output.verbose", false)
-	_ = settings.BindEnv("output.format", "FARROW_OUTPUT")
-	_ = settings.BindEnv("output.verbose", "FARROW_VERBOSE")
-	format := outputFormat(strings.ToLower(strings.TrimSpace(settings.GetString("output.format"))))
-	switch format {
-	case outputText, outputJSON, outputYAML:
-	default:
-		return nil, stdout, stderr, fmt.Errorf("FARROW_OUTPUT must be text, json, or yaml, got %q", format)
+	format, verbose, err := environmentDefaults()
+	if err != nil {
+		return nil, stdout, stderr, err
 	}
-	verbose := settings.GetBool("output.verbose")
 	formatFromCLI := false
 	passthrough := false
 	for _, argument := range args {
@@ -268,13 +291,10 @@ func prepareOutput(args []string, stdout, stderr io.Writer) ([]string, io.Writer
 		}
 		clean = append(clean, argument)
 	}
-	settings.Set("output.format", string(format))
-	settings.Set("output.verbose", verbose)
 	_, stderrFile := writerFile(stderr)
 	state := &outputContext{
 		format:     format,
 		verbose:    verbose,
-		settings:   settings,
 		stdoutTTY:  writerTTY(stdout),
 		stderrTTY:  writerTTY(stderr),
 		stderrFile: stderrFile,

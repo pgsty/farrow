@@ -8,24 +8,14 @@ license_source_mappings() {
     'aead.dev-minisign-LICENSE|module|aead.dev/minisign@v0.3.0/LICENSE' \
     'github.com-diskfs-go-diskfs-LICENSE|module|github.com/diskfs/go-diskfs@v1.9.4/LICENSE' \
     'github.com-djherbis-times-LICENSE|module|github.com/djherbis/times@v1.6.0/LICENSE' \
-    'github.com-fsnotify-fsnotify-LICENSE|module|github.com/fsnotify/fsnotify@v1.9.0/LICENSE' \
-    'github.com-go-viper-mapstructure-v2-LICENSE|module|github.com/go-viper/mapstructure/v2@v2.4.0/LICENSE' \
-    'github.com-pelletier-go-toml-v2-LICENSE|module|github.com/pelletier/go-toml/v2@v2.2.4/LICENSE' \
-    'github.com-sagikazarmark-locafero-LICENSE|module|github.com/sagikazarmark/locafero@v0.11.0/LICENSE' \
-    'github.com-sourcegraph-conc-LICENSE|module|github.com/sourcegraph/conc@v0.3.1-0.20240121214520-5f936abd7ae8/LICENSE' \
-    'github.com-spf13-afero-LICENSE|module|github.com/spf13/afero@v1.15.0/LICENSE.txt' \
-    'github.com-spf13-cast-LICENSE|module|github.com/spf13/cast@v1.10.0/LICENSE' \
     'github.com-spf13-cobra-LICENSE|module|github.com/spf13/cobra@v1.10.2/LICENSE.txt' \
     'github.com-spf13-pflag-LICENSE|module|github.com/spf13/pflag@v1.0.10/LICENSE' \
-    'github.com-spf13-viper-LICENSE|module|github.com/spf13/viper@v1.21.0/LICENSE' \
-    'github.com-subosito-gotenv-LICENSE|module|github.com/subosito/gotenv@v1.6.0/LICENSE' \
     'go.yaml.in-yaml-v3-LICENSE|module|go.yaml.in/yaml/v3@v3.0.5/LICENSE' \
     'go.yaml.in-yaml-v3-NOTICE|module|go.yaml.in/yaml/v3@v3.0.5/NOTICE' \
     'golang.org-go-stdlib-LICENSE|go|LICENSE' \
     'golang.org-x-crypto-LICENSE|module|golang.org/x/crypto@v0.55.0/LICENSE' \
     'golang.org-x-sys-LICENSE|module|golang.org/x/sys@v0.47.0/LICENSE' \
-    'golang.org-x-term-LICENSE|module|golang.org/x/term@v0.45.0/LICENSE' \
-    'golang.org-x-text-LICENSE|module|golang.org/x/text@v0.41.0/LICENSE'
+    'golang.org-x-term-LICENSE|module|golang.org/x/term@v0.45.0/LICENSE'
 }
 
 license_names() {

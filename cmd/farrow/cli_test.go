@@ -596,7 +596,7 @@ func TestSSHShortcutAcceptsExplicitName(t *testing.T) {
 	}
 }
 
-func TestViperOutputEnvironment(t *testing.T) {
+func TestOutputEnvironmentDefaults(t *testing.T) {
 	t.Setenv("FARROW_OUTPUT", "json")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -606,6 +606,25 @@ func TestViperOutputEnvironment(t *testing.T) {
 	var result map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result["name"] != "farrow" {
 		t.Fatalf("output=%q result=%v err=%v", stdout.String(), result, err)
+	}
+}
+
+func TestVerboseShorthandCombinationsReachTheOutputContext(t *testing.T) {
+	for _, arguments := range [][]string{{"-vv", "version"}, {"version", "-vv"}} {
+		var stdout, stderr bytes.Buffer
+		prepared, out, errOut, err := prepareOutput(arguments, &stdout, &stderr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if verboseOutput(errOut) {
+			t.Fatalf("prepareOutput(%v) consumed a Cobra-only shorthand form", arguments)
+		}
+		if code := executeCLI(prepared, out, errOut); code != exitOK {
+			t.Fatalf("executeCLI(%v) code=%d stderr=%s", prepared, code, stderr.String())
+		}
+		if !verboseOutput(errOut) {
+			t.Fatalf("executeCLI(%v) did not enable verbose diagnostics", prepared)
+		}
 	}
 }
 

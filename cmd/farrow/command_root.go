@@ -42,6 +42,14 @@ specification; validate always requires an inventory.`,
 	root.PersistentFlags().Bool("json", false, "emit JSON output")
 	root.PersistentFlags().Bool("yaml", false, "emit YAML output")
 	root.PersistentFlags().BoolP("verbose", "v", false, "emit detailed diagnostics to stderr")
+	// prepareOutput consumes the spelled-out presentation flags before Cobra
+	// runs, so the persistent flags above mostly document them. Cobra still
+	// parses shorthand combinations (-nv, -vv); honor those too.
+	root.PersistentPreRun = func(command *cobra.Command, _ []string) {
+		if verbose, err := command.Flags().GetBool("verbose"); err == nil && verbose {
+			enableVerbose(stderr)
+		}
+	}
 
 	root.AddGroup(
 		&cobra.Group{ID: "setup", Title: "Setup:"},

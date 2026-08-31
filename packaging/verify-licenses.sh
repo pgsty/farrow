@@ -12,22 +12,12 @@ expected=$(printf '%s\n' \
   $'aead.dev/minisign\tv0.3.0' \
   $'github.com/diskfs/go-diskfs\tv1.9.4' \
   $'github.com/djherbis/times\tv1.6.0' \
-  $'github.com/fsnotify/fsnotify\tv1.9.0' \
-  $'github.com/go-viper/mapstructure/v2\tv2.4.0' \
-  $'github.com/pelletier/go-toml/v2\tv2.2.4' \
-  $'github.com/sagikazarmark/locafero\tv0.11.0' \
-  $'github.com/sourcegraph/conc\tv0.3.1-0.20240121214520-5f936abd7ae8' \
-  $'github.com/spf13/afero\tv1.15.0' \
-  $'github.com/spf13/cast\tv1.10.0' \
   $'github.com/spf13/cobra\tv1.10.2' \
   $'github.com/spf13/pflag\tv1.0.10' \
-  $'github.com/spf13/viper\tv1.21.0' \
-  $'github.com/subosito/gotenv\tv1.6.0' \
   $'go.yaml.in/yaml/v3\tv3.0.5' \
   $'golang.org/x/crypto\tv0.55.0' \
   $'golang.org/x/sys\tv0.47.0' \
-  $'golang.org/x/term\tv0.45.0' \
-  $'golang.org/x/text\tv0.41.0' | LC_ALL=C sort)
+  $'golang.org/x/term\tv0.45.0' | LC_ALL=C sort)
 actual=$(
   cd "${repo}"
   go list -deps -json ./cmd/farrow ./cmd/farrow-hosts-helper |
@@ -59,4 +49,4 @@ actual_license_list=$(find "${license_corpus}" -mindepth 1 -maxdepth 1 -type f -
   printf 'generated dependency license corpus contains a non-regular entry\n' >&2
   exit 1
 }
-printf 'verified nineteen reachable module versions, Go %s stdlib license, and exact upstream license/notice bytes\n' "${FARROW_GO_VERSION}"
+printf 'verified nine reachable module versions, Go %s stdlib license, and exact upstream license/notice bytes\n' "${FARROW_GO_VERSION}"
