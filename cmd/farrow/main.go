@@ -2087,10 +2087,6 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	return executeCLI(ctx, prepared, preparedStdout, preparedStderr)
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
-	return runContext(context.TODO(), args, stdout, stderr)
-}
-
 // interruptSignals is the one delivery channel for SIGINT and SIGTERM. It is
 // package-level so a child that must own SIGINT for a while (an SSH session)
 // can suspend and re-arm the same registration.
