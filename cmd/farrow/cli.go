@@ -133,7 +133,7 @@ func resolvedNodeNames(command *cobra.Command, preferConfig bool) []string {
 			return nil
 		}
 	}
-	if candidate, err := currentProjectResolved(); err == nil {
+	if candidate, err := currentDeploymentResolved(); err == nil {
 		resolved = candidate
 	}
 	return sortedNodeNames(resolved)

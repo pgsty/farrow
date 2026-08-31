@@ -41,8 +41,8 @@ func removeOwnedRegularWithin(root, path string) error {
 	return fsutil.SyncDir(root)
 }
 
-func privateNodeTargets(projectValue Deployment, node state.NodeState) (string, []string, error) {
-	nodeDir, err := projectValue.NodeDir(node.Node)
+func privateNodeTargets(deploymentValue Deployment, node state.NodeState) (string, []string, error) {
+	nodeDir, err := deploymentValue.NodeDir(node.Node)
 	if err != nil {
 		return "", nil, err
 	}
@@ -96,12 +96,12 @@ func privateNodeTargets(projectValue Deployment, node state.NodeState) (string, 
 	return nodeDir, ordered, nil
 }
 
-func (m Manager) removeKnownHostEntries(ctx context.Context, projectValue Deployment, nodes []state.NodeState, resolvedAddresses map[string]string) error {
+func (m Manager) removeKnownHostEntries(ctx context.Context, deploymentValue Deployment, nodes []state.NodeState, resolvedAddresses map[string]string) error {
 	sshKeygen, err := m.lookPath("ssh-keygen")
 	if err != nil {
 		return err
 	}
-	keysDir := filepath.Join(projectValue.Root, "keys")
+	keysDir := filepath.Join(deploymentValue.Root, "keys")
 	knownHosts := filepath.Join(keysDir, "known_hosts")
 	for _, node := range nodes {
 		for _, host := range []string{fmt.Sprintf("[127.0.0.1]:%d", node.SSHPort), resolvedAddresses[node.Node]} {
@@ -128,26 +128,26 @@ func (m Manager) removeKnownHostEntries(ctx context.Context, projectValue Deploy
 }
 
 func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
-	projectValue, err := m.openProject(false)
+	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
 		return Status{}, err
 	}
-	store := state.Store{Root: projectValue.Root}
-	projectState, err := store.ReadDeployment()
-	if err != nil || projectState.Resolved.Network != "private" {
+	store := state.Store{Root: deploymentValue.Root}
+	deploymentState, err := store.ReadDeployment()
+	if err != nil || deploymentState.Resolved.Network != "private" {
 		return Status{}, errors.New("the deployment has no valid private state")
 	}
-	selected, err := selectedNodeNames(projectState.Resolved, m.Nodes)
+	selected, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
 	if err != nil {
 		return Status{}, err
 	}
-	partial := len(selected) != len(projectState.Resolved.Nodes)
+	partial := len(selected) != len(deploymentState.Resolved.Nodes)
 	if partial && !m.allowPartialDestroy {
 		return Status{}, errors.New("private destroy currently requires selecting the complete deployment")
 	}
 	selectedSet := nodeNameSet(selected)
 	needsStop := false
-	for _, definition := range projectState.Resolved.Nodes {
+	for _, definition := range deploymentState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
 			continue
 		}
@@ -169,19 +169,19 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 	}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
+	deploymentLock, err := acquireDeploymentLock(lockContext, deploymentValue.Root, false)
 	if err != nil {
 		return Status{}, err
 	}
 	defer func() {
-		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment destroy lock")
+		returnErr = lock.JoinRelease(returnErr, deploymentLock, "deployment destroy lock")
 	}()
-	nodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
-	allNodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
+	nodes := make([]state.NodeState, 0, len(deploymentState.Resolved.Nodes))
+	allNodes := make([]state.NodeState, 0, len(deploymentState.Resolved.Nodes))
 	targets := make(map[string][]string)
 	nodeDirs := make(map[string]string)
 	addresses := make(map[string]string)
-	for _, definition := range projectState.Resolved.Nodes {
+	for _, definition := range deploymentState.Resolved.Nodes {
 		node, err := store.ReadNode(definition.Name)
 		if missingPath(err) {
 			continue
@@ -200,7 +200,7 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 		if process.MatchesLive(ctx, m.runner(), identityValue, node.Invocation) || process.Alive(node.Process.PID) {
 			return Status{}, fmt.Errorf("refuse private destroy while node %s process is live", node.Node)
 		}
-		nodeDir, nodeTargets, err := privateNodeTargets(projectValue, node)
+		nodeDir, nodeTargets, err := privateNodeTargets(deploymentValue, node)
 		if err != nil {
 			return Status{}, err
 		}
@@ -209,13 +209,13 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 		nodeDirs[node.Node] = nodeDir
 		addresses[node.Node] = definition.Address
 	}
-	persistentIdentities, err := validatePrivatePersistentState(projectValue, projectState, allNodes)
+	persistentIdentities, err := validatePrivatePersistentState(deploymentValue, deploymentState, allNodes)
 	if err != nil {
 		return Status{}, err
 	}
-	deploymentStatePath := filepath.Join(projectValue.Root, "state.json")
+	deploymentStatePath := filepath.Join(deploymentValue.Root, "state.json")
 	if !partial {
-		if err := ownedRegularWithin(projectValue.Root, deploymentStatePath); err != nil {
+		if err := ownedRegularWithin(deploymentValue.Root, deploymentStatePath); err != nil {
 			return Status{}, err
 		}
 	}
@@ -241,7 +241,7 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 			if source == "" {
 				return Status{}, fmt.Errorf("persistent private disk %s/%s has no state path", identityValue.Node, identityValue.Name)
 			}
-			if _, err := persistent.Preserve(projectValue.Root, identityValue, source); err != nil {
+			if _, err := persistent.Preserve(deploymentValue.Root, identityValue, source); err != nil {
 				return Status{}, err
 			}
 		}
@@ -257,18 +257,18 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 			return Status{}, fmt.Errorf("private node directory contains unexpected artifacts: %w", err)
 		}
 	}
-	if err := m.removeKnownHostEntries(ctx, projectValue, nodes, addresses); err != nil {
+	if err := m.removeKnownHostEntries(ctx, deploymentValue, nodes, addresses); err != nil {
 		return Status{}, err
 	}
 	if !partial {
-		if err := removeOwnedRegularWithin(projectValue.Root, deploymentStatePath); err != nil {
+		if err := removeOwnedRegularWithin(deploymentValue.Root, deploymentStatePath); err != nil {
 			return Status{}, err
 		}
 	}
 	if partial && m.dropFromSpec {
-		remaining := cloneResolved(projectState.Resolved)
+		remaining := cloneResolved(deploymentState.Resolved)
 		remaining.Nodes = remaining.Nodes[:0]
-		for _, definition := range projectState.Resolved.Nodes {
+		for _, definition := range deploymentState.Resolved.Nodes {
 			if _, removed := selectedSet[definition.Name]; !removed {
 				remaining.Nodes = append(remaining.Nodes, definition)
 			}
@@ -289,8 +289,8 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 	case partial:
 		message = "destroyed selected node artifacts for immediate recreate; deployment state, peer nodes, keys, and persistent data disks preserved"
 	}
-	result := Status{OperationID: m.OperationID, SpecHash: projectState.SpecHash, Message: message}
-	for _, definition := range projectState.Resolved.Nodes {
+	result := Status{OperationID: m.OperationID, SpecHash: deploymentState.SpecHash, Message: message}
+	for _, definition := range deploymentState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
 			continue
 		}
@@ -300,7 +300,7 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 }
 
 // DestroyNodes destroys only the selected nodes and removes them from the
-// project's resolved state and lease, so a later `up` does not resurrect
+// deployment's resolved state and lock, so a later `up` does not resurrect
 // them. This is the explicit removal path required by scale-in edits.
 func (m Manager) DestroyNodes(ctx context.Context) (Status, error) {
 	if len(m.Nodes) == 0 {
@@ -312,23 +312,23 @@ func (m Manager) DestroyNodes(ctx context.Context) (Status, error) {
 }
 
 func (m Manager) Recreate(ctx context.Context) (Status, error) {
-	projectValue, err := m.openProject(false)
+	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
 		return Status{}, err
 	}
-	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
-	if err != nil || projectState.Resolved.Network != "private" {
+	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
+	if err != nil || deploymentState.Resolved.Network != "private" {
 		return Status{}, errors.New("the deployment has no valid private state")
 	}
-	return m.RecreateResolved(ctx, projectState.Resolved)
+	return m.RecreateResolved(ctx, deploymentState.Resolved)
 }
 
-func validatePrivateRecreatePersistent(projectValue Deployment, current, requested spec.Resolved) error {
-	currentIdentities, err := privatePersistentIdentities(projectValue, current)
+func validatePrivateRecreatePersistent(deploymentValue Deployment, current, requested spec.Resolved) error {
+	currentIdentities, err := privatePersistentIdentities(deploymentValue, current)
 	if err != nil {
 		return err
 	}
-	requestedIdentities, err := privatePersistentIdentities(projectValue, requested)
+	requestedIdentities, err := privatePersistentIdentities(deploymentValue, requested)
 	if err != nil {
 		return err
 	}
@@ -345,7 +345,7 @@ func validatePrivateRecreatePersistent(projectValue Deployment, current, request
 			return fmt.Errorf("recreate desired configuration is incompatible with persistent disk %s/%s", identityValue.Node, identityValue.Name)
 		}
 	}
-	_, err = persistent.ValidateDesired(projectValue.Root, requestedIdentities)
+	_, err = persistent.ValidateDesired(deploymentValue.Root, requestedIdentities)
 	return err
 }
 
@@ -356,15 +356,15 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err := validateResolved(requested); err != nil {
 		return Status{}, err
 	}
-	projectValue, err := m.openProject(false)
+	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
 		return Status{}, err
 	}
-	projectState, err := (state.Store{Root: projectValue.Root}).ReadDeployment()
-	if err != nil || projectState.Resolved.Network != "private" {
+	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
+	if err != nil || deploymentState.Resolved.Network != "private" {
 		return Status{}, errors.New("the deployment has no valid private state")
 	}
-	if err := validatePrivateRecreatePersistent(projectValue, projectState.Resolved, requested); err != nil {
+	if err := validatePrivateRecreatePersistent(deploymentValue, deploymentState.Resolved, requested); err != nil {
 		return Status{}, err
 	}
 	profile, err := m.nativeProfile()
@@ -391,7 +391,7 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 		return Status{}, err
 	}
 	destroyManager := m
-	selected, err := selectedNodeNames(projectState.Resolved, m.Nodes)
+	selected, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
 	if err != nil {
 		return Status{}, err
 	}
@@ -400,7 +400,7 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 		return Status{}, err
 	}
 	if len(m.Nodes) != 0 {
-		drifted, driftErr := runtimeDriftNodes(state.Store{Root: projectValue.Root}, requested, runtime.Profile)
+		drifted, driftErr := runtimeDriftNodes(state.Store{Root: deploymentValue.Root}, requested, runtime.Profile)
 		if driftErr != nil {
 			return Status{}, driftErr
 		}
@@ -408,10 +408,10 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 			return Status{}, fmt.Errorf("%w: runtime changes require whole-deployment recreate without node selectors", ErrRecreateRequired)
 		}
 	}
-	if err := selectedShareSources(projectValue, requested, requestedSelection); err != nil {
+	if err := selectedShareSources(deploymentValue, requested, requestedSelection); err != nil {
 		return Status{}, err
 	}
-	shareBinaries, err := selectedShareInvocationBinaries(state.Store{Root: projectValue.Root}, projectState.Resolved, selected)
+	shareBinaries, err := selectedShareInvocationBinaries(state.Store{Root: deploymentValue.Root}, deploymentState.Resolved, selected)
 	if err != nil {
 		return Status{}, err
 	}
@@ -421,7 +421,7 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err := validatePrivateShareDeviceHelp(ctx, m.runner(), shareBinaries); err != nil {
 		return Status{}, err
 	}
-	if len(selected) != len(projectState.Resolved.Nodes) {
+	if len(selected) != len(deploymentState.Resolved.Nodes) {
 		destroyManager.allowPartialDestroy = true
 	}
 	if _, err := destroyManager.Destroy(ctx); err != nil {

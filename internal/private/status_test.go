@@ -22,8 +22,8 @@ import (
 func statusFixture(t *testing.T) (StartConfig, state.Store) {
 	t.Helper()
 	config, _ := preparedStartFixture(t)
-	t.Setenv("FARROW_HOME", config.Project.Root)
-	return config, state.Store{Root: config.Project.Root}
+	t.Setenv("FARROW_HOME", config.Deployment.Root)
+	return config, state.Store{Root: config.Deployment.Root}
 }
 
 func TestSelectedStatusConnectionAndStopIgnoreDegradedPeer(t *testing.T) {

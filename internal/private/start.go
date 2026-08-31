@@ -27,7 +27,7 @@ type StartAborter interface {
 
 type NativeLifecycle struct {
 	VM           vm.Lifecycle
-	Project      Deployment
+	Deployment   Deployment
 	Shares       map[string][]spec.Share
 	SSHPath      string
 	PrivateKey   string
@@ -36,7 +36,7 @@ type NativeLifecycle struct {
 }
 
 func (l NativeLifecycle) PreflightStart(node state.NodeState) error {
-	bundle, err := openPrivateNodeShares(l.Project, l.Shares, node)
+	bundle, err := openPrivateNodeShares(l.Deployment, l.Shares, node)
 	if err != nil {
 		return err
 	}
@@ -68,7 +68,7 @@ func (l NativeLifecycle) privateNetworkFile() (*os.File, error) {
 }
 
 func (l NativeLifecycle) Start(ctx context.Context, node state.NodeState) (_ process.Identity, returnErr error) {
-	bundle, err := openPrivateNodeShares(l.Project, l.Shares, node)
+	bundle, err := openPrivateNodeShares(l.Deployment, l.Shares, node)
 	if err != nil {
 		return process.Identity{}, err
 	}
@@ -118,7 +118,7 @@ func (l NativeLifecycle) WaitReady(ctx context.Context, node state.NodeState, ti
 }
 
 type StartConfig struct {
-	Project      Deployment
+	Deployment   Deployment
 	Lifecycle    NodeLifecycle
 	Nodes        []string
 	Concurrency  int
@@ -196,7 +196,7 @@ func writeNodes(store state.Store, nodes []state.NodeState) error {
 }
 
 func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, error) {
-	if config.Project.Root == "" || config.Lifecycle == nil {
+	if config.Deployment.Root == "" || config.Lifecycle == nil {
 		return nil, errors.New("private start deployment or lifecycle is incomplete")
 	}
 	if config.Concurrency <= 0 {
@@ -211,7 +211,7 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, err
 	if config.SetupRuntime == nil {
 		config.SetupRuntime = setupRuntime
 	}
-	store := state.Store{Root: config.Project.Root}
+	store := state.Store{Root: config.Deployment.Root}
 	nodes, err := loadNodes(store, config.Nodes)
 	if err != nil {
 		return nil, err

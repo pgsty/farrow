@@ -177,7 +177,7 @@ func TestRollbackFlagIsUpOnly(t *testing.T) {
 	}
 }
 
-func TestProvisionRejectsUnsafeInputBeforeProjectAccess(t *testing.T) {
+func TestProvisionRejectsUnsafeInputBeforeDeploymentAccess(t *testing.T) {
 	root := t.TempDir()
 	scriptPath := filepath.Join(root, "setup.sh")
 	if err := os.WriteFile(scriptPath, []byte("echo ok\n"), 0o600); err != nil {

@@ -28,9 +28,9 @@ func writeDestroyKeyFixtures(t *testing.T, root string) string {
 
 func TestPrivateDestroyRemovesOnlyNodesAndPreservesKeysStateCache(t *testing.T) {
 	startConfig, nodes := preparedStartFixture(t)
-	projectValue := startConfig.Project
-	t.Setenv("FARROW_HOME", projectValue.Root)
-	keysDir := writeDestroyKeyFixtures(t, projectValue.Root)
+	deploymentValue := startConfig.Deployment
+	t.Setenv("FARROW_HOME", deploymentValue.Root)
+	keysDir := writeDestroyKeyFixtures(t, deploymentValue.Root)
 	manager := Manager{FarrowVersion: "test"}
 	result, err := manager.Destroy(context.Background())
 	if err != nil {
@@ -40,32 +40,32 @@ func TestPrivateDestroyRemovesOnlyNodesAndPreservesKeysStateCache(t *testing.T) 
 		t.Fatalf("destroy result = %#v", result)
 	}
 	for _, node := range nodes {
-		directory, _ := projectValue.NodeDir(node.Node)
+		directory, _ := deploymentValue.NodeDir(node.Node)
 		if _, err := os.Lstat(directory); !os.IsNotExist(err) {
 			t.Fatalf("destroyed node directory remains: %s: %v", directory, err)
 		}
 	}
-	for _, path := range []string{keysDir, filepath.Join(keysDir, "id_ed25519"), filepath.Join(projectValue.Root, "base.qcow2")} {
+	for _, path := range []string{keysDir, filepath.Join(keysDir, "id_ed25519"), filepath.Join(deploymentValue.Root, "base.qcow2")} {
 		if _, err := os.Lstat(path); err != nil {
 			t.Fatalf("preserved private artifact missing %s: %v", path, err)
 		}
 	}
-	if _, err := os.Lstat(filepath.Join(projectValue.Root, "state.json")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(deploymentValue.Root, "state.json")); !os.IsNotExist(err) {
 		t.Fatalf("full destroy must remove the deployment state document: %v", err)
 	}
 }
 
 func TestPrivatePartialRecreateDestroyPreservesPeerState(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
-	projectValue := startConfig.Project
-	t.Setenv("FARROW_HOME", projectValue.Root)
-	writeDestroyKeyFixtures(t, projectValue.Root)
+	deploymentValue := startConfig.Deployment
+	t.Setenv("FARROW_HOME", deploymentValue.Root)
+	writeDestroyKeyFixtures(t, deploymentValue.Root)
 	manager := Manager{FarrowVersion: "test", Nodes: []string{"node-1"}, allowPartialDestroy: true}
 	result, err := manager.Destroy(context.Background())
 	if err != nil || len(result.Nodes) != 1 || result.Nodes[0].Name != "node-1" || result.Nodes[0].State != state.Absent {
 		t.Fatalf("partial destroy result=%#v err=%v", result, err)
 	}
-	store := state.Store{Root: projectValue.Root}
+	store := state.Store{Root: deploymentValue.Root}
 	if _, err := store.ReadNode("meta"); err != nil {
 		t.Fatalf("peer state was removed: %v", err)
 	}
@@ -80,12 +80,12 @@ func TestPrivatePartialRecreateDestroyPreservesPeerState(t *testing.T) {
 func TestControllerRecreatesOnlyMissingSelectedNode(t *testing.T) {
 	lifecycle := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
 	controller := controllerFixture(t, &fakePrivateDisks{}, lifecycle)
-	t.Setenv("FARROW_HOME", controller.Project.Root)
+	t.Setenv("FARROW_HOME", controller.Deployment.Root)
 	created, err := controller.CreateAndStart(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := state.Store{Root: controller.Project.Root}
+	store := state.Store{Root: controller.Deployment.Root}
 	for _, node := range created.Commit.Nodes {
 		node.Phase = state.Prepared
 		node.Process = state.ProcessIdentity{}
@@ -93,7 +93,7 @@ func TestControllerRecreatesOnlyMissingSelectedNode(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeDestroyKeyFixtures(t, controller.Project.Root)
+	writeDestroyKeyFixtures(t, controller.Deployment.Root)
 	destroyer := Manager{FarrowVersion: "test", Nodes: []string{"node-1"}, allowPartialDestroy: true}
 	if _, err := destroyer.Destroy(context.Background()); err != nil {
 		t.Fatal(err)
@@ -111,49 +111,49 @@ func TestControllerRecreatesOnlyMissingSelectedNode(t *testing.T) {
 	}
 }
 
-func markFixtureDiskPersistent(t *testing.T, projectValue state.Store) (state.DeploymentState, state.NodeState) {
+func markFixtureDiskPersistent(t *testing.T, deploymentValue state.Store) (state.DeploymentState, state.NodeState) {
 	t.Helper()
-	projectState, err := projectValue.ReadDeployment()
+	deploymentState, err := deploymentValue.ReadDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectState.Resolved.Nodes[0].Disks[0].Persistent = true
-	hash, err := spec.Hash(projectState.Resolved)
+	deploymentState.Resolved.Nodes[0].Disks[0].Persistent = true
+	hash, err := spec.Hash(deploymentState.Resolved)
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectState.SpecHash = hash
-	if err := projectValue.WriteDeployment(projectState); err != nil {
+	deploymentState.SpecHash = hash
+	if err := deploymentValue.WriteDeployment(deploymentState); err != nil {
 		t.Fatal(err)
 	}
-	node, err := projectValue.ReadNode(projectState.Resolved.Nodes[0].Name)
+	node, err := deploymentValue.ReadNode(deploymentState.Resolved.Nodes[0].Name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	node.SpecHash = hash
 	node.DataDisks[0].Persistent = true
-	if err := projectValue.WriteNode(node); err != nil {
+	if err := deploymentValue.WriteNode(node); err != nil {
 		t.Fatal(err)
 	}
-	return projectState, node
+	return deploymentState, node
 }
 
 func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
-	projectValue := startConfig.Project
-	t.Setenv("FARROW_HOME", projectValue.Root)
-	store := state.Store{Root: projectValue.Root}
-	projectState, originalNode := markFixtureDiskPersistent(t, store)
+	deploymentValue := startConfig.Deployment
+	t.Setenv("FARROW_HOME", deploymentValue.Root)
+	store := state.Store{Root: deploymentValue.Root}
+	deploymentState, originalNode := markFixtureDiskPersistent(t, store)
 	originalData, err := os.ReadFile(originalNode.DataDisks[0].Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeDestroyKeyFixtures(t, projectValue.Root)
+	writeDestroyKeyFixtures(t, deploymentValue.Root)
 	manager := Manager{FarrowVersion: "test"}
 	if _, err := manager.Destroy(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	records, err := persistent.Inventory(projectValue.Root)
+	records, err := persistent.Inventory(deploymentValue.Root)
 	if err != nil || len(records) != 1 {
 		t.Fatalf("retained records = %#v, %v", records, err)
 	}
@@ -161,9 +161,9 @@ func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T)
 		t.Fatalf("retained data changed: %q, %v", data, err)
 	}
 
-	prepare := privatePrepareConfig(t, projectValue.Root, &fakePrivateDisks{})
-	prepare.Resolved = projectState.Resolved
-	prepare.SpecHash = projectState.SpecHash
+	prepare := privatePrepareConfig(t, deploymentValue.Root, &fakePrivateDisks{})
+	prepare.Resolved = deploymentState.Resolved
+	prepare.SpecHash = deploymentState.SpecHash
 	prepare.Plan, err = Build(prepare.Resolved, os.Getuid(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -184,14 +184,14 @@ func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T)
 
 func TestPrivatePersistentDeleteRequiresDestroyedNodes(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
-	projectValue := startConfig.Project
-	t.Setenv("FARROW_HOME", projectValue.Root)
-	_, _ = markFixtureDiskPersistent(t, state.Store{Root: projectValue.Root})
+	deploymentValue := startConfig.Deployment
+	t.Setenv("FARROW_HOME", deploymentValue.Root)
+	_, _ = markFixtureDiskPersistent(t, state.Store{Root: deploymentValue.Root})
 	manager := Manager{FarrowVersion: "test"}
 	if _, err := manager.DeletePersistent(context.Background()); err == nil {
 		t.Fatal("persistent disks were deleted while nodes existed")
 	}
-	writeDestroyKeyFixtures(t, projectValue.Root)
+	writeDestroyKeyFixtures(t, deploymentValue.Root)
 	if _, err := manager.Destroy(context.Background()); err != nil {
 		t.Fatal(err)
 	}

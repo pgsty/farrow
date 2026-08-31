@@ -23,7 +23,7 @@ func privateFilesystem(value string) string {
 	return value
 }
 
-func privatePersistentIdentities(projectValue Deployment, resolved spec.Resolved) ([]persistent.Identity, error) {
+func privatePersistentIdentities(deploymentValue Deployment, resolved spec.Resolved) ([]persistent.Identity, error) {
 	result := make([]persistent.Identity, 0)
 	for _, node := range resolved.Nodes {
 		for _, definition := range node.Disks {
@@ -43,32 +43,32 @@ func privatePersistentIdentities(projectValue Deployment, resolved spec.Resolved
 	return result, nil
 }
 
-func validatePrivatePersistentDesired(projectValue Deployment, resolved spec.Resolved) error {
-	desired, err := privatePersistentIdentities(projectValue, resolved)
+func validatePrivatePersistentDesired(deploymentValue Deployment, resolved spec.Resolved) error {
+	desired, err := privatePersistentIdentities(deploymentValue, resolved)
 	if err != nil {
 		return err
 	}
-	_, err = persistent.ValidateDesired(projectValue.Root, desired)
+	_, err = persistent.ValidateDesired(deploymentValue.Root, desired)
 	return err
 }
 
-func privatePrepareProject(config PrepareConfig) Deployment {
-	return Deployment{Root: config.ProjectRoot, DataRoot: config.ProjectRoot}
+func privatePrepareDeployment(config PrepareConfig) Deployment {
+	return Deployment{Root: config.DeploymentRoot}
 }
 
-func validatePrivatePersistentState(projectValue Deployment, projectState state.DeploymentState, nodes []state.NodeState) ([]persistent.Identity, error) {
-	desired, err := privatePersistentIdentities(projectValue, projectState.Resolved)
+func validatePrivatePersistentState(deploymentValue Deployment, deploymentState state.DeploymentState, nodes []state.NodeState) ([]persistent.Identity, error) {
+	desired, err := privatePersistentIdentities(deploymentValue, deploymentState.Resolved)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := persistent.ValidateDesired(projectValue.Root, desired); err != nil {
+	if _, err := persistent.ValidateDesired(deploymentValue.Root, desired); err != nil {
 		return nil, err
 	}
 	stateDisks := make(map[string]state.DataDisk)
 	for _, node := range nodes {
 		for _, dataDisk := range node.DataDisks {
 			if dataDisk.Persistent {
-				if err := persistent.ValidateSource(projectValue.Root, dataDisk.Path); err != nil {
+				if err := persistent.ValidateSource(deploymentValue.Root, dataDisk.Path); err != nil {
 					return nil, err
 				}
 				stateDisks[node.Node+"\x00"+dataDisk.Name] = dataDisk
@@ -99,13 +99,13 @@ func resolvePrivateDataDisk(ctx context.Context, config PrepareConfig, nodeDir s
 		}
 		return defaultPath, true, nil
 	}
-	projectValue := privatePrepareProject(config)
-	desired, err := privatePersistentIdentities(projectValue, config.Resolved)
+	deploymentValue := privatePrepareDeployment(config)
+	desired, err := privatePersistentIdentities(deploymentValue, config.Resolved)
 	if err != nil {
 		return "", false, err
 	}
 	identityValue := persistent.Identity{Node: filepath.Base(nodeDir), Name: definition.Name, Serial: serial, Size: definition.Size, Mount: definition.Mount, Filesystem: privateFilesystem(definition.Filesystem)}
-	record, found, err := persistent.Find(projectValue.Root, desired, identityValue)
+	record, found, err := persistent.Find(deploymentValue.Root, desired, identityValue)
 	if err != nil {
 		return "", false, err
 	}
@@ -127,33 +127,33 @@ func resolvePrivateDataDisk(ctx context.Context, config PrepareConfig, nodeDir s
 	return record.Path, false, nil
 }
 
-// PersistentDisks returns the strict project inventory without mutation.
+// PersistentDisks returns the strict deployment inventory without mutation.
 func (m Manager) PersistentDisks() ([]persistent.Record, error) {
-	projectValue, err := m.openProject(false)
+	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
 		return nil, err
 	}
-	return persistent.Inventory(projectValue.Root)
+	return persistent.Inventory(deploymentValue.Root)
 }
 
 // DeletePersistent is the only private API which deletes retained data disks.
 // Every node must already be destroyed and the global lease inactive. CLI
 // confirmation is intentionally kept outside this filesystem boundary.
 func (m Manager) DeletePersistent(ctx context.Context) (_ []persistent.Record, returnErr error) {
-	projectValue, err := m.openProject(false)
+	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
 		return nil, err
 	}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
+	deploymentLock, err := acquireDeploymentLock(lockContext, deploymentValue.Root, false)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		returnErr = lock.JoinRelease(returnErr, projectLock, "persistent disk deletion lock")
+		returnErr = lock.JoinRelease(returnErr, deploymentLock, "persistent disk deletion lock")
 	}()
-	nodesDir := filepath.Join(projectValue.Root, "nodes")
+	nodesDir := filepath.Join(deploymentValue.Root, "nodes")
 	entries, err := os.ReadDir(nodesDir)
 	if err == nil && len(entries) != 0 {
 		return nil, errors.New("refuse persistent disk deletion while private node artifacts exist")
@@ -166,5 +166,5 @@ func (m Manager) DeletePersistent(ctx context.Context) (_ []persistent.Record, r
 		return nil, ctx.Err()
 	default:
 	}
-	return persistent.DeleteAll(projectValue.Root)
+	return persistent.DeleteAll(deploymentValue.Root)
 }

@@ -15,6 +15,6 @@ func quickResolved(withDataDisk, withDefaultForwards bool) spec.Resolved {
 			{Bind: "127.0.0.1", Host: 18443, Guest: 443, Protocol: "tcp"},
 		}
 	}
-	// Keep the retired user network so legacy project diagnostics remain covered.
+	// Keep the retired user network so legacy deployment diagnostics remain covered.
 	return spec.Resolved{Schema: 1, Name: "quick", Image: "u24", Network: "user", SSHUser: "dba", SSHWaitTimeoutNS: int64(spec.DefaultSSHWaitTimeout), Nodes: []spec.Node{node}}
 }

@@ -1,4 +1,4 @@
-// Package spec contains the typed resolved model used by the M0 quick slice.
+// Package spec contains Farrow's typed, resolved inventory model.
 package spec
 
 import (
@@ -32,7 +32,7 @@ func RequestedHostPort(forward Forward) uint16 {
 
 // WithMaterializedHost records the original request only when allocation had
 // to choose a different port. Keeping the field optional preserves the
-// canonical JSON and hash of projects whose preferred port was available.
+// canonical JSON and hash of deployments whose preferred port was available.
 func WithMaterializedHost(forward Forward, host uint16) Forward {
 	requested := RequestedHostPort(forward)
 	forward.Host = host
@@ -139,7 +139,7 @@ func (r Resolved) SSHWaitTimeout() (time.Duration, error) {
 }
 
 // CanonicalJSON relies only on structs and slices; there are no unordered map
-// keys in the M0 model.
+// keys in the resolved model.
 func CanonicalJSON(value Resolved) ([]byte, error) { return json.Marshal(value) }
 
 func Hash(value Resolved) (string, error) {
@@ -151,11 +151,11 @@ func Hash(value Resolved) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-// NodeResolved narrows a resolved spec to its project envelope plus exactly
+// NodeResolved narrows a resolved spec to its deployment envelope plus exactly
 // one node. Its hash is the node-scoped drift identity: adding or changing a
 // peer never moves another node's hash, while any envelope change (network,
-// image default, SSH user) moves every node. A single-node project's node
-// hash equals its project hash by construction.
+// image default, SSH user) moves every node. A single-node deployment's node
+// hash equals its deployment hash by construction.
 func NodeResolved(value Resolved, name string) (Resolved, bool) {
 	for _, node := range value.Nodes {
 		if node.Name == name {

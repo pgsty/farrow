@@ -239,7 +239,7 @@ func (f *File) Validate() error {
 		return fmt.Errorf("configuration version must be 1, got %d", f.Version)
 	}
 	if !naming.ValidNodeName(f.Name) {
-		return fmt.Errorf("invalid project name %q", f.Name)
+		return fmt.Errorf("invalid deployment name %q", f.Name)
 	}
 	if f.Arch != "native" && f.Arch != "amd64" && f.Arch != "arm64" {
 		return errors.New("arch must be native, amd64, or arm64")
@@ -271,12 +271,12 @@ func (f *File) Validate() error {
 	addresses := make(map[string]struct{})
 	allAliases := make(map[string]struct{})
 	controls := 0
-	type projectShareHost struct {
+	type deploymentShareHost struct {
 		path     string
 		readonly bool
 		node     string
 	}
-	projectShareHosts := make([]projectShareHost, 0)
+	deploymentShareHosts := make([]deploymentShareHost, 0)
 	for _, node := range f.Nodes {
 		if !naming.ValidNodeName(node.Name) {
 			return fmt.Errorf("invalid node name %q", node.Name)
@@ -318,7 +318,7 @@ func (f *File) Validate() error {
 				return fmt.Errorf("duplicate host alias %q", alias)
 			}
 			if _, exists := allAliases[alias]; exists {
-				return fmt.Errorf("host alias %q collides within project", alias)
+				return fmt.Errorf("host alias %q collides within deployment", alias)
 			}
 			aliasSeen[alias] = struct{}{}
 			allAliases[alias] = struct{}{}
@@ -373,14 +373,14 @@ func (f *File) Validate() error {
 				}
 			}
 			readonly := shareReadonly(share)
-			for _, previous := range projectShareHosts {
+			for _, previous := range deploymentShareHosts {
 				if previous.node != node.Name && hostPathOverlap(previous.path, share.Host) && (!previous.readonly || !readonly) {
 					return fmt.Errorf("cross-node share hosts %q on %s and %q on %s overlap with read-write access", previous.path, previous.node, share.Host, node.Name)
 				}
 			}
 			shareHosts = append(shareHosts, share.Host)
 			shareGuests = append(shareGuests, share.Guest)
-			projectShareHosts = append(projectShareHosts, projectShareHost{path: share.Host, readonly: readonly, node: node.Name})
+			deploymentShareHosts = append(deploymentShareHosts, deploymentShareHost{path: share.Host, readonly: readonly, node: node.Name})
 		}
 		if len(node.Shares) == 0 {
 			node.Shares = nil

@@ -22,11 +22,11 @@ type KeyPurgeIntegrityError = sshkeys.PurgeIntegrityError
 
 // ensureNoRetainedNodes refuses a key purge while any node artifact remains.
 // A node directory counts as retained even when its state cannot be decoded.
-func ensureNoRetainedNodes(ctx context.Context, projectValue Deployment) error {
+func ensureNoRetainedNodes(ctx context.Context, deploymentValue Deployment) error {
 	if err := ctx.Err(); err != nil {
 		return &sshkeys.PurgeStateError{Reason: fmt.Sprintf("preflight was canceled: %v", err)}
 	}
-	nodesDir := filepath.Join(projectValue.Root, "nodes")
+	nodesDir := filepath.Join(deploymentValue.Root, "nodes")
 	entries, err := os.ReadDir(nodesDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -37,7 +37,7 @@ func ensureNoRetainedNodes(ctx context.Context, projectValue Deployment) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	store := state.Store{Root: projectValue.Root}
+	store := state.Store{Root: deploymentValue.Root}
 	for _, entry := range entries {
 		node, readErr := store.ReadNode(entry.Name())
 		if readErr != nil {
@@ -57,28 +57,28 @@ func ensureNoRetainedNodes(ctx context.Context, projectValue Deployment) error {
 // while node artifacts or retained persistent disks exist, then removes
 // exactly the allowlisted key files.
 func (m Manager) PurgeKeys(ctx context.Context, apply bool) (_ KeyPurgeReport, returnErr error) {
-	projectValue, err := m.openProject(false)
+	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
 		return KeyPurgeReport{}, err
 	}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
+	deploymentLock, err := acquireDeploymentLock(lockContext, deploymentValue.Root, false)
 	if err != nil {
 		return KeyPurgeReport{}, err
 	}
 	defer func() {
-		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment key purge lock")
+		returnErr = lock.JoinRelease(returnErr, deploymentLock, "deployment key purge lock")
 	}()
-	if err := ensureNoRetainedNodes(ctx, projectValue); err != nil {
+	if err := ensureNoRetainedNodes(ctx, deploymentValue); err != nil {
 		return KeyPurgeReport{}, err
 	}
-	retainedDisks, err := persistent.Inventory(projectValue.Root)
+	retainedDisks, err := persistent.Inventory(deploymentValue.Root)
 	if err != nil {
 		return KeyPurgeReport{}, &sshkeys.PurgeIntegrityError{Reason: fmt.Sprintf("inspect retained persistent disks: %v", err)}
 	}
 	if len(retainedDisks) != 0 {
 		return KeyPurgeReport{}, &sshkeys.PurgeStateError{Reason: fmt.Sprintf("%d persistent data disk(s) remain; explicitly delete them before purging keys", len(retainedDisks))}
 	}
-	return sshkeys.PurgeKeys(projectValue.Root, apply)
+	return sshkeys.PurgeKeys(deploymentValue.Root, apply)
 }

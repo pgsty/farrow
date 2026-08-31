@@ -30,7 +30,7 @@ func prefixLength(cidr string) (int, error) {
 	return ones, nil
 }
 
-func projectHosts(resolved spec.Resolved) []cloudinit.Host {
+func deploymentHosts(resolved spec.Resolved) []cloudinit.Host {
 	hosts := make([]cloudinit.Host, 0, len(resolved.Nodes)*2)
 	for _, node := range resolved.Nodes {
 		hosts = append(hosts, cloudinit.Host{Name: node.Name, Address: node.Address})
@@ -73,7 +73,7 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 	if err != nil {
 		return nil, err
 	}
-	hosts := projectHosts(resolved)
+	hosts := deploymentHosts(resolved)
 	result := make(map[string]cloudinit.Files, len(resolved.Nodes))
 	for _, nodeSpec := range resolved.Nodes {
 		nodePlan, ok := plan.Node(nodeSpec.Name)

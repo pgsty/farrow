@@ -24,7 +24,7 @@ func (e *PartialError) Error() string {
 }
 
 type Controller struct {
-	Project      Deployment
+	Deployment   Deployment
 	Prepare      PrepareConfig
 	Lifecycle    NodeLifecycle
 	Concurrency  int
@@ -73,17 +73,17 @@ func failedCreateNodes(result CreateResult) []string {
 
 func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, error) {
 	result := CreateResult{}
-	if controller.Project.Root == "" || controller.Prepare.ProjectRoot != controller.Project.Root || controller.Lifecycle == nil || controller.Version == "" {
+	if controller.Deployment.Root == "" || controller.Prepare.DeploymentRoot != controller.Deployment.Root || controller.Lifecycle == nil || controller.Version == "" {
 		return result, fmt.Errorf("private controller deployment, prepare, lifecycle, or version is incomplete")
 	}
 	lockContext, cancelLock := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLock()
-	projectLock, err := acquireDeploymentLock(lockContext, controller.Project.Root, false)
+	deploymentLock, err := acquireDeploymentLock(lockContext, controller.Deployment.Root, false)
 	if err != nil {
 		return result, err
 	}
 	defer func() {
-		err = lock.JoinRelease(err, projectLock, "deployment controller lock")
+		err = lock.JoinRelease(err, deploymentLock, "deployment controller lock")
 	}()
 	createNames, err := selectedNodeNames(controller.Prepare.Resolved, controller.CreateNodes)
 	if err != nil {
@@ -93,7 +93,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 	result.Prepare = PrepareSelected(ctx, controller.Prepare, createNames, controller.Concurrency)
 	controller.Progress.Report(activity.Event{Phase: "prepare", Message: fmt.Sprintf("Prepared %d of %d node(s)", len(PreparedNames(result.Prepare)), len(createNames)), Done: true})
 	controller.Progress.Report(activity.Event{Phase: "commit", Message: "Committing prepared node state"})
-	result.Commit, err = CommitPrepared(controller.Project, controller.Prepare, result.Prepare, controller.Version)
+	result.Commit, err = CommitPrepared(controller.Deployment, controller.Prepare, result.Prepare, controller.Version)
 	if err != nil {
 		return result, err
 	}
@@ -102,7 +102,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 		return result, &PartialError{Nodes: failed}
 	}
 	for _, node := range result.Commit.Nodes {
-		if err := FinalizePrepared(controller.Project, node.Node); err != nil {
+		if err := FinalizePrepared(controller.Deployment, node.Node); err != nil {
 			return result, err
 		}
 	}
@@ -135,7 +135,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 		}
 		controller.Progress.Report(activity.Event{Phase: "guest-ready", Message: startMessage})
 		result.Start, err = StartPrepared(ctx, StartConfig{
-			Project: controller.Project, Lifecycle: controller.Lifecycle,
+			Deployment: controller.Deployment, Lifecycle: controller.Lifecycle,
 			Nodes: startNames, Concurrency: controller.Concurrency, ReadyTimeout: controller.ReadyTimeout, NoWait: controller.NoWait,
 			SetupRuntime: controller.SetupRuntime,
 		})
@@ -155,13 +155,13 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 	return result, nil
 }
 
-func RollbackFailedPrepares(projectValue Deployment, result CreateResult, apply bool) ([]FailedRollback, error) {
+func RollbackFailedPrepares(deploymentValue Deployment, result CreateResult, apply bool) ([]FailedRollback, error) {
 	rollbacks := make([]FailedRollback, 0)
 	for _, outcome := range result.Prepare {
 		if outcome.Error == "" {
 			continue
 		}
-		rollback, err := RollbackPrepared(projectValue, outcome.Node, apply)
+		rollback, err := RollbackPrepared(deploymentValue, outcome.Node, apply)
 		if err != nil {
 			return rollbacks, err
 		}
@@ -170,8 +170,8 @@ func RollbackFailedPrepares(projectValue Deployment, result CreateResult, apply 
 	return rollbacks, nil
 }
 
-func rollbackCreateFailure(projectValue Deployment, result CreateResult, operationErr error) error {
-	rollbacks, err := RollbackFailedPrepares(projectValue, result, true)
+func rollbackCreateFailure(deploymentValue Deployment, result CreateResult, operationErr error) error {
+	rollbacks, err := RollbackFailedPrepares(deploymentValue, result, true)
 	if err != nil {
 		return fmt.Errorf("%w; requested failed-prepare rollback also failed: %v", operationErr, err)
 	}

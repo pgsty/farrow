@@ -45,8 +45,8 @@ func invocationRuntime(journal PrepareJournal) (string, string, error) {
 	return qmpPath, pidfile, nil
 }
 
-func RollbackPrepared(projectValue Deployment, node string, apply bool) (RollbackResult, error) {
-	nodeDir, err := projectValue.NodeDir(node)
+func RollbackPrepared(deploymentValue Deployment, node string, apply bool) (RollbackResult, error) {
+	nodeDir, err := deploymentValue.NodeDir(node)
 	if err != nil {
 		return RollbackResult{}, err
 	}

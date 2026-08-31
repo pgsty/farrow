@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-// ErrNoConfig marks a project directory with no discoverable configuration.
+// ErrNoConfig marks an inventory directory with no discoverable configuration.
 var ErrNoConfig = errors.New("no configuration found; run `farrow setup` to create one, or pass -f")
 
 // DiscoveryNames are the configuration filenames probed in the working
@@ -64,7 +64,7 @@ func LoadPath(path string) (File, error) {
 	return file, nil
 }
 
-// Discover resolves the project configuration: the explicit -f path when
+// Discover resolves the inventory configuration: the explicit -f path when
 // given, otherwise the first DiscoveryNames hit in the working directory.
 // A missing configuration returns ErrNoConfig.
 func Discover(cwd, explicit string) (File, string, error) {

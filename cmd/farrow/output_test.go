@@ -366,7 +366,7 @@ func TestProgressReportsDetailedStagesOnlyOnStderr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := startProgress(context.TODO(), errOut, "Preparing and starting the project")
+	item := startProgress(context.TODO(), errOut, "Preparing and starting the deployment")
 	item.Report(activity.Event{
 		Phase:        "image-download",
 		Message:      "Downloading image u24",
@@ -393,7 +393,7 @@ func TestProgressPersistsCompletedPhasesAsChecklistOnTTY(t *testing.T) {
 	state := &outputContext{format: outputText, stderrFile: true, stderrTTY: true, color: true}
 	var stderr bytes.Buffer
 	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
-	item := startProgress(context.TODO(), errOut, "Preparing and starting the project")
+	item := startProgress(context.TODO(), errOut, "Preparing and starting the deployment")
 	item.Report(activity.Event{Phase: "preflight", Message: "Running preflight"})
 	item.Report(activity.Event{Phase: "preflight", Message: "Preflight passed", Done: true})
 	item.Report(activity.Event{Phase: "guest-ready", Message: "Guest meta is ready", Done: true})
@@ -407,7 +407,7 @@ func TestProgressPersistsCompletedPhasesAsChecklistOnTTY(t *testing.T) {
 			t.Fatalf("completed phase did not persist as a checklist row (%q missing): %q", want, got)
 		}
 	}
-	if !strings.Contains(got, "✓"+ansiReset+" Preparing and starting the project (") {
+	if !strings.Contains(got, "✓"+ansiReset+" Preparing and starting the deployment (") {
 		t.Fatalf("overall summary row missing: %q", got)
 	}
 	if strings.Contains(got, "Running preflight\n") {

@@ -46,9 +46,9 @@ type Backend struct {
 }
 
 type PrepareConfig struct {
-	ProjectRoot string
-	Resolved    spec.Resolved
-	// SpecHash is the whole-project drift summary; NodeHashes carries each
+	DeploymentRoot string
+	Resolved       spec.Resolved
+	// SpecHash is the whole-deployment drift summary; NodeHashes carries each
 	// node's own drift identity (see spec.NodeHash). Seeds, journals, and node
 	// state bind to the node hash so peers can be added without touching them.
 	SpecHash        string
@@ -124,7 +124,7 @@ func (config PrepareConfig) now() time.Time {
 }
 
 func validatePrepareConfig(config PrepareConfig) error {
-	if config.ProjectRoot == "" || !filepath.IsAbs(config.ProjectRoot) || config.QEMUBinary == "" || !filepath.IsAbs(config.QEMUBinary) || config.Disks == nil || len(config.Plan.Nodes) != len(config.Resolved.Nodes) || len(config.Seeds) != len(config.Resolved.Nodes) || len(config.SpecHash) != 64 {
+	if config.DeploymentRoot == "" || !filepath.IsAbs(config.DeploymentRoot) || config.QEMUBinary == "" || !filepath.IsAbs(config.QEMUBinary) || config.Disks == nil || len(config.Plan.Nodes) != len(config.Resolved.Nodes) || len(config.Seeds) != len(config.Resolved.Nodes) || len(config.SpecHash) != 64 {
 		return errors.New("private prepare deployment, QEMU, disks, plan, or seeds are incomplete")
 	}
 	for _, node := range config.Resolved.Nodes {
@@ -132,7 +132,7 @@ func validatePrepareConfig(config PrepareConfig) error {
 			return fmt.Errorf("private prepare node hash missing for node %s", node.Name)
 		}
 	}
-	info, err := os.Lstat(config.ProjectRoot)
+	info, err := os.Lstat(config.DeploymentRoot)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
 		return errors.New("private prepare deployment root must be a real mode-0700 directory")
 	}
@@ -240,11 +240,11 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	if sshPort == 0 {
 		return NodeArtifacts{}, fmt.Errorf("private node %s has no management SSH port", name)
 	}
-	persistentIdentities, err := privatePersistentIdentities(privatePrepareProject(config), config.Resolved)
+	persistentIdentities, err := privatePersistentIdentities(privatePrepareDeployment(config), config.Resolved)
 	if err != nil {
 		return NodeArtifacts{}, err
 	}
-	if _, err := persistent.ValidateDesired(privatePrepareProject(config).Root, persistentIdentities); err != nil {
+	if _, err := persistent.ValidateDesired(privatePrepareDeployment(config).Root, persistentIdentities); err != nil {
 		return NodeArtifacts{}, err
 	}
 	operationID, err := identity.NewUUID()
@@ -254,7 +254,7 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	if err != nil || !identity.ValidUUID(operationID) {
 		return NodeArtifacts{}, errors.New("private prepare operation UUID is invalid")
 	}
-	nodesDir := filepath.Join(config.ProjectRoot, "nodes")
+	nodesDir := filepath.Join(config.DeploymentRoot, "nodes")
 	if err := os.Mkdir(nodesDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return NodeArtifacts{}, err
 	}

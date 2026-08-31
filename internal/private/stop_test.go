@@ -53,7 +53,7 @@ func TestStopRunningParallelAndIdempotent(t *testing.T) {
 	startConfig := runningStopFixture(t)
 	fake := &fakeStopLifecycle{fail: map[string]bool{}}
 	outcomes, err := StopRunning(context.Background(), StopConfig{
-		Project: startConfig.Project, Lifecycle: fake,
+		Deployment: startConfig.Deployment, Lifecycle: fake,
 		Nodes: startConfig.Nodes, Concurrency: 2, CleanupRuntime: func(state.NodeState) error { return nil },
 	})
 	if err != nil || len(stoppedNames(outcomes)) != 2 {
@@ -67,7 +67,7 @@ func TestStopRunningParallelAndIdempotent(t *testing.T) {
 			t.Fatalf("default guest shutdown timeout=%s, want %s", timeout, vm.GracefulGuestShutdownTimeout)
 		}
 	}
-	store := state.Store{Root: startConfig.Project.Root}
+	store := state.Store{Root: startConfig.Deployment.Root}
 	for _, name := range startConfig.Nodes {
 		node, err := store.ReadNode(name)
 		if err != nil || node.Phase != state.Stopped || node.Process != (state.ProcessIdentity{}) {
@@ -75,7 +75,7 @@ func TestStopRunningParallelAndIdempotent(t *testing.T) {
 		}
 	}
 	second, err := StopRunning(context.Background(), StopConfig{
-		Project: startConfig.Project, Lifecycle: fake,
+		Deployment: startConfig.Deployment, Lifecycle: fake,
 		Nodes: startConfig.Nodes, Concurrency: 2, CleanupRuntime: func(state.NodeState) error { return nil },
 	})
 	if err != nil || len(stoppedNames(second)) != 2 {
@@ -87,13 +87,13 @@ func TestStopRunningPreservesPartialFailure(t *testing.T) {
 	startConfig := runningStopFixture(t)
 	fake := &fakeStopLifecycle{fail: map[string]bool{"node-1": true}}
 	outcomes, err := StopRunning(context.Background(), StopConfig{
-		Project: startConfig.Project, Lifecycle: fake,
+		Deployment: startConfig.Deployment, Lifecycle: fake,
 		Nodes: startConfig.Nodes, Concurrency: 2, CleanupRuntime: func(state.NodeState) error { return nil },
 	})
 	if err != nil || len(stoppedNames(outcomes)) != 1 || outcomes[1].Error == "" {
 		t.Fatalf("partial stop outcomes=%#v err=%v", outcomes, err)
 	}
-	store := state.Store{Root: startConfig.Project.Root}
+	store := state.Store{Root: startConfig.Deployment.Root}
 	meta, metaErr := store.ReadNode("meta")
 	if metaErr != nil || meta.Phase != state.Stopped {
 		t.Fatalf("successful stop not persisted: %#v, %v", meta, metaErr)
@@ -108,13 +108,13 @@ func TestStopRunningSelectedNodeKeepsPeer(t *testing.T) {
 	startConfig := runningStopFixture(t)
 	fake := &fakeStopLifecycle{fail: map[string]bool{}}
 	outcomes, err := StopRunning(context.Background(), StopConfig{
-		Project: startConfig.Project, Lifecycle: fake,
+		Deployment: startConfig.Deployment, Lifecycle: fake,
 		Nodes: []string{"meta"}, Concurrency: 1, CleanupRuntime: func(state.NodeState) error { return nil },
 	})
 	if err != nil || len(outcomes) != 1 || !outcomes[0].Stopped {
 		t.Fatalf("selected stop outcomes=%#v err=%v", outcomes, err)
 	}
-	store := state.Store{Root: startConfig.Project.Root}
+	store := state.Store{Root: startConfig.Deployment.Root}
 	meta, metaErr := store.ReadNode("meta")
 	peer, peerErr := store.ReadNode("node-1")
 	if metaErr != nil || peerErr != nil || meta.Phase != state.Stopped || peer.Phase != state.Running {
@@ -124,7 +124,7 @@ func TestStopRunningSelectedNodeKeepsPeer(t *testing.T) {
 
 func TestStopRunningAcceptsAlreadyStoppedPeer(t *testing.T) {
 	startConfig := runningStopFixture(t)
-	store := state.Store{Root: startConfig.Project.Root}
+	store := state.Store{Root: startConfig.Deployment.Root}
 	peer, err := store.ReadNode("node-1")
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestStopRunningAcceptsAlreadyStoppedPeer(t *testing.T) {
 	}
 	fake := &fakeStopLifecycle{fail: map[string]bool{"node-1": true}}
 	outcomes, err := StopRunning(context.Background(), StopConfig{
-		Project: startConfig.Project, Lifecycle: fake,
+		Deployment: startConfig.Deployment, Lifecycle: fake,
 		Nodes: startConfig.Nodes, Concurrency: 2, CleanupRuntime: func(state.NodeState) error { return nil },
 	})
 	if err != nil || len(stoppedNames(outcomes)) != 2 || outcomes[1].Error != "" {
@@ -151,9 +151,9 @@ func TestStopRunningAcceptsAlreadyStoppedPeer(t *testing.T) {
 
 func TestStatusConvergesInterruptedTransitionAndUnblocksDestroy(t *testing.T) {
 	startConfig, nodes := preparedStartFixture(t)
-	projectValue := startConfig.Project
-	t.Setenv("FARROW_HOME", projectValue.Root)
-	store := state.Store{Root: projectValue.Root}
+	deploymentValue := startConfig.Deployment
+	t.Setenv("FARROW_HOME", deploymentValue.Root)
+	store := state.Store{Root: deploymentValue.Root}
 	// Simulate a CLI killed mid-stop: the node is stranded in a transitional
 	// phase with no live runtime behind it.
 	stranded := nodes[0]
@@ -177,7 +177,7 @@ func TestStatusConvergesInterruptedTransitionAndUnblocksDestroy(t *testing.T) {
 	if err != nil || persisted.Phase != state.Stopped || persisted.Process.PID != 0 {
 		t.Fatalf("converged state = %#v err=%v", persisted, err)
 	}
-	writeDestroyKeyFixtures(t, projectValue.Root)
+	writeDestroyKeyFixtures(t, deploymentValue.Root)
 	if _, err := (Manager{FarrowVersion: "test"}).Destroy(context.Background()); err != nil {
 		t.Fatalf("destroy after convergence failed: %v", err)
 	}

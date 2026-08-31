@@ -7,17 +7,17 @@ import (
 )
 
 func TestRollbackPreparedDryRunAndApply(t *testing.T) {
-	projectValue, config, outcomes := commitFixture(t, &fakePrivateDisks{})
+	deploymentValue, config, outcomes := commitFixture(t, &fakePrivateDisks{})
 	_ = config
 	artifacts := *outcomes[0].Artifacts
-	dryRun, err := RollbackPrepared(projectValue, artifacts.Name, false)
+	dryRun, err := RollbackPrepared(deploymentValue, artifacts.Name, false)
 	if err != nil || len(dryRun.Actions) < 4 {
 		t.Fatalf("rollback dry run = %#v, %v", dryRun, err)
 	}
 	if _, err := os.Lstat(artifacts.Root); err != nil {
 		t.Fatalf("dry run removed root: %v", err)
 	}
-	applied, err := RollbackPrepared(projectValue, artifacts.Name, true)
+	applied, err := RollbackPrepared(deploymentValue, artifacts.Name, true)
 	if err != nil || len(applied.Actions) != len(dryRun.Actions) {
 		t.Fatalf("rollback apply = %#v, %v", applied, err)
 	}
@@ -27,13 +27,13 @@ func TestRollbackPreparedDryRunAndApply(t *testing.T) {
 }
 
 func TestRollbackPreparedPreflightPreservesAllOnUnexpectedEntry(t *testing.T) {
-	projectValue, _, outcomes := commitFixture(t, &fakePrivateDisks{})
+	deploymentValue, _, outcomes := commitFixture(t, &fakePrivateDisks{})
 	artifacts := *outcomes[0].Artifacts
 	unexpected := filepath.Join(artifacts.NodeDir, "manual.img")
 	if err := os.WriteFile(unexpected, []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RollbackPrepared(projectValue, artifacts.Name, true); err == nil {
+	if _, err := RollbackPrepared(deploymentValue, artifacts.Name, true); err == nil {
 		t.Fatal("unexpected node entry did not block rollback")
 	}
 	for _, pathname := range []string{artifacts.Root, artifacts.Seed, artifacts.NVRAM, artifacts.Journal, unexpected} {
@@ -44,11 +44,11 @@ func TestRollbackPreparedPreflightPreservesAllOnUnexpectedEntry(t *testing.T) {
 }
 
 func TestRollbackPreparedRefusesCommittedStateAndRuntimeArtifact(t *testing.T) {
-	projectValue, config, outcomes := commitFixture(t, &fakePrivateDisks{})
-	if _, err := CommitPrepared(projectValue, config, outcomes, "test-version"); err != nil {
+	deploymentValue, config, outcomes := commitFixture(t, &fakePrivateDisks{})
+	if _, err := CommitPrepared(deploymentValue, config, outcomes, "test-version"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RollbackPrepared(projectValue, outcomes[0].Node, true); err == nil {
+	if _, err := RollbackPrepared(deploymentValue, outcomes[0].Node, true); err == nil {
 		t.Fatal("state-committed node was rolled back")
 	}
 }

@@ -12,8 +12,7 @@ import (
 // Deployment locates the single global deployment. Its root IS the data root:
 // state, nodes, keys, and retained disks all live directly under it.
 type Deployment struct {
-	Root     string
-	DataRoot string
+	Root string
 }
 
 func (d Deployment) NodeDir(name string) (string, error) {
@@ -31,7 +30,7 @@ func openDeployment(create bool) (Deployment, error) {
 	if err != nil {
 		return Deployment{}, err
 	}
-	value := Deployment{Root: root, DataRoot: root}
+	value := Deployment{Root: root}
 	if create {
 		if err := (state.Store{Root: root}).EnsureRoot(); err != nil {
 			return Deployment{}, err

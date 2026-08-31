@@ -647,7 +647,7 @@ func runPrivateSSH(parent context.Context, commandName string, args []string, re
 }
 
 func runSSH(ctx context.Context, commandName string, args []string, stdout, stderr io.Writer) (commandOutcome, error) {
-	resolved, err := currentProjectResolved()
+	resolved, err := currentDeploymentResolved()
 	if err != nil {
 		return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
 	}
@@ -960,7 +960,7 @@ func loadLifecycleConfig(command, configPath string) (spec.Resolved, bool, error
 	return resolved, true, nil
 }
 
-func currentProjectResolved() (spec.Resolved, error) {
+func currentDeploymentResolved() (spec.Resolved, error) {
 	root, err := state.ResolveDataRoot()
 	if err != nil {
 		return spec.Resolved{}, err
@@ -1331,7 +1331,7 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 	if err != nil {
 		return commandOutcome{}, newUsageError(err)
 	}
-	persisted, persistedErr := currentProjectResolved()
+	persisted, persistedErr := currentDeploymentResolved()
 	switch {
 	case persistedErr == nil && persisted.Network == "private":
 		if !hasConfig {
@@ -1432,7 +1432,7 @@ func runSSHConfig(parent context.Context, options sshConfigOptions, nodes []stri
 		}
 		return sshConfigOutcome(result, options.Name), nil
 	}
-	resolved, resolveErr := currentProjectResolved()
+	resolved, resolveErr := currentDeploymentResolved()
 	if resolveErr != nil {
 		return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
 	}
@@ -1586,7 +1586,7 @@ func runLogs(parent context.Context, options logOptions, requestedNode string, s
 	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	resolved, resolveErr := currentProjectResolved()
+	resolved, resolveErr := currentDeploymentResolved()
 	if resolveErr != nil {
 		return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
 	}

@@ -88,18 +88,18 @@ func TestStartPreparedNoWaitStopsAtVerifiedProcessStart(t *testing.T) {
 
 func preparedStartFixture(t *testing.T) (StartConfig, []state.NodeState) {
 	t.Helper()
-	projectValue, prepareConfig, outcomes := commitFixture(t, &fakePrivateDisks{})
-	committed, err := CommitPrepared(projectValue, prepareConfig, outcomes, "test-version")
+	deploymentValue, prepareConfig, outcomes := commitFixture(t, &fakePrivateDisks{})
+	committed, err := CommitPrepared(deploymentValue, prepareConfig, outcomes, "test-version")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, node := range committed.Nodes {
-		if err := FinalizePrepared(projectValue, node.Node); err != nil {
+		if err := FinalizePrepared(deploymentValue, node.Node); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return StartConfig{
-		Project: projectValue, Nodes: []string{"meta", "node-1"},
+		Deployment: deploymentValue, Nodes: []string{"meta", "node-1"},
 		Concurrency: 2, ReadyTimeout: time.Second, SetupRuntime: func(string) error { return nil },
 	}, committed.Nodes
 }
@@ -115,7 +115,7 @@ func TestStartPreparedParallelSuccess(t *testing.T) {
 	if fake.maxActive < 2 {
 		t.Fatalf("nodes did not start concurrently: max=%d", fake.maxActive)
 	}
-	store := state.Store{Root: config.Project.Root}
+	store := state.Store{Root: config.Deployment.Root}
 	for _, name := range config.Nodes {
 		node, err := store.ReadNode(name)
 		if err != nil || node.Phase != state.Running || node.Process.PID == 0 {
@@ -132,7 +132,7 @@ func TestStartPreparedPreservesRunningPeerOnReadinessFailure(t *testing.T) {
 	if err != nil || len(runningNames(outcomes)) != 2 || len(readyNames(outcomes)) != 1 || outcomes[1].Error == "" {
 		t.Fatalf("partial readiness outcomes=%#v err=%v", outcomes, err)
 	}
-	store := state.Store{Root: config.Project.Root}
+	store := state.Store{Root: config.Deployment.Root}
 	for _, name := range config.Nodes {
 		node, err := store.ReadNode(name)
 		if err != nil || node.Phase != state.Running {
@@ -149,7 +149,7 @@ func TestStartPreparedLeavesFailedStartRecorded(t *testing.T) {
 	if err != nil || len(runningNames(outcomes)) != 1 || outcomes[1].Error == "" {
 		t.Fatalf("partial start outcomes=%#v err=%v", outcomes, err)
 	}
-	store := state.Store{Root: config.Project.Root}
+	store := state.Store{Root: config.Deployment.Root}
 	meta, metaErr := store.ReadNode("meta")
 	if metaErr != nil || meta.Phase != state.Running {
 		t.Fatalf("successful peer not running: %#v, %v", meta, metaErr)
@@ -163,7 +163,7 @@ func TestStartPreparedLeavesFailedStartRecorded(t *testing.T) {
 func TestStartPreparedCompensatesRunningStateWriteFailure(t *testing.T) {
 	config, _ := preparedStartFixture(t)
 	config.Nodes = []string{"node-1"}
-	statePath := filepath.Join(config.Project.Root, "nodes", "node-1", "state.json")
+	statePath := filepath.Join(config.Deployment.Root, "nodes", "node-1", "state.json")
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
 	fake.beforeReturn = func(state.NodeState) {
 		if err := os.Remove(statePath); err != nil {

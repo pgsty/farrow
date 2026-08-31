@@ -1,5 +1,5 @@
 // Package fsutil provides the small, audited filesystem primitives shared by
-// project, state, and image stores.
+// configuration, state, and image stores.
 package fsutil
 
 import (

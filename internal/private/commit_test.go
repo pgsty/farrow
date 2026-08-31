@@ -13,8 +13,8 @@ import (
 func commitFixture(t *testing.T, disks DiskOps) (Deployment, PrepareConfig, []PrepareOutcome) {
 	t.Helper()
 	root := t.TempDir()
-	projectValue := Deployment{Root: root, DataRoot: root}
-	config := privatePrepareConfig(t, projectValue.Root, disks)
+	deploymentValue := Deployment{Root: root}
+	config := privatePrepareConfig(t, deploymentValue.Root, disks)
 	// privatePrepareConfig creates a fresh intent; rebuild it for the current
 	// owner before preparing or committing state.
 	var err error
@@ -32,16 +32,16 @@ func commitFixture(t *testing.T, disks DiskOps) (Deployment, PrepareConfig, []Pr
 		t.Fatal(err)
 	}
 	outcomes := prepareAll(context.Background(), config, 2)
-	return projectValue, config, outcomes
+	return deploymentValue, config, outcomes
 }
 
 func TestCommitPreparedStateAndFinalization(t *testing.T) {
-	projectValue, config, outcomes := commitFixture(t, &fakePrivateDisks{})
-	result, err := CommitPrepared(projectValue, config, outcomes, "test-version")
-	if err != nil || len(result.Nodes) != 2 || len(result.Failed) != 0 || result.Project.Resolved.Network != "private" {
+	deploymentValue, config, outcomes := commitFixture(t, &fakePrivateDisks{})
+	result, err := CommitPrepared(deploymentValue, config, outcomes, "test-version")
+	if err != nil || len(result.Nodes) != 2 || len(result.Failed) != 0 || result.Deployment.Resolved.Network != "private" {
 		t.Fatalf("commit result = %#v, %v", result, err)
 	}
-	store := state.Store{Root: projectValue.Root}
+	store := state.Store{Root: deploymentValue.Root}
 	for _, node := range result.Nodes {
 		persisted, err := store.ReadNode(node.Node)
 		if err != nil || persisted.Phase != state.Prepared || persisted.VMUUID != node.VMUUID {
@@ -54,12 +54,12 @@ func TestCommitPreparedStateAndFinalization(t *testing.T) {
 		}
 	}
 	// State commit is idempotent before the finalizer removes the journal.
-	second, err := CommitPrepared(projectValue, config, outcomes, "test-version")
+	second, err := CommitPrepared(deploymentValue, config, outcomes, "test-version")
 	if err != nil || len(second.Nodes) != 2 {
 		t.Fatalf("idempotent commit = %#v, %v", second, err)
 	}
 	for _, node := range result.Nodes {
-		if err := FinalizePrepared(projectValue, node.Node); err != nil {
+		if err := FinalizePrepared(deploymentValue, node.Node); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Lstat(filepath.Join(filepath.Dir(node.RootDisk), "private-prepare.json")); !os.IsNotExist(err) {
@@ -69,19 +69,19 @@ func TestCommitPreparedStateAndFinalization(t *testing.T) {
 }
 
 func TestCommitPreparedPreservesSuccessfulNodeOnPeerFailure(t *testing.T) {
-	projectValue, config, outcomes := commitFixture(t, &fakePrivateDisks{failSubstring: "node-1/root.qcow2"})
-	result, err := CommitPrepared(projectValue, config, outcomes, "test-version")
+	deploymentValue, config, outcomes := commitFixture(t, &fakePrivateDisks{failSubstring: "node-1/root.qcow2"})
+	result, err := CommitPrepared(deploymentValue, config, outcomes, "test-version")
 	if err != nil || len(result.Nodes) != 1 || len(result.Failed) != 1 || result.Nodes[0].Node != "meta" || result.Failed[0] != "node-1" {
 		t.Fatalf("partial commit = %#v, %v", result, err)
 	}
-	store := state.Store{Root: projectValue.Root}
+	store := state.Store{Root: deploymentValue.Root}
 	if _, err := store.ReadNode("meta"); err != nil {
 		t.Fatalf("successful peer state missing: %v", err)
 	}
 	if _, err := store.ReadNode("node-1"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed peer gained state: %v", err)
 	}
-	partial, err := ReadPrepareJournal(filepath.Join(projectValue.Root, "nodes", "node-1", "private-prepare.json"))
+	partial, err := ReadPrepareJournal(filepath.Join(deploymentValue.Root, "nodes", "node-1", "private-prepare.json"))
 	if err != nil || partial.Prepared || partial.StateCommitted {
 		t.Fatalf("failed peer journal = %#v, %v", partial, err)
 	}

@@ -16,7 +16,7 @@ func privateKeyPurgeFixture(t *testing.T) (Manager, Deployment, string) {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("FARROW_HOME", root)
-	projectValue := Deployment{Root: root, DataRoot: root}
+	deploymentValue := Deployment{Root: root}
 	keysDir := filepath.Join(root, "keys")
 	if err := os.Mkdir(keysDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -26,11 +26,11 @@ func privateKeyPurgeFixture(t *testing.T) (Manager, Deployment, string) {
 			t.Fatal(err)
 		}
 	}
-	return Manager{}, projectValue, keysDir
+	return Manager{}, deploymentValue, keysDir
 }
 
 func TestPrivatePurgeKeysPlansAppliesAndIsIdempotent(t *testing.T) {
-	manager, projectValue, keysDir := privateKeyPurgeFixture(t)
+	manager, deploymentValue, keysDir := privateKeyPurgeFixture(t)
 	report, err := manager.PurgeKeys(context.Background(), false)
 	if err != nil || report.Apply || len(report.Actions) != 3 {
 		t.Fatalf("plan = %#v, %v", report, err)
@@ -55,7 +55,7 @@ func TestPrivatePurgeKeysPlansAppliesAndIsIdempotent(t *testing.T) {
 	if _, err := os.Lstat(keysDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("keys directory remains: %v", err)
 	}
-	if _, err := os.Lstat(projectValue.Root); err != nil {
+	if _, err := os.Lstat(deploymentValue.Root); err != nil {
 		t.Fatalf("deployment root was removed: %v", err)
 	}
 	report, err = manager.PurgeKeys(context.Background(), true)
@@ -65,8 +65,8 @@ func TestPrivatePurgeKeysPlansAppliesAndIsIdempotent(t *testing.T) {
 }
 
 func TestPrivatePurgeKeysBlocksRetainedArtifactsWithoutDeletingKeys(t *testing.T) {
-	manager, projectValue, keysDir := privateKeyPurgeFixture(t)
-	nodeDir, err := projectValue.EnsureNodeDir("meta")
+	manager, deploymentValue, keysDir := privateKeyPurgeFixture(t)
+	nodeDir, err := deploymentValue.EnsureNodeDir("meta")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestPrivatePurgeKeysReportsLiveProcessAndDataDisksAsState(t *testing.T) {
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			manager, projectValue, _ := privateKeyPurgeFixture(t)
+			manager, deploymentValue, _ := privateKeyPurgeFixture(t)
 			now := time.Now().UTC()
 			test.node.Schema = state.NodeSchema
 			test.node.FarrowVersion = "test"
@@ -107,7 +107,7 @@ func TestPrivatePurgeKeysReportsLiveProcessAndDataDisksAsState(t *testing.T) {
 			test.node.SpecHash = strings.Repeat("a", 64)
 			test.node.CreatedAt = now
 			test.node.UpdatedAt = now
-			if err := (state.Store{Root: projectValue.Root}).WriteNode(test.node); err != nil {
+			if err := (state.Store{Root: deploymentValue.Root}).WriteNode(test.node); err != nil {
 				t.Fatal(err)
 			}
 			_, err := manager.PurgeKeys(context.Background(), true)

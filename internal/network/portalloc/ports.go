@@ -1,5 +1,5 @@
-// Package user implements deterministic user-network resource choices.
-package user
+// Package portalloc implements deterministic host-port allocation.
+package portalloc
 
 import "fmt"
 

@@ -15,18 +15,18 @@ import (
 )
 
 type CommitResult struct {
-	Project state.DeploymentState `json:"deployment"`
-	Nodes   []state.NodeState     `json:"nodes"`
-	Failed  []string              `json:"failed,omitempty"`
+	Deployment state.DeploymentState `json:"deployment"`
+	Nodes      []state.NodeState     `json:"nodes"`
+	Failed     []string              `json:"failed,omitempty"`
 }
 
 func desiredDeploymentState(resolved spec.Resolved, hash, version string, now time.Time) state.DeploymentState {
 	return state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: version, SpecHash: hash, Resolved: resolved, UpdatedAt: now}
 }
 
-// envelopeOf strips the node list so project-level settings can be compared
+// envelopeOf strips the node list so deployment-level settings can be compared
 // on their own. Any envelope change moves every node's hash and is therefore
-// a whole-project recreate, never a silent in-place update.
+// a whole-deployment recreate, never a silent in-place update.
 func envelopeOf(value spec.Resolved) spec.Resolved {
 	envelope := value
 	if value.Private != nil {
@@ -73,7 +73,7 @@ func additiveResolvedChange(store state.Store, existing, desired spec.Resolved) 
 	return true
 }
 
-func ensureProjectState(store state.Store, desired state.DeploymentState) error {
+func ensureDeploymentState(store state.Store, desired state.DeploymentState) error {
 	existing, err := store.ReadDeployment()
 	if errors.Is(err, os.ErrNotExist) {
 		return store.WriteDeployment(desired)
@@ -90,7 +90,7 @@ func ensureProjectState(store state.Store, desired state.DeploymentState) error 
 	return store.WriteDeployment(desired)
 }
 
-func stateForArtifacts(config PrepareConfig, projectValue Deployment, artifacts NodeArtifacts, journal PrepareJournal, version string, now time.Time) (state.NodeState, error) {
+func stateForArtifacts(config PrepareConfig, deploymentValue Deployment, artifacts NodeArtifacts, journal PrepareJournal, version string, now time.Time) (state.NodeState, error) {
 	definition, ok := nodeSpec(config.Resolved, artifacts.Name)
 	if !ok {
 		return state.NodeState{}, fmt.Errorf("resolved spec has no node %s", artifacts.Name)
@@ -139,17 +139,17 @@ func stateForArtifacts(config PrepareConfig, projectValue Deployment, artifacts 
 // purpose: a commit interrupted between two node writes would leave the
 // deployment half-recorded, so this phase always runs to completion and reports
 // per-node outcomes instead of accepting cancellation.
-func CommitPrepared(projectValue Deployment, config PrepareConfig, outcomes []PrepareOutcome, version string) (CommitResult, error) {
-	if projectValue.Root != config.ProjectRoot || version == "" {
+func CommitPrepared(deploymentValue Deployment, config PrepareConfig, outcomes []PrepareOutcome, version string) (CommitResult, error) {
+	if deploymentValue.Root != config.DeploymentRoot || version == "" {
 		return CommitResult{}, errors.New("private commit config/version identity mismatch")
 	}
 	now := config.now()
-	projectState := desiredDeploymentState(config.Resolved, config.SpecHash, version, now)
-	store := state.Store{Root: projectValue.Root}
-	if err := ensureProjectState(store, projectState); err != nil {
+	deploymentState := desiredDeploymentState(config.Resolved, config.SpecHash, version, now)
+	store := state.Store{Root: deploymentValue.Root}
+	if err := ensureDeploymentState(store, deploymentState); err != nil {
 		return CommitResult{}, err
 	}
-	result := CommitResult{Project: projectState, Nodes: []state.NodeState{}}
+	result := CommitResult{Deployment: deploymentState, Nodes: []state.NodeState{}}
 	for _, outcome := range outcomes {
 		if outcome.Error != "" || outcome.Artifacts == nil {
 			result.Failed = append(result.Failed, outcome.Node)
@@ -160,7 +160,7 @@ func CommitPrepared(projectValue Deployment, config PrepareConfig, outcomes []Pr
 		if err != nil {
 			return result, err
 		}
-		nodeState, err := stateForArtifacts(config, projectValue, artifacts, journal, version, now)
+		nodeState, err := stateForArtifacts(config, deploymentValue, artifacts, journal, version, now)
 		if err != nil {
 			return result, err
 		}
@@ -186,8 +186,8 @@ func CommitPrepared(projectValue Deployment, config PrepareConfig, outcomes []Pr
 	return result, nil
 }
 
-func FinalizePrepared(projectValue Deployment, node string) error {
-	nodeDir, err := projectValue.NodeDir(node)
+func FinalizePrepared(deploymentValue Deployment, node string) error {
+	nodeDir, err := deploymentValue.NodeDir(node)
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ func FinalizePrepared(projectValue Deployment, node string) error {
 	if !journal.StateCommitted || journal.StatePath != filepath.Join(nodeDir, "state.json") {
 		return errors.New("private prepare journal state is not committed")
 	}
-	nodeState, err := (state.Store{Root: projectValue.Root}).ReadNode(node)
+	nodeState, err := (state.Store{Root: deploymentValue.Root}).ReadNode(node)
 	if err != nil {
 		return err
 	}

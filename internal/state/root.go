@@ -93,7 +93,7 @@ func ResolveDataRoot() (string, error) {
 		return "", err
 	}
 	if _, err := os.Lstat(filepath.Join(root, "projects")); err == nil {
-		return "", fmt.Errorf("%s holds a pre-simplification multi-project layout; farrow now keeps exactly one deployment there — remove it with `rm -rf %s` (images are re-pulled on demand) and run setup/up again", root, root)
+		return "", fmt.Errorf("%s holds a pre-simplification multiple-deployment layout; farrow now keeps exactly one deployment there — remove it with `rm -rf %s` (images are re-pulled on demand) and run setup/up again", root, root)
 	}
 	return root, nil
 }

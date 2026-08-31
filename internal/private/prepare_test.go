@@ -107,7 +107,7 @@ func privatePrepareConfig(t *testing.T, root string, disks DiskOps) PrepareConfi
 		t.Fatal(err)
 	}
 	return PrepareConfig{
-		ProjectRoot: root, Resolved: resolved, SpecHash: hash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds,
+		DeploymentRoot: root, Resolved: resolved, SpecHash: hash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds,
 		Bases:    map[string]BaseImage{"u24": {Path: base, Alias: "u24", Release: "test", Digest: strings.Repeat("a", 64), VirtualSize: 4 * spec.GiB}},
 		SSHPorts: map[string]uint16{"meta": 2222, "node-1": 2223},
 		Profile:  profile, QEMUBinary: "/opt/qemu/bin/qemu-system-aarch64",

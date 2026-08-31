@@ -128,7 +128,7 @@ func validateCanonicalWithin(root, target string) error {
 }
 
 // ValidateSource proves that a node-local disk is a single-link, mode-0600,
-// current-user file whose fully resolved path remains inside the project.
+// current-user file whose fully resolved path remains inside the deployment.
 func ValidateSource(root, source string) error {
 	inside, err := fsutil.IsWithin(root, source)
 	if err != nil || !inside {

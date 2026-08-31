@@ -1,5 +1,5 @@
 // Package lock implements bounded advisory file locks for Farrow's fixed lock
-// order: cache/global, private lease, project, then node.
+// order: cache/global, deployment allocator, deployment, then node.
 package lock
 
 import (

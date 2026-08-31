@@ -26,11 +26,11 @@ import (
 
 const maxInventoryBytes = 4 << 20
 
-// InventoryProjectName is the fixed resolved-spec name for inventory-defined
-// projects. Naming from file content or directory would move the drift hash
+// InventoryDeploymentName is the fixed resolved-spec name for inventory-defined
+// deployments. Naming from file content or directory would move the drift hash
 // when the file or directory is renamed, so the name is deliberately constant;
-// project identity lives in the workspace marker.
-const InventoryProjectName = "farrow"
+// deployment identity is the single owner-scoped state root.
+const InventoryDeploymentName = "farrow"
 
 const (
 	defaultCPU      = 2
@@ -713,7 +713,7 @@ func ParseInventory(data []byte) (File, error) {
 
 	file := File{
 		Version: 1,
-		Name:    InventoryProjectName,
+		Name:    InventoryDeploymentName,
 		Arch:    "native",
 		Network: NetworkConfig{Mode: "private", CIDR: layout.CIDR(), HostAddress: layout.HostAddress(), DHCPEnd: layout.DHCPEnd()},
 	}

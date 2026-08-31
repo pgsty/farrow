@@ -27,51 +27,51 @@ func integrationHome(home string) (string, error) {
 }
 
 func (m Manager) integrationSnapshot(ctx context.Context) (_ Deployment, _ state.DeploymentState, _ []state.NodeState, returnErr error) {
-	projectValue, err := m.openProject(false)
+	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
 		return Deployment{}, state.DeploymentState{}, nil, err
 	}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, true)
+	deploymentLock, err := acquireDeploymentLock(lockContext, deploymentValue.Root, true)
 	if err != nil {
 		return Deployment{}, state.DeploymentState{}, nil, err
 	}
 	defer func() {
-		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment integration snapshot lock")
+		returnErr = lock.JoinRelease(returnErr, deploymentLock, "deployment integration snapshot lock")
 	}()
-	return m.integrationSnapshotLocked(projectValue)
+	return m.integrationSnapshotLocked(deploymentValue)
 }
 
-func (m Manager) integrationSnapshotLocked(projectValue Deployment) (Deployment, state.DeploymentState, []state.NodeState, error) {
-	store := state.Store{Root: projectValue.Root}
-	projectState, err := store.ReadDeployment()
+func (m Manager) integrationSnapshotLocked(deploymentValue Deployment) (Deployment, state.DeploymentState, []state.NodeState, error) {
+	store := state.Store{Root: deploymentValue.Root}
+	deploymentState, err := store.ReadDeployment()
 	if err != nil {
 		return Deployment{}, state.DeploymentState{}, nil, err
 	}
-	if projectState.Resolved.Network != "private" {
+	if deploymentState.Resolved.Network != "private" {
 		return Deployment{}, state.DeploymentState{}, nil, errors.New("the deployment state is not private")
 	}
-	selected, err := selectedNodeNames(projectState.Resolved, m.Nodes)
+	selected, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
 	if err != nil {
 		return Deployment{}, state.DeploymentState{}, nil, err
 	}
 	selectedSet := nodeNameSet(selected)
-	filtered := cloneResolved(projectState.Resolved)
+	filtered := cloneResolved(deploymentState.Resolved)
 	filtered.Nodes = filtered.Nodes[:0]
-	for _, definition := range projectState.Resolved.Nodes {
+	for _, definition := range deploymentState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; include {
 			filtered.Nodes = append(filtered.Nodes, definition)
 		}
 	}
-	projectState.Resolved = filtered
+	deploymentState.Resolved = filtered
 	nodes := make([]state.NodeState, 0, len(filtered.Nodes))
 	for _, definition := range filtered.Nodes {
 		node, err := store.ReadNode(definition.Name)
 		if err != nil {
 			return Deployment{}, state.DeploymentState{}, nil, err
 		}
-		expectedHash, hashErr := spec.NodeHash(projectState.Resolved, definition.Name)
+		expectedHash, hashErr := spec.NodeHash(deploymentState.Resolved, definition.Name)
 		if hashErr != nil || node.SpecHash != expectedHash {
 			return Deployment{}, state.DeploymentState{}, nil, fmt.Errorf("private node %s state does not match its resolved node hash", definition.Name)
 		}
@@ -80,55 +80,55 @@ func (m Manager) integrationSnapshotLocked(projectValue Deployment) (Deployment,
 		}
 		nodes = append(nodes, node)
 	}
-	return projectValue, projectState, nodes, nil
+	return deploymentValue, deploymentState, nodes, nil
 }
 
-func validateSSHArtifacts(projectValue Deployment) (string, string, error) {
-	return sshkeys.ValidateSSHArtifacts(projectValue.Root)
+func validateSSHArtifacts(deploymentValue Deployment) (string, string, error) {
+	return sshkeys.ValidateSSHArtifacts(deploymentValue.Root)
 }
 
 // Connections resolves and verifies a selected batch while holding the
-// project exclusive lock across the complete snapshot and runtime checks.
+// deployment exclusive lock across the complete snapshot and runtime checks.
 func (m Manager) Connections(ctx context.Context) (_ []Connection, returnErr error) {
-	projectValue, err := m.openProject(false)
+	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
 		return nil, err
 	}
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
+	deploymentLock, err := acquireDeploymentLock(lockContext, deploymentValue.Root, false)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment connections lock")
+		returnErr = lock.JoinRelease(returnErr, deploymentLock, "deployment connections lock")
 	}()
-	projectValue, err = m.openProject(false)
+	deploymentValue, err = m.openDeployment(false)
 	if err != nil {
 		return nil, err
 	}
-	return m.ConnectionsLocked(ctx, projectValue, projectLock)
+	return m.ConnectionsLocked(ctx, deploymentValue, deploymentLock)
 }
 
 // ConnectionsLocked is the non-locking provisioning entrypoint. The caller
-// must pass the live exclusive project.lock token and keep it held for the
+// must pass the live exclusive deployment lock token and keep it held for the
 // complete remote operation, preventing lifecycle changes after validation.
-func (m Manager) ConnectionsLocked(ctx context.Context, projectValue Deployment, projectLock *lock.File) ([]Connection, error) {
-	if err := projectLock.ValidateExclusive(deploymentLockPath(projectValue.Root)); err != nil {
+func (m Manager) ConnectionsLocked(ctx context.Context, deploymentValue Deployment, deploymentLock *lock.File) ([]Connection, error) {
+	if err := deploymentLock.ValidateExclusive(deploymentLockPath(deploymentValue.Root)); err != nil {
 		return nil, fmt.Errorf("private connections require the matching exclusive deployment lock: %w", err)
 	}
-	_, projectState, nodes, err := m.integrationSnapshotLocked(projectValue)
+	_, deploymentState, nodes, err := m.integrationSnapshotLocked(deploymentValue)
 	if err != nil {
 		return nil, err
 	}
-	privateKey, knownHosts, err := validateSSHArtifacts(projectValue)
+	privateKey, knownHosts, err := validateSSHArtifacts(deploymentValue)
 	if err != nil {
 		return nil, err
 	}
-	lifecycle := vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: projectState.Resolved.SSHUser}
+	lifecycle := vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}
 	connections := make([]Connection, 0, len(nodes))
 	for index, node := range nodes {
-		definition := projectState.Resolved.Nodes[index]
+		definition := deploymentState.Resolved.Nodes[index]
 		if node.Phase != state.Running {
 			return nil, fmt.Errorf("private node %s is not running", node.Node)
 		}
@@ -140,7 +140,7 @@ func (m Manager) ConnectionsLocked(ctx context.Context, projectValue Deployment,
 			return nil, fmt.Errorf("private node %s recorded process identity does not match", node.Node)
 		}
 		connections = append(connections, Connection{
-			Node: definition.Name, User: projectState.Resolved.SSHUser,
+			Node: definition.Name, User: deploymentState.Resolved.SSHUser,
 			Host: "127.0.0.1", Port: node.SSHPort,
 			PrivateKey: privateKey, KnownHosts: knownHosts,
 		})
@@ -156,16 +156,16 @@ func (m Manager) InstallSSHConfig(ctx context.Context, name, home string) (sshco
 	if err != nil {
 		return sshconfig.Result{}, err
 	}
-	projectValue, projectState, nodes, err := m.integrationSnapshot(ctx)
+	deploymentValue, deploymentState, nodes, err := m.integrationSnapshot(ctx)
 	if err != nil {
 		return sshconfig.Result{}, err
 	}
-	identityFile, knownHosts, err := validateSSHArtifacts(projectValue)
+	identityFile, knownHosts, err := validateSSHArtifacts(deploymentValue)
 	if err != nil {
 		return sshconfig.Result{}, err
 	}
 	entries := make([]sshconfig.Entry, 0, len(nodes))
-	for index, definition := range projectState.Resolved.Nodes {
+	for index, definition := range deploymentState.Resolved.Nodes {
 		aliases := []string{definition.Name}
 		if definition.Address != "" {
 			aliases = append(aliases, definition.Address)
@@ -175,7 +175,7 @@ func (m Manager) InstallSSHConfig(ctx context.Context, name, home string) (sshco
 			Name:       name,
 			Node:       definition.Name,
 			Aliases:    aliases,
-			User:       projectState.Resolved.SSHUser,
+			User:       deploymentState.Resolved.SSHUser,
 			Host:       "127.0.0.1",
 			Port:       nodes[index].SSHPort,
 			Identity:   identityFile,
@@ -196,12 +196,12 @@ func (m Manager) RemoveSSHConfig(name, home string) (sshconfig.Result, error) {
 // HostEntries returns the fixed private address, node name, and declared
 // profile aliases for the marker-owned /etc/hosts block.
 func (m Manager) HostEntries(ctx context.Context) ([]hostconfig.Entry, error) {
-	_, projectState, _, err := m.integrationSnapshot(ctx)
+	_, deploymentState, _, err := m.integrationSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]hostconfig.Entry, 0, len(projectState.Resolved.Nodes))
-	for _, definition := range projectState.Resolved.Nodes {
+	entries := make([]hostconfig.Entry, 0, len(deploymentState.Resolved.Nodes))
+	for _, definition := range deploymentState.Resolved.Nodes {
 		names := make([]string, 0, len(definition.Aliases)+1)
 		seen := make(map[string]struct{}, len(definition.Aliases)+1)
 		for _, name := range append([]string{definition.Name}, definition.Aliases...) {

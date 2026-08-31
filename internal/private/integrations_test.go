@@ -13,8 +13,8 @@ import (
 
 func TestPrivateSSHConfigInstallContainsEveryNodeAndAddress(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
-	t.Setenv("FARROW_HOME", startConfig.Project.Root)
-	keysDir := filepath.Join(startConfig.Project.Root, "keys")
+	t.Setenv("FARROW_HOME", startConfig.Deployment.Root)
+	keysDir := filepath.Join(startConfig.Deployment.Root, "keys")
 	if err := os.Mkdir(keysDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestPrivateSSHConfigInstallContainsEveryNodeAndAddress(t *testing.T) {
 
 func TestPrivateHostEntriesIncludeDeclaredAliases(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
-	t.Setenv("FARROW_HOME", startConfig.Project.Root)
+	t.Setenv("FARROW_HOME", startConfig.Deployment.Root)
 	manager := Manager{FarrowVersion: "test"}
 	entries, err := manager.HostEntries(context.Background())
 	if err != nil {
@@ -79,14 +79,14 @@ func TestPrivateHostEntriesIncludeDeclaredAliases(t *testing.T) {
 
 func TestPrivateSSHConfigRejectsSymlinkedKeysDirectory(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
-	t.Setenv("FARROW_HOME", startConfig.Project.Root)
+	t.Setenv("FARROW_HOME", startConfig.Deployment.Root)
 	outside := t.TempDir()
 	for name := range map[string]struct{}{"id_ed25519": {}, "known_hosts": {}} {
 		if err := os.WriteFile(filepath.Join(outside, name), []byte("fixture"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Symlink(outside, filepath.Join(startConfig.Project.Root, "keys")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(startConfig.Deployment.Root, "keys")); err != nil {
 		t.Fatal(err)
 	}
 	manager := Manager{FarrowVersion: "test"}
@@ -97,8 +97,8 @@ func TestPrivateSSHConfigRejectsSymlinkedKeysDirectory(t *testing.T) {
 
 func TestConnectionsLockedRequiresAndReusesExclusiveDeploymentLock(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
-	t.Setenv("FARROW_HOME", startConfig.Project.Root)
-	keysDir := filepath.Join(startConfig.Project.Root, "keys")
+	t.Setenv("FARROW_HOME", startConfig.Deployment.Root)
+	keysDir := filepath.Join(startConfig.Deployment.Root, "keys")
 	if err := os.Mkdir(keysDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -108,24 +108,24 @@ func TestConnectionsLockedRequiresAndReusesExclusiveDeploymentLock(t *testing.T)
 		}
 	}
 	manager := Manager{FarrowVersion: "test"}
-	if _, err := manager.ConnectionsLocked(context.Background(), startConfig.Project, nil); err == nil || !strings.Contains(err.Error(), "exclusive deployment lock") {
+	if _, err := manager.ConnectionsLocked(context.Background(), startConfig.Deployment, nil); err == nil || !strings.Contains(err.Error(), "exclusive deployment lock") {
 		t.Fatalf("missing token error = %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(startConfig.Project.Root, "locks"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(startConfig.Deployment.Root, "locks"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	projectLock, err := lock.Acquire(context.Background(), deploymentLockPath(startConfig.Project.Root), false)
+	deploymentLock, err := lock.Acquire(context.Background(), deploymentLockPath(startConfig.Deployment.Root), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := projectLock.Release(); err != nil {
+		if err := deploymentLock.Release(); err != nil {
 			t.Errorf("release integration test lock: %v", err)
 		}
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err = manager.ConnectionsLocked(ctx, startConfig.Project, projectLock)
+	_, err = manager.ConnectionsLocked(ctx, startConfig.Deployment, deploymentLock)
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("locked snapshot error = %v", err)
 	}

@@ -70,13 +70,13 @@ func TestDiffResolvedClassifiesNodeChanges(t *testing.T) {
 	}
 }
 
-func diffTestProject(t *testing.T) Deployment {
+func diffTestDeployment(t *testing.T) Deployment {
 	t.Helper()
 	root := t.TempDir()
-	return Deployment{Root: root, DataRoot: root}
+	return Deployment{Root: root}
 }
 
-func projectStateFor(t *testing.T, resolved spec.Resolved) state.DeploymentState {
+func deploymentStateFor(t *testing.T, resolved spec.Resolved) state.DeploymentState {
 	t.Helper()
 	hash, err := spec.Hash(resolved)
 	if err != nil {
@@ -85,17 +85,17 @@ func projectStateFor(t *testing.T, resolved spec.Resolved) state.DeploymentState
 	return state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash, Resolved: resolved, UpdatedAt: time.Unix(1, 0).UTC()}
 }
 
-func TestEnsureProjectStateAcceptsAdditionsRefusesRemovals(t *testing.T) {
-	projectValue := diffTestProject(t)
-	store := state.Store{Root: projectValue.Root}
+func TestEnsureDeploymentStateAcceptsAdditionsRefusesRemovals(t *testing.T) {
+	deploymentValue := diffTestDeployment(t)
+	store := state.Store{Root: deploymentValue.Root}
 	persisted := diffFixtureResolved()
-	if err := ensureProjectState(store, projectStateFor(t, persisted)); err != nil {
+	if err := ensureDeploymentState(store, deploymentStateFor(t, persisted)); err != nil {
 		t.Fatalf("initial write: %v", err)
 	}
 
 	added := diffFixtureResolved()
 	added.Nodes = append(added.Nodes, spec.Node{Name: "node-2", Address: "10.10.10.12", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 64 * spec.GiB})
-	if err := ensureProjectState(store, projectStateFor(t, added)); err != nil {
+	if err := ensureDeploymentState(store, deploymentStateFor(t, added)); err != nil {
 		t.Fatalf("additive update refused: %v", err)
 	}
 	current, err := store.ReadDeployment()
@@ -105,7 +105,7 @@ func TestEnsureProjectStateAcceptsAdditionsRefusesRemovals(t *testing.T) {
 
 	shrunk := diffFixtureResolved()
 	shrunk.Nodes = shrunk.Nodes[:1]
-	if err := ensureProjectState(store, projectStateFor(t, shrunk)); err == nil {
+	if err := ensureDeploymentState(store, deploymentStateFor(t, shrunk)); err == nil {
 		t.Fatal("node removal must never ride a state commit")
 	}
 
@@ -121,15 +121,15 @@ func TestEnsureProjectStateAcceptsAdditionsRefusesRemovals(t *testing.T) {
 	if err := store.WriteNode(nodeState); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProjectState(store, projectStateFor(t, resized)); err == nil {
+	if err := ensureDeploymentState(store, deploymentStateFor(t, resized)); err == nil {
 		t.Fatal("definition change with live node state must be refused")
 	}
 	// ...and accepted once that state is gone (the per-node recreate window).
-	nodeDir, _ := projectValue.NodeDir("node-1")
+	nodeDir, _ := deploymentValue.NodeDir("node-1")
 	if err := os.Remove(filepath.Join(nodeDir, "state.json")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProjectState(store, projectStateFor(t, resized)); err != nil {
+	if err := ensureDeploymentState(store, deploymentStateFor(t, resized)); err != nil {
 		t.Fatalf("recreate-window update refused: %v", err)
 	}
 }

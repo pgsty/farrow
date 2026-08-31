@@ -24,7 +24,7 @@ func (l NativeLifecycle) Stop(ctx context.Context, node state.NodeState, timeout
 }
 
 type StopConfig struct {
-	Project        Deployment
+	Deployment     Deployment
 	Lifecycle      StopLifecycle
 	Nodes          []string
 	Concurrency    int
@@ -115,7 +115,7 @@ func loadStoppableNodes(store state.Store, names []string) ([]state.NodeState, e
 }
 
 func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, error) {
-	if config.Project.Root == "" || config.Lifecycle == nil {
+	if config.Deployment.Root == "" || config.Lifecycle == nil {
 		return nil, errors.New("private stop deployment or lifecycle is incomplete")
 	}
 	if config.Concurrency <= 0 {
@@ -130,7 +130,7 @@ func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, error) 
 	if config.CleanupRuntime == nil {
 		config.CleanupRuntime = cleanupRuntime
 	}
-	store := state.Store{Root: config.Project.Root}
+	store := state.Store{Root: config.Deployment.Root}
 	nodes, err := loadStoppableNodes(store, config.Nodes)
 	if err != nil {
 		return nil, err

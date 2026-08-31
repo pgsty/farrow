@@ -66,7 +66,7 @@ func TestIntegrationRealPrivateOfflinePrepare(t *testing.T) {
 	}
 	runner := execx.OSRunner{Timeout: 30 * time.Second, OutputLimit: 1 << 20}
 	config := PrepareConfig{
-		ProjectRoot: output, Resolved: resolved, SpecHash: hash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds,
+		DeploymentRoot: output, Resolved: resolved, SpecHash: hash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds,
 		Bases:    map[string]BaseImage{"u24": {Path: imagePath, Alias: "u24", Release: "20260801", Digest: strings.Repeat("a", 64), VirtualSize: 3758096384}},
 		SSHPorts: map[string]uint16{"meta": 2222, "node-1": 2223}, Profile: profile,
 		QEMUBinary: qemuPath, Firmware: firmware,

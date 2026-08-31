@@ -258,27 +258,27 @@ func privateShareFixture(t *testing.T) spec.Share {
 
 func persistPrivateShare(t *testing.T, store state.Store, share spec.Share) state.DeploymentState {
 	t.Helper()
-	projectState, err := store.ReadDeployment()
+	deploymentState, err := store.ReadDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectState.Resolved.Nodes[0].Shares = []spec.Share{share}
-	projectState.SpecHash, err = spec.Hash(projectState.Resolved)
+	deploymentState.Resolved.Nodes[0].Shares = []spec.Share{share}
+	deploymentState.SpecHash, err = spec.Hash(deploymentState.Resolved)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.WriteDeployment(projectState); err != nil {
+	if err := store.WriteDeployment(deploymentState); err != nil {
 		t.Fatal(err)
 	}
-	node, err := store.ReadNode(projectState.Resolved.Nodes[0].Name)
+	node, err := store.ReadNode(deploymentState.Resolved.Nodes[0].Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	node.SpecHash = projectState.SpecHash
+	node.SpecHash = deploymentState.SpecHash
 	if err := store.WriteNode(node); err != nil {
 		t.Fatal(err)
 	}
-	return projectState
+	return deploymentState
 }
 
 func privateShareCapabilityManager(t *testing.T, fixture StartConfig, runner execx.Runner) Manager {
@@ -312,7 +312,7 @@ func assertPrivateShareCapabilityFailurePreservesState(t *testing.T, fixture Sta
 	if !errors.As(err, &capability) {
 		t.Fatalf("error=%T %v, want CapabilityError", err, err)
 	}
-	store := state.Store{Root: fixture.Project.Root}
+	store := state.Store{Root: fixture.Deployment.Root}
 	afterNode, readErr := store.ReadNode(beforeNode.Node)
 	if readErr != nil || afterNode.Phase != beforeNode.Phase || afterNode.SpecHash != beforeNode.SpecHash {
 		t.Fatalf("node mutated after failed share preflight: before=%#v after=%#v err=%v", beforeNode, afterNode, readErr)
@@ -324,8 +324,8 @@ func assertPrivateShareCapabilityFailurePreservesState(t *testing.T, fixture Sta
 
 func TestPrivateRestartShareCapabilityPrecedesStop(t *testing.T) {
 	fixture, _ := preparedStartFixture(t)
-	t.Setenv("FARROW_HOME", fixture.Project.Root)
-	store := state.Store{Root: fixture.Project.Root}
+	t.Setenv("FARROW_HOME", fixture.Deployment.Root)
+	store := state.Store{Root: fixture.Deployment.Root}
 	persistPrivateShare(t, store, privateShareFixture(t))
 	beforeNode, err := store.ReadNode("meta")
 	if err != nil {
@@ -353,17 +353,17 @@ func TestPrivateRecreateShareCapabilityPrecedesDestroy(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture, _ := preparedStartFixture(t)
-			t.Setenv("FARROW_HOME", fixture.Project.Root)
-			store := state.Store{Root: fixture.Project.Root}
+			t.Setenv("FARROW_HOME", fixture.Deployment.Root)
+			store := state.Store{Root: fixture.Deployment.Root}
 			share := privateShareFixture(t)
-			projectState, err := store.ReadDeployment()
+			deploymentState, err := store.ReadDeployment()
 			if err != nil {
 				t.Fatal(err)
 			}
 			if test.currentShare {
-				projectState = persistPrivateShare(t, store, share)
+				deploymentState = persistPrivateShare(t, store, share)
 			}
-			requested := cloneResolved(projectState.Resolved)
+			requested := cloneResolved(deploymentState.Resolved)
 			requested.Arch = test.requestedArch
 			if test.requestedShare {
 				requested.Nodes[0].Shares = []spec.Share{share}
@@ -390,9 +390,9 @@ func TestPrivateRecreateShareCapabilityPrecedesDestroy(t *testing.T) {
 
 func TestPrivateRecreateRuntimePolicyPrecedesDestroy(t *testing.T) {
 	fixture, _ := preparedStartFixture(t)
-	t.Setenv("FARROW_HOME", fixture.Project.Root)
-	store := state.Store{Root: fixture.Project.Root}
-	projectState, err := store.ReadDeployment()
+	t.Setenv("FARROW_HOME", fixture.Deployment.Root)
+	store := state.Store{Root: fixture.Deployment.Root}
+	deploymentState, err := store.ReadDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestPrivateRecreateRuntimePolicyPrecedesDestroy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requested := cloneResolved(projectState.Resolved)
+	requested := cloneResolved(deploymentState.Resolved)
 	requested.Image = "el7"
 	_, err = privateShareCapabilityManager(t, fixture, &rejectingPrivateShareRunner{}).RecreateResolved(context.Background(), requested)
 	assertPrivateShareCapabilityFailurePreservesState(t, fixture, beforeNode, err)
@@ -408,9 +408,9 @@ func TestPrivateRecreateRuntimePolicyPrecedesDestroy(t *testing.T) {
 
 func TestPrivateRecreateRuntimeDriftRequiresWholeDeployment(t *testing.T) {
 	fixture, _ := preparedStartFixture(t)
-	t.Setenv("FARROW_HOME", fixture.Project.Root)
-	store := state.Store{Root: fixture.Project.Root}
-	projectState, err := store.ReadDeployment()
+	t.Setenv("FARROW_HOME", fixture.Deployment.Root)
+	store := state.Store{Root: fixture.Deployment.Root}
+	deploymentState, err := store.ReadDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestPrivateRecreateRuntimeDriftRequiresWholeDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requested := cloneResolved(projectState.Resolved)
+	requested := cloneResolved(deploymentState.Resolved)
 	requested.Image = "el8"
 	manager := privateShareCapabilityManager(t, fixture, &rejectingPrivateShareRunner{})
 	manager.Nodes = []string{"meta"}
@@ -472,9 +472,9 @@ func TestPrivateRecreateSelectedRuntimeInputsPrecedeDestroy(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture, _ := preparedStartFixture(t)
-			t.Setenv("FARROW_HOME", fixture.Project.Root)
-			store := state.Store{Root: fixture.Project.Root}
-			projectState, err := store.ReadDeployment()
+			t.Setenv("FARROW_HOME", fixture.Deployment.Root)
+			store := state.Store{Root: fixture.Deployment.Root}
+			deploymentState, err := store.ReadDeployment()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -482,7 +482,7 @@ func TestPrivateRecreateSelectedRuntimeInputsPrecedeDestroy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			requested := cloneResolved(projectState.Resolved)
+			requested := cloneResolved(deploymentState.Resolved)
 			manager := privateShareCapabilityManager(t, fixture, &rejectingPrivateShareRunner{})
 			test.mutate(&manager, &requested)
 			_, err = manager.RecreateResolved(context.Background(), requested)
@@ -651,8 +651,8 @@ func TestResolveRuntimeQEMUValidatesSelectedBinaryAndBackend(t *testing.T) {
 
 func TestRuntimeDriftUsesPersistedInvocation(t *testing.T) {
 	fixture, _ := preparedStartFixture(t)
-	store := state.Store{Root: fixture.Project.Root}
-	projectState, err := store.ReadDeployment()
+	store := state.Store{Root: fixture.Deployment.Root}
+	deploymentState, err := store.ReadDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,11 +665,11 @@ func TestRuntimeDriftUsesPersistedInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, _ := platform.Resolve("darwin", "arm64")
-	if drifted, err := runtimeDriftNodes(store, projectState.Resolved, host); err != nil || len(drifted) != 0 {
+	if drifted, err := runtimeDriftNodes(store, deploymentState.Resolved, host); err != nil || len(drifted) != 0 {
 		t.Fatalf("native runtime drift = %v, %v", drifted, err)
 	}
 	tcg, _ := platform.ResolveRuntime(host, "arm64", true)
-	if drifted, err := runtimeDriftNodes(store, projectState.Resolved, tcg); err != nil || len(drifted) != len(projectState.Resolved.Nodes) || drifted[0] != "meta" {
+	if drifted, err := runtimeDriftNodes(store, deploymentState.Resolved, tcg); err != nil || len(drifted) != len(deploymentState.Resolved.Nodes) || drifted[0] != "meta" {
 		t.Fatalf("TCG runtime drift = %v, %v", drifted, err)
 	}
 }

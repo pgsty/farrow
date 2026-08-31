@@ -10,7 +10,7 @@ import (
 
 func TestExclusiveLockHonorsContext(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "project.lock")
+	path := filepath.Join(t.TempDir(), "deployment.lock")
 	first, err := Acquire(context.Background(), path, false)
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestExclusiveLockHonorsContext(t *testing.T) {
 func TestValidateExclusiveRejectsWrongReleasedAndSharedTokens(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	path := filepath.Join(root, "project.lock")
+	path := filepath.Join(root, "deployment.lock")
 	exclusive, err := Acquire(context.Background(), path, false)
 	if err != nil {
 		t.Fatal(err)

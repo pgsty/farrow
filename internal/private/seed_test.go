@@ -32,7 +32,7 @@ func TestRenderSeedsPrivateContractAndKeyBoundary(t *testing.T) {
 	worker := files["node-1"]
 	keyMarker := []byte("-----BEGIN PRIVATE KEY-----")
 	if !bytes.Contains(control.UserData, keyMarker) || bytes.Contains(worker.UserData, keyMarker) {
-		t.Fatal("project private key crossed the control-node boundary")
+		t.Fatal("deployment private key crossed the control-node boundary")
 	}
 	for name, seed := range files {
 		for _, want := range []string{"meta", "10.10.10.10", "node-1", "10.10.10.11", "private0", "dhcp4: false"} {
