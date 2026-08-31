@@ -186,12 +186,11 @@ func sortedMapKeys[V any](values map[string]V) []string {
 	return keys
 }
 
-func runNetwork(parent context.Context, options networkOptions, stdout, stderr io.Writer) int {
+func runNetwork(parent context.Context, options networkOptions, stdout, stderr io.Writer) (commandOutcome, error) {
 	command := options.Action
 	if command == "install" || command == "uninstall" {
 		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-			errorf(stderr, "network install/uninstall supports native Linux and macOS")
-			return exitCapability
+			return commandOutcome{}, newDetailedCommandError("capability", exitCapability, errors.New("network install/uninstall supports native Linux and macOS"), "", nil)
 		}
 		var layout subnet.Layout
 		vmnetMode := "host"
@@ -201,16 +200,13 @@ func runNetwork(parent context.Context, options networkOptions, stdout, stderr i
 				vmnetMode = "host"
 			}
 			if vmnetMode != "host" && vmnetMode != "shared" {
-				errorf(stderr, "--mode must be host or shared, got %q", vmnetMode)
-				return exitUsage
+				return commandOutcome{}, newUsageError(fmt.Errorf("--mode must be host or shared, got %q", vmnetMode))
 			}
 			if runtime.GOOS == "linux" && vmnetMode != "host" {
-				errorf(stderr, "--mode is a macOS socket_vmnet option; Linux uses farrow0")
-				return exitUsage
+				return commandOutcome{}, newUsageError(errors.New("--mode is a macOS socket_vmnet option; Linux uses farrow0"))
 			}
 			if runtime.GOOS != "darwin" && (options.Archive != "" || options.InterfaceID != "") {
-				errorf(stderr, "--archive and --interface-id are macOS-only")
-				return exitUsage
+				return commandOutcome{}, newUsageError(errors.New("--archive and --interface-id are macOS-only"))
 			}
 			networkCIDR := options.CIDR
 			if networkCIDR == "" {
@@ -219,8 +215,7 @@ func runNetwork(parent context.Context, options networkOptions, stdout, stderr i
 			var layoutErr error
 			layout, layoutErr = subnet.Parse(networkCIDR)
 			if layoutErr != nil {
-				errorf(stderr, "%v", layoutErr)
-				return exitUsage
+				return commandOutcome{}, newUsageError(layoutErr)
 			}
 		}
 		baseRunner := execx.OSRunner{Timeout: 2 * time.Minute, OutputLimit: 1 << 20}
@@ -231,17 +226,19 @@ func runNetwork(parent context.Context, options networkOptions, stdout, stderr i
 			preflightProgress := startProgress(ctx, stderr, "Validating the fixed-IP network plan")
 			preflightReport := netpreflight.Run(ctx, netpreflight.Request{OS: runtime.GOOS, Arch: runtime.GOARCH, Purpose: netpreflight.Install, Layout: layout, Addresses: addresses}, netpreflight.Probe{Runner: baseRunner})
 			preflightProgress.Stop(nil)
+			if errors.Is(parent.Err(), context.Canceled) {
+				return commandOutcome{}, ErrCancelled
+			}
 			if !preflightReport.Ready {
-				if structuredOutput(stdout) {
-					_ = encodeJSON(stdout, stderr, preflightReport)
-				} else {
+				err := errors.New("host network preflight is not ready")
+				return commandOutcome{}, newSilentRenderedCommandError("network_preflight", preflightReport.ExitCode, err, preflightReport, func(_ io.Writer, stderr io.Writer) error {
 					for _, finding := range preflightReport.Findings {
-						if _, err := fmt.Fprintf(stderr, "%s %s: %s\n", finding.Severity, finding.Code, finding.Evidence); err != nil {
-							return exitRuntime
+						if _, writeErr := fmt.Fprintf(stderr, "%s %s: %s\n", finding.Severity, finding.Code, finding.Evidence); writeErr != nil {
+							return writeErr
 						}
 					}
-				}
-				return preflightReport.ExitCode
+					return nil
+				})
 			}
 		}
 		privilege := &sudoSession{base: baseRunner, stderr: stderr, scope: "network command"}
@@ -251,8 +248,7 @@ func runNetwork(parent context.Context, options networkOptions, stdout, stderr i
 			reason = "apply the reviewed host-network plan"
 		}
 		if err := privilege.ensure(ctx, reason); err != nil {
-			errorf(stderr, "%v", err)
-			return exitCapability
+			return commandOutcome{}, newDetailedCommandError("capability", exitCapability, err, "", nil)
 		}
 		rootRunner := setupRootRunner(baseRunner)
 		if runtime.GOOS == "darwin" {
@@ -261,162 +257,142 @@ func runNetwork(parent context.Context, options networkOptions, stdout, stderr i
 				progressItem := startProgress(ctx, stderr, "Installing the Darwin fixed-IP network")
 				report, err := installDarwinNetwork(ctx, executor, options.Archive, options.InterfaceID, runtime.GOARCH, vmnetMode, layout.CIDR(), options.Apply)
 				progressItem.Stop(err)
-				if err != nil {
-					errorf(stderr, "%v", err)
-					if errors.Is(err, darwinnet.ErrVMNetSharingBusy) {
-						return exitConflict
-					}
-					return exitIntegrity
+				if errors.Is(parent.Err(), context.Canceled) {
+					return commandOutcome{}, ErrCancelled
 				}
-				if structuredOutput(stdout) {
-					return encodeJSON(stdout, stderr, report)
+				if err != nil {
+					if errors.Is(err, darwinnet.ErrVMNetSharingBusy) {
+						return commandOutcome{}, newConflictError(err)
+					}
+					return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 				}
 				for _, warning := range report.Warnings {
 					warningf(stderr, "%s", warning)
 				}
-				if _, err := fmt.Fprintf(stdout, "action: %s\napplied: %t\n", report.Action, report.Applied); err != nil {
-					errorf(stderr, "write Darwin network plan: %v", err)
-					return exitRuntime
-				}
-				for _, path := range sortedMapKeys(report.Targets) {
-					metadata := report.Targets[path]
-					if _, err := fmt.Fprintf(stdout, "%s %s\n", path, metadata); err != nil {
-						errorf(stderr, "write Darwin network plan: %v", err)
-						return exitRuntime
+				return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
+					if _, err := fmt.Fprintf(stdout, "action: %s\napplied: %t\n", report.Action, report.Applied); err != nil {
+						return err
 					}
-				}
-				if !report.Applied && report.Action != "none" {
-					if _, err := fmt.Fprintln(stdout, "rerun with --yes using the same --archive and --interface-id; Farrow will request sudo when needed"); err != nil {
-						errorf(stderr, "write Darwin network plan: %v", err)
-						return exitRuntime
+					for _, path := range sortedMapKeys(report.Targets) {
+						if _, err := fmt.Fprintf(stdout, "%s %s\n", path, report.Targets[path]); err != nil {
+							return err
+						}
 					}
-				}
-				return exitOK
+					if !report.Applied && report.Action != "none" {
+						_, err := fmt.Fprintln(stdout, "rerun with --yes using the same --archive and --interface-id; Farrow will request sudo when needed")
+						return err
+					}
+					return nil
+				}}, nil
 			}
 			progressItem := startProgress(ctx, stderr, "Removing the Darwin fixed-IP network")
 			report, err := executor.Uninstall(ctx, options.Apply)
 			progressItem.Stop(err)
+			if errors.Is(parent.Err(), context.Canceled) {
+				return commandOutcome{}, ErrCancelled
+			}
 			if err != nil {
-				errorf(stderr, "%v", err)
-				return exitIntegrity
-			}
-			if structuredOutput(stdout) {
-				return encodeJSON(stdout, stderr, report)
-			}
-			for _, path := range report.RemoveFiles {
-				if _, err := fmt.Fprintf(stdout, "remove file %s\n", path); err != nil {
-					errorf(stderr, "write Darwin network uninstall plan: %v", err)
-					return exitRuntime
-				}
-			}
-			for _, path := range report.RemoveDirs {
-				if _, err := fmt.Fprintf(stdout, "rmdir %s\n", path); err != nil {
-					errorf(stderr, "write Darwin network uninstall plan: %v", err)
-					return exitRuntime
-				}
+				return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 			}
 			if report.Recovered {
 				warningf(stderr, "protected network.json was unavailable; uninstall ownership was recovered from byte-identical interface evidence, the exact launchd plist, and installed binary digests")
 			}
-			if _, err := fmt.Fprintf(stdout, "applied: %t\n", report.Applied); err != nil {
-				errorf(stderr, "write Darwin network uninstall plan: %v", err)
-				return exitRuntime
-			}
-			return exitOK
+			return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
+				for _, path := range report.RemoveFiles {
+					if _, err := fmt.Fprintf(stdout, "remove file %s\n", path); err != nil {
+						return err
+					}
+				}
+				for _, path := range report.RemoveDirs {
+					if _, err := fmt.Fprintf(stdout, "rmdir %s\n", path); err != nil {
+						return err
+					}
+				}
+				_, err := fmt.Fprintf(stdout, "applied: %t\n", report.Applied)
+				return err
+			}}, nil
 		}
 		executor := linuxnet.Executor{User: baseRunner, Root: rootRunner, InUse: deploymentInUse}
 		if command == "install" {
 			linuxConfig, configErr := linuxnet.ConfigForCIDR(layout.CIDR())
 			if configErr != nil {
-				errorf(stderr, "%v", configErr)
-				return exitUsage
+				return commandOutcome{}, newUsageError(configErr)
 			}
 			progressItem := startProgress(ctx, stderr, "Installing the Linux fixed-IP network")
 			report, err := executor.InstallConfig(ctx, linuxConfig, options.Apply)
 			progressItem.Stop(err)
-			if err != nil {
-				errorf(stderr, "%v", err)
-				return exitIntegrity
+			if errors.Is(parent.Err(), context.Canceled) {
+				return commandOutcome{}, ErrCancelled
 			}
-			if structuredOutput(stdout) {
-				return encodeJSON(stdout, stderr, report)
+			if err != nil {
+				return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 			}
 			for _, warning := range report.Warnings {
 				warningf(stderr, "%s", warning)
 			}
-			for _, directory := range report.Plan.Directories {
-				if err := writeText(stdout, "directory %s %s %s\n", directory.Path, directory.Owner, directory.Mode); err != nil {
-					errorf(stderr, "write Linux network install plan: %v", err)
-					return exitRuntime
-				}
-			}
-			for _, file := range report.Plan.Files {
-				if err := writeText(stdout, "file %s %s %s\n", file.Path, file.Owner, file.Mode); err != nil {
-					errorf(stderr, "write Linux network install plan: %v", err)
-					return exitRuntime
-				}
-			}
-			for _, phase := range report.Plan.Phases {
-				if err := writeText(stdout, "phase %s\n", phase.Name); err != nil {
-					errorf(stderr, "write Linux network install plan: %v", err)
-					return exitRuntime
-				}
-				for _, action := range phase.Commands {
-					if err := writeText(stdout, "  %s\n", execx.Display(action.Binary, action.Args...)); err != nil {
-						errorf(stderr, "write Linux network install plan: %v", err)
-						return exitRuntime
+			return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
+				for _, directory := range report.Plan.Directories {
+					if err := writeText(stdout, "directory %s %s %s\n", directory.Path, directory.Owner, directory.Mode); err != nil {
+						return err
 					}
 				}
-			}
-			if err := writeText(stdout, "applied: %t\n", report.Applied); err != nil {
-				errorf(stderr, "write Linux network install plan: %v", err)
-				return exitRuntime
-			}
-			if !report.Applied {
-				if _, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed"); err != nil {
-					errorf(stderr, "write Linux network install plan: %v", err)
-					return exitRuntime
+				for _, file := range report.Plan.Files {
+					if err := writeText(stdout, "file %s %s %s\n", file.Path, file.Owner, file.Mode); err != nil {
+						return err
+					}
 				}
-			}
-			return exitOK
+				for _, phase := range report.Plan.Phases {
+					if err := writeText(stdout, "phase %s\n", phase.Name); err != nil {
+						return err
+					}
+					for _, action := range phase.Commands {
+						if err := writeText(stdout, "  %s\n", execx.Display(action.Binary, action.Args...)); err != nil {
+							return err
+						}
+					}
+				}
+				if err := writeText(stdout, "applied: %t\n", report.Applied); err != nil {
+					return err
+				}
+				if !report.Applied {
+					_, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
+					return err
+				}
+				return nil
+			}}, nil
 		}
 		progressItem := startProgress(ctx, stderr, "Removing the Linux fixed-IP network")
 		report, err := executor.Uninstall(ctx, options.Apply)
 		progressItem.Stop(err)
+		if errors.Is(parent.Err(), context.Canceled) {
+			return commandOutcome{}, ErrCancelled
+		}
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitIntegrity
+			return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 		}
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, report)
-		}
-		for _, path := range report.Plan.RemoveFiles {
-			if err := writeText(stdout, "remove file %s\n", path); err != nil {
-				errorf(stderr, "write Linux network uninstall plan: %v", err)
-				return exitRuntime
+		return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
+			for _, path := range report.Plan.RemoveFiles {
+				if err := writeText(stdout, "remove file %s\n", path); err != nil {
+					return err
+				}
 			}
-		}
-		for _, directory := range report.Plan.RemoveDirectories {
-			if err := writeText(stdout, "rmdir %s\n", directory); err != nil {
-				errorf(stderr, "write Linux network uninstall plan: %v", err)
-				return exitRuntime
+			for _, directory := range report.Plan.RemoveDirectories {
+				if err := writeText(stdout, "rmdir %s\n", directory); err != nil {
+					return err
+				}
 			}
-		}
-		if err := writeText(stdout, "applied: %t\n", report.Applied); err != nil {
-			errorf(stderr, "write Linux network uninstall plan: %v", err)
-			return exitRuntime
-		}
-		if !report.Applied {
-			if _, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed"); err != nil {
-				errorf(stderr, "write Linux network uninstall plan: %v", err)
-				return exitRuntime
+			if err := writeText(stdout, "applied: %t\n", report.Applied); err != nil {
+				return err
 			}
-		}
-		return exitOK
+			if !report.Applied {
+				_, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
+				return err
+			}
+			return nil
+		}}, nil
 	}
 	if command != "status" {
-		errorf(stderr, "unknown network action %q", command)
-		return exitUsage
+		return commandOutcome{}, newUsageError(fmt.Errorf("unknown network action %q", command))
 	}
 	ctx, cancel := context.WithTimeout(parent, 60*time.Second)
 	defer cancel()
@@ -426,8 +402,7 @@ func runNetwork(parent context.Context, options networkOptions, stdout, stderr i
 	}
 	layout, err := subnet.Parse(cidr)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitUsage
+		return commandOutcome{}, newUsageError(err)
 	}
 	baseRunner := execx.OSRunner{Timeout: 5 * time.Second, OutputLimit: 1 << 20}
 	progressItem := startProgress(ctx, stderr, "Inspecting the host network")
@@ -451,41 +426,39 @@ func runNetwork(parent context.Context, options networkOptions, stdout, stderr i
 		}
 	}
 	progressItem.Stop(nil)
+	if errors.Is(parent.Err(), context.Canceled) {
+		return commandOutcome{}, ErrCancelled
+	}
 	result := struct {
 		OS        string              `json:"os"`
 		Arch      string              `json:"arch"`
 		Preflight netpreflight.Report `json:"preflight"`
 		Checks    []doctor.Check      `json:"checks,omitempty"`
 	}{OS: doctorReport.OS, Arch: doctorReport.Arch, Preflight: preflightReport, Checks: checks}
-	if structuredOutput(stdout) {
-		if code := encodeJSON(stdout, stderr, result); code != exitOK {
-			return code
-		}
-	} else {
+	renderText := func(stdout, _ io.Writer) error {
 		if err := writeText(stdout, "network: %s ready=%t installation=%s\n", preflightReport.CIDR, preflightReport.Ready, preflightReport.Installation.Status); err != nil {
-			errorf(stderr, "write network status: %v", err)
-			return exitRuntime
+			return err
 		}
 		for _, finding := range preflightReport.Findings {
 			if err := writeText(stdout, "[%s] %s: %s\n", finding.Severity, finding.Code, finding.Evidence); err != nil {
-				errorf(stderr, "write network status: %v", err)
-				return exitRuntime
+				return err
 			}
 		}
 		for _, check := range checks {
 			if err := writeText(stdout, "[%s] %s: %s\n", check.Status, check.Name, check.Evidence); err != nil {
-				errorf(stderr, "write network status: %v", err)
-				return exitRuntime
+				return err
 			}
 		}
+		return nil
 	}
 	if hasError {
+		code := exitCapability
 		if preflightReport.ExitCode != 0 {
-			return preflightReport.ExitCode
+			code = preflightReport.ExitCode
 		}
-		return exitCapability
+		return commandOutcome{}, newSilentRenderedCommandError(exitCategory(code), code, errors.New("network status is not ready"), result, renderText)
 	}
-	return exitOK
+	return commandOutcome{payload: result, text: renderText}, nil
 }
 
 const structuredCommandCaptureLimit = 4 << 20
