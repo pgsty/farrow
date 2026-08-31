@@ -99,6 +99,12 @@ version=${FARROW_VERSION:-dev}
   printf 'FARROW_VERSION contains unsupported characters: %s\n' "${version}" >&2
   exit 2
 }
+install_keep=${FARROW_INSTALL_KEEP:-3}
+if [[ ! ${install_keep} =~ ^[0-9]+$ || ${#install_keep} -gt 9 ]]; then
+  printf 'FARROW_INSTALL_KEEP must be a non-negative integer of at most nine digits\n' >&2
+  exit 2
+fi
+install_keep=$((10#${install_keep}))
 
 commit=${FARROW_COMMIT:-}
 if [[ -n ${commit} && ! ${commit} =~ ^[0-9a-f]{40}$ && ${commit} != uncommitted ]]; then
@@ -146,6 +152,77 @@ cleanup() {
   esac
 }
 trap cleanup EXIT
+
+prune_retained_releases() {
+  local release_root_directory=$1 active_release=$2 keep=$3
+  local resolved_root entry resolved_entry candidate oldest release_count
+  if (( keep == 0 )); then
+    return 0
+  fi
+  if [[ -L ${release_root_directory} || ! -d ${release_root_directory} || ! -O ${release_root_directory} ]]; then
+    printf 'refuse unsafe development retained-release root: %s\n' "${release_root_directory}" >&2
+    return 7
+  fi
+  resolved_root=$(cd "${release_root_directory}" && pwd -P)
+  if [[ ${resolved_root} != "${release_root_directory}" ]]; then
+    printf 'development retained-release root changed after validation: %s\n' "${release_root_directory}" >&2
+    return 7
+  fi
+  case ${active_release} in
+    "${resolved_root}"/*) ;;
+    *) printf 'active development release resolves outside the retained-release root: %s\n' "${active_release}" >&2; return 7 ;;
+  esac
+  if [[ -L ${active_release} || ! -d ${active_release} || ! -O ${active_release} || $(cd "${active_release}" && pwd -P) != "${active_release}" ]]; then
+    printf 'active development release is not an owned real directory: %s\n' "${active_release}" >&2
+    return 7
+  fi
+
+  release_count=0
+  for entry in "${resolved_root}"/*; do
+    [[ -e ${entry} || -L ${entry} ]] || continue
+    if [[ -L ${entry} || ! -d ${entry} || ! -O ${entry} ]]; then
+      printf 'refuse unsafe development retained release: %s\n' "${entry}" >&2
+      return 7
+    fi
+    resolved_entry=$(cd "${entry}" && pwd -P)
+    if [[ ${resolved_entry} != "${entry}" ]]; then
+      printf 'development retained release changed after validation: %s\n' "${entry}" >&2
+      return 7
+    fi
+    ((release_count += 1))
+  done
+
+  while (( release_count > keep )); do
+    oldest=
+    for candidate in "${resolved_root}"/*; do
+      [[ -e ${candidate} || -L ${candidate} ]] || continue
+      if [[ -L ${candidate} || ! -d ${candidate} || ! -O ${candidate} ]]; then
+        printf 'refuse unsafe development retained release: %s\n' "${candidate}" >&2
+        return 7
+      fi
+      [[ ${candidate} == "${active_release}" ]] && continue
+      if [[ -z ${oldest} || ${candidate} -ot ${oldest} ]]; then
+        oldest=${candidate}
+      elif [[ ! ${oldest} -ot ${candidate} && ${candidate} < ${oldest} ]]; then
+        oldest=${candidate}
+      fi
+    done
+    if [[ -z ${oldest} ]]; then
+      printf 'cannot select an inactive development release without touching current\n' >&2
+      return 7
+    fi
+    case ${oldest} in
+      "${resolved_root}"/*) ;;
+      *) printf 'refuse development retained release outside validated root: %s\n' "${oldest}" >&2; return 7 ;;
+    esac
+    if [[ ${oldest} == "${active_release}" || -L ${oldest} || ! -d ${oldest} || ! -O ${oldest} ]]; then
+      printf 'refuse unsafe development retained release removal: %s\n' "${oldest}" >&2
+      return 7
+    fi
+    rm -rf -- "${oldest}"
+    ((release_count -= 1))
+  done
+}
 
 helper=${temporary}/farrow-hosts-helper
 binary=${temporary}/farrow
@@ -237,5 +314,12 @@ link_stage=
 installed_helper_sha=$(sha256_file "${output}/farrow-hosts-helper")
 [[ ${installed_helper_sha} == "${helper_sha}" ]]
 grep -a -F "${installed_helper_sha}" "${output}/farrow" >/dev/null
+for name in farrow farrow-hosts-helper; do
+  [[ -L ${output}/${name} && $(readlink "${output}/${name}") == ".farrow-releases/${release_id}/${name}" && -x ${output}/${name} ]] || {
+    printf 'development entry point does not name the verified release: %s\n' "${output}/${name}" >&2
+    exit 7
+  }
+done
+prune_retained_releases "${releases}" "${release_root}" "${install_keep}"
 printf 'built Farrow for %s/%s in %s\n' "${goos}" "${goarch}" "${output}"
 printf 'helper sha256 %s\n' "${installed_helper_sha}"

@@ -47,6 +47,12 @@ if [[ -n ${allow_unsigned} && ${allow_unsigned} != 1 ]]; then
   printf 'FARROW_INSTALL_ALLOW_UNSIGNED must be empty or 1\n' >&2
   exit 2
 fi
+install_keep=${FARROW_INSTALL_KEEP:-3}
+if [[ ! ${install_keep} =~ ^[0-9]+$ || ${#install_keep} -gt 9 ]]; then
+  printf 'FARROW_INSTALL_KEEP must be a non-negative integer of at most nine digits\n' >&2
+  exit 2
+fi
+install_keep=$((10#${install_keep}))
 case /${install_directory}/ in
   */../*|*/./*)
   printf 'FARROW_INSTALL_DIR must not contain dot path segments\n' >&2
@@ -120,6 +126,78 @@ secure_path_to_home() {
     esac
   done
 }
+
+prune_retained_releases() {
+  local release_root_directory=$1 active_release=$2 keep=$3
+  local resolved_root entry resolved_entry candidate oldest release_count
+  if (( keep == 0 )); then
+    return 0
+  fi
+  if [[ -L ${release_root_directory} || ! -d ${release_root_directory} || ! -O ${release_root_directory} ]]; then
+    printf 'refuse unsafe retained-release root: %s\n' "${release_root_directory}" >&2
+    return 7
+  fi
+  resolved_root=$(cd "${release_root_directory}" && pwd -P)
+  if [[ ${resolved_root} != "${release_root_directory}" ]]; then
+    printf 'retained-release root changed after validation: %s\n' "${release_root_directory}" >&2
+    return 7
+  fi
+  case ${active_release} in
+    "${resolved_root}"/*) ;;
+    *) printf 'active release resolves outside the retained-release root: %s\n' "${active_release}" >&2; return 7 ;;
+  esac
+  if [[ -L ${active_release} || ! -d ${active_release} || ! -O ${active_release} || $(cd "${active_release}" && pwd -P) != "${active_release}" ]]; then
+    printf 'active release is not an owned real directory: %s\n' "${active_release}" >&2
+    return 7
+  fi
+
+  release_count=0
+  for entry in "${resolved_root}"/*; do
+    [[ -e ${entry} || -L ${entry} ]] || continue
+    if [[ -L ${entry} || ! -d ${entry} || ! -O ${entry} ]]; then
+      printf 'refuse unsafe retained release: %s\n' "${entry}" >&2
+      return 7
+    fi
+    resolved_entry=$(cd "${entry}" && pwd -P)
+    if [[ ${resolved_entry} != "${entry}" ]]; then
+      printf 'retained release changed after validation: %s\n' "${entry}" >&2
+      return 7
+    fi
+    ((release_count += 1))
+  done
+
+  while (( release_count > keep )); do
+    oldest=
+    for candidate in "${resolved_root}"/*; do
+      [[ -e ${candidate} || -L ${candidate} ]] || continue
+      if [[ -L ${candidate} || ! -d ${candidate} || ! -O ${candidate} ]]; then
+        printf 'refuse unsafe retained release: %s\n' "${candidate}" >&2
+        return 7
+      fi
+      [[ ${candidate} == "${active_release}" ]] && continue
+      if [[ -z ${oldest} || ${candidate} -ot ${oldest} ]]; then
+        oldest=${candidate}
+      elif [[ ! ${oldest} -ot ${candidate} && ${candidate} < ${oldest} ]]; then
+        oldest=${candidate}
+      fi
+    done
+    if [[ -z ${oldest} ]]; then
+      printf 'cannot select an inactive retained release without touching current\n' >&2
+      return 7
+    fi
+    case ${oldest} in
+      "${resolved_root}"/*) ;;
+      *) printf 'refuse retained release outside validated root: %s\n' "${oldest}" >&2; return 7 ;;
+    esac
+    if [[ ${oldest} == "${active_release}" || -L ${oldest} || ! -d ${oldest} || ! -O ${oldest} ]]; then
+      printf 'refuse unsafe retained release removal: %s\n' "${oldest}" >&2
+      return 7
+    fi
+    rm -rf -- "${oldest}"
+    ((release_count -= 1))
+  done
+}
+
 secure_path_to_home "${resolved_existing_parent}" || exit 7
 if command -v sha256sum >/dev/null 2>&1; then
   sha256_file() { sha256sum "$1" | awk '{print $1}'; }
@@ -358,6 +436,16 @@ for name in farrow farrow-hosts-helper; do
     exit 7
   }
 done
+if [[ ! -L ${current} || $(readlink "${current}") != ".farrow-releases/${release_id}" ]]; then
+  printf 'current release pointer does not name the verified release: %s\n' "${current}" >&2
+  exit 7
+fi
+current_release=$(cd "${current}" && pwd -P)
+if [[ ${current_release} != "${release_root}" ]]; then
+  printf 'current release pointer resolves to the wrong release: %s\n' "${current_release}" >&2
+  exit 7
+fi
+prune_retained_releases "${releases}" "${current_release}" "${install_keep}"
 if [[ ${signature_bypassed} == true ]]; then
   printf 'Installed Farrow %s in %s (signature NOT verified)\n' "${version}" "${install_directory}"
 else
