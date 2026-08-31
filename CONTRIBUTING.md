@@ -28,15 +28,18 @@ make check     # everything CI runs, before you push
 ```
 
 `make check` runs module verification, shell syntax checks, unit and race tests,
-`go vet`, Staticcheck, `govulncheck`, cross-compilation for all four supported
-targets, the image-pipeline boundary tests, and the dependency-license
-inventory. It must pass with no output before a pull request is ready.
+`go vet`, Staticcheck, four-target dead-code intersection, errcheck,
+`govulncheck`, cross-compilation for all four supported targets, the
+image-pipeline boundary tests, and the dependency-license inventory. It must
+pass before a pull request is ready.
 
 The toolchain is pinned in `packaging/toolchain.env` and CI asserts the exact
 versions, so install those versions locally:
 
 ```bash
 go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+go install golang.org/x/tools/cmd/deadcode@v0.49.0
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
 go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 ```
 

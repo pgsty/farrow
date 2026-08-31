@@ -59,6 +59,20 @@ check_staticcheck() {
   command -v staticcheck >/dev/null || { printf 'staticcheck is missing\n' >&2; exit 3; }
   require_version staticcheck "$(staticcheck -version | awk '{print $2; exit}')" "${FARROW_STATICCHECK_VERSION}"
 }
+check_go_module_tool() {
+  local tool=$1 module=$2 expected=$3 install_path=$4 binary version
+  command -v "${tool}" >/dev/null || { printf '%s is missing; install it with: go install %s@v%s\n' "${tool}" "${install_path}" "${expected}" >&2; exit 3; }
+  binary=$(command -v "${tool}")
+  version=$(go version -m "${binary}" | awk -v module="${module}" '$1 == "mod" && $2 == module && $3 != "(devel)" {sub(/^v/, "", $3); print $3; exit}')
+  [[ -n ${version} ]] || { printf 'cannot identify the %s module version from %s\n' "${tool}" "${binary}" >&2; exit 3; }
+  require_version "${tool}" "${version}" "${expected}"
+}
+check_deadcode() {
+  check_go_module_tool deadcode golang.org/x/tools "${FARROW_DEADCODE_VERSION}" golang.org/x/tools/cmd/deadcode
+}
+check_golangci_lint() {
+  check_go_module_tool golangci-lint github.com/golangci/golangci-lint/v2 "${FARROW_GOLANGCI_LINT_VERSION}" github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+}
 check_govulncheck() {
   command -v govulncheck >/dev/null || { printf 'govulncheck is missing\n' >&2; exit 3; }
   require_version govulncheck "$(govulncheck -version | awk -F'@v' '/^Scanner:/ {print $2; exit}')" "${FARROW_GOVULNCHECK_VERSION}"
@@ -69,6 +83,6 @@ case ${mode} in
   packages) check_go; check_nfpm; check_syft ;;
   goreleaser) check_go; check_goreleaser; check_syft ;;
   signing) check_cosign ;;
-  quality) check_go; check_staticcheck; check_govulncheck ;;
-  all) check_go; check_goreleaser; check_nfpm; check_syft; check_cosign; check_staticcheck; check_govulncheck ;;
+  quality) check_go; check_staticcheck; check_deadcode; check_golangci_lint; check_govulncheck ;;
+  all) check_go; check_goreleaser; check_nfpm; check_syft; check_cosign; check_staticcheck; check_deadcode; check_golangci_lint; check_govulncheck ;;
 esac

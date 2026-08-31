@@ -31,11 +31,13 @@ jobs:
           check-latest: false
           cache: true
 
-      - name: Install pinned Staticcheck
+      - name: Install pinned source-quality tools
         shell: bash
         run: |
           set -euo pipefail
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          go install golang.org/x/tools/cmd/deadcode@v0.49.0
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
           go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
       - name: Install pinned GoReleaser
@@ -50,9 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           source packaging/toolchain.env
-          test "$(go env GOVERSION)" = "go${FARROW_GO_VERSION}"
-          test "$(staticcheck -version | awk '{print $2; exit}')" = "${FARROW_STATICCHECK_VERSION}"
-          test "$(govulncheck -version | awk -F'@v' '/^Scanner:/ {print $2; exit}')" = "${FARROW_GOVULNCHECK_VERSION}"
+          ./packaging/check-toolchain.sh quality
           test "$(goreleaser --version | awk '/GitVersion:/ {sub(/^v/, "", $2); print $2; exit}')" = "${FARROW_GORELEASER_VERSION}"
 
       - name: Source hygiene and module integrity
@@ -74,6 +74,12 @@ jobs:
 
       - name: Staticcheck
         run: make staticcheck
+
+      - name: Dead code across supported targets
+        run: make deadcode
+
+      - name: Unchecked errors
+        run: make errcheck
 
       - name: Reachable vulnerability scan
         run: make vuln

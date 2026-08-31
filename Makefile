@@ -1,7 +1,7 @@
 .PHONY: build \
 	build-darwin-amd64 build-darwin-arm64 build-linux-amd64 build-linux-arm64 \
 	amd arm cross build-cross cross-check \
-	module-check shell-check test race vet staticcheck vuln check license-check \
+	module-check shell-check test race vet staticcheck deadcode errcheck vuln check license-check \
 	image-pipeline-test image-pipeline-native-test install-test \
 	release-check release-snapshot release-local gr-check gr-snapshot gr-local release-dev
 
@@ -38,6 +38,31 @@ vet:
 staticcheck:
 	staticcheck ./...
 
+deadcode:
+	@set -eu; \
+	  temporary_parent=$$(cd "$${TMPDIR:-/tmp}" && pwd -P); \
+	  temporary=$$(mktemp -d "$${temporary_parent}/farrow-deadcode.XXXXXX"); \
+	  cleanup() { \
+	    case "$${temporary}" in \
+	      "$${temporary_parent}"/farrow-deadcode.*) rm -rf -- "$${temporary}" ;; \
+	      *) printf 'refuse unsafe deadcode cleanup: %s\n' "$${temporary}" >&2 ;; \
+	    esac; \
+	  }; \
+	  trap cleanup EXIT; \
+	  for target in darwin-arm64 darwin-amd64 linux-amd64 linux-arm64; do \
+	    goos=$${target%-*}; goarch=$${target#*-}; \
+	    GOOS=$${goos} GOARCH=$${goarch} deadcode -test ./... >"$${temporary}/$${target}.raw"; \
+	    LC_ALL=C sort "$${temporary}/$${target}.raw" >"$${temporary}/$${target}"; \
+	  done; \
+	  comm -12 "$${temporary}/darwin-arm64" "$${temporary}/darwin-amd64" >"$${temporary}/intersection-2"; \
+	  comm -12 "$${temporary}/intersection-2" "$${temporary}/linux-amd64" >"$${temporary}/intersection-3"; \
+	  comm -12 "$${temporary}/intersection-3" "$${temporary}/linux-arm64" >"$${temporary}/intersection"; \
+	  if test -s "$${temporary}/intersection"; then cat "$${temporary}/intersection"; exit 1; fi
+
+errcheck:
+	@output=$$(golangci-lint run --no-config --default=none -E errcheck \
+	  --max-issues-per-linter=0 --max-same-issues=0 ./... 2>&1) || { printf '%s\n' "$${output}"; exit 1; }
+
 vuln:
 	govulncheck ./...
 
@@ -58,7 +83,7 @@ cross-check:
 	GOOS=linux GOARCH=amd64 go build ./...
 	GOOS=linux GOARCH=arm64 go build ./...
 
-check: module-check shell-check test race vet staticcheck vuln cross-check image-pipeline-test install-test license-check
+check: module-check shell-check test race vet staticcheck deadcode errcheck vuln cross-check image-pipeline-test install-test license-check
 
 license-check:
 	./packaging/verify-licenses.sh
