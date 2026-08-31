@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 )
 
 func processStarted(pid int) (string, error) {
@@ -13,6 +15,24 @@ func processStarted(pid int) (string, error) {
 		return "", fmt.Errorf("read Linux process start identity: %w", err)
 	}
 	return parseProcStatStart(data)
+}
+
+func parseProcStatStart(data []byte) (string, error) {
+	line := strings.TrimSpace(string(data))
+	closing := strings.LastIndexByte(line, ')')
+	if closing < 0 || closing+1 >= len(line) {
+		return "", errors.New("process stat lacks a complete command field")
+	}
+	fields := strings.Fields(line[closing+1:])
+	// fields[0] is stat field 3 (state); field 22 (starttime) is index 19.
+	if len(fields) <= 19 {
+		return "", errors.New("process stat lacks starttime field 22")
+	}
+	start, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil || start == 0 {
+		return "", errors.New("process stat starttime is invalid")
+	}
+	return "procstat:" + strconv.FormatUint(start, 10), nil
 }
 
 func processArgv(pid int) ([]string, error) {

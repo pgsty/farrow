@@ -58,6 +58,3 @@ func Open() (Deployment, error) { return openDeployment(false) }
 func AcquireLock(ctx context.Context, deployment Deployment, shared bool) (*lock.File, error) {
 	return acquireDeploymentLock(ctx, deployment.Root, shared)
 }
-
-// LockPath returns the deployment lock path for ValidateExclusive callers.
-func LockPath(deployment Deployment) string { return deploymentLockPath(deployment.Root) }

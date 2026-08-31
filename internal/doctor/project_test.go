@@ -13,7 +13,7 @@ func TestDeploymentChecksAreReadOnlyAndReportCurrentDeployment(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("FARROW_HOME", root)
 	store := state.Store{Root: root}
-	resolved := spec.Quick(true, true)
+	resolved := quickResolved(true, true)
 	hash, err := spec.Hash(resolved)
 	if err != nil {
 		t.Fatal(err)

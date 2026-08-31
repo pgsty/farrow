@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/farrow/internal/cloudinit"
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/platform"
@@ -41,7 +40,7 @@ func TestIntegrationRealPrivateOfflinePrepare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firmware, err := platform.FindFirmware(profile)
+	firmware, err := platform.FindFirmwareForBoot(profile, "uefi")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +93,7 @@ func TestIntegrationRealPrivateOfflinePrepare(t *testing.T) {
 		if _, err := ReadPrepareJournal(artifacts.Journal); err != nil {
 			t.Fatal(err)
 		}
-		if label, _, err := cloudinit.ReadISO(artifacts.Seed); err != nil || label != "CIDATA" {
+		if label, _, err := readSeedISO(artifacts.Seed); err != nil || label != "CIDATA" {
 			t.Fatalf("seed %s = %q, %v", outcome.Node, label, err)
 		}
 		nodePlan, _ := plan.Node(outcome.Node)

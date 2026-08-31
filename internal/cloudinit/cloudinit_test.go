@@ -299,7 +299,7 @@ func TestBuildISORoundTrip(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("seed mode = %o, want 600", info.Mode().Perm())
 	}
-	label, contents, err := ReadISO(target)
+	label, contents, err := readISO(target)
 	if err != nil {
 		t.Fatalf("ReadISO: %v", err)
 	}

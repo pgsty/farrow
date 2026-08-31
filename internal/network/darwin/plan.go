@@ -153,14 +153,6 @@ func StrictNetworkState(data []byte) (NetworkState, error) {
 	return state, nil
 }
 
-func NewInstallPlan(arch, interfaceID string) (InstallPlan, error) {
-	return NewInstallPlanMode(arch, interfaceID, "host")
-}
-
-func NewInstallPlanMode(arch, interfaceID, mode string) (InstallPlan, error) {
-	return NewInstallPlanModeNetwork(arch, interfaceID, mode, subnet.DefaultCIDR)
-}
-
 func NewInstallPlanModeNetwork(arch, interfaceID, mode, cidr string) (InstallPlan, error) {
 	if !uuidPattern.MatchString(interfaceID) {
 		return InstallPlan{}, fmt.Errorf("invalid persistent interface UUID %q", interfaceID)

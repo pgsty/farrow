@@ -33,19 +33,18 @@ func (s *Size) UnmarshalYAML(node *yaml.Node) error {
 
 const maxVirtualCPUs = 256
 
-func formatSize(value int64) string {
+func (s Size) MarshalYAML() (any, error) {
+	value := int64(s)
 	for _, unit := range []struct {
 		name string
 		size int64
 	}{{"TiB", 1 << 40}, {"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}} {
 		if value >= unit.size && value%unit.size == 0 {
-			return strconv.FormatInt(value/unit.size, 10) + unit.name
+			return strconv.FormatInt(value/unit.size, 10) + unit.name, nil
 		}
 	}
-	return strconv.FormatInt(value, 10) + "B"
+	return strconv.FormatInt(value, 10) + "B", nil
 }
-
-func (s Size) MarshalYAML() (any, error) { return formatSize(int64(s)), nil }
 
 type Duration time.Duration
 

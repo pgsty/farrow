@@ -97,7 +97,7 @@ func TestInitForceShorthandOverwritesExistingInventory(t *testing.T) {
 
 func TestConfigurationWarningsIncludeNonLoopbackForwards(t *testing.T) {
 	t.Parallel()
-	resolved := spec.Quick(true, false)
+	resolved := quickResolved(true, false)
 	resolved.Nodes[0].Forwards = []spec.Forward{
 		{Bind: "127.0.0.1", Host: 15432, Guest: 5432, Protocol: "tcp"},
 		{Bind: "0.0.0.0", Host: 13000, Guest: 3000, Protocol: "tcp"},
@@ -219,7 +219,7 @@ func TestProvisionConnectionExitClassifiesSSHArtifactIntegrity(t *testing.T) {
 
 func TestCommandTimeoutHonorsResolvedReadiness(t *testing.T) {
 	t.Parallel()
-	resolved := spec.Quick(true, true)
+	resolved := quickResolved(true, true)
 	if got := withReadinessTimeout(10*time.Minute, resolved); got != 10*time.Minute {
 		t.Fatalf("default command timeout = %s", got)
 	}
@@ -703,7 +703,7 @@ func TestDeploymentEventLogRejectsNodeSelector(t *testing.T) {
 func TestLegacyDeploymentDiagnosticsDistinguishExistingState(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("FARROW_HOME", root)
-	resolved := spec.Quick(true, false)
+	resolved := quickResolved(true, false)
 	hash, err := spec.Hash(resolved)
 	if err != nil {
 		t.Fatal(err)
@@ -760,7 +760,7 @@ func TestSSHConfigRemoveRemainsAvailableAfterResolvedStateIsGone(t *testing.T) {
 		Name: "lab", Node: "meta", User: "dba",
 		Host: "127.0.0.1", Port: 2222, Identity: filepath.Join(root, "key"), KnownHosts: filepath.Join(root, "known"),
 	}
-	installed, err := sshconfig.Install(home, entry)
+	installed, err := sshconfig.InstallMany(home, []sshconfig.Entry{entry})
 	if err != nil {
 		t.Fatal(err)
 	}

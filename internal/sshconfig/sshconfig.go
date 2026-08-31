@@ -183,10 +183,6 @@ func markerOwned(data []byte) bool {
 	return strings.HasPrefix(trimmed, beginMarker+"\n") && strings.HasSuffix(trimmed, "\n"+endMarker) && strings.Count(trimmed, beginMarker) == 1 && strings.Count(trimmed, endMarker) == 1
 }
 
-func Install(home string, entry Entry) (Result, error) {
-	return InstallMany(home, []Entry{entry})
-}
-
 // InstallMany atomically publishes one marker-owned fragment containing every
 // node of the deployment and one marker-owned Include in the user's config.
 func InstallMany(home string, entries []Entry) (Result, error) {

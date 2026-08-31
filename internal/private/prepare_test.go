@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pgsty/farrow/internal/cloudinit"
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/platform"
 	"github.com/pgsty/farrow/internal/spec"
@@ -140,7 +139,7 @@ func TestPrepareAllBuildsJournaledOfflineArtifacts(t *testing.T) {
 				t.Errorf("node %s missing %s: %v", outcome.Node, pathname, err)
 			}
 		}
-		label, _, err := cloudinit.ReadISO(artifacts.Seed)
+		label, _, err := readSeedISO(artifacts.Seed)
 		if err != nil || label != "CIDATA" {
 			t.Errorf("node %s seed = %q, %v", outcome.Node, label, err)
 		}

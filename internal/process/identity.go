@@ -158,24 +158,6 @@ func MatchesLive(ctx context.Context, runner execx.Runner, identity Identity, in
 	return err == nil && current == identity
 }
 
-func parseProcStatStart(data []byte) (string, error) {
-	line := strings.TrimSpace(string(data))
-	closing := strings.LastIndexByte(line, ')')
-	if closing < 0 || closing+1 >= len(line) {
-		return "", errors.New("process stat lacks a complete command field")
-	}
-	fields := strings.Fields(line[closing+1:])
-	// fields[0] is stat field 3 (state); field 22 (starttime) is index 19.
-	if len(fields) <= 19 {
-		return "", errors.New("process stat lacks starttime field 22")
-	}
-	start, err := strconv.ParseUint(fields[19], 10, 64)
-	if err != nil || start == 0 {
-		return "", errors.New("process stat starttime is invalid")
-	}
-	return "procstat:" + strconv.FormatUint(start, 10), nil
-}
-
 func parseDarwinProcArgs(data []byte) ([]string, error) {
 	if len(data) < 4 {
 		return nil, errors.New("darwin process arguments lack argc")

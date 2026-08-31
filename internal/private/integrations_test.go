@@ -114,7 +114,7 @@ func TestConnectionsLockedRequiresAndReusesExclusiveDeploymentLock(t *testing.T)
 	if err := os.MkdirAll(filepath.Join(startConfig.Project.Root, "locks"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	projectLock, err := lock.Acquire(context.Background(), LockPath(startConfig.Project), false)
+	projectLock, err := lock.Acquire(context.Background(), deploymentLockPath(startConfig.Project.Root), false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,7 +20,7 @@ func testStore(t *testing.T) Store {
 func TestDeploymentAndNodeRoundTrip(t *testing.T) {
 	t.Parallel()
 	store := testStore(t)
-	resolved := spec.Quick(true, true)
+	resolved := quickResolved(true, true)
 	hash, err := spec.Hash(resolved)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestDeploymentAndNodeRoundTrip(t *testing.T) {
 func TestDataDiskFilesystemFieldsAreBackwardCompatible(t *testing.T) {
 	t.Parallel()
 	store := testStore(t)
-	resolved := spec.Quick(true, true)
+	resolved := quickResolved(true, true)
 	hash, err := spec.Hash(resolved)
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestDataDiskFilesystemFieldsAreBackwardCompatible(t *testing.T) {
 func TestDataDiskFilesystemStatePreservesContradictoryEvidence(t *testing.T) {
 	t.Parallel()
 	store := testStore(t)
-	resolved := spec.Quick(true, true)
+	resolved := quickResolved(true, true)
 	hash, _ := spec.Hash(resolved)
 	now := time.Now().UTC()
 	node := NodeState{
@@ -132,7 +132,7 @@ func TestDataDiskFilesystemStatePreservesContradictoryEvidence(t *testing.T) {
 func TestDeploymentForwardRequestEvidenceAndLegacyCompatibility(t *testing.T) {
 	t.Parallel()
 	store := testStore(t)
-	resolved := spec.Quick(true, true)
+	resolved := quickResolved(true, true)
 	resolved.Nodes[0].Forwards[0] = spec.WithMaterializedHost(resolved.Nodes[0].Forwards[0], 25432)
 	hash, err := spec.Hash(resolved)
 	if err != nil {
@@ -197,7 +197,7 @@ func TestDeploymentForwardRequestEvidenceAndLegacyCompatibility(t *testing.T) {
 func TestStrictStateAndHashValidation(t *testing.T) {
 	t.Parallel()
 	store := testStore(t)
-	resolved := spec.Quick(true, true)
+	resolved := quickResolved(true, true)
 	hash, _ := spec.Hash(resolved)
 	value := DeploymentState{Schema: DeploymentSchema, FarrowVersion: "dev", SpecHash: hash, Resolved: resolved, UpdatedAt: time.Now().UTC()}
 	if err := store.WriteDeployment(value); err != nil {

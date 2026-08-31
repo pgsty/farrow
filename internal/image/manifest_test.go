@@ -16,6 +16,21 @@ type embeddedGolden struct {
 	sourceUser   string
 }
 
+func embeddedEntries(t *testing.T) []Entry {
+	t.Helper()
+	catalog := EmbeddedCatalog()
+	entries := make([]Entry, 0, len(formalMatrix))
+	for _, key := range formalMatrix {
+		imageName, arch, _ := strings.Cut(key, "/")
+		entry, err := catalog.Entry(imageName, arch)
+		if err != nil {
+			t.Fatalf("invalid embedded image matrix entry %s: %v", key, err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
 func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 	t.Parallel()
 	expected := map[string]embeddedGolden{
@@ -89,7 +104,7 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 		},
 	}
 
-	entries := EmbeddedEntries()
+	entries := embeddedEntries(t)
 	if len(entries) != len(expected) {
 		t.Fatalf("EmbeddedEntries count = %d, want %d", len(entries), len(expected))
 	}

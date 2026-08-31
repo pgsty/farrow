@@ -59,20 +59,6 @@ func EmbeddedCatalogBytes() ([]byte, error) {
 	return append([]byte(nil), embeddedCatalogBytes...), nil
 }
 
-func EmbeddedEntries() []Entry {
-	catalog := EmbeddedCatalog()
-	entries := make([]Entry, 0, len(formalMatrix))
-	for _, key := range formalMatrix {
-		imageName, arch, _ := strings.Cut(key, "/")
-		entry, err := catalog.Entry(imageName, arch)
-		if err != nil {
-			panic(fmt.Sprintf("invalid embedded image matrix entry %s: %v", key, err))
-		}
-		entries = append(entries, entry)
-	}
-	return entries
-}
-
 func CanonicalAlias(alias string) string {
 	alias = strings.ToLower(strings.TrimSpace(alias))
 	canonical, _, err := EmbeddedCatalog().canonicalImage(alias)

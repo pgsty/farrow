@@ -38,6 +38,9 @@ vet:
 staticcheck:
 	staticcheck ./...
 
+# The production-only diagnostic, `deadcode ./...`, is expected to report only
+# YAML MarshalYAML/UnmarshalYAML hooks invoked through reflection. The enforced
+# four-target test-linked intersection below must remain completely empty.
 deadcode:
 	@set -eu; \
 	  temporary_parent=$$(cd "$${TMPDIR:-/tmp}" && pwd -P); \

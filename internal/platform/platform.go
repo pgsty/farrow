@@ -130,13 +130,6 @@ func regularFile(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-func FindFirmware(profile Profile) (Firmware, error) {
-	if !profile.RequiresUEFI {
-		return Firmware{}, nil
-	}
-	return FindFirmwareForBoot(profile, "uefi")
-}
-
 func FindFirmwareForBoot(profile Profile, boot string) (Firmware, error) {
 	if boot == "bios" {
 		if profile.RequiresUEFI {

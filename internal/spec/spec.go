@@ -138,30 +138,6 @@ func (r Resolved) SSHWaitTimeout() (time.Duration, error) {
 	return time.Duration(r.SSHWaitTimeoutNS), nil
 }
 
-// Quick returns a small fixed single-node Resolved. It survives purely as a
-// cross-package test fixture; nothing in the product constructs it.
-func Quick(withDataDisk, withDefaultForwards bool) Resolved {
-	node := Node{
-		Name:     "meta",
-		Control:  true,
-		CPUs:     2,
-		Memory:   4 * GiB,
-		RootDisk: 64 * GiB,
-	}
-	if withDataDisk {
-		node.Disks = []Disk{{Name: "data", Size: 64 * GiB, Mount: "/data"}}
-	}
-	if withDefaultForwards {
-		node.Forwards = []Forward{
-			{Bind: "127.0.0.1", Host: 15432, Guest: 5432, Protocol: "tcp"},
-			{Bind: "127.0.0.1", Host: 13000, Guest: 3000, Protocol: "tcp"},
-			{Bind: "127.0.0.1", Host: 18080, Guest: 80, Protocol: "tcp"},
-			{Bind: "127.0.0.1", Host: 18443, Guest: 443, Protocol: "tcp"},
-		}
-	}
-	return Resolved{Schema: 1, Name: "quick", Image: "u24", Network: "user", SSHUser: "dba", SSHWaitTimeoutNS: int64(DefaultSSHWaitTimeout), Nodes: []Node{node}}
-}
-
 // CanonicalJSON relies only on structs and slices; there are no unordered map
 // keys in the M0 model.
 func CanonicalJSON(value Resolved) ([]byte, error) { return json.Marshal(value) }
