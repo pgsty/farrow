@@ -30,6 +30,9 @@ Notable user-visible changes. This project follows
 
 ### Changed
 
+- Installer and development builds retain at most three verified release
+  directories by default; set `FARROW_INSTALL_KEEP=N` to choose another bound
+  or `FARROW_INSTALL_KEEP=0` to disable pruning.
 - The presentation environment variables `FARROW_OUTPUT` and `FARROW_VERBOSE`
   are read directly; Viper and its nine transitive modules are gone from the
   dependency graph and the shipped license inventory.
