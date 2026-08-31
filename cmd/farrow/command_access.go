@@ -184,7 +184,7 @@ before applying it.`,
 		} else {
 			command.Aliases = []string{"u"}
 		}
-		command.Flags().BoolVarP(&apply, "yes", "y", false, "apply the displayed privileged plan without prompting")
+		command.Flags().BoolVarP(&apply, "yes", "y", false, "apply the displayed privileged plan without confirmation (sudo may still ask for a password)")
 		parent.AddCommand(command)
 	}
 	return parent

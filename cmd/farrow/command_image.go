@@ -24,8 +24,9 @@ import local qcow2 files, and manage the active signed catalog.`,
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List available images",
-		Long: `Refresh the configured signed catalog when available, then list catalog
-and registered local image entries for the native host architecture.`,
+		Long: `Refresh the configured signed catalog when available, then list every
+catalog entry for every architecture plus the registered local images. Each
+row names its architecture; info and pull select the native one.`,
 		Example: `  farrow image list
   farrow image list --repo https://mirror.example/farrow
   farrow --json image list`,

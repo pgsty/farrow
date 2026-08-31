@@ -6,6 +6,35 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `farrow reload` is one engine operation: definition drift and removed
+  nodes are refused before any node stops, and `--json`/`--yaml` emit a
+  single document instead of one per phase.
+- `farrow ssh` and `farrow exec` refuse a misspelled node before `--` instead
+  of running it as a command on the control node.
+- Unknown or repeated node selectors are usage errors (exit 2) reported before
+  host preflight or a confirmation prompt, not runtime errors after them.
+- `farrow destroy` asks for the same `destroy` token whether or not nodes are
+  selected, and prints the exact scope (nodes, disks, keys, state) first.
+- `farrow setup` treats end of input at its `[Y/n]` prompt as a cancellation;
+  only an answered prompt defaults to yes.
+- `farrow logs --source events` rejects a node argument instead of silently
+  returning the deployment-wide log under that name.
+- Combined verbose shorthands (`-vv`, `-nv`) enable diagnostics.
+- Structured failure payloads keep the real reason for usage errors that were
+  previously written straight to stderr.
+- Verbose diagnostics redact credentials and query strings from source URLs.
+- `farrow-hosts-helper --help` exits 0; its non-root and positional-argument
+  tests no longer pass for the wrong reason.
+
+### Changed
+
+- The presentation environment variables `FARROW_OUTPUT` and `FARROW_VERBOSE`
+  are read directly; Viper and its nine transitive modules are gone from the
+  dependency graph and the shipped license inventory.
+- Retired the unreachable user-NAT setup branches and four dead APIs.
+
 ## [0.1.0]
 
 First public, pre-1.0 developer release of the native Go/QEMU runtime for

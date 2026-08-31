@@ -74,7 +74,7 @@ manager backend. Without --yes the command is a read-only plan.`,
 	install.Flags().StringVarP(&installOptions.Mode, "mode", "m", installOptions.Mode, "macOS vmnet mode: host or shared")
 	install.Flags().StringVarP(&installOptions.Archive, "archive", "a", "", "macOS: pinned socket_vmnet archive")
 	install.Flags().StringVarP(&installOptions.InterfaceID, "interface-id", "i", "", "macOS: persistent vmnet UUID")
-	install.Flags().BoolVarP(&installOptions.Apply, "yes", "y", false, "apply the displayed privileged plan without prompting")
+	install.Flags().BoolVarP(&installOptions.Apply, "yes", "y", false, "apply the displayed privileged plan without confirmation (sudo may still ask for a password)")
 	_ = install.RegisterFlagCompletionFunc("mode", enumFlagCompletion("host", "shared"))
 	parent.AddCommand(install)
 
@@ -93,7 +93,7 @@ nothing without --yes.`,
 			return commandError(runNetwork(uninstallOptions, stdout, stderr))
 		},
 	}
-	uninstall.Flags().BoolVarP(&uninstallOptions.Apply, "yes", "y", false, "apply the displayed privileged plan without prompting")
+	uninstall.Flags().BoolVarP(&uninstallOptions.Apply, "yes", "y", false, "apply the displayed privileged plan without confirmation (sudo may still ask for a password)")
 	parent.AddCommand(uninstall)
 	return parent
 }

@@ -93,7 +93,7 @@ farrow up                    # converge
 farrow status                # audit/converge selected runtime state, from anywhere
 farrow ssh meta -- uptime    # run something in a guest
 farrow ss                    # teach plain `ssh` about the nodes
-farrow hosts install         # publish node names into the host hosts file
+farrow hosts install --yes   # publish node names into the host hosts file
 farrow destroy               # explicit, confirmed teardown
 ```
 
@@ -112,6 +112,11 @@ Presentation flags never change an exit status.
 | 5 | partial success across selected nodes |
 | 6 | resource conflict (address or port in use) |
 | 7 | integrity failure (digest, signature, or state mismatch) |
+
+`ssh`, `exec`, and a single-node `provision` pass the guest command's own exit
+status through unchanged, so their non-zero codes are the remote program's,
+not one of the categories above. Farrow's own failures on those paths still use
+the table.
 
 ## State
 

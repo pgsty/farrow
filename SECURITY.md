@@ -16,16 +16,23 @@ backport line yet.
 
 ## Privilege boundary
 
-Farrow runs unprivileged. It asks for administrator access for exactly two host
-transactions, each announced before it happens:
+Farrow runs unprivileged. It asks for administrator access for exactly three
+kinds of host transaction, each announced before it happens and each also
+reachable as an individual command:
 
-1. **Installing the host-global fixed-IP network.** `farrow network install`
+1. **Installing missing packages during `farrow setup`.** On Linux, setup runs
+   the system package manager (`apt-get` or `dnf`) through `sudo` for QEMU,
+   firmware, and OpenSSH after printing the exact plan and asking once. On
+   macOS, Homebrew runs as the invoking user and never needs root.
+2. **Installing the host-global fixed-IP network.** `farrow network install`
    prints the complete privileged plan and applies nothing without `--yes`.
    `farrow network uninstall` reverses it, restoring the recorded original
    ownership and mode of anything it changed.
-2. **Installing the hosts helper.** `farrow-hosts-helper` is a separate,
-   minimal, root-owned binary at `/opt/farrow/libexec/farrow-hosts-helper`. It
-   is the only component that ever writes the system hosts file.
+3. **Installing and invoking the hosts helper.** `farrow-hosts-helper` is a
+   separate, minimal, root-owned binary at
+   `/opt/farrow/libexec/farrow-hosts-helper`. It is the only component that
+   ever writes the system hosts file; `farrow hosts install --yes` invokes it
+   through `sudo -n` with a digest-matched, marker-bounded plan.
 
 Everything else — image cache, deployment state, SSH material, QEMU processes —
 is owned by the invoking user under `$FARROW_HOME` and never needs root.
