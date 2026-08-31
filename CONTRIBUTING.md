@@ -55,8 +55,8 @@ Catalog maintenance stays separate from the user-facing `farrow repo` command.
 the destination must be an absolute path that does not exist. `tools/catalogsign`
 manages Minisign keys and signatures accepted by the runtime. Its password is
 read only from inherited `CATALOGSIGN_PASSWORD` (empty is allowed), never from a
-command-line argument. Production private keys live on the repository host at
-`m0:/data/repo/keys/farrow`; do not copy them into this repository or CI.
+command-line argument. Production private keys never enter this repository or
+CI; they stay on the repository host.
 
 ```bash
 make catalog-export CATALOG_OUTPUT=/absolute/new/catalog.json

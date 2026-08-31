@@ -40,6 +40,8 @@ Notable user-visible changes. This project follows
 
 - Inventory validation and migration diagnostics now consistently call the
   single owner-scoped state a deployment rather than a project.
+- The post-`up` reminder to run `farrow hosts install --yes` is printed as a
+  warning line.
 - Ambiguous `farrow ssh`/`farrow exec` invocations without `--` now warn once
   when the first token is treated as a remote command; the 0.1.x grammar and
   exit status remain unchanged.
