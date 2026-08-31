@@ -251,26 +251,27 @@ func TestSplitRemoteInvocationValidatesNodesBeforeSeparator(t *testing.T) {
 		arguments []string
 		node      string
 		command   string
+		implicit  bool
 		wantErr   string
 	}{
 		{arguments: nil},
 		{arguments: []string{"meta"}, node: "meta"},
 		{arguments: []string{"meta", "uptime"}, node: "meta", command: "uptime"},
-		{arguments: []string{"uptime", "-p"}, command: "uptime -p"},
+		{arguments: []string{"uptime", "-p"}, command: "uptime -p", implicit: true},
 		{arguments: []string{"--", "uptime"}, command: "uptime"},
 		{arguments: []string{"meta", "--", "ls", "--", "-l"}, node: "meta", command: "ls -- -l"},
 		{arguments: []string{"metaa", "--", "uptime"}, wantErr: `the deployment has no node "metaa"`},
 		{arguments: []string{"meta", "node-1", "--", "uptime"}, wantErr: "at most one node may precede --"},
 	} {
-		node, command, err := splitRemoteInvocation(test.arguments, resolved)
+		node, command, implicit, err := splitRemoteInvocation(test.arguments, resolved)
 		if test.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Errorf("split(%v) err = %v, want %q", test.arguments, err, test.wantErr)
 			}
 			continue
 		}
-		if err != nil || node != test.node || strings.Join(command, " ") != test.command {
-			t.Errorf("split(%v) = %q, %q, %v; want %q, %q", test.arguments, node, strings.Join(command, " "), err, test.node, test.command)
+		if err != nil || node != test.node || strings.Join(command, " ") != test.command || implicit != test.implicit {
+			t.Errorf("split(%v) = %q, %q, implicit=%t, %v; want %q, %q, implicit=%t", test.arguments, node, strings.Join(command, " "), implicit, err, test.node, test.command, test.implicit)
 		}
 	}
 	for _, arguments := range [][]string{
@@ -295,6 +296,30 @@ func TestSplitRemoteInvocationValidatesNodesBeforeSeparator(t *testing.T) {
 	}
 	if !strings.HasSuffix(strings.TrimSpace(pathStdout.String()), ":0") {
 		t.Errorf("path completion unexpectedly suppressed file names: %q", pathStdout.String())
+	}
+}
+
+func TestImplicitRemoteCommandWarnsOnceAtTheCommandBoundary(t *testing.T) {
+	t.Setenv("FARROW_HOME", t.TempDir())
+	resolved := spec.Resolved{Nodes: []spec.Node{{Name: "meta", Control: true}}}
+	for _, test := range []struct {
+		name        string
+		commandName string
+		arguments   []string
+		want        string
+	}{
+		{name: "ssh heuristic", commandName: "ssh", arguments: []string{"uptime"}, want: `warning: treating "uptime" as a remote command; write farrow ssh [node] -- command`},
+		{name: "exec heuristic", commandName: "exec", arguments: []string{"hostname"}, want: `warning: treating "hostname" as a remote command; write farrow exec [node] -- command`},
+		{name: "known node", commandName: "ssh", arguments: []string{"meta", "uptime"}},
+		{name: "explicit separator", commandName: "ssh", arguments: []string{"--", "uptime"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			_, _ = runPrivateSSH(context.TODO(), test.commandName, test.arguments, resolved, io.Discard, &stderr)
+			if got := strings.TrimSpace(stderr.String()); got != test.want {
+				t.Fatalf("stderr=%q want=%q", got, test.want)
+			}
+		})
 	}
 }
 

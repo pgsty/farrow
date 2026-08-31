@@ -570,7 +570,7 @@ func runSSHChild(command *exec.Cmd) error {
 // be nothing or one known node, so a misspelled node is a usage error rather
 // than a command run on the control node. Without --, the first argument is
 // the node only when it names one; anything else is the remote command.
-func splitRemoteInvocation(arguments []string, resolved spec.Resolved) (string, []string, error) {
+func splitRemoteInvocation(arguments []string, resolved spec.Resolved) (string, []string, bool, error) {
 	known := func(name string) bool {
 		for _, candidate := range resolved.Nodes {
 			if candidate.Name == name {
@@ -586,24 +586,27 @@ func splitRemoteInvocation(arguments []string, resolved spec.Resolved) (string, 
 		head, command := arguments[:index], arguments[index+1:]
 		switch {
 		case len(head) == 0:
-			return "", command, nil
+			return "", command, false, nil
 		case len(head) > 1:
-			return "", nil, fmt.Errorf("at most one node may precede --, got %s", strings.Join(head, " "))
+			return "", nil, false, fmt.Errorf("at most one node may precede --, got %s", strings.Join(head, " "))
 		case !known(head[0]):
-			return "", nil, fmt.Errorf("the deployment has no node %q", head[0])
+			return "", nil, false, fmt.Errorf("the deployment has no node %q", head[0])
 		}
-		return head[0], command, nil
+		return head[0], command, false, nil
 	}
 	if len(arguments) > 0 && known(arguments[0]) {
-		return arguments[0], arguments[1:], nil
+		return arguments[0], arguments[1:], false, nil
 	}
-	return "", arguments, nil
+	return "", arguments, len(arguments) > 0, nil
 }
 
 func runPrivateSSH(parent context.Context, commandName string, args []string, resolved spec.Resolved, stdout, stderr io.Writer) (commandOutcome, error) {
-	node, command, err := splitRemoteInvocation(args, resolved)
+	node, command, implicitCommand, err := splitRemoteInvocation(args, resolved)
 	if err != nil {
 		return commandOutcome{}, newUsageError(err)
+	}
+	if implicitCommand {
+		warningf(stderr, "treating %q as a remote command; write farrow %s [node] -- command", args[0], commandName)
 	}
 	if commandName == "exec" && len(command) == 0 {
 		return commandOutcome{}, newUsageError(errors.New("exec requires a remote command: farrow exec [node] -- command [args...]"))

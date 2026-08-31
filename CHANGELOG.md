@@ -34,6 +34,9 @@ Notable user-visible changes. This project follows
 
 ### Changed
 
+- Ambiguous `farrow ssh`/`farrow exec` invocations without `--` now warn once
+  when the first token is treated as a remote command; the 0.1.x grammar and
+  exit status remain unchanged.
 - Installer and development builds retain at most three verified release
   directories by default; set `FARROW_INSTALL_KEEP=N` to choose another bound
   or `FARROW_INSTALL_KEEP=0` to disable pruning.
