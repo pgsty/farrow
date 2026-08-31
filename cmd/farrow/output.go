@@ -36,22 +36,13 @@ type outputContext struct {
 	color       bool
 	mu          sync.Mutex
 	stdoutBytes int64
-	lastError   string
 	writeErr    error
-	commandCtx  context.Context
 }
 
 type commandFailure struct {
 	Error       string `json:"error"`
 	Message     string `json:"message"`
 	OperationID string `json:"operation_id,omitempty"`
-}
-
-func emitCommandFailure(stdout, stderr io.Writer, category, message, operationID string) int {
-	if !structuredOutput(stdout) {
-		return exitOK
-	}
-	return encodeJSON(stdout, stderr, commandFailure{Error: category, Message: message, OperationID: operationID})
 }
 
 type outputWriter struct {
@@ -85,27 +76,6 @@ func outputWriteError(writer io.Writer) error {
 	return state.writeErr
 }
 
-func setCommandContext(writer io.Writer, ctx context.Context) {
-	state := outputContextFrom(writer)
-	if state == nil {
-		return
-	}
-	state.mu.Lock()
-	state.commandCtx = ctx
-	state.mu.Unlock()
-}
-
-func commandContextCancelled(writer io.Writer) bool {
-	state := outputContextFrom(writer)
-	if state == nil {
-		return false
-	}
-	state.mu.Lock()
-	ctx := state.commandCtx
-	state.mu.Unlock()
-	return ctx != nil && errors.Is(ctx.Err(), context.Canceled)
-}
-
 func structuredPayloadWritten(writer io.Writer) bool {
 	state := outputContextFrom(writer)
 	if state == nil {
@@ -114,26 +84,6 @@ func structuredPayloadWritten(writer io.Writer) bool {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	return state.stdoutBytes > 0
-}
-
-func recordCommandError(writer io.Writer, message string) {
-	state := outputContextFrom(writer)
-	if state == nil {
-		return
-	}
-	state.mu.Lock()
-	state.lastError = message
-	state.mu.Unlock()
-}
-
-func recordedCommandError(writer io.Writer) string {
-	state := outputContextFrom(writer)
-	if state == nil {
-		return ""
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.lastError
 }
 
 func writerFile(writer io.Writer) (*os.File, bool) {
@@ -383,6 +333,14 @@ func encodeOutput(out io.Writer, value any) error {
 	return err
 }
 
+func encodeJSON(out, errOut io.Writer, value any) int {
+	if err := encodeOutput(out, value); err != nil {
+		bestEffortf(errOut, "encode %s output: %v\n", outputFormatFor(out), err)
+		return exitRuntime
+	}
+	return exitOK
+}
+
 // encodeStreamOutput writes one self-contained stream record. JSON streams are
 // NDJSON; YAML streams use explicit document separators. Finite commands use
 // encodeOutput and remain a single document.
@@ -472,13 +430,9 @@ func warningf(stderr io.Writer, format string, arguments ...any) {
 }
 
 func errorf(stderr io.Writer, format string, arguments ...any) {
-	if commandContextCancelled(stderr) {
-		return
-	}
 	message := strings.TrimSpace(fmt.Sprintf(format, arguments...))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "ERROR:"))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "error:"))
-	recordCommandError(stderr, message)
 	bestEffortf(stderr, "%s %s\n", styled(stderr, ansiRed, "error:"), message)
 }
 

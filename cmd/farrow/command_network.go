@@ -36,7 +36,7 @@ read-only preflight findings used before lifecycle mutation.`,
   farrow --json network status`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			outcome, err := runNetwork(command.Context(), statusOptions, stdout, stderr)
+			outcome, err := runNetwork(command.Context(), statusOptions, stderr)
 			if err != nil {
 				return err
 			}
@@ -72,7 +72,7 @@ manager backend. Without --yes the command is a read-only plan.`,
 			return nil
 		},
 		RunE: func(command *cobra.Command, _ []string) error {
-			outcome, err := runNetwork(command.Context(), installOptions, stdout, stderr)
+			outcome, err := runNetwork(command.Context(), installOptions, stderr)
 			if err != nil {
 				return err
 			}
@@ -100,7 +100,7 @@ nothing without --yes.`,
   farrow network uninstall --yes # apply after the deployment is stopped`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			outcome, err := runNetwork(command.Context(), uninstallOptions, stdout, stderr)
+			outcome, err := runNetwork(command.Context(), uninstallOptions, stderr)
 			if err != nil {
 				return err
 			}

@@ -145,8 +145,8 @@ func TestDestructiveConfirmationTTYAndNonTTY(t *testing.T) {
 	if !strings.Contains(prompt.String(), `typing "destroy"`) {
 		t.Fatalf("prompt = %q", prompt.String())
 	}
-	if err := confirmDestructive(false, true, "destroy", strings.NewReader("no\n"), io.Discard); err == nil {
-		t.Fatal("mismatched interactive confirmation accepted")
+	if err := confirmDestructive(false, true, "destroy", strings.NewReader("no\n"), io.Discard); !errors.Is(err, ErrCancelled) {
+		t.Fatalf("mismatched interactive confirmation error = %v, want ErrCancelled", err)
 	}
 	if err := confirmDestructive(false, false, "destroy", strings.NewReader("destroy\n"), io.Discard); err == nil || !strings.Contains(err.Error(), "requires --force") {
 		t.Fatalf("non-TTY confirmation error = %v", err)

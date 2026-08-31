@@ -186,7 +186,7 @@ func sortedMapKeys[V any](values map[string]V) []string {
 	return keys
 }
 
-func runNetwork(parent context.Context, options networkOptions, stdout, stderr io.Writer) (commandOutcome, error) {
+func runNetwork(parent context.Context, options networkOptions, stderr io.Writer) (commandOutcome, error) {
 	command := options.Action
 	if command == "install" || command == "uninstall" {
 		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
@@ -933,14 +933,6 @@ func runProvision(parent context.Context, options provisionOptions, nodes []stri
 		}
 	}
 	return commandOutcome{}, newSilentRenderedCommandError("runtime", exitRuntime, errors.New("provision failed"), report, renderText)
-}
-
-func encodeJSON(out, errOut io.Writer, value any) int {
-	if err := encodeOutput(out, value); err != nil {
-		bestEffortf(errOut, "encode %s output: %v\n", outputFormatFor(out), err)
-		return exitRuntime
-	}
-	return exitOK
 }
 
 func lifecycleReadsConfig(command string) bool {

@@ -20,8 +20,9 @@ Notable user-visible changes. This project follows
   host preflight or a confirmation prompt, not runtime errors after them.
 - `farrow destroy` asks for the same `destroy` token whether or not nodes are
   selected, and prints the exact scope (nodes, disks, keys, state) first.
-- `farrow setup` treats end of input at its `[Y/n]` prompt as a cancellation;
-  only an answered prompt defaults to yes.
+- Refusing or leaving `farrow setup` confirmation unanswered, and mismatching
+  the `destroy`/`recreate` token, now return one cancellation result and exit
+  130; only an answered setup prompt defaults to yes.
 - `farrow logs --source events` rejects a node argument instead of silently
   returning the deployment-wide log under that name.
 - Combined verbose shorthands (`-vv`, `-nv`) enable diagnostics.

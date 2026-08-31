@@ -31,19 +31,6 @@ func init() {
 	cobra.EnableCommandSorting = false
 }
 
-type commandExitError struct{ code int }
-
-func (err commandExitError) Error() string {
-	return fmt.Sprintf("command exited with status %d", err.code)
-}
-
-func commandError(code int) error {
-	if code == exitOK {
-		return nil
-	}
-	return commandExitError{code: code}
-}
-
 func helpBeforeSeparator(arguments []string) bool {
 	for _, argument := range arguments {
 		if argument == "--" {
@@ -238,18 +225,12 @@ func configureHelpOnly(command *cobra.Command, message string, stdout, stderr io
 		// --json emits the machine-readable failure, while the plain form still
 		// prints the full help on stdout because that is what a person came for.
 		// `farrow --help` remains the deliberate, successful way to ask for help.
-		if structuredOutput(stdout) {
-			if code := emitCommandFailure(stdout, stderr, "usage", message, ""); code != exitOK {
-				return commandError(code)
+		if !structuredOutput(stdout) {
+			if err := command.Help(); err != nil {
+				return newRuntimeError(err)
 			}
-			errorf(stderr, "%s", message)
-			return commandExitError{code: exitUsage}
 		}
-		if err := command.Help(); err != nil {
-			return err
-		}
-		errorf(stderr, "%s", message)
-		return commandExitError{code: exitUsage}
+		return newUsageError(errors.New(message))
 	}
 
 	// RunE makes a namespace runnable so Cobra validates misspelled children.

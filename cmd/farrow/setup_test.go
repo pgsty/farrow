@@ -133,10 +133,7 @@ func TestConstrainSetupNetworkModeReusesDefaultButRejectsExplicitMismatch(t *tes
 
 func TestSetupApplyCommandRemovesDryRunAndPreservesTypedArguments(t *testing.T) {
 	t.Parallel()
-	context := &outputContext{format: outputYAML, verbose: true}
-	stdout := &outputWriter{Writer: &bytes.Buffer{}, context: context}
-	stderr := &outputWriter{Writer: &bytes.Buffer{}, context: context, stderr: true}
-	next, argv := setupApplyCommand([]string{"full", "--mode=shared", "--dry-run=1", "--cidr", "172.31.251.0/24"}, stdout, stderr)
+	next, argv := setupApplyCommand([]string{"full", "--mode=shared", "--dry-run=1", "--cidr", "172.31.251.0/24"}, outputYAML, true)
 	want := []string{"farrow", "setup", "full", "--mode=shared", "--cidr", "172.31.251.0/24", "--yaml", "--verbose"}
 	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") || strings.Contains(next, "dry-run") {
 		t.Fatalf("next=%q argv=%#v", next, argv)
@@ -173,6 +170,9 @@ func TestEmitPrivatePendingNetworkDoesNotClaimUserNAT(t *testing.T) {
 
 func TestSetupConfirmationTreatsEndOfInputAsCancellation(t *testing.T) {
 	t.Parallel()
+	if err := confirmSetup(false, true, strings.NewReader("y\n"), &bytes.Buffer{}); !errors.Is(err, ErrCancelled) {
+		t.Fatalf("non-terminal setup confirmation error = %v, want ErrCancelled", err)
+	}
 	for input, accepted := range map[string]bool{"\n": true, "y\n": true, "YES\n": true, "n\n": false, "no\n": false, "": false, "y": false} {
 		err := readSetupConfirmation(strings.NewReader(input))
 		if accepted && err != nil {
@@ -181,9 +181,12 @@ func TestSetupConfirmationTreatsEndOfInputAsCancellation(t *testing.T) {
 		if !accepted && err == nil {
 			t.Errorf("input %q accepted; only an answered [Y/n] prompt may default to yes", input)
 		}
+		if !accepted && !errors.Is(err, ErrCancelled) {
+			t.Errorf("input %q error = %v, want ErrCancelled", input, err)
+		}
 	}
-	if err := readSetupConfirmation(strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "no confirmation was entered") {
-		t.Fatalf("EOF err = %v", err)
+	if err := readSetupConfirmation(strings.NewReader("")); !strings.Contains(err.Error(), "no setup confirmation was entered") {
+		t.Fatalf("EOF err = %v, want a specific cancellation reason", err)
 	}
 }
 
@@ -194,7 +197,7 @@ func TestRunSetupEmitsStructuredEarlyFailure(t *testing.T) {
 	outputState := &outputContext{format: outputJSON}
 	out := &outputWriter{Writer: &stdout, context: outputState}
 	errOut := &outputWriter{Writer: &stderr, context: outputState, stderr: true}
-	outcome, runErr := runSetupCommand(context.TODO(), "profile-that-does-not-exist", setupCLIOptions{Mode: "host"}, out, errOut)
+	outcome, runErr := runSetupCommand(context.TODO(), "profile-that-does-not-exist", setupCLIOptions{Mode: "host"}, outputJSON, false, errOut)
 	code := exitOK
 	if runErr != nil {
 		typed, ok := runErr.(typedCommandError)

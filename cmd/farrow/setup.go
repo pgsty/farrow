@@ -403,7 +403,7 @@ func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) er
 	}
 	terminal, ok := stdin.(interface{ Fd() uintptr })
 	if !ok || !term.IsTerminal(int(terminal.Fd())) {
-		return errors.New("setup needs --yes when stdin is not a terminal")
+		return fmt.Errorf("%w: setup needs --yes when stdin is not a terminal", ErrCancelled)
 	}
 	if _, err := fmt.Fprint(stderr, "Continue with this setup? [Y/n] "); err != nil {
 		return fmt.Errorf("write setup confirmation prompt: %w", err)
@@ -417,7 +417,7 @@ func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) er
 func readSetupConfirmation(stdin io.Reader) error {
 	line, err := bufio.NewReader(io.LimitReader(stdin, 64)).ReadString('\n')
 	if errors.Is(err, io.EOF) {
-		return errors.New("setup cancelled: no confirmation was entered")
+		return fmt.Errorf("%w: no setup confirmation was entered", ErrCancelled)
 	}
 	if err != nil {
 		return err
@@ -426,7 +426,7 @@ func readSetupConfirmation(stdin io.Reader) error {
 	case "", "y", "yes":
 		return nil
 	default:
-		return errors.New("setup cancelled")
+		return ErrCancelled
 	}
 }
 
@@ -1040,7 +1040,7 @@ func setupNextCommand(selection setupSelection, cwd string) (string, []string) {
 	return formatSetupCommand(arguments)
 }
 
-func setupApplyCommand(arguments []string, stdout, stderr io.Writer) (string, []string) {
+func setupApplyCommand(arguments []string, format outputFormat, verbose bool) (string, []string) {
 	apply := []string{"farrow", "setup"}
 	for _, argument := range arguments {
 		if argument == "--dry-run" || argument == "-dry-run" ||
@@ -1049,13 +1049,13 @@ func setupApplyCommand(arguments []string, stdout, stderr io.Writer) (string, []
 		}
 		apply = append(apply, argument)
 	}
-	switch outputFormatFor(stdout) {
+	switch format {
 	case outputJSON:
 		apply = append(apply, "--json")
 	case outputYAML:
 		apply = append(apply, "--yaml")
 	}
-	if verboseOutput(stderr) {
+	if verbose {
 		apply = append(apply, "--verbose")
 	}
 	return formatSetupCommand(apply)
@@ -1069,7 +1069,7 @@ func formatSetupCommand(arguments []string) (string, []string) {
 	return strings.Join(quoted, " "), arguments
 }
 
-func runSetupCommand(parent context.Context, profileName string, options setupCLIOptions, stdout, stderr io.Writer) (commandOutcome, error) {
+func runSetupCommand(parent context.Context, profileName string, options setupCLIOptions, format outputFormat, verbose bool, stderr io.Writer) (commandOutcome, error) {
 	result := setupResult{
 		Schema: 1, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Steps: make([]setupStep, 0, 6), NextArgv: nil,
@@ -1166,7 +1166,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 			result.Steps = append(result.Steps, setupStep{Name: "config", Status: "planned", Detail: selection.ConfigPath})
 		}
 		if !result.Blocked {
-			result.Next, result.NextArgv = setupApplyCommand(options.arguments(profileName), stdout, stderr)
+			result.Next, result.NextArgv = setupApplyCommand(options.arguments(profileName), format, verbose)
 		}
 		if result.Blocked {
 			return failSetupRendered(&result, blockerCode, errors.New(result.Resolution))
@@ -1177,7 +1177,10 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 		return failSetupRendered(&result, blockerCode, errors.New(result.Resolution))
 	}
 	if err := confirmSetup(options.Yes, setupMutating(dependencyPlan, selection, networkReport), os.Stdin, stderr); err != nil {
-		return commandOutcome{}, ErrCancelled
+		if errors.Is(err, ErrCancelled) {
+			return commandOutcome{}, ErrCancelled
+		}
+		return failSetup(&result, exitConflict, err)
 	}
 	if len(dependencyPlan.Commands) > 0 {
 		changed, uncertain, err := runSetupCommands(ctx, dependencyPlan.Commands, base, sudoSession, stderr)

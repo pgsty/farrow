@@ -49,21 +49,21 @@ func newCommandBoundaryError(category string, code int, err error) *commandBound
 	return &commandBoundaryError{failure: commandFailure{Error: category, Message: err.Error()}, code: code, cause: err}
 }
 
-func newDetailedCommandError(category string, code int, err error, operationID string, payload any) error {
+func newDetailedCommandError(category string, code int, err error, operationID string, payload any) *commandBoundaryError {
 	return &commandBoundaryError{
 		failure: commandFailure{Error: category, Message: err.Error(), OperationID: operationID},
 		code:    code, cause: err, payload: payload,
 	}
 }
 
-func newRenderedCommandError(category string, code int, err error, operationID string, payload any, text func(io.Writer, io.Writer) error) error {
-	boundary := newDetailedCommandError(category, code, err, operationID, payload).(*commandBoundaryError)
+func newRenderedCommandError(category string, code int, err error, operationID string, payload any, text func(io.Writer, io.Writer) error) *commandBoundaryError {
+	boundary := newDetailedCommandError(category, code, err, operationID, payload)
 	boundary.text = text
 	return boundary
 }
 
-func newSilentRenderedCommandError(category string, code int, err error, payload any, text func(io.Writer, io.Writer) error) error {
-	boundary := newRenderedCommandError(category, code, err, "", payload, text).(*commandBoundaryError)
+func newSilentRenderedCommandError(category string, code int, err error, payload any, text func(io.Writer, io.Writer) error) *commandBoundaryError {
+	boundary := newRenderedCommandError(category, code, err, "", payload, text)
 	boundary.silent = true
 	return boundary
 }
@@ -86,7 +86,7 @@ func newExitError(code int, err error) error {
 
 func newRemoteExitError(code int, result remoteCommandResult) error {
 	err := fmt.Errorf("remote command exited with status %d", code)
-	boundary := newDetailedCommandError("remote_exit", code, err, "", result).(*commandBoundaryError)
+	boundary := newDetailedCommandError("remote_exit", code, err, "", result)
 	boundary.silent = true
 	return boundary
 }
@@ -328,7 +328,6 @@ func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Write
 	ctx = context.WithValue(ctx, commandOutcomeContextKey{}, collector)
 	root := newRootCommand(stdout, stderr)
 	root.SetArgs(arguments)
-	setCommandContext(stdout, ctx)
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return reportCancelled(stdout, stderr)
 	}
@@ -346,25 +345,19 @@ func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Write
 	if executed == nil {
 		executed = root
 	}
+	if errors.Is(err, ErrCancelled) {
+		return reportCancelled(stdout, stderr)
+	}
 	var typed typedCommandError
 	if errors.As(err, &typed) {
 		return renderTypedCommandError(typed, stdout, stderr)
 	}
-	var coded commandExitError
-	if errors.As(err, &coded) {
-		if structuredOutput(stdout) && !structuredPayloadWritten(stdout) {
-			message := recordedCommandError(stderr)
-			if message == "" {
-				message = fmt.Sprintf("%s failed with exit status %d", executed.CommandPath(), coded.code)
-			}
-			if encodeCode := emitCommandFailure(stdout, stderr, exitCategory(coded.code), message, ""); encodeCode != exitOK {
-				return encodeCode
+	if !structuredPayloadWritten(stdout) {
+		if structuredOutput(stdout) {
+			if code := encodeJSON(stdout, stderr, commandFailure{Error: "usage", Message: err.Error()}); code != exitOK {
+				return code
 			}
 		}
-		return coded.code
-	}
-	if !structuredPayloadWritten(stdout) {
-		_ = emitCommandFailure(stdout, stderr, "usage", err.Error(), "")
 	}
 	errorf(stderr, "%v", err)
 	if _, writeErr := fmt.Fprintf(stderr, "run '%s --help' for usage\n", executed.CommandPath()); writeErr != nil {
@@ -403,7 +396,6 @@ func reportCancelled(stdout, stderr io.Writer) int {
 			return code
 		}
 	}
-	recordCommandError(stderr, ErrCancelled.Error())
 	bestEffortf(stderr, "%s %s\n", styled(stderr, ansiRed, "error:"), ErrCancelled.Error())
 	return exitCancelled
 }

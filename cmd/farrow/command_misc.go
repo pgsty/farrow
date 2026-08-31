@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"strings"
 
 	"github.com/pgsty/farrow/internal/version"
 	"github.com/spf13/cobra"
@@ -41,7 +42,7 @@ templates, image aliases, and best-effort node-name completion.`,
   farrow completion fish > ~/.config/fish/completions/farrow.fish`,
 		Args:      cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
 		ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
-		RunE: func(_ *cobra.Command, arguments []string) error {
+		RunE: func(command *cobra.Command, arguments []string) error {
 			var script bytes.Buffer
 			var err error
 			switch arguments[0] {
@@ -54,23 +55,19 @@ templates, image aliases, and best-effort node-name completion.`,
 			case "powershell":
 				err = root.GenPowerShellCompletion(&script)
 			default:
-				return fmt.Errorf("unsupported completion shell %q; expected bash, zsh, fish, or powershell", arguments[0])
+				return newUsageError(fmt.Errorf("unsupported completion shell %q; expected bash, zsh, fish, or powershell", arguments[0]))
 			}
 			if err != nil {
-				errorf(stderr, "generate %s completion: %v", arguments[0], err)
-				return commandError(exitRuntime)
+				return newRuntimeError(fmt.Errorf("generate %s completion: %w", arguments[0], err))
 			}
-			if structuredOutput(stdout) {
-				return commandError(encodeJSON(stdout, stderr, struct {
-					Shell  string `json:"shell"`
-					Script string `json:"script"`
-				}{Shell: arguments[0], Script: script.String()}))
-			}
-			if _, err = io.Copy(stdout, &script); err != nil {
-				errorf(stderr, "write %s completion: %v", arguments[0], err)
-				return commandError(exitRuntime)
-			}
-			return nil
+			result := struct {
+				Shell  string `json:"shell"`
+				Script string `json:"script"`
+			}{Shell: arguments[0], Script: script.String()}
+			return collectCommandOutcome(command.Context(), commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
+				_, err := io.Copy(stdout, strings.NewReader(result.Script))
+				return err
+			}})
 		},
 	}
 	return command

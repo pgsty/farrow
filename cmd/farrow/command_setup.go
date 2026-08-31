@@ -43,7 +43,7 @@ before any mutation and requests privilege only at the first privileged step.`,
 			profileName = arguments[0]
 		}
 		options.ModeExplicit = command.Flags().Changed("mode")
-		outcome, err := runSetupCommand(command.Context(), profileName, options, stdout, stderr)
+		outcome, err := runSetupCommand(command.Context(), profileName, options, outputFormatFor(stdout), verboseOutput(stderr), stderr)
 		if err != nil {
 			return err
 		}
