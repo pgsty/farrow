@@ -185,7 +185,7 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 	command := options.Action
 	if command == "install" || command == "uninstall" {
 		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-			fmt.Fprintln(stderr, "product network install/uninstall supports native Linux and macOS")
+			errorf(stderr, "network install/uninstall supports native Linux and macOS")
 			return exitCapability
 		}
 		var layout subnet.Layout
@@ -196,15 +196,15 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 				vmnetMode = "host"
 			}
 			if vmnetMode != "host" && vmnetMode != "shared" {
-				fmt.Fprintf(stderr, "--mode must be host or shared, got %q\n", vmnetMode)
+				errorf(stderr, "--mode must be host or shared, got %q", vmnetMode)
 				return exitUsage
 			}
 			if runtime.GOOS == "linux" && vmnetMode != "host" {
-				fmt.Fprintln(stderr, "--mode is a macOS socket_vmnet option; Linux uses farrow0")
+				errorf(stderr, "--mode is a macOS socket_vmnet option; Linux uses farrow0")
 				return exitUsage
 			}
 			if runtime.GOOS != "darwin" && (options.Archive != "" || options.InterfaceID != "") {
-				fmt.Fprintln(stderr, "--archive and --interface-id are macOS-only")
+				errorf(stderr, "--archive and --interface-id are macOS-only")
 				return exitUsage
 			}
 			networkCIDR := options.CIDR
@@ -754,11 +754,11 @@ func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Wr
 		return exitUsage
 	}
 	if options.Parallelism < 1 || options.Parallelism > provision.MaxParallelism {
-		fmt.Fprintf(stderr, "provision parallelism must be 1..%d\n", provision.MaxParallelism)
+		errorf(stderr, "provision parallelism must be 1..%d", provision.MaxParallelism)
 		return exitUsage
 	}
 	if options.Timeout <= 0 || options.Timeout > 24*time.Hour {
-		fmt.Fprintln(stderr, "provision timeout must be greater than zero and no more than 24h")
+		errorf(stderr, "provision timeout must be greater than zero and no more than 24h")
 		return exitUsage
 	}
 	script, err := provision.LoadScript(options.ScriptPath)
@@ -794,7 +794,7 @@ func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Wr
 	}()
 	deploymentState, err := (state.Store{Root: deployment.Root}).ReadDeployment()
 	if err != nil {
-		fmt.Fprintln(stderr, "provision requires an existing running deployment:", err)
+		errorf(stderr, "provision requires an existing running deployment: %v", err)
 		return exitConflict
 	}
 	resolved := deploymentState.Resolved
@@ -811,7 +811,7 @@ func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Wr
 		}
 		for _, connection := range connections {
 			if connection.Host != "127.0.0.1" {
-				fmt.Fprintf(stderr, "refuse non-loopback provision endpoint for node %s\n", connection.Node)
+				errorf(stderr, "refuse non-loopback provision endpoint for node %s", connection.Node)
 				return exitIntegrity
 			}
 			targets = append(targets, provision.Target{Node: connection.Node, User: connection.User, Port: connection.Port, PrivateKey: connection.PrivateKey, KnownHosts: connection.KnownHosts})
@@ -819,7 +819,7 @@ func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Wr
 		}
 		recordEvent = manager.RecordEvent
 	} else {
-		fmt.Fprintf(stderr, "unsupported deployment network %q\n", resolved.Network)
+		errorf(stderr, "unsupported deployment network %q", resolved.Network)
 		return exitIntegrity
 	}
 
@@ -835,7 +835,7 @@ func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Wr
 	}
 	startMessage := fmt.Sprintf("script_sha256=%s bytes=%d sudo=%t parallel=%d targets=%s", script.SHA256, script.Size, options.Sudo, options.Parallelism, strings.Join(selectedNames, ","))
 	if err := recordEvent(ctx, "provision", "info", "starting "+startMessage); err != nil {
-		fmt.Fprintln(stderr, "refuse provision without an auditable event append:", err)
+		errorf(stderr, "refuse provision without an auditable event append: %v", err)
 		return exitIntegrity
 	}
 	debugf(stderr, "provision operation_id=%s targets=%s timeout=%s parallel=%d sudo=%t script_sha256=%s", operationID, strings.Join(selectedNames, ","), options.Timeout, options.Parallelism, options.Sudo, script.SHA256)
@@ -1170,7 +1170,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 			return status, nil
 		}
 	default:
-		fmt.Fprintf(stderr, "unsupported private command %q\n", command)
+		errorf(stderr, "unsupported private command %q", command)
 		return exitUsage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -1370,7 +1370,7 @@ func runSSHConfig(options sshConfigOptions, nodes []string, stdout, stderr io.Wr
 		options.Name = "farrow"
 	}
 	if options.Remove && len(nodes) != 0 {
-		fmt.Fprintln(stderr, "ssh-config --remove removes the deployment fragment and does not accept node selectors")
+		errorf(stderr, "ssh-config --remove removes the deployment fragment and does not accept node selectors")
 		return exitUsage
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -2000,7 +2000,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		}
 		invalidAliasMetadata := (options.Name == "" && (options.Boot != "" || options.SourceUser != "")) || (options.Name != "" && (options.SourceUser == "" || (options.Boot != "bios" && options.Boot != "uefi")))
 		if invalidAliasMetadata {
-			fmt.Fprintln(stderr, "--name requires --boot bios|uefi and --source-user; alias metadata is immutable")
+			errorf(stderr, "--name requires --boot bios|uefi and --source-user; alias metadata is immutable")
 			return exitUsage
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -2049,7 +2049,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	default:
-		fmt.Fprintf(stderr, "unknown image command %q\n", options.Action)
+		errorf(stderr, "unknown image command %q", options.Action)
 		return exitUsage
 	}
 }
