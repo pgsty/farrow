@@ -6,6 +6,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func collectImageCommand(command *cobra.Command, options imageOptions, _ io.Writer, stderr io.Writer) error {
+	outcome, err := runImage(command.Context(), options, stderr)
+	if err != nil {
+		return err
+	}
+	return collectCommandOutcome(command.Context(), outcome)
+}
+
 func newImageCommand(stdout, stderr io.Writer) *cobra.Command {
 	parent := subcommandGroup(
 		"image",
@@ -32,7 +40,7 @@ row names its architecture; info and pull select the native one.`,
   farrow --json image list`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return commandError(runImage(command.Context(), listOptions, stdout, stderr))
+			return collectImageCommand(command, listOptions, stdout, stderr)
 		},
 	}
 	list.Flags().StringVarP(&listOptions.Repository, "repo", "r", "", repositoryFlagHelp)
@@ -71,7 +79,7 @@ activation.`
 				if len(arguments) != 0 {
 					options.Alias = arguments[0]
 				}
-				return commandError(runImage(command.Context(), options, stdout, stderr))
+				return collectImageCommand(command, options, stdout, stderr)
 			},
 		}
 		if action == "info" {
@@ -98,7 +106,7 @@ staging files. The default and --dry-run are read-only; deletion requires
   farrow image prune --yes       # delete the displayed candidates`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return commandError(runImage(command.Context(), pruneOptions, stdout, stderr))
+			return collectImageCommand(command, pruneOptions, stdout, stderr)
 		},
 	}
 	prune.Flags().BoolVarP(&pruneOptions.DryRun, "dry-run", "d", false, "show unreferenced images and stale staging files without deleting")
@@ -122,7 +130,7 @@ atomically.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			syncOptions.Source = arguments[0]
-			return commandError(runImage(command.Context(), syncOptions, stdout, stderr))
+			return collectImageCommand(command, syncOptions, stdout, stderr)
 		},
 	}
 	syncCommand.Flags().BoolVar(&syncOptions.AllowDowngrade, "allow-downgrade", false, "allow activation below the catalog high-water mark")
@@ -140,7 +148,7 @@ signed-catalog high-water mark used to prevent silent downgrade.`,
   farrow --json image reset-manifest`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return commandError(runImage(command.Context(), resetOptions, stdout, stderr))
+			return collectImageCommand(command, resetOptions, stdout, stderr)
 		},
 	}
 	reset.Flags().StringVarP(&resetOptions.Repository, "repo", "r", "", "repository whose active catalog is reset to the embedded baseline")
@@ -166,7 +174,7 @@ prefixed alias and therefore also requires --boot and --source-user.`,
 		},
 		RunE: func(command *cobra.Command, arguments []string) error {
 			importOptions.Path = arguments[0]
-			return commandError(runImage(command.Context(), importOptions, stdout, stderr))
+			return collectImageCommand(command, importOptions, stdout, stderr)
 		},
 	}
 	importCommand.Flags().StringVarP(&importOptions.ExpectedSHA256, "sha256", "s", "", "optional expected SHA-256")

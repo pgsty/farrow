@@ -34,7 +34,7 @@ build never changes repo.yaml or image bytes.`,
 			Args:    cobra.ExactArgs(1),
 			RunE: func(command *cobra.Command, arguments []string) error {
 				options.Path = arguments[0]
-				return commandError(runImage(command.Context(), options, stdout, stderr))
+				return collectImageCommand(command, options, stdout, stderr)
 			},
 		}
 		parent.AddCommand(command)

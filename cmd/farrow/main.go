@@ -1823,49 +1823,45 @@ type imageOptions struct {
 	AllowDowngrade bool
 }
 
-func runImage(parent context.Context, options imageOptions, stdout, stderr io.Writer) int {
+func runImage(parent context.Context, options imageOptions, stderr io.Writer) (commandOutcome, error) {
 	switch options.Action {
 	case "list":
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		service, err := imageService(options.Repository, nil)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		entries, manifestState, err := service.List(ctx)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, struct {
-				Manifest image.ManifestState `json:"manifest"`
-				Images   []image.Entry       `json:"images"`
-			}{manifestState, entries})
-		}
-		textField(stdout, 12, "manifest", manifestState.Active)
-		textField(stdout, 12, "version", manifestState.ActiveVersion)
-		textField(stdout, 12, "highest", manifestState.HighestVersion)
-		for _, entry := range entries {
-			channels := "-"
-			if len(entry.Channels) != 0 {
-				channels = strings.Join(entry.Channels, ",")
+		payload := struct {
+			Manifest image.ManifestState `json:"manifest"`
+			Images   []image.Entry       `json:"images"`
+		}{manifestState, entries}
+		return commandOutcome{payload: payload, text: func(stdout, _ io.Writer) error {
+			textField(stdout, 12, "manifest", manifestState.Active)
+			textField(stdout, 12, "version", manifestState.ActiveVersion)
+			textField(stdout, 12, "highest", manifestState.HighestVersion)
+			for _, entry := range entries {
+				channels := "-"
+				if len(entry.Channels) != 0 {
+					channels = strings.Join(entry.Channels, ",")
+				}
+				if err := writeText(stdout, "%s %s %s channels=%s status=%s sha256:%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status, entry.SHA256); err != nil {
+					return err
+				}
 			}
-			if err := writeText(stdout, "%s %s %s channels=%s status=%s sha256:%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status, entry.SHA256); err != nil {
-				errorf(stderr, "write image list: %v", err)
-				return exitRuntime
-			}
-		}
-		return exitOK
+			return nil
+		}}, nil
 	case "info", "pull":
 		ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 		defer cancel()
 		var progressItem *progress
 		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		var info image.Info
 		if options.Action == "pull" {
@@ -1884,51 +1880,44 @@ func runImage(parent context.Context, options imageOptions, stdout, stderr io.Wr
 			}
 		}
 		progressItem.Stop(err)
+		if errors.Is(parent.Err(), context.Canceled) {
+			return commandOutcome{}, ErrCancelled
+		}
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		printImageStatusWarning(stderr, info.Entry)
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, info)
-		}
-		if err := writeText(stdout, "%s %s %s status=%s sha256:%s cached=%t\n", info.Entry.Alias, info.Entry.Release, info.Entry.Arch, info.Entry.Status, info.Entry.SHA256, info.Cached); err != nil {
-			errorf(stderr, "write image info: %v", err)
-			return exitRuntime
-		}
-		if info.Path != "" {
-			if err := writeText(stdout, "path: %s\n", info.Path); err != nil {
-				errorf(stderr, "write image info: %v", err)
-				return exitRuntime
+		return commandOutcome{payload: info, text: func(stdout, _ io.Writer) error {
+			if err := writeText(stdout, "%s %s %s status=%s sha256:%s cached=%t\n", info.Entry.Alias, info.Entry.Release, info.Entry.Arch, info.Entry.Status, info.Entry.SHA256, info.Cached); err != nil {
+				return err
 			}
-		}
-		return exitOK
+			if info.Path != "" {
+				return writeText(stdout, "path: %s\n", info.Path)
+			}
+			return nil
+		}}, nil
 	case "repo-scan", "repo-build", "repo-verify":
 		root, err := filepath.Abs(options.Path)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
+			return commandOutcome{}, newUsageError(err)
 		}
 		if options.Action == "repo-scan" {
 			report, scanErr := image.ScanRepository(root)
 			if scanErr != nil {
-				errorf(stderr, "%v", scanErr)
-				return exitIntegrity
+				return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, scanErr, "", nil)
 			}
-			if structuredOutput(stdout) {
-				return encodeJSON(stdout, stderr, report)
-			}
-			textField(stdout, 12, "root", report.Root)
-			textField(stdout, 12, "tracked", len(report.Tracked))
-			textField(stdout, 12, "missing", len(report.Missing))
-			textField(stdout, 12, "untracked", len(report.Untracked))
-			textField(stdout, 12, "unsafe", len(report.Unsafe))
-			return exitOK
+			return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
+				textField(stdout, 12, "root", report.Root)
+				textField(stdout, 12, "tracked", len(report.Tracked))
+				textField(stdout, 12, "missing", len(report.Missing))
+				textField(stdout, 12, "untracked", len(report.Untracked))
+				textField(stdout, 12, "unsafe", len(report.Unsafe))
+				return nil
+			}}, nil
 		}
 		qemuImg, err := exec.LookPath("qemu-img")
 		if err != nil {
-			errorf(stderr, "repository %s requires qemu-img: %v", strings.TrimPrefix(options.Action, "repo-"), err)
-			return exitCapability
+			return commandOutcome{}, newDetailedCommandError("capability", exitCapability, fmt.Errorf("repository %s requires qemu-img: %w", strings.TrimPrefix(options.Action, "repo-"), err), "", nil)
 		}
 		ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 		defer cancel()
@@ -1940,132 +1929,107 @@ func runImage(parent context.Context, options imageOptions, stdout, stderr io.Wr
 			result, err = builder.Verify(ctx, root)
 		}
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitIntegrity
+			return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 		}
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, result)
-		}
-		textField(stdout, 12, "catalog", result.Path)
-		textField(stdout, 12, "revision", result.Catalog.Version)
-		textField(stdout, 12, "images", len(result.Catalog.Images))
-		textField(stdout, 12, "bytes", result.Bytes)
-		return exitOK
+		return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
+			textField(stdout, 12, "catalog", result.Path)
+			textField(stdout, 12, "revision", result.Catalog.Version)
+			textField(stdout, 12, "images", len(result.Catalog.Images))
+			textField(stdout, 12, "bytes", result.Bytes)
+			return nil
+		}}, nil
 	case "prune":
 		if options.DryRun && options.Apply {
-			errorf(stderr, "--dry-run and --yes are mutually exclusive")
-			return exitUsage
+			return commandOutcome{}, newUsageError(errors.New("--dry-run and --yes are mutually exclusive"))
 		}
 		ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 		defer cancel()
 		service, err := imageService(options.Repository, nil)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		progressItem := startProgress(ctx, stderr, "Scanning unreferenced image cache entries")
 		report, err := service.PruneAll(ctx, options.Apply, func(refCtx context.Context) (map[string]struct{}, error) {
 			return nodeImageReferences(service.DataRoot)
 		})
 		progressItem.Stop(err)
+		if errors.Is(parent.Err(), context.Canceled) {
+			return commandOutcome{}, ErrCancelled
+		}
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitIntegrity
+			return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 		}
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, report)
-		}
-		if len(report.Items) == 0 {
-			if err := writeText(stdout, "no unreferenced cache images\n"); err != nil {
-				errorf(stderr, "write image prune result: %v", err)
-				return exitRuntime
+		return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
+			if len(report.Items) == 0 {
+				return writeText(stdout, "no unreferenced cache images\n")
 			}
-			return exitOK
-		}
-		for _, item := range report.Items {
-			action := "would delete"
-			if item.Applied {
-				action = "deleted"
-			}
-			if item.Digest == "" {
-				if err := writeText(stdout, "%s %s (%d bytes, %s)\n", action, item.ImagePath, item.Bytes, item.Kind); err != nil {
-					errorf(stderr, "write image prune result: %v", err)
-					return exitRuntime
+			for _, item := range report.Items {
+				action := "would delete"
+				if item.Applied {
+					action = "deleted"
 				}
-			} else {
-				if err := writeText(stdout, "%s %s sha256:%s (%d bytes)\n", action, item.ImagePath, item.Digest, item.Bytes); err != nil {
-					errorf(stderr, "write image prune result: %v", err)
-					return exitRuntime
+				var err error
+				if item.Digest == "" {
+					err = writeText(stdout, "%s %s (%d bytes, %s)\n", action, item.ImagePath, item.Bytes, item.Kind)
+				} else {
+					err = writeText(stdout, "%s %s sha256:%s (%d bytes)\n", action, item.ImagePath, item.Digest, item.Bytes)
+				}
+				if err != nil {
+					return err
 				}
 			}
-		}
-		return exitOK
+			return nil
+		}}, nil
 	case "sync":
 		if options.Source == "" {
-			errorf(stderr, "image sync requires a URL or path")
-			return exitUsage
+			return commandOutcome{}, newUsageError(errors.New("image sync requires a URL or path"))
 		}
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", progressSource(options.Source), options.AllowDowngrade)
 		service, err := imageService(options.Repository, nil)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		progressItem := startProgress(ctx, stderr, "Synchronizing the image manifest")
 		state, err := service.SyncManifest(ctx, options.Source, options.AllowDowngrade)
 		progressItem.Stop(err)
+		if errors.Is(parent.Err(), context.Canceled) {
+			return commandOutcome{}, ErrCancelled
+		}
 		if err != nil {
-			_ = emitCommandFailure(stdout, stderr, "runtime", err.Error(), "")
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, state)
-		}
-		if err := writeText(stdout, "activated manifest version %d digest %s key %s\n", state.ActiveVersion, state.ActiveDigest, state.KeyID); err != nil {
-			errorf(stderr, "write manifest sync result: %v", err)
-			return exitRuntime
-		}
-		return exitOK
+		return commandOutcome{payload: state, text: func(stdout, _ io.Writer) error {
+			return writeText(stdout, "activated manifest version %d digest %s key %s\n", state.ActiveVersion, state.ActiveDigest, state.KeyID)
+		}}, nil
 	case "reset-manifest":
 		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()
 		service, err := imageService(options.Repository, nil)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		state, err := service.ResetManifest(ctx)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, state)
-		}
-		if err := writeText(stdout, "active manifest reset to embedded version %d; high-water mark %d preserved\n", state.ActiveVersion, state.HighestVersion); err != nil {
-			errorf(stderr, "write manifest reset result: %v", err)
-			return exitRuntime
-		}
-		return exitOK
+		return commandOutcome{payload: state, text: func(stdout, _ io.Writer) error {
+			return writeText(stdout, "active manifest reset to embedded version %d; high-water mark %d preserved\n", state.ActiveVersion, state.HighestVersion)
+		}}, nil
 	case "import":
 		if options.Path == "" {
-			errorf(stderr, "image import requires a path")
-			return exitUsage
+			return commandOutcome{}, newUsageError(errors.New("image import requires a path"))
 		}
 		invalidAliasMetadata := (options.Name == "" && (options.Boot != "" || options.SourceUser != "")) || (options.Name != "" && (options.SourceUser == "" || (options.Boot != "bios" && options.Boot != "uefi")))
 		if invalidAliasMetadata {
-			errorf(stderr, "--name requires --boot bios|uefi and --source-user; alias metadata is immutable")
-			return exitUsage
+			return commandOutcome{}, newUsageError(errors.New("--name requires --boot bios|uefi and --source-user; alias metadata is immutable"))
 		}
 		ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 		defer cancel()
 		service, err := imageService("", nil)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		var path string
 		var metadata image.Metadata
@@ -2083,7 +2047,7 @@ func runImage(parent context.Context, options imageOptions, stdout, stderr io.Wr
 		}
 		progressItem.Stop(err)
 		if errors.Is(parent.Err(), context.Canceled) {
-			return exitCancelled
+			return commandOutcome{}, ErrCancelled
 		}
 		result := struct {
 			Path     string         `json:"path"`
@@ -2096,24 +2060,18 @@ func runImage(parent context.Context, options imageOptions, stdout, stderr io.Wr
 			result.Error = "runtime"
 			result.Message = err.Error()
 		}
-		if structuredOutput(stdout) {
-			if code := encodeJSON(stdout, stderr, result); code != exitOK {
-				return code
+		renderText := func(stdout, _ io.Writer) error {
+			if path != "" {
+				return writeText(stdout, "imported %s\nsha256 %s\n", path, metadata.Digest)
 			}
-		} else if path != "" {
-			if writeErr := writeText(stdout, "imported %s\nsha256 %s\n", path, metadata.Digest); writeErr != nil {
-				errorf(stderr, "write image import result: %v", writeErr)
-				return exitRuntime
-			}
+			return nil
 		}
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRenderedCommandError("runtime", exitRuntime, err, "", result, renderText)
 		}
-		return exitOK
+		return commandOutcome{payload: result, text: renderText}, nil
 	default:
-		errorf(stderr, "unknown image command %q", options.Action)
-		return exitUsage
+		return commandOutcome{}, newUsageError(fmt.Errorf("unknown image command %q", options.Action))
 	}
 }
 
