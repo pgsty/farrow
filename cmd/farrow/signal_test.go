@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	privatevm "github.com/pgsty/farrow/internal/private"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
@@ -99,6 +100,45 @@ func TestFollowLogsReturnsCancelled(t *testing.T) {
 	}
 	if stdout.Len() != 0 || strings.Count(stderr.String(), "error:") != 1 || !strings.Contains(stderr.String(), "cancelled") {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestInterruptedLifecycleIsRecordedInTheEventLog(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	resolved := spec.Resolved{
+		Schema: 1, Name: "private", Image: "u24", Network: "private", SSHUser: "dba",
+		Private: &spec.PrivateNetwork{CIDR: "10.10.10.0/24", HostAddress: "10.10.10.1", DHCPEnd: "10.10.10.8"},
+		Nodes:   []spec.Node{{Name: "meta", Control: true, Address: "10.10.10.10", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB}},
+	}
+	hash, err := spec.Hash(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (state.Store{Root: root}).WriteDeployment(state.DeploymentState{
+		Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash,
+		Resolved: resolved, UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithCancel(context.TODO())
+	cancel()
+	manager := privatevm.Manager{FarrowVersion: "test", OperationID: "018f4b8e-1234-4abc-9def-0123456789ab"}
+	var stderr bytes.Buffer
+	recordCancelledLifecycle(parent, manager, "up", privatevm.Status{}, context.Canceled, &stderr)
+	if stderr.Len() != 0 {
+		t.Fatalf("audit append reported a problem: %q", stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(root, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &event); err != nil {
+		t.Fatalf("events.jsonl=%q err=%v", data, err)
+	}
+	if event["action"] != "up" || event["level"] != "error" || !strings.HasPrefix(event["message"].(string), "cancelled by signal") {
+		t.Fatalf("event=%v", event)
 	}
 }
 

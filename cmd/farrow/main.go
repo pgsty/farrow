@@ -1220,6 +1220,9 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	status.OperationID = operationID
 	if errors.Is(parent.Err(), context.Canceled) {
 		progressItem.Stop(ErrCancelled)
+		if command != "status" {
+			recordCancelledLifecycle(parent, manager, command, status, err, stderr)
+		}
 		return commandOutcome{}, ErrCancelled
 	}
 	lifecycleSucceeded := err == nil
@@ -1314,6 +1317,24 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		}
 		return nil
 	}}, nil
+}
+
+// recordCancelledLifecycle keeps the audit trail honest after an interrupt:
+// the engine may have changed node state before the signal landed, so the
+// event is appended on a context that outlives the cancellation, exactly as
+// provision does for its completion event.
+func recordCancelledLifecycle(parent context.Context, manager privatevm.Manager, command string, status privatevm.Status, err error, stderr io.Writer) {
+	message := "cancelled by signal"
+	if err != nil {
+		message += ": " + err.Error()
+	} else if status.Message != "" {
+		message += " after " + status.Message
+	}
+	audit, cancelAudit := context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
+	defer cancelAudit()
+	if eventErr := manager.RecordEvent(audit, command, "error", message); eventErr != nil {
+		warningf(stderr, "cancelled %s could not be recorded in events.jsonl: %v", command, eventErr)
+	}
 }
 
 func runLifecycleCommand(ctx context.Context, command string, options lifecycleOptions, nodes []string, stderr io.Writer) (commandOutcome, error) {
