@@ -560,8 +560,11 @@ func runSSHChild(command *exec.Cmd) error {
 	// SIGINT: raw-mode Ctrl-C is an SSH byte, and non-raw Ctrl-C belongs to the
 	// child process group rather than local command cancellation. SIGTERM still
 	// reaches the command context and CommandContext terminates the child.
+	// signal.Ignore drops every earlier Notify registration for SIGINT, and
+	// signal.Reset would only restore the default disposition, so the
+	// interrupt channel is re-armed explicitly once the child has exited.
 	signal.Ignore(os.Interrupt)
-	defer signal.Reset(os.Interrupt)
+	defer signal.Notify(interruptSignals, os.Interrupt)
 	return command.Wait()
 }
 
@@ -2162,8 +2165,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return runContext(context.TODO(), args, stdout, stderr)
 }
 
+// interruptSignals is the one delivery channel for SIGINT and SIGTERM. It is
+// package-level so a child that must own SIGINT for a while (an SSH session)
+// can suspend and re-arm the same registration.
+var interruptSignals = make(chan os.Signal, 1)
+
+// interruptContext cancels the returned context on the first SIGINT or
+// SIGTERM. The stop function unregisters the signals and cancels the context.
+func interruptContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	signal.Notify(interruptSignals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-interruptSignals:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() {
+		signal.Stop(interruptSignals)
+		cancel()
+	}
+}
+
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := interruptContext(context.Background())
 	code := runContext(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)

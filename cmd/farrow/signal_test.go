@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -146,7 +145,7 @@ func TestSSHChildInterruptHelper(t *testing.T) {
 	if os.Getenv("FARROW_TEST_SSH_INTERRUPT_HELPER") != "1" {
 		return
 	}
-	ctx, stop := signal.NotifyContext(context.TODO(), os.Interrupt)
+	ctx, stop := interruptContext(context.TODO())
 	defer stop()
 	_, err := executeSSHProcess(
 		ctx, "exec", "meta", "dba", "127.0.0.1", 22,
@@ -158,6 +157,16 @@ func TestSSHChildInterruptHelper(t *testing.T) {
 	}
 	if ctx.Err() != nil {
 		t.Fatalf("remote SIGINT cancelled the Farrow parent: %v", ctx.Err())
+	}
+	// Once the child is gone, SIGINT must cancel Farrow again: the child
+	// window suspends the registration, it does not drop it.
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("SIGINT after the SSH child exited did not cancel the Farrow context")
 	}
 }
 
