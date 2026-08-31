@@ -1,15 +1,11 @@
-// Package config contains strict user-facing scalar parsers shared by CLI and
-// future YAML decoding.
+// Package config contains the strict user-facing scalar parsers shared by the
+// CLI and inventory decoding.
 package config
 
 import (
-	"errors"
 	"fmt"
-	"net/netip"
 	"strconv"
 	"strings"
-
-	"github.com/pgsty/farrow/internal/spec"
 )
 
 var sizeUnits = []struct {
@@ -38,53 +34,4 @@ func ParseSize(value string) (int64, error) {
 		return parsed * unit.multiplier, nil
 	}
 	return 0, fmt.Errorf("size %q requires B, KiB, MiB, GiB, TiB, KB, MB, GB, or TB", value)
-}
-
-// ParseForward accepts host:guest or bind:host:guest. Bind addresses are IPv4
-// only and the protocol is TCP in v1.
-func ParseForward(value string) (spec.Forward, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return spec.Forward{}, errors.New("forward is empty")
-	}
-	bind := "127.0.0.1"
-	var hostText, guestText string
-	if strings.HasPrefix(value, "[") {
-		closing := strings.Index(value, "]:")
-		if closing < 0 {
-			return spec.Forward{}, fmt.Errorf("invalid bracketed forward %q", value)
-		}
-		bind = value[1:closing]
-		ports := strings.Split(value[closing+2:], ":")
-		if len(ports) != 2 {
-			return spec.Forward{}, fmt.Errorf("invalid forward %q", value)
-		}
-		hostText, guestText = ports[0], ports[1]
-	} else {
-		parts := strings.Split(value, ":")
-		switch len(parts) {
-		case 2:
-			hostText, guestText = parts[0], parts[1]
-		case 3:
-			bind, hostText, guestText = parts[0], parts[1], parts[2]
-		default:
-			return spec.Forward{}, fmt.Errorf("invalid forward %q", value)
-		}
-	}
-	address, err := netip.ParseAddr(bind)
-	if err != nil {
-		return spec.Forward{}, fmt.Errorf("invalid forward bind address %q", bind)
-	}
-	if !address.Is4() {
-		return spec.Forward{}, fmt.Errorf("v1 forward bind address %q must be IPv4", bind)
-	}
-	host, err := strconv.ParseUint(hostText, 10, 16)
-	if err != nil || host == 0 {
-		return spec.Forward{}, fmt.Errorf("invalid host port %q", hostText)
-	}
-	guest, err := strconv.ParseUint(guestText, 10, 16)
-	if err != nil || guest == 0 {
-		return spec.Forward{}, fmt.Errorf("invalid guest port %q", guestText)
-	}
-	return spec.Forward{Bind: bind, Host: uint16(host), Guest: uint16(guest), Protocol: "tcp"}, nil
 }

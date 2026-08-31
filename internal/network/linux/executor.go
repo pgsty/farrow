@@ -61,14 +61,6 @@ func (e Executor) lookPath(name string) (string, error) {
 	return exec.LookPath(name)
 }
 
-func (e Executor) PlanInstall(ctx context.Context) (Plan, error) {
-	config, err := ConfigForCIDR(subnet.DefaultCIDR)
-	if err != nil {
-		return Plan{}, err
-	}
-	return e.PlanInstallConfig(ctx, config)
-}
-
 func (e Executor) PlanInstallConfig(ctx context.Context, config Config) (Plan, error) {
 	if err := e.validate(); err != nil {
 		return Plan{}, err
@@ -262,14 +254,6 @@ func (e Executor) helperAttachSmoke(ctx context.Context, helper string) (returnE
 	}
 	pid = 0
 	return nil
-}
-
-func (e Executor) Install(ctx context.Context, apply bool) (InstallReport, error) {
-	config, err := ConfigForCIDR(subnet.DefaultCIDR)
-	if err != nil {
-		return InstallReport{}, err
-	}
-	return e.InstallConfig(ctx, config, apply)
 }
 
 func (e Executor) InstallConfig(ctx context.Context, config Config, apply bool) (InstallReport, error) {

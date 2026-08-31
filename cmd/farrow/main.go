@@ -137,25 +137,6 @@ func withReadinessTimeout(base time.Duration, resolved spec.Resolved) time.Durat
 	return base
 }
 
-func loadPrivatePreflightConfig(path string) (spec.Resolved, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return spec.Resolved{}, err
-	}
-	file, err := config.LoadPath(absolute)
-	if err != nil {
-		return spec.Resolved{}, err
-	}
-	resolved, err := file.Resolve()
-	if err != nil {
-		return spec.Resolved{}, err
-	}
-	if resolved.Network != "private" || resolved.Private == nil {
-		return spec.Resolved{}, errors.New("network preflight -f requires a valid configuration")
-	}
-	return resolved, nil
-}
-
 type sudoRunner struct {
 	base                execx.Runner
 	preserveEnvironment []string

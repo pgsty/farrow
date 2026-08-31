@@ -36,7 +36,7 @@ func TestResolveSetupSelectionDefaultsToMeta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.Mode != "private" || selection.Profile != "meta" || !selection.Publish || !selection.Generated {
+	if selection.Profile != "meta" || !selection.Publish || !selection.Generated {
 		t.Fatalf("default selection = %#v", selection)
 	}
 	if selection.ConfigPath != filepath.Join(directory, "farrow.yml") {
@@ -54,7 +54,7 @@ func TestResolveSetupSelectionGeneratesPrivateProfileOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.Mode != "private" || selection.Profile != "meta" || !selection.Publish || !selection.Generated || len(selection.ConfigData) == 0 {
+	if selection.Profile != "meta" || !selection.Publish || !selection.Generated || len(selection.ConfigData) == 0 {
 		t.Fatalf("generated selection = %#v", selection)
 	}
 	if selection.ConfigPath != filepath.Join(directory, "farrow.yml") {
@@ -67,7 +67,7 @@ func TestResolveSetupSelectionGeneratesPrivateProfileOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repeated.Publish || repeated.Mode != "private" {
+	if repeated.Publish {
 		t.Fatalf("repeated selection = %#v", repeated)
 	}
 }

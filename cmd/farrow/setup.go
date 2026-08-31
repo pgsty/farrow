@@ -63,7 +63,6 @@ type setupResult struct {
 }
 
 type setupSelection struct {
-	Mode            string
 	Profile         string
 	Resolved        spec.Resolved
 	File            config.File
@@ -137,7 +136,7 @@ func generatedSetupProfile(name, cidr, target string) (setupSelection, error) {
 		return setupSelection{}, err
 	}
 	return setupSelection{
-		Mode: "private", Profile: name, Resolved: resolved, File: file,
+		Profile: name, Resolved: resolved, File: file,
 		ConfigData: data, ConfigPath: target, Generated: true, Publish: true,
 		ExplicitNetwork: cidr != "",
 	}, nil
@@ -216,7 +215,7 @@ func resolveSetupSelection(profileName, filePath, cidr, cwd string) (setupSelect
 		if err != nil {
 			return setupSelection{}, err
 		}
-		return setupSelection{Mode: "private", Resolved: resolved, File: file, ConfigPath: absolute}, nil
+		return setupSelection{Resolved: resolved, File: file, ConfigPath: absolute}, nil
 	}
 	discovered, err := discoverSetupConfig(cwd)
 	if err != nil {
@@ -230,7 +229,7 @@ func resolveSetupSelection(profileName, filePath, cidr, cwd string) (setupSelect
 		if err != nil {
 			return setupSelection{}, err
 		}
-		return setupSelection{Mode: "private", Resolved: resolved, File: file, ConfigPath: discovered}, nil
+		return setupSelection{Resolved: resolved, File: file, ConfigPath: discovered}, nil
 	}
 	if profileName == "" {
 		profileName = "meta"
@@ -536,7 +535,7 @@ func setupNeedsNetworkInstall(report netpreflight.Report) bool {
 	return report.Installation.Status == "" || report.Installation.Status == "absent"
 }
 
-func applySetupNetwork(ctx context.Context, selection setupSelection, mode, repo string, report netpreflight.Report, base execx.Runner, sudo *sudoSession, stderr io.Writer) (setupStep, bool, error) {
+func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflight.Report, base execx.Runner, sudo *sudoSession, stderr io.Writer) (setupStep, bool, error) {
 	if !setupNeedsNetworkInstall(report) {
 		tickf(stderr, "Network %s is already installed", report.CIDR)
 		return setupStep{Name: "network", Status: "ready", Detail: report.CIDR}, false, nil
@@ -787,10 +786,8 @@ func setupMutating(plan setuphost.DependencyPlan, selection setupSelection, repo
 	if len(plan.Commands) > 0 || selection.Publish {
 		return true
 	}
-	if selection.Mode == "private" {
-		if _, err := hostconfig.InstalledHelperDigest(); err != nil {
-			return true
-		}
+	if _, err := hostconfig.InstalledHelperDigest(); err != nil {
+		return true
 	}
 	return report != nil && setupNeedsNetworkInstall(*report)
 }
@@ -1067,11 +1064,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 	next, nextArgv := setupNextCommand(selection, cwd)
 	result.Next = next
 	result.NextArgv = nextArgv
-	private := selection.Mode == "private"
-	if !private && options.ModeExplicit {
-		return failSetup(&result, exitUsage, errors.New("--mode applies only to a private profile"), stdout, stderr)
-	}
-	dependencyPlan, err := setuphost.PlanDependencies(setuphost.DependencyProbe{}, private)
+	dependencyPlan, err := setuphost.PlanDependencies(setuphost.DependencyProbe{}, true)
 	if err != nil {
 		return failSetup(&result, exitCapability, err, stdout, stderr)
 	}
@@ -1084,15 +1077,12 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 	defer cancel()
 	sudoSession := &sudoSession{base: base, stderr: stderr, scope: "setup run"}
 	defer sudoSession.close()
-	networkMode := ""
-	if private {
-		networkMode = "bridge"
-		if runtime.GOOS == "darwin" {
-			networkMode = options.Mode
-		}
+	networkMode := "bridge"
+	if runtime.GOOS == "darwin" {
+		networkMode = options.Mode
 	}
 	var networkReport *netpreflight.Report
-	if private && dependencyPlan.Ready {
+	if dependencyPlan.Ready {
 		report, reportErr := selectSetupNetwork(ctx, &selection, base)
 		if reportErr != nil {
 			return failSetup(&result, exitCapability, reportErr, stdout, stderr)
@@ -1107,7 +1097,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 	result.Dependencies = dependencyPlan
 	result.Network = networkReport
 	result.NetworkMode = networkMode
-	if private && selection.Resolved.Private != nil {
+	if selection.Resolved.Private != nil {
 		result.NetworkCIDR = selection.Resolved.Private.CIDR
 	}
 	blockerCode := exitOK
@@ -1125,14 +1115,12 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		result.Applicable = !result.Blocked
 		result.Ready = false
 		result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "planned"})
-		if private {
-			networkStatus := "planned"
-			if result.Blocked {
-				networkStatus = "blocked"
-			}
-			result.Steps = append(result.Steps, setupStep{Name: "network", Status: networkStatus})
-			result.Steps = append(result.Steps, setupStep{Name: "hosts-helper", Status: "planned"})
+		networkStatus := "planned"
+		if result.Blocked {
+			networkStatus = "blocked"
 		}
+		result.Steps = append(result.Steps, setupStep{Name: "network", Status: networkStatus})
+		result.Steps = append(result.Steps, setupStep{Name: "hosts-helper", Status: "planned"})
 		if selection.Publish {
 			result.Steps = append(result.Steps, setupStep{Name: "config", Status: "planned", Detail: selection.ConfigPath})
 		}
@@ -1172,7 +1160,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		tickf(stderr, "Dependencies ready (QEMU, qemu-img, UEFI firmware, OpenSSH)")
 		result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "ready"})
 	}
-	verifiedDependencies, err := setuphost.PlanDependencies(setuphost.DependencyProbe{}, private)
+	verifiedDependencies, err := setuphost.PlanDependencies(setuphost.DependencyProbe{}, true)
 	if err != nil || !verifiedDependencies.Ready {
 		if err == nil {
 			err = fmt.Errorf("dependencies remain unavailable: %s", strings.Join(verifiedDependencies.Missing, ", "))
@@ -1189,74 +1177,68 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		return failSetup(&result, exitCapability, capabilityErr, stdout, stderr)
 	}
 	result.Steps = append(result.Steps, setupStep{Name: "capabilities", Status: "ready"})
-	if private {
-		report, reportErr := selectSetupNetwork(ctx, &selection, base)
-		if reportErr != nil {
-			return failSetup(&result, exitCapability, reportErr, stdout, stderr)
+	report, reportErr := selectSetupNetwork(ctx, &selection, base)
+	if reportErr != nil {
+		return failSetup(&result, exitCapability, reportErr, stdout, stderr)
+	}
+	report, networkMode = constrainSetupNetworkMode(report, options.Mode, options.ModeExplicit)
+	result.Network = &report
+	result.NetworkMode = networkMode
+	if selection.Resolved.Private != nil {
+		result.NetworkCIDR = selection.Resolved.Private.CIDR
+	}
+	if !report.Ready {
+		failure := setupFindingError(report)
+		code := report.ExitCode
+		if code == exitOK {
+			code = exitCapability
 		}
-		report, networkMode = constrainSetupNetworkMode(report, options.Mode, options.ModeExplicit)
-		result.Network = &report
-		result.NetworkMode = networkMode
-		if selection.Resolved.Private != nil {
-			result.NetworkCIDR = selection.Resolved.Private.CIDR
-		}
-		if !report.Ready {
-			failure := setupFindingError(report)
-			code := report.ExitCode
-			if code == exitOK {
-				code = exitCapability
-			}
-			result.Blocked = true
-			result.Resolution = failure.Error()
-			result.Next = "resolve the reported network conflict, then rerun farrow setup"
-			result.NextArgv = nil
-			return failSetup(&result, code, failure, stdout, stderr)
-		}
-		step, uncertain, installErr := applySetupNetwork(ctx, selection, networkMode, options.Repo, report, base, sudoSession, stderr)
-		if installErr != nil {
-			result.MutationUncertain = result.MutationUncertain || uncertain
-			result.Steps = append(result.Steps, setupStep{Name: "network", Status: "failed"})
-			if errors.Is(installErr, darwinnet.ErrVMNetSharingBusy) {
-				return failSetup(&result, exitConflict, installErr, stdout, stderr)
-			}
-			return failSetup(&result, exitIntegrity, installErr, stdout, stderr)
-		}
-		result.Steps = append(result.Steps, step)
-		result.Changed = result.Changed || step.Changed
-		finalReport, finalErr := inspectSetupNetwork(ctx, selection, base)
-		finalReport, _ = constrainSetupNetworkMode(finalReport, networkMode, true)
-		if finalErr != nil || !finalReport.Ready || !finalReport.Installation.Healthy {
-			if finalErr == nil {
-				finalErr = setupFindingError(finalReport)
-			}
-			return failSetup(&result, exitIntegrity, fmt.Errorf("fixed-IP network verification failed: %w", finalErr), stdout, stderr)
-		}
-		result.Network = &finalReport
-		helperStep, uncertain, helperErr := ensureSetupHostsHelper(ctx, base, sudoSession, stderr)
-		result.Changed = result.Changed || helperStep.Changed
+		result.Blocked = true
+		result.Resolution = failure.Error()
+		result.Next = "resolve the reported network conflict, then rerun farrow setup"
+		result.NextArgv = nil
+		return failSetup(&result, code, failure, stdout, stderr)
+	}
+	step, uncertain, installErr := applySetupNetwork(ctx, networkMode, options.Repo, report, base, sudoSession, stderr)
+	if installErr != nil {
 		result.MutationUncertain = result.MutationUncertain || uncertain
-		if helperErr != nil {
-			if helperStep.Name == "" {
-				helperStep = setupStep{Name: "hosts-helper", Status: "failed"}
-			}
-			result.Steps = append(result.Steps, helperStep)
-			return failSetup(&result, exitIntegrity, helperErr, stdout, stderr)
+		result.Steps = append(result.Steps, setupStep{Name: "network", Status: "failed"})
+		if errors.Is(installErr, darwinnet.ErrVMNetSharingBusy) {
+			return failSetup(&result, exitConflict, installErr, stdout, stderr)
+		}
+		return failSetup(&result, exitIntegrity, installErr, stdout, stderr)
+	}
+	result.Steps = append(result.Steps, step)
+	result.Changed = result.Changed || step.Changed
+	finalReport, finalErr := inspectSetupNetwork(ctx, selection, base)
+	finalReport, _ = constrainSetupNetworkMode(finalReport, networkMode, true)
+	if finalErr != nil || !finalReport.Ready || !finalReport.Installation.Healthy {
+		if finalErr == nil {
+			finalErr = setupFindingError(finalReport)
+		}
+		return failSetup(&result, exitIntegrity, fmt.Errorf("fixed-IP network verification failed: %w", finalErr), stdout, stderr)
+	}
+	result.Network = &finalReport
+	helperStep, uncertain, helperErr := ensureSetupHostsHelper(ctx, base, sudoSession, stderr)
+	result.Changed = result.Changed || helperStep.Changed
+	result.MutationUncertain = result.MutationUncertain || uncertain
+	if helperErr != nil {
+		if helperStep.Name == "" {
+			helperStep = setupStep{Name: "hosts-helper", Status: "failed"}
 		}
 		result.Steps = append(result.Steps, helperStep)
-	} else {
-		result.Steps = append(result.Steps, setupStep{Name: "network", Status: "ready", Detail: "QEMU user NAT"})
+		return failSetup(&result, exitIntegrity, helperErr, stdout, stderr)
 	}
-	if private {
-		verifyProgress := startProgress(ctx, stderr, "Verifying the fixed-IP host setup")
-		checks, verifyErr := verifySetup(ctx, true)
-		verifyProgress.Stop(verifyErr)
-		result.Checks = checks
-		if verifyErr != nil {
-			result.Steps = append(result.Steps, setupStep{Name: "verify", Status: "failed"})
-			return failSetup(&result, exitCapability, verifyErr, stdout, stderr)
-		}
-		result.Steps = append(result.Steps, setupStep{Name: "verify", Status: "ready"})
+	result.Steps = append(result.Steps, helperStep)
+	verifyProgress := startProgress(ctx, stderr, "Verifying the fixed-IP host setup")
+	checks, verifyErr := verifySetup(ctx, true)
+	verifyProgress.Stop(verifyErr)
+	result.Checks = checks
+	if verifyErr != nil {
+		result.Steps = append(result.Steps, setupStep{Name: "verify", Status: "failed"})
+		return failSetup(&result, exitCapability, verifyErr, stdout, stderr)
 	}
+	result.Steps = append(result.Steps, setupStep{Name: "verify", Status: "ready"})
 	if selection.Publish {
 		if len(bytes.TrimSpace(selection.ConfigData)) == 0 {
 			return failSetup(&result, exitIntegrity, errors.New("generated setup configuration is empty"), stdout, stderr)

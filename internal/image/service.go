@@ -244,16 +244,6 @@ func (s Service) PullArch(ctx context.Context, alias, arch string) (Info, error)
 	return Info{Entry: entry, Manifest: manifestState, Cached: true, Path: path, Metadata: &metadata}, nil
 }
 
-// Resolve pulls (or locally resolves) one native-architecture alias and
-// returns the validated base image for lifecycle use.
-func (s Service) Resolve(ctx context.Context, alias string) (Entry, string, Metadata, error) {
-	profile, err := platform.Native()
-	if err != nil {
-		return Entry{}, "", Metadata{}, err
-	}
-	return s.ResolveArch(ctx, alias, profile.Arch)
-}
-
 // ResolveArch is the lifecycle seam for an explicit deployment guest
 // architecture. It does not infer acceleration or fall back to another
 // artifact architecture.

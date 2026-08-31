@@ -452,16 +452,6 @@ func TestLifecycleSSHConfigFailureEmitsOneStructuredPartialResult(t *testing.T) 
 	}
 }
 
-func TestLoadPrivatePreflightConfigAcceptsRelativePath(t *testing.T) {
-	resolved, err := loadPrivatePreflightConfig("../../tests/fixtures/private-two.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved.Network != "private" || resolved.Private.CIDR != "10.10.10.0/24" || len(resolved.Nodes) != 2 {
-		t.Fatalf("resolved=%#v", resolved)
-	}
-}
-
 func TestImageListJSON(t *testing.T) {
 	t.Setenv("FARROW_HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())

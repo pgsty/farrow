@@ -27,9 +27,6 @@ const (
 
 var nodePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
-// ValidNodeName reports whether name is a safe node/directory identifier.
-func ValidNodeName(name string) bool { return nodePattern.MatchString(name) }
-
 type Phase string
 
 const (
