@@ -103,7 +103,7 @@ func TestConfigurationWarningsIncludeNonLoopbackForwards(t *testing.T) {
 		{Bind: "0.0.0.0", Host: 13000, Guest: 3000, Protocol: "tcp"},
 	}
 	warnings := configurationWarnings(resolved)
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "exposes host TCP 0.0.0.0:13000 beyond loopback") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "exposes host TCP 0.0.0.0:13000 beyond loopback") || strings.Contains(warnings[0], "WARNING") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 }

@@ -266,6 +266,14 @@ func TestDiagnosticsAndProgressDoNotPolluteStructuredStdout(t *testing.T) {
 	}
 }
 
+func TestProgressSourceRedactsCredentialsAndQuery(t *testing.T) {
+	t.Parallel()
+	got := progressSource("https://build:secret@example.com/catalog.json?token=private#revision")
+	if got != "https://example.com/catalog.json" {
+		t.Fatalf("redacted source = %q", got)
+	}
+}
+
 func TestProgressUsesNoANSIWhenTerminalStylingIsDisabled(t *testing.T) {
 	state := &outputContext{format: outputText, verbose: true, stderrTTY: true, color: false}
 	var stderr bytes.Buffer

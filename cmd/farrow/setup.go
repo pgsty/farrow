@@ -588,7 +588,7 @@ func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflig
 		if err != nil {
 			return setupStep{}, false, err
 		}
-		debugf(stderr, "socket_vmnet source=%s downloaded=%t", download.URL, download.Downloaded)
+		debugf(stderr, "socket_vmnet source=%s downloaded=%t", progressSource(download.URL), download.Downloaded)
 		progressItem := startProgress(ctx, stderr, "Installing the fixed-IP network")
 		installReport, err := executor.InstallModeNetwork(ctx, download.Path, interfaceID, runtime.GOARCH, mode, report.CIDR, true)
 		progressItem.Stop(err)

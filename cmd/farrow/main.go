@@ -76,7 +76,7 @@ func configurationWarnings(resolved spec.Resolved) []string {
 		for _, forward := range node.Forwards {
 			address := net.ParseIP(forward.Bind)
 			if address != nil && !address.IsLoopback() {
-				warnings = append(warnings, fmt.Sprintf("WARNING: node %s exposes host TCP %s:%d beyond loopback; this may make guest port %d reachable from other machines", node.Name, forward.Bind, forward.Host, forward.Guest))
+				warnings = append(warnings, fmt.Sprintf("node %s exposes host TCP %s:%d beyond loopback; this may make guest port %d reachable from other machines", node.Name, forward.Bind, forward.Host, forward.Guest))
 			}
 		}
 	}
@@ -1956,7 +1956,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", options.Source, options.AllowDowngrade)
+		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", progressSource(options.Source), options.AllowDowngrade)
 		service, err := imageService(options.Repository, nil)
 		if err != nil {
 			errorf(stderr, "%v", err)

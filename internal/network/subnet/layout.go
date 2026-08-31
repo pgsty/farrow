@@ -112,5 +112,5 @@ func (l Layout) Warning() string {
 	if l.IsDefault() {
 		return ""
 	}
-	return fmt.Sprintf("WARNING: non-default host-global private subnet %s selected; host=%s DHCP-end=%s static=%s-%s; every project, node address, lease, and installed network must use this same layout", l.CIDR(), l.HostAddress(), l.DHCPEnd(), l.StaticStart(), l.StaticEnd())
+	return fmt.Sprintf("non-default host-global private subnet %s selected; host=%s DHCP-end=%s static=%s-%s; every node address and the installed network must use this same layout", l.CIDR(), l.HostAddress(), l.DHCPEnd(), l.StaticStart(), l.StaticEnd())
 }
