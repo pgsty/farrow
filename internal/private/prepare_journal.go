@@ -11,12 +11,13 @@ import (
 	"strings"
 
 	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/naming"
 )
 
 const maxPrepareJournalBytes = 1 << 20
 
 func validatePrepareJournal(path string, value PrepareJournal) error {
-	if value.Schema != 1 || !identity.ValidUUID(value.OperationID) || !identity.ValidUUID(value.VMUUID) || !nodePattern.MatchString(value.Node) || len(value.SpecHash) != 64 || value.StartedAt.IsZero() || value.UpdatedAt.Before(value.StartedAt) {
+	if value.Schema != 1 || !identity.ValidUUID(value.OperationID) || !identity.ValidUUID(value.VMUUID) || !naming.ValidNodeName(value.Node) || len(value.SpecHash) != 64 || value.StartedAt.IsZero() || value.UpdatedAt.Before(value.StartedAt) {
 		return errors.New("private prepare journal identity, hash, or time is invalid")
 	}
 	if _, err := hex.DecodeString(value.SpecHash); err != nil {
@@ -36,7 +37,7 @@ func validatePrepareJournal(path string, value PrepareJournal) error {
 		valid := (artifact.Kind == "root-overlay" && basename == "root.qcow2") ||
 			(artifact.Kind == "seed" && basename == "seed.iso") ||
 			(artifact.Kind == "nvram" && basename == "nvram.fd") ||
-			(artifact.Kind == "data-disk" && strings.HasSuffix(basename, ".qcow2") && dataName != "root" && nodePattern.MatchString(dataName))
+			(artifact.Kind == "data-disk" && strings.HasSuffix(basename, ".qcow2") && dataName != "root" && naming.ValidNodeName(dataName))
 		if !valid {
 			return errors.New("private prepare artifact kind/path is outside the allowlist")
 		}

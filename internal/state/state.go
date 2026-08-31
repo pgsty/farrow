@@ -10,10 +10,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/naming"
 	"github.com/pgsty/farrow/internal/network/subnet"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/spec"
@@ -24,8 +24,6 @@ const (
 	NodeSchema        = 2
 	TransactionSchema = 2
 )
-
-var nodePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 type Phase string
 
@@ -157,7 +155,7 @@ func (s Store) EnsureRoot() error {
 
 // NodeDir returns <root>/nodes/<name> after validating the node name.
 func (s Store) NodeDir(name string) (string, error) {
-	if !nodePattern.MatchString(name) {
+	if !naming.ValidNodeName(name) {
 		return "", fmt.Errorf("invalid node name %q", name)
 	}
 	return filepath.Join(s.Root, "nodes", name), nil

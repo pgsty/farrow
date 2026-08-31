@@ -7,14 +7,12 @@ package runtimepath
 import (
 	"errors"
 	"fmt"
+	"github.com/pgsty/farrow/internal/naming"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"syscall"
 )
-
-var nodePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func fallbackBase(uid int) string {
 	root := "/tmp"
@@ -88,7 +86,7 @@ func Directory(node string, uid int) (string, error) {
 // Validate proves a persisted runtime path belongs to the node and keeps its
 // QMP socket under the platform path limit.
 func Validate(directory, node string, uid int) error {
-	if !nodePattern.MatchString(node) || uid < 0 || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+	if !naming.ValidNodeName(node) || uid < 0 || !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
 		return errors.New("runtime directory identity is invalid")
 	}
 	farrowDir := filepath.Dir(directory)
@@ -122,7 +120,7 @@ func Ensure(directory string, uid int) error {
 	nodeDir := directory
 	farrowDir := filepath.Dir(nodeDir)
 	base := filepath.Dir(farrowDir)
-	if filepath.Base(farrowDir) != "farrow" || !nodePattern.MatchString(filepath.Base(nodeDir)) {
+	if filepath.Base(farrowDir) != "farrow" || !naming.ValidNodeName(filepath.Base(nodeDir)) {
 		return errors.New("runtime directory has an invalid managed layout")
 	}
 	allowBaseCreate := base == fallbackBase(uid)
@@ -145,7 +143,7 @@ func PruneEmptyParents(directory string, uid int) error {
 	}
 	farrowDir := filepath.Dir(directory)
 	base := filepath.Dir(farrowDir)
-	if filepath.Base(farrowDir) != "farrow" || !nodePattern.MatchString(filepath.Base(directory)) {
+	if filepath.Base(farrowDir) != "farrow" || !naming.ValidNodeName(filepath.Base(directory)) {
 		return errors.New("runtime directory has an invalid managed layout")
 	}
 	candidates := []string{farrowDir}

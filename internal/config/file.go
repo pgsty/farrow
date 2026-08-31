@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/image"
+	"github.com/pgsty/farrow/internal/naming"
 	"github.com/pgsty/farrow/internal/network/subnet"
 	"github.com/pgsty/farrow/internal/spec"
 	"go.yaml.in/yaml/v3"
@@ -129,7 +130,6 @@ type File struct {
 }
 
 var (
-	dnsLabel       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	sshUser        = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	dnsName        = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
 	diskName       = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -239,7 +239,7 @@ func (f *File) Validate() error {
 	if f.Version != 1 {
 		return fmt.Errorf("configuration version must be 1, got %d", f.Version)
 	}
-	if !dnsLabel.MatchString(f.Name) {
+	if !naming.ValidNodeName(f.Name) {
 		return fmt.Errorf("invalid project name %q", f.Name)
 	}
 	if f.Arch != "native" && f.Arch != "amd64" && f.Arch != "arm64" {
@@ -279,7 +279,7 @@ func (f *File) Validate() error {
 	}
 	projectShareHosts := make([]projectShareHost, 0)
 	for _, node := range f.Nodes {
-		if !dnsLabel.MatchString(node.Name) {
+		if !naming.ValidNodeName(node.Name) {
 			return fmt.Errorf("invalid node name %q", node.Name)
 		}
 		if _, exists := names[node.Name]; exists {

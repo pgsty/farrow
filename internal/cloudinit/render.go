@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pgsty/farrow/internal/naming"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -66,7 +67,6 @@ type Files struct {
 }
 
 var (
-	dnsLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	dnsNamePattern  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
 	serialPattern   = regexp.MustCompile(`^[a-z2-7]{20}$`)
 	shareTagPattern = regexp.MustCompile(`^farrow-[0-9a-f]{20}$`)
@@ -112,7 +112,7 @@ func singleLine(label, value string) error {
 }
 
 func validateInput(input Input) error {
-	if !dnsLabelPattern.MatchString(input.Node) || !dnsLabelPattern.MatchString(input.Hostname) {
+	if !naming.ValidNodeName(input.Node) || !naming.ValidNodeName(input.Hostname) {
 		return errors.New("node and hostname must be DNS labels")
 	}
 	if input.Generation == 0 {

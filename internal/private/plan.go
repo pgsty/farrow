@@ -6,17 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/naming"
 	"github.com/pgsty/farrow/internal/network/subnet"
 	"github.com/pgsty/farrow/internal/runtimepath"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
 )
-
-var nodePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 type UUIDSource func() (string, error)
 
@@ -54,7 +52,7 @@ func validateResolved(value spec.Resolved) error {
 	names := make(map[string]struct{})
 	addresses := make(map[string]struct{})
 	for _, node := range value.Nodes {
-		if !nodePattern.MatchString(node.Name) || !layout.IsStatic(node.Address) || node.CPUs < 1 || node.Memory < 512<<20 || node.RootDisk <= 0 {
+		if !naming.ValidNodeName(node.Name) || !layout.IsStatic(node.Address) || node.CPUs < 1 || node.Memory < 512<<20 || node.RootDisk <= 0 {
 			return fmt.Errorf("private node %q identity, address, or resources are invalid", node.Name)
 		}
 		if _, duplicate := names[node.Name]; duplicate {

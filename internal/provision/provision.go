@@ -14,11 +14,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pgsty/farrow/internal/naming"
 	"github.com/pgsty/farrow/internal/vm"
 	"golang.org/x/sys/unix"
 )
@@ -28,8 +28,6 @@ const (
 	MaxParallelism   = 4
 	defaultOutputCap = 1 << 20
 )
-
-var nodeNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 type Script struct {
 	Name    string `json:"name"`
@@ -118,7 +116,7 @@ type Target struct {
 }
 
 func (t Target) validate() error {
-	if !nodeNamePattern.MatchString(t.Node) || t.Port == 0 {
+	if !naming.ValidNodeName(t.Node) || t.Port == 0 {
 		return fmt.Errorf("invalid provision target %q", t.Node)
 	}
 	if !filepath.IsAbs(t.PrivateKey) || !filepath.IsAbs(t.KnownHosts) {

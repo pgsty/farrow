@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pgsty/farrow/internal/naming"
 	"github.com/pgsty/farrow/internal/platform"
 )
 
@@ -110,7 +111,6 @@ func (i Invocation) ShareFiles() []InheritedFile {
 }
 
 var (
-	namePattern     = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	uuidPattern     = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 	shareTagPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
 )
@@ -126,7 +126,7 @@ func validate(config Config) error {
 	if config.Binary == "" {
 		return errors.New("QEMU binary path is empty")
 	}
-	if !namePattern.MatchString(config.Name) {
+	if !naming.ValidNodeName(config.Name) {
 		return fmt.Errorf("invalid QEMU node name %q", config.Name)
 	}
 	if !uuidPattern.MatchString(config.UUID) {

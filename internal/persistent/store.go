@@ -12,12 +12,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"syscall"
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/naming"
 )
 
 const (
@@ -26,8 +26,6 @@ const (
 	markerName   = "ownership.json"
 	diskFileName = "disk.qcow2"
 )
-
-var componentPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // Identity is the immutable attachment contract for one persistent disk.
 // Size is deliberately exact: recreate never grows, shrinks, or silently
@@ -59,7 +57,7 @@ type Record struct {
 func key(node, name string) string { return node + "\x00" + name }
 
 func validateIdentity(identity Identity) error {
-	if !componentPattern.MatchString(identity.Node) || !componentPattern.MatchString(identity.Name) {
+	if !naming.ValidNodeName(identity.Node) || !naming.ValidNodeName(identity.Name) {
 		return errors.New("persistent disk node/name identity is invalid")
 	}
 	if identity.Serial == "" || identity.Size <= 0 || !filepath.IsAbs(identity.Mount) || filepath.Clean(identity.Mount) != identity.Mount || identity.Mount == "/" {
@@ -206,7 +204,7 @@ func Inventory(deploymentRoot string) ([]Record, error) {
 	}
 	records := make([]Record, 0)
 	for _, nodeEntry := range nodes {
-		if !componentPattern.MatchString(nodeEntry.Name()) {
+		if !naming.ValidNodeName(nodeEntry.Name()) {
 			return nil, fmt.Errorf("persistent disk store has unexpected node entry %q", nodeEntry.Name())
 		}
 		nodeDir := filepath.Join(root, nodeEntry.Name())
@@ -221,7 +219,7 @@ func Inventory(deploymentRoot string) ([]Record, error) {
 			return nil, fmt.Errorf("persistent disk node directory is unexpectedly empty: %s", nodeDir)
 		}
 		for _, diskEntry := range disks {
-			if !componentPattern.MatchString(diskEntry.Name()) {
+			if !naming.ValidNodeName(diskEntry.Name()) {
 				return nil, fmt.Errorf("persistent disk store has unexpected disk entry %q", diskEntry.Name())
 			}
 			diskDir := filepath.Join(nodeDir, diskEntry.Name())
