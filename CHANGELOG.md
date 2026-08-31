@@ -22,7 +22,11 @@ Notable user-visible changes. This project follows
   selected, and prints the exact scope (nodes, disks, keys, state) first.
 - Refusing or leaving `farrow setup` confirmation unanswered, and mismatching
   the `destroy`/`recreate` token, now return one cancellation result and exit
-  130; only an answered setup prompt defaults to yes.
+  130; only an answered setup prompt defaults to yes. Running `setup` without
+  `--yes` on a pipe is a usage error (exit 2), like `destroy` without
+  `--force`.
+- An interrupted `up`, `recreate`, or `destroy` still appends its event to
+  `events.jsonl`, so the audit trail shows what the signal cut short.
 - `farrow logs --source events` rejects a node argument instead of silently
   returning the deployment-wide log under that name.
 - Combined verbose shorthands (`-vv`, `-nv`) enable diagnostics.

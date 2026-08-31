@@ -397,13 +397,17 @@ func setupFindingError(report netpreflight.Report) error {
 	return errors.New(strings.Join(lines, "\n"))
 }
 
+// errSetupNeedsYes is automation forgetting the flag, not a person declining:
+// a usage error, like destroy without --force on a pipe.
+var errSetupNeedsYes = errors.New("setup needs --yes when stdin is not a terminal")
+
 func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) error {
 	if yes || !mutating {
 		return nil
 	}
 	terminal, ok := stdin.(interface{ Fd() uintptr })
 	if !ok || !term.IsTerminal(int(terminal.Fd())) {
-		return fmt.Errorf("%w: setup needs --yes when stdin is not a terminal", ErrCancelled)
+		return errSetupNeedsYes
 	}
 	if _, err := fmt.Fprint(stderr, "Continue with this setup? [Y/n] "); err != nil {
 		return fmt.Errorf("write setup confirmation prompt: %w", err)
@@ -1179,6 +1183,9 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 	if err := confirmSetup(options.Yes, setupMutating(dependencyPlan, selection, networkReport), os.Stdin, stderr); err != nil {
 		if errors.Is(err, ErrCancelled) {
 			return commandOutcome{}, ErrCancelled
+		}
+		if errors.Is(err, errSetupNeedsYes) {
+			return failSetup(&result, exitUsage, err)
 		}
 		return failSetup(&result, exitConflict, err)
 	}

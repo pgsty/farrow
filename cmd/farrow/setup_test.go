@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,11 +169,22 @@ func TestEmitPrivatePendingNetworkDoesNotClaimUserNAT(t *testing.T) {
 	}
 }
 
+func TestSetupWithoutTerminalNeedsYesAsAUsageError(t *testing.T) {
+	t.Parallel()
+	err := confirmSetup(false, true, strings.NewReader("y\n"), io.Discard)
+	if !errors.Is(err, errSetupNeedsYes) || errors.Is(err, ErrCancelled) {
+		t.Fatalf("non-terminal confirmation err = %v; want the --yes usage error, not a cancellation", err)
+	}
+	if err := confirmSetup(true, true, strings.NewReader(""), io.Discard); err != nil {
+		t.Fatalf("--yes rejected: %v", err)
+	}
+	if err := confirmSetup(false, false, strings.NewReader(""), io.Discard); err != nil {
+		t.Fatalf("non-mutating setup asked for confirmation: %v", err)
+	}
+}
+
 func TestSetupConfirmationTreatsEndOfInputAsCancellation(t *testing.T) {
 	t.Parallel()
-	if err := confirmSetup(false, true, strings.NewReader("y\n"), &bytes.Buffer{}); !errors.Is(err, ErrCancelled) {
-		t.Fatalf("non-terminal setup confirmation error = %v, want ErrCancelled", err)
-	}
 	for input, accepted := range map[string]bool{"\n": true, "y\n": true, "YES\n": true, "n\n": false, "no\n": false, "": false, "y": false} {
 		err := readSetupConfirmation(strings.NewReader(input))
 		if accepted && err != nil {
