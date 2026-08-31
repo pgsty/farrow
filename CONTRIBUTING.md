@@ -43,10 +43,59 @@ go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
 go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 ```
 
-Changes under `packaging/`, `.goreleaser.yaml`, or the `Makefile` also run the
-`packaging` workflow, which builds and verifies a complete snapshot release.
-Run it locally with `make release-snapshot` if you have GoReleaser, nFPM, and
-Syft at the pinned versions.
+Changes under `tools/`, `packaging/`, `.goreleaser.yaml`, or the `Makefile` also
+run the `packaging` workflow, which builds and verifies a complete snapshot
+release. Run it locally with `make release-snapshot` if you have GoReleaser,
+nFPM, and Syft at the pinned versions.
+
+## Maintenance and release tools
+
+Catalog maintenance stays separate from the user-facing `farrow repo` command.
+`tools/catalogexport` writes the exact catalog embedded in the current source;
+the destination must be an absolute path that does not exist. `tools/catalogsign`
+manages Minisign keys and signatures accepted by the runtime. Its password is
+read only from inherited `CATALOGSIGN_PASSWORD` (empty is allowed), never from a
+command-line argument. Production private keys live on the repository host at
+`m0:/data/repo/keys/farrow`; do not copy them into this repository or CI.
+
+```bash
+make catalog-export CATALOG_OUTPUT=/absolute/new/catalog.json
+make catalog-keygen CATALOG_KEY_DIR=/absolute/private CATALOG_KEY_NAME=farrow-catalog-next
+make catalog-sign CATALOG_KEY=/absolute/private/farrow-catalog-next.key CATALOG_FILE=/absolute/catalog.json
+make catalog-verify CATALOG_PUBLIC_KEY=/absolute/private/farrow-catalog-next.pub CATALOG_FILE=/absolute/catalog.json
+```
+
+Catalog signatures and release signatures are distinct trust domains. The
+former are Minisign files consumed by Farrow; the latter are Sigstore bundles
+for release checksums and provenance. This offline test creates only a temporary
+development key and rejects tampered checksums:
+
+```bash
+make cosign-test COSIGN_CHECKSUMS=/absolute/checksums.txt
+```
+
+`make release-dev VERSION=0.1.1-dev.1 SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)`
+builds and verifies the older unsigned development-archive path. The packaging
+workflow runs it alongside the GoReleaser snapshot and the Cosign round-trip;
+neither path publishes anything.
+
+The maintenance inventory below names files whose owner is otherwise indirect.
+`make maintenance-check` fails when a new file under `tools/` or `packaging/`
+has no Make, workflow, or inventory reference.
+
+- GoReleaser hooks: `packaging/goreleaser-package-sbom.sh`,
+  `packaging/goreleaser-package-stage.sh`, and `packaging/goreleaser-sbom.sh`.
+- Archive/package composition: `packaging/binary-format.sh`,
+  `packaging/payload-inventory.sh`, `packaging/render-homebrew.sh`,
+  `packaging/homebrew/farrow.rb.tmpl`, `packaging/install.sh`, and
+  `packaging/nfpm.yaml`.
+- Image construction: `packaging/image-pipeline/build.sh`,
+  `packaging/image-pipeline/normalize-guest.sh`,
+  `packaging/image-pipeline/pipeline.py`,
+  `packaging/image-pipeline/recipe-v1.json`, and
+  `packaging/image-pipeline/.gitignore`.
+- Repository fixture: `packaging/image-repository/repo.yaml`.
+- Signing boundary: `packaging/test-cosign-roundtrip.sh`.
 
 ## House style
 

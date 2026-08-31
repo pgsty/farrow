@@ -36,6 +36,14 @@ fi
 
 repo=$(cd "$(dirname "$0")/.." && pwd -P)
 "${repo}/packaging/check-toolchain.sh" go
+if tar --version 2>&1 | grep -qi bsdtar; then
+  tar_create_options=(--no-recursion --no-xattrs --no-acls --no-fflags --no-mac-metadata --format ustar --uid 0 --gid 0 --uname root --gname root --numeric-owner)
+else
+  # GNU tar has no BSD file-flag or macOS metadata switches, and spells the
+  # owner controls differently. Both branches create the same sorted ustar
+  # payload after the tree has been stamped with SOURCE_DATE_EPOCH.
+  tar_create_options=(--no-recursion --no-xattrs --no-acls --format=ustar --owner=0 --group=0 --numeric-owner)
+fi
 if [[ ${output} != /* ]]; then
   output=${repo}/${output}
 fi
@@ -123,8 +131,7 @@ EOF
   (
     cd "${temporary}"
     find "${root_name}" -print | LC_ALL=C sort | \
-      COPYFILE_DISABLE=1 tar --no-recursion --no-xattrs --no-acls --no-fflags --no-mac-metadata \
-        --format ustar --uid 0 --gid 0 --uname root --gname root --numeric-owner -cf - -T -
+      COPYFILE_DISABLE=1 tar "${tar_create_options[@]}" -cf - -T -
   ) | gzip -n -9 >"${archive}"
   chmod 0644 "${archive}"
 done

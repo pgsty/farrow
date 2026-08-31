@@ -1,8 +1,9 @@
 .PHONY: build \
 	build-darwin-amd64 build-darwin-arm64 build-linux-amd64 build-linux-arm64 \
 	amd arm cross build-cross cross-check \
-	module-check shell-check test race vet staticcheck deadcode errcheck vuln check license-check \
+	module-check shell-check maintenance-check test race vet staticcheck deadcode errcheck vuln check license-check \
 	image-pipeline-test image-pipeline-native-test install-test \
+	catalog-export catalog-keygen catalog-sign catalog-verify cosign-test \
 	release-check release-snapshot release-local gr-check gr-snapshot gr-local release-dev
 
 SNAPSHOT_DIST ?= .goreleaser-snapshot
@@ -76,6 +77,17 @@ module-check:
 shell-check:
 	@for script in packaging/*.sh packaging/image-pipeline/*.sh tests/*.sh; do bash -n "$$script"; done
 
+# A maintenance file must have an explicit owner in a Make target, workflow, or
+# contributor documentation. Go tool tests use their package directory as the
+# stable reference so adding another *_test.go does not require an inventory edit.
+maintenance-check:
+	@git ls-files 'tools/**' 'packaging/**' | while IFS= read -r path; do \
+	  case "$$path" in tools/*/*.go) reference=$${path%/*} ;; *) reference=$$path ;; esac; \
+	  grep -Fqs -- "$$reference" Makefile CONTRIBUTING.md .github/workflows/*.yml || { \
+	    printf 'unowned maintenance file: %s\n' "$$path" >&2; exit 1; \
+	  }; \
+	done
+
 cross: build-darwin-amd64 build-darwin-arm64 build-linux-amd64 build-linux-arm64
 
 build-cross: cross
@@ -86,7 +98,7 @@ cross-check:
 	GOOS=linux GOARCH=amd64 go build ./...
 	GOOS=linux GOARCH=arm64 go build ./...
 
-check: module-check shell-check test race vet staticcheck deadcode errcheck vuln cross-check image-pipeline-test install-test license-check
+check: module-check shell-check maintenance-check test race vet staticcheck deadcode errcheck vuln cross-check image-pipeline-test install-test license-check
 
 license-check:
 	./packaging/verify-licenses.sh
@@ -99,6 +111,29 @@ image-pipeline-native-test:
 
 install-test:
 	./tests/install-test.sh
+
+catalog-export:
+	@test -n "$(CATALOG_OUTPUT)" || { echo "CATALOG_OUTPUT is required" >&2; exit 2; }
+	go run ./tools/catalogexport "$(CATALOG_OUTPUT)"
+
+catalog-keygen:
+	@test -n "$(CATALOG_KEY_DIR)" || { echo "CATALOG_KEY_DIR is required" >&2; exit 2; }
+	@test -n "$(CATALOG_KEY_NAME)" || { echo "CATALOG_KEY_NAME is required" >&2; exit 2; }
+	go run ./tools/catalogsign generate "$(CATALOG_KEY_DIR)" "$(CATALOG_KEY_NAME)"
+
+catalog-sign:
+	@test -n "$(CATALOG_KEY)" || { echo "CATALOG_KEY is required" >&2; exit 2; }
+	@test -n "$(CATALOG_FILE)" || { echo "CATALOG_FILE is required" >&2; exit 2; }
+	go run ./tools/catalogsign sign "$(CATALOG_KEY)" "$(CATALOG_FILE)"
+
+catalog-verify:
+	@test -n "$(CATALOG_PUBLIC_KEY)" || { echo "CATALOG_PUBLIC_KEY is required" >&2; exit 2; }
+	@test -n "$(CATALOG_FILE)" || { echo "CATALOG_FILE is required" >&2; exit 2; }
+	go run ./tools/catalogsign verify "$(CATALOG_PUBLIC_KEY)" "$(CATALOG_FILE)"
+
+cosign-test:
+	@test -n "$(COSIGN_CHECKSUMS)" || { echo "COSIGN_CHECKSUMS is required" >&2; exit 2; }
+	./packaging/test-cosign-roundtrip.sh "$(abspath $(COSIGN_CHECKSUMS))"
 
 release-check:
 	./packaging/check-toolchain.sh goreleaser
@@ -153,5 +188,5 @@ gr-local: release-local
 release-dev:
 	@test -n "$(VERSION)" || { echo "VERSION is required" >&2; exit 2; }
 	@test -n "$(SOURCE_DATE_EPOCH)" || { echo "SOURCE_DATE_EPOCH is required" >&2; exit 2; }
-	SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) ./packaging/build-release.sh $(VERSION) dist/$(VERSION)
-	./packaging/verify-release.sh $(VERSION) "$(CURDIR)/dist/$(VERSION)"
+	SOURCE_DATE_EPOCH="$(SOURCE_DATE_EPOCH)" ./packaging/build-release.sh "$(VERSION)" "dist/$(VERSION)"
+	./packaging/verify-release.sh "$(VERSION)" "$(CURDIR)/dist/$(VERSION)"

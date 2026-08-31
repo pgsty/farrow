@@ -16,21 +16,23 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: catalogexport <absolute-new-output-path>")
 		os.Exit(2)
 	}
+	if err := exportCatalog(os.Args[1]); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func exportCatalog(target string) error {
 	data, err := image.EmbeddedCatalogBytes()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return err
 	}
-	target := os.Args[1]
 	if !filepath.IsAbs(target) {
-		err = fmt.Errorf("output path must be absolute")
-	} else if parent, parentErr := filepath.EvalSymlinks(filepath.Dir(target)); parentErr != nil {
-		err = parentErr
-	} else {
-		err = fsutil.AtomicCreate(filepath.Join(parent, filepath.Base(target)), data, 0o600)
+		return fmt.Errorf("output path must be absolute")
 	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(target))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return err
 	}
+	return fsutil.AtomicCreate(filepath.Join(parent, filepath.Base(target)), data, 0o600)
 }
