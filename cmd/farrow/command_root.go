@@ -8,6 +8,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func noFileCompletions(command *cobra.Command, names ...string) {
+	for _, name := range names {
+		if _, exists := command.GetFlagCompletionFunc(name); exists {
+			continue
+		}
+		if command.Flags().Lookup(name) == nil && command.PersistentFlags().Lookup(name) == nil {
+			panic(fmt.Sprintf("register completion for missing flag %s on %s", name, command.CommandPath()))
+		}
+		if err := command.RegisterFlagCompletionFunc(name, cobra.NoFileCompletions); err != nil {
+			panic(fmt.Sprintf("register completion for --%s on %s: %v", name, command.CommandPath(), err))
+		}
+	}
+}
+
 func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "farrow",
@@ -42,6 +56,7 @@ specification; validate always requires an inventory.`,
 	root.PersistentFlags().Bool("json", false, "emit JSON output")
 	root.PersistentFlags().Bool("yaml", false, "emit YAML output")
 	root.PersistentFlags().BoolP("verbose", "v", false, "emit detailed diagnostics to stderr")
+	noFileCompletions(root, "json", "yaml", "verbose")
 	// prepareOutput consumes the spelled-out presentation flags before Cobra
 	// runs, so the persistent flags above mostly document them. Cobra still
 	// parses shorthand combinations (-nv, -vv); honor those too.

@@ -105,6 +105,7 @@ staging files. The default and --dry-run are read-only; deletion requires
 	prune.Flags().BoolVarP(&pruneOptions.Apply, "yes", "y", false, "delete the displayed unreferenced images and stale staging files")
 	prune.Flags().StringVarP(&pruneOptions.Repository, "repo", "r", "", repositoryFlagHelp)
 	prune.MarkFlagsMutuallyExclusive("dry-run", "yes")
+	noFileCompletions(prune, "dry-run", "yes")
 	parent.AddCommand(prune)
 
 	syncOptions := imageOptions{Action: "sync"}
@@ -126,6 +127,7 @@ atomically.`,
 	}
 	syncCommand.Flags().BoolVar(&syncOptions.AllowDowngrade, "allow-downgrade", false, "allow activation below the catalog high-water mark")
 	syncCommand.Flags().StringVarP(&syncOptions.Repository, "repo", "r", "", "repository whose independent high-water state is being synchronized")
+	noFileCompletions(syncCommand, "allow-downgrade")
 	parent.AddCommand(syncCommand)
 
 	resetOptions := imageOptions{Action: "reset-manifest"}
@@ -173,6 +175,7 @@ prefixed alias and therefore also requires --boot and --source-user.`,
 	importCommand.Flags().StringVarP(&importOptions.SourceUser, "source-user", "u", "", "required with --name: source image login user")
 	importCommand.MarkFlagsRequiredTogether("name", "boot", "source-user")
 	_ = importCommand.RegisterFlagCompletionFunc("boot", enumFlagCompletion("bios", "uefi"))
+	noFileCompletions(importCommand, "sha256", "name", "source-user")
 	parent.AddCommand(importCommand)
 	return parent
 }

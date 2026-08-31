@@ -40,6 +40,7 @@ read-only preflight findings used before lifecycle mutation.`,
 		},
 	}
 	status.Flags().StringVarP(&statusOptions.CIDR, "cidr", "c", "", "expected host-global RFC1918 IPv4 /24")
+	noFileCompletions(status, "cidr")
 	parent.AddCommand(status)
 
 	installOptions := networkOptions{Action: "install", CIDR: subnet.DefaultCIDR, Mode: "host"}
@@ -76,6 +77,7 @@ manager backend. Without --yes the command is a read-only plan.`,
 	install.Flags().StringVarP(&installOptions.InterfaceID, "interface-id", "i", "", "macOS: persistent vmnet UUID")
 	install.Flags().BoolVarP(&installOptions.Apply, "yes", "y", false, "apply the displayed privileged plan without confirmation (sudo may still ask for a password)")
 	_ = install.RegisterFlagCompletionFunc("mode", enumFlagCompletion("host", "shared"))
+	noFileCompletions(install, "cidr", "interface-id", "yes")
 	parent.AddCommand(install)
 
 	uninstallOptions := networkOptions{Action: "uninstall"}
@@ -94,6 +96,7 @@ nothing without --yes.`,
 		},
 	}
 	uninstall.Flags().BoolVarP(&uninstallOptions.Apply, "yes", "y", false, "apply the displayed privileged plan without confirmation (sudo may still ask for a password)")
+	noFileCompletions(uninstall, "yes")
 	parent.AddCommand(uninstall)
 	return parent
 }

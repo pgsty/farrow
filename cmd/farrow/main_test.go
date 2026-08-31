@@ -262,6 +262,29 @@ func TestSplitRemoteInvocationValidatesNodesBeforeSeparator(t *testing.T) {
 			t.Errorf("split(%v) = %q, %q, %v; want %q, %q", test.arguments, node, strings.Join(command, " "), err, test.node, test.command)
 		}
 	}
+	for _, arguments := range [][]string{
+		{"__complete", "init", "--cidr", ""},
+		{"__complete", "recreate", "--force="},
+		{"__complete", "provision", "--parallel", ""},
+		{"__complete", "ssh-config", "--name", ""},
+		{"__complete", "image", "import", "--sha256", ""},
+		{"__complete", "network", "install", "--interface-id", ""},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(arguments, &stdout, &stderr); code != exitOK {
+			t.Fatalf("scalar completion %v code=%d stderr=%s", arguments, code, stderr.String())
+		}
+		if !strings.HasSuffix(strings.TrimSpace(stdout.String()), ":4") {
+			t.Errorf("scalar completion %v did not suppress file names: %q", arguments, stdout.String())
+		}
+	}
+	var pathStdout, pathStderr bytes.Buffer
+	if code := run([]string{"__complete", "init", "--output", ""}, &pathStdout, &pathStderr); code != exitOK {
+		t.Fatalf("path completion code=%d stderr=%s", code, pathStderr.String())
+	}
+	if !strings.HasSuffix(strings.TrimSpace(pathStdout.String()), ":0") {
+		t.Errorf("path completion unexpectedly suppressed file names: %q", pathStdout.String())
+	}
 }
 
 func TestNodeSelectorsAreValidatedBeforeAnyOperation(t *testing.T) {

@@ -123,16 +123,20 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 		command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
 		command.Flags().BoolVarP(&options.NoWait, "no-wait", "n", false, "return after QMP/process identity without waiting for guest readiness")
 		command.Flags().BoolVarP(&options.Rollback, "rollback", "b", false, "remove safe artifacts from nodes that fail to prepare")
+		noFileCompletions(command, "no-wait", "rollback")
 	case "start", "restart":
 		command.Flags().BoolVarP(&options.NoWait, "no-wait", "n", false, "return after QMP/process identity without waiting for guest readiness")
+		noFileCompletions(command, "no-wait")
 	case "recreate":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "desired inventory (default: discover locally, then use applied state)")
 		command.Flags().BoolVar(&options.Force, "force", false, "recreate without the interactive confirmation (required without a terminal)")
 		command.Flags().BoolVarP(&options.NoWait, "no-wait", "n", false, "return after QMP/process identity without waiting for guest readiness")
+		noFileCompletions(command, "force", "no-wait")
 	case "destroy":
 		command.Flags().BoolVarP(&options.Force, "force", "f", false, "destroy without the interactive confirmation (required without a terminal)")
 		command.Flags().BoolVar(&options.DeletePersistent, "delete-persistent", false, "also delete owned persistent data disks")
 		command.Flags().BoolVar(&options.Purge, "purge", false, "terminal disposal: also delete persistent disks, keys, and deployment state")
+		noFileCompletions(command, "force", "delete-persistent", "purge")
 	}
 	command.RunE = func(_ *cobra.Command, nodes []string) error {
 		return commandError(runLifecycleCommand(name, options, nodes, stdout, stderr))

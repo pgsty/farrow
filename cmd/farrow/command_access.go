@@ -40,6 +40,7 @@ script digest, and never uploads the script as a persistent guest file.`,
 	command.Flags().BoolVar(&options.Sudo, "sudo", false, "run the guest script through sudo -n")
 	command.Flags().IntVarP(&options.Parallelism, "parallel", "p", options.Parallelism, "bounded node concurrency, 1..4")
 	command.Flags().DurationVarP(&options.Timeout, "timeout", "t", options.Timeout, "hard deadline for the operation, maximum 24h")
+	noFileCompletions(command, "sudo", "parallel", "timeout")
 	_ = command.MarkFlagRequired("script")
 	return command
 }
@@ -77,6 +78,7 @@ limited to selected nodes; removal is state-independent and accepts no nodes.`,
 	command.Flags().BoolVarP(&options.Install, "install", "i", false, "install a marker-owned Include and deployment fragment")
 	command.Flags().BoolVarP(&options.Remove, "remove", "r", false, "remove the marker-owned Include and fragment")
 	command.Flags().StringVarP(&options.Name, "name", "n", options.Name, "SSH Host and fragment prefix")
+	noFileCompletions(command, "install", "remove", "name")
 	command.MarkFlagsMutuallyExclusive("install", "remove")
 	return command
 }
@@ -112,6 +114,7 @@ names, and the installed fragment prefix defaults to 'farrow'.`,
 		},
 	}
 	command.Flags().StringVarP(&name, "name", "n", "", "SSH fragment prefix (default: farrow)")
+	noFileCompletions(command, "name")
 	return command
 }
 
@@ -145,6 +148,7 @@ remains machine-readable.`,
 	command.Flags().StringVarP(&options.Source, "source", "s", options.Source, "log source: serial, qemu, or events")
 	command.Flags().BoolVarP(&options.Follow, "follow", "f", false, "continue streaming appended log data")
 	_ = command.RegisterFlagCompletionFunc("source", enumFlagCompletion("serial", "qemu", "events"))
+	noFileCompletions(command, "follow")
 	return command
 }
 
@@ -185,6 +189,7 @@ before applying it.`,
 			command.Aliases = []string{"u"}
 		}
 		command.Flags().BoolVarP(&apply, "yes", "y", false, "apply the displayed privileged plan without confirmation (sudo may still ask for a password)")
+		noFileCompletions(command, "yes")
 		parent.AddCommand(command)
 	}
 	return parent

@@ -36,6 +36,7 @@ before any mutation and requests privilege only at the first privileged step.`,
 	command.Flags().BoolVarP(&options.Yes, "yes", "y", false, "accept the one-time setup plan (required without a terminal)")
 	command.MarkFlagsMutuallyExclusive("dry-run", "yes")
 	_ = command.RegisterFlagCompletionFunc("mode", enumFlagCompletion("host", "shared"))
+	noFileCompletions(command, "cidr", "dry-run", "yes")
 	command.RunE = func(command *cobra.Command, arguments []string) error {
 		profileName := ""
 		if len(arguments) == 1 {
@@ -74,6 +75,7 @@ inventory to stdout for inspection or composition.`,
 	command.Flags().StringVarP(&options.CIDR, "cidr", "c", "", "rebase the generated template to a canonical RFC1918 IPv4 /24")
 	command.Flags().StringVarP(&options.Output, "output", "o", "", "write to this path instead of ./farrow.yml; '-' writes to stdout")
 	command.Flags().BoolVarP(&options.Force, "force", "f", false, "overwrite an existing configuration file")
+	noFileCompletions(command, "cidr", "force")
 	return command
 }
 
