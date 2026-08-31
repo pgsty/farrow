@@ -937,62 +937,61 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 	return tracked.err
 }
 
-func emitSetupResult(result setupResult, stdout, stderr io.Writer) int {
-	if structuredOutput(stdout) {
-		return encodeJSON(stdout, stderr, result)
-	}
-	textField(stdout, 14, "host", result.OS+"/"+result.Arch)
-	if result.Profile != "" && result.Profile != "unknown" {
-		textField(stdout, 14, "profile", result.Profile)
-	}
-	dependencyStatus := "ready"
-	if result.DryRun && len(result.Dependencies.Commands) > 0 {
-		dependencyStatus = "would install"
-	} else {
-		for _, step := range result.Steps {
-			if step.Name == "dependencies" && step.Status == "installed" {
-				dependencyStatus = "installed"
+func setupOutcome(result setupResult) commandOutcome {
+	return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
+		textField(stdout, 14, "host", result.OS+"/"+result.Arch)
+		if result.Profile != "" && result.Profile != "unknown" {
+			textField(stdout, 14, "profile", result.Profile)
+		}
+		dependencyStatus := "ready"
+		if result.DryRun && len(result.Dependencies.Commands) > 0 {
+			dependencyStatus = "would install"
+		} else {
+			for _, step := range result.Steps {
+				if step.Name == "dependencies" && step.Status == "installed" {
+					dependencyStatus = "installed"
+				}
 			}
 		}
-	}
-	textField(stdout, 14, "dependencies", statusValue(stdout, dependencyStatus))
-	if result.Network != nil {
-		status := result.Network.Installation.Status
+		textField(stdout, 14, "dependencies", statusValue(stdout, dependencyStatus))
+		if result.Network != nil {
+			status := result.Network.Installation.Status
+			if result.Blocked {
+				status = "blocked"
+			} else if status == "" || status == "absent" {
+				status = "pending install"
+			}
+			textField(stdout, 14, "network", fmt.Sprintf("%s (%s)", result.Network.CIDR, status))
+		} else {
+			textField(stdout, 14, "network", fmt.Sprintf("%s (pending dependencies)", result.NetworkCIDR))
+		}
+		if result.NetworkMode != "" {
+			textField(stdout, 14, "network mode", result.NetworkMode)
+		}
+		if result.Config != "" {
+			textField(stdout, 14, "config", result.Config)
+		}
+		status := "ready"
 		if result.Blocked {
 			status = "blocked"
-		} else if status == "" || status == "absent" {
-			status = "pending install"
+		} else if result.DryRun {
+			status = "plan"
 		}
-		textField(stdout, 14, "network", fmt.Sprintf("%s (%s)", result.Network.CIDR, status))
-	} else {
-		textField(stdout, 14, "network", fmt.Sprintf("%s (pending dependencies)", result.NetworkCIDR))
-	}
-	if result.NetworkMode != "" {
-		textField(stdout, 14, "network mode", result.NetworkMode)
-	}
-	if result.Config != "" {
-		textField(stdout, 14, "config", result.Config)
-	}
-	status := "ready"
-	if result.Blocked {
-		status = "blocked"
-	} else if result.DryRun {
-		status = "plan"
-	}
-	textField(stdout, 14, "status", statusValue(stdout, status))
-	if result.Resolution != "" {
-		textField(stdout, 14, "resolution", strings.ReplaceAll(result.Resolution, "\n", "; "))
-	}
-	if result.MutationUncertain {
-		textField(stdout, 14, "mutation", "uncertain after a failed host command; inspect before retrying")
-	}
-	textField(stdout, 14, "next", result.Next)
-	return exitOK
+		textField(stdout, 14, "status", statusValue(stdout, status))
+		if result.Resolution != "" {
+			textField(stdout, 14, "resolution", strings.ReplaceAll(result.Resolution, "\n", "; "))
+		}
+		if result.MutationUncertain {
+			textField(stdout, 14, "mutation", "uncertain after a failed host command; inspect before retrying")
+		}
+		textField(stdout, 14, "next", result.Next)
+		return nil
+	}}
 }
 
-func failSetup(result *setupResult, code int, failure error, stdout, stderr io.Writer) int {
-	if commandContextCancelled(stdout) {
-		return exitCancelled
+func failSetup(result *setupResult, code int, failure error) (commandOutcome, error) {
+	if errors.Is(failure, context.Canceled) {
+		return commandOutcome{}, ErrCancelled
 	}
 	result.Ready = false
 	result.ExitCode = code
@@ -1002,13 +1001,15 @@ func failSetup(result *setupResult, code int, failure error, stdout, stderr io.W
 		result.Next = "resolve the reported error, then rerun farrow setup"
 		result.NextArgv = nil
 	}
-	errorf(stderr, "%v", failure)
-	if structuredOutput(stdout) {
-		if encodeCode := emitSetupResult(*result, stdout, stderr); encodeCode != exitOK {
-			return encodeCode
-		}
+	return commandOutcome{}, newDetailedCommandError(exitCategory(code), code, failure, "", *result)
+}
+
+func failSetupRendered(result *setupResult, code int, failure error) (commandOutcome, error) {
+	_, err := failSetup(result, code, failure)
+	if boundary, ok := err.(*commandBoundaryError); ok {
+		boundary.text = setupOutcome(*result).text
 	}
-	return code
+	return commandOutcome{}, err
 }
 
 func shellQuote(argument string) string {
@@ -1068,7 +1069,7 @@ func formatSetupCommand(arguments []string) (string, []string) {
 	return strings.Join(quoted, " "), arguments
 }
 
-func runSetupCommand(parent context.Context, profileName string, options setupCLIOptions, stdout, stderr io.Writer) int {
+func runSetupCommand(parent context.Context, profileName string, options setupCLIOptions, stdout, stderr io.Writer) (commandOutcome, error) {
 	result := setupResult{
 		Schema: 1, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Steps: make([]setupStep, 0, 6), NextArgv: nil,
@@ -1078,24 +1079,24 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 	}
 	result.DryRun = options.DryRun
 	if options.DryRun && options.Yes {
-		return failSetup(&result, exitUsage, errors.New("--dry-run and --yes are mutually exclusive"), stdout, stderr)
+		return failSetup(&result, exitUsage, errors.New("--dry-run and --yes are mutually exclusive"))
 	}
 	if options.Mode != "host" && options.Mode != "shared" {
-		return failSetup(&result, exitUsage, errors.New("--mode must be host or shared"), stdout, stderr)
+		return failSetup(&result, exitUsage, errors.New("--mode must be host or shared"))
 	}
 	if runtime.GOOS != "darwin" && options.Mode != "host" {
-		return failSetup(&result, exitUsage, errors.New("--mode shared is available only on Darwin"), stdout, stderr)
+		return failSetup(&result, exitUsage, errors.New("--mode shared is available only on Darwin"))
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		return failSetup(&result, exitRuntime, err, stdout, stderr)
+		return failSetup(&result, exitRuntime, err)
 	}
 	selection, err := resolveSetupSelection(profileName, options.FilePath, options.CIDR, cwd)
 	if err != nil {
 		if strings.Contains(err.Error(), "unknown lab template") {
-			return failSetup(&result, exitUsage, err, stdout, stderr)
+			return failSetup(&result, exitUsage, err)
 		}
-		return failSetup(&result, exitConflict, err, stdout, stderr)
+		return failSetup(&result, exitConflict, err)
 	}
 	result.Profile = selection.Profile
 	result.Config = selection.ConfigPath
@@ -1104,11 +1105,11 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 	result.NextArgv = nextArgv
 	dependencyPlan, err := setuphost.PlanDependencies(setuphost.DependencyProbe{}, true)
 	if err != nil {
-		return failSetup(&result, exitCapability, err, stdout, stderr)
+		return failSetup(&result, exitCapability, err)
 	}
 	result.Dependencies = dependencyPlan
 	if dependencyPlan.Unsupported {
-		return failSetup(&result, exitCapability, errors.New(dependencyPlan.Resolution), stdout, stderr)
+		return failSetup(&result, exitCapability, errors.New(dependencyPlan.Resolution))
 	}
 	base := execx.OSRunner{Timeout: 20 * time.Minute, OutputLimit: 64 << 10}
 	ctx, cancel := context.WithTimeout(parent, 45*time.Minute)
@@ -1123,7 +1124,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 	if dependencyPlan.Ready {
 		report, reportErr := selectSetupNetwork(ctx, &selection, base)
 		if reportErr != nil {
-			return failSetup(&result, exitCapability, reportErr, stdout, stderr)
+			return failSetup(&result, exitCapability, reportErr)
 		}
 		report, networkMode = constrainSetupNetworkMode(report, options.Mode, options.ModeExplicit)
 		networkReport = &report
@@ -1131,7 +1132,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 		result.NetworkMode = networkMode
 	}
 	if err := printSetupPlan(stderr, dependencyPlan, selection, networkReport, options.DryRun); err != nil {
-		return failSetup(&result, exitRuntime, fmt.Errorf("write setup plan: %w", err), stdout, stderr)
+		return failSetup(&result, exitRuntime, fmt.Errorf("write setup plan: %w", err))
 	}
 	result.Config = selection.ConfigPath
 	result.Dependencies = dependencyPlan
@@ -1168,24 +1169,15 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 			result.Next, result.NextArgv = setupApplyCommand(options.arguments(profileName), stdout, stderr)
 		}
 		if result.Blocked {
-			result.ExitCode = blockerCode
-			errorf(stderr, "%s", result.Resolution)
+			return failSetupRendered(&result, blockerCode, errors.New(result.Resolution))
 		}
-		if code := emitSetupResult(result, stdout, stderr); code != exitOK {
-			return code
-		}
-		return blockerCode
+		return setupOutcome(result), nil
 	}
 	if result.Blocked {
-		result.ExitCode = blockerCode
-		errorf(stderr, "%s", result.Resolution)
-		if code := emitSetupResult(result, stdout, stderr); code != exitOK {
-			return code
-		}
-		return blockerCode
+		return failSetupRendered(&result, blockerCode, errors.New(result.Resolution))
 	}
 	if err := confirmSetup(options.Yes, setupMutating(dependencyPlan, selection, networkReport), os.Stdin, stderr); err != nil {
-		return failSetup(&result, exitConflict, err, stdout, stderr)
+		return commandOutcome{}, ErrCancelled
 	}
 	if len(dependencyPlan.Commands) > 0 {
 		changed, uncertain, err := runSetupCommands(ctx, dependencyPlan.Commands, base, sudoSession, stderr)
@@ -1193,7 +1185,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 		result.MutationUncertain = result.MutationUncertain || uncertain
 		if err != nil {
 			result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "failed", Changed: changed})
-			return failSetup(&result, exitCapability, err, stdout, stderr)
+			return failSetup(&result, exitCapability, err)
 		}
 		result.Steps = append(result.Steps, setupStep{Name: "dependencies", Status: "installed", Changed: changed})
 	} else {
@@ -1205,7 +1197,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 		if err == nil {
 			err = fmt.Errorf("dependencies remain unavailable: %s", strings.Join(verifiedDependencies.Missing, ", "))
 		}
-		return failSetup(&result, exitCapability, err, stdout, stderr)
+		return failSetup(&result, exitCapability, err)
 	}
 	result.Dependencies = verifiedDependencies
 	capabilityProgress := startProgress(ctx, stderr, "Verifying native QEMU")
@@ -1214,12 +1206,12 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 	result.Checks = capabilityChecks
 	if capabilityErr != nil {
 		result.Steps = append(result.Steps, setupStep{Name: "capabilities", Status: "failed"})
-		return failSetup(&result, exitCapability, capabilityErr, stdout, stderr)
+		return failSetup(&result, exitCapability, capabilityErr)
 	}
 	result.Steps = append(result.Steps, setupStep{Name: "capabilities", Status: "ready"})
 	report, reportErr := selectSetupNetwork(ctx, &selection, base)
 	if reportErr != nil {
-		return failSetup(&result, exitCapability, reportErr, stdout, stderr)
+		return failSetup(&result, exitCapability, reportErr)
 	}
 	report, networkMode = constrainSetupNetworkMode(report, options.Mode, options.ModeExplicit)
 	result.Network = &report
@@ -1237,16 +1229,16 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 		result.Resolution = failure.Error()
 		result.Next = "resolve the reported network conflict, then rerun farrow setup"
 		result.NextArgv = nil
-		return failSetup(&result, code, failure, stdout, stderr)
+		return failSetup(&result, code, failure)
 	}
 	step, uncertain, installErr := applySetupNetwork(ctx, networkMode, options.Repo, report, base, sudoSession, stderr)
 	if installErr != nil {
 		result.MutationUncertain = result.MutationUncertain || uncertain
 		result.Steps = append(result.Steps, setupStep{Name: "network", Status: "failed"})
 		if errors.Is(installErr, darwinnet.ErrVMNetSharingBusy) {
-			return failSetup(&result, exitConflict, installErr, stdout, stderr)
+			return failSetup(&result, exitConflict, installErr)
 		}
-		return failSetup(&result, exitIntegrity, installErr, stdout, stderr)
+		return failSetup(&result, exitIntegrity, installErr)
 	}
 	result.Steps = append(result.Steps, step)
 	result.Changed = result.Changed || step.Changed
@@ -1256,7 +1248,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 		if finalErr == nil {
 			finalErr = setupFindingError(finalReport)
 		}
-		return failSetup(&result, exitIntegrity, fmt.Errorf("fixed-IP network verification failed: %w", finalErr), stdout, stderr)
+		return failSetup(&result, exitIntegrity, fmt.Errorf("fixed-IP network verification failed: %w", finalErr))
 	}
 	result.Network = &finalReport
 	helperStep, uncertain, helperErr := ensureSetupHostsHelper(ctx, base, sudoSession, stderr)
@@ -1267,7 +1259,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 			helperStep = setupStep{Name: "hosts-helper", Status: "failed"}
 		}
 		result.Steps = append(result.Steps, helperStep)
-		return failSetup(&result, exitIntegrity, helperErr, stdout, stderr)
+		return failSetup(&result, exitIntegrity, helperErr)
 	}
 	result.Steps = append(result.Steps, helperStep)
 	verifyProgress := startProgress(ctx, stderr, "Verifying the fixed-IP host setup")
@@ -1276,12 +1268,12 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 	result.Checks = checks
 	if verifyErr != nil {
 		result.Steps = append(result.Steps, setupStep{Name: "verify", Status: "failed"})
-		return failSetup(&result, exitCapability, verifyErr, stdout, stderr)
+		return failSetup(&result, exitCapability, verifyErr)
 	}
 	result.Steps = append(result.Steps, setupStep{Name: "verify", Status: "ready"})
 	if selection.Publish {
 		if len(bytes.TrimSpace(selection.ConfigData)) == 0 {
-			return failSetup(&result, exitIntegrity, errors.New("generated setup configuration is empty"), stdout, stderr)
+			return failSetup(&result, exitIntegrity, errors.New("generated setup configuration is empty"))
 		}
 		if err := fsutil.AtomicCreate(selection.ConfigPath, selection.ConfigData, 0o600); err != nil {
 			code := exitIntegrity
@@ -1289,7 +1281,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 				code = exitConflict
 			}
 			result.Steps = append(result.Steps, setupStep{Name: "config", Status: "failed", Detail: selection.ConfigPath})
-			return failSetup(&result, code, fmt.Errorf("publish setup configuration without replacing concurrent content: %w", err), stdout, stderr)
+			return failSetup(&result, code, fmt.Errorf("publish setup configuration without replacing concurrent content: %w", err))
 		}
 		result.Config = selection.ConfigPath
 		result.Changed = true
@@ -1302,5 +1294,5 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 	}
 	result.Applicable = true
 	result.Ready = true
-	return emitSetupResult(result, stdout, stderr)
+	return setupOutcome(result), nil
 }

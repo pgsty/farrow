@@ -202,13 +202,15 @@ func TestProvisionRejectsUnsafeInputBeforeProjectAccess(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			outcome, runErr := runProvision(context.TODO(), test.options, nil, &stderr)
-			code := renderCommandOutcome(&outcome, &stdout, &stderr)
+			code := exitOK
 			if runErr != nil {
 				typed, ok := runErr.(typedCommandError)
 				if !ok {
 					t.Fatalf("untyped provision error: %v", runErr)
 				}
 				code = renderTypedCommandError(typed, &stdout, &stderr)
+			} else {
+				code = renderCommandOutcome(&outcome, &stdout, &stderr)
 			}
 			if code != test.code || !strings.Contains(stderr.String(), test.want) || stdout.Len() != 0 {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())

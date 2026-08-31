@@ -162,7 +162,8 @@ func TestEmitPrivatePendingNetworkDoesNotClaimUserNAT(t *testing.T) {
 		Schema: 1, OS: "darwin", Arch: "arm64", Profile: "full",
 		DryRun: true, NetworkCIDR: "10.10.10.0/24", NetworkMode: "host", Next: "farrow up",
 	}
-	if code := emitSetupResult(result, &stdout, &stderr); code != exitOK {
+	outcome := setupOutcome(result)
+	if code := renderCommandOutcome(&outcome, &stdout, &stderr); code != exitOK {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
 	if strings.Contains(stdout.String(), "user NAT") || !strings.Contains(stdout.String(), "pending dependencies") {
@@ -193,7 +194,17 @@ func TestRunSetupEmitsStructuredEarlyFailure(t *testing.T) {
 	outputState := &outputContext{format: outputJSON}
 	out := &outputWriter{Writer: &stdout, context: outputState}
 	errOut := &outputWriter{Writer: &stderr, context: outputState, stderr: true}
-	code := runSetupCommand(context.TODO(), "profile-that-does-not-exist", setupCLIOptions{Mode: "host"}, out, errOut)
+	outcome, runErr := runSetupCommand(context.TODO(), "profile-that-does-not-exist", setupCLIOptions{Mode: "host"}, out, errOut)
+	code := exitOK
+	if runErr != nil {
+		typed, ok := runErr.(typedCommandError)
+		if !ok {
+			t.Fatalf("untyped setup error: %v", runErr)
+		}
+		code = renderTypedCommandError(typed, out, errOut)
+	} else {
+		code = renderCommandOutcome(&outcome, out, errOut)
+	}
 	if code != exitUsage {
 		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
 	}

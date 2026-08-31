@@ -2086,53 +2086,48 @@ func doctorCheckLabel(check doctor.Check) string {
 	return string(check.Status)
 }
 
-func runDoctor(parent context.Context, stdout, stderr io.Writer) int {
+func runDoctor(parent context.Context, stderr io.Writer) (commandOutcome, error) {
 	ctx, cancel := context.WithTimeout(parent, 60*time.Second)
 	defer cancel()
 	progressItem := startProgress(ctx, stderr, "Checking host capabilities")
 	report := (doctor.Probe{}).Run(ctx)
 	progressItem.Stop(nil)
-	if structuredOutput(stdout) {
-		if code := encodeJSON(stdout, stderr, report); code != exitOK {
-			return code
-		}
-	} else {
+	if errors.Is(parent.Err(), context.Canceled) {
+		return commandOutcome{}, ErrCancelled
+	}
+	renderText := func(stdout, _ io.Writer) error {
 		textField(stdout, 10, "host", fmt.Sprintf("%s/%s", report.OS, report.Arch))
 		textField(stdout, 10, "tier", report.Tier)
 		for _, check := range report.Checks {
 			if err := writeText(stdout, "%s %-20s %s\n", statusCell(stdout, 10, doctorCheckLabel(check)), check.Name, check.Evidence); err != nil {
-				errorf(stderr, "write doctor result: %v", err)
-				return exitRuntime
+				return err
 			}
 			if check.Fix != "" {
 				if err := writeText(stdout, "  fix: %s\n", check.Fix); err != nil {
-					errorf(stderr, "write doctor result: %v", err)
-					return exitRuntime
+					return err
 				}
 			}
 		}
 		if report.HasErrors() {
 			if err := writeText(stdout, "this host cannot run Farrow guests until the errors above are resolved\n"); err != nil {
-				errorf(stderr, "write doctor result: %v", err)
-				return exitRuntime
+				return err
 			}
 		} else {
 			if err := writeText(stdout, "host compute capability is ready\n"); err != nil {
-				errorf(stderr, "write doctor result: %v", err)
-				return exitRuntime
+				return err
 			}
 		}
 		if !report.NetworkReady() {
 			if err := writeText(stdout, "the host-global network is not ready; run `farrow setup` to prepare it\n"); err != nil {
-				errorf(stderr, "write doctor result: %v", err)
-				return exitRuntime
+				return err
 			}
 		}
+		return nil
 	}
 	if report.HasErrors() {
-		return exitCapability
+		return commandOutcome{}, newSilentRenderedCommandError("capability", exitCapability, errors.New("host compute capability is not ready"), report, renderText)
 	}
-	return exitOK
+	return commandOutcome{payload: report, text: renderText}, nil
 }
 
 func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {

@@ -290,7 +290,11 @@ missing compute capability exits 3.`,
 		Args:    cobra.NoArgs,
 		GroupID: "host",
 		RunE: func(command *cobra.Command, _ []string) error {
-			return commandError(runDoctor(command.Context(), stdout, stderr))
+			outcome, err := runDoctor(command.Context(), stderr)
+			if err != nil {
+				return err
+			}
+			return collectCommandOutcome(command.Context(), outcome)
 		},
 	}
 	network := newNetworkCommand(stdout, stderr)
