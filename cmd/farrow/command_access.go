@@ -76,7 +76,11 @@ limited to selected nodes; removal is state-independent and accepts no nodes.`,
 			return nil
 		},
 		RunE: func(command *cobra.Command, nodes []string) error {
-			return commandError(runSSHConfig(command.Context(), options, nodes, stdout, stderr))
+			outcome, err := runSSHConfig(command.Context(), options, nodes)
+			if err != nil {
+				return err
+			}
+			return collectCommandOutcome(command.Context(), outcome)
 		},
 	}
 	command.Flags().BoolVarP(&options.Install, "install", "i", false, "install a marker-owned Include and deployment fragment")
@@ -114,7 +118,11 @@ names, and the installed fragment prefix defaults to 'farrow'.`,
 			if err != nil {
 				return err
 			}
-			return commandError(runSSHConfig(command.Context(), options, nodes, stdout, stderr))
+			outcome, err := runSSHConfig(command.Context(), options, nodes)
+			if err != nil {
+				return err
+			}
+			return collectCommandOutcome(command.Context(), outcome)
 		},
 	}
 	command.Flags().StringVarP(&name, "name", "n", "", "SSH fragment prefix (default: farrow)")
@@ -146,7 +154,11 @@ remains machine-readable.`,
 			if len(arguments) == 1 {
 				node = arguments[0]
 			}
-			return commandError(runLogs(command.Context(), options, node, stdout, stderr))
+			outcome, err := runLogs(command.Context(), options, node, stdout, stderr)
+			if err != nil {
+				return err
+			}
+			return collectCommandOutcome(command.Context(), outcome)
 		},
 	}
 	command.Flags().StringVarP(&options.Source, "source", "s", options.Source, "log source: serial, qemu, or events")
@@ -184,7 +196,11 @@ before applying it.`,
 			Example: example,
 			Args:    cobra.NoArgs,
 			RunE: func(command *cobra.Command, _ []string) error {
-				return commandError(runHosts(command.Context(), action, apply, stdout, stderr))
+				outcome, err := runHosts(command.Context(), action, apply, stderr)
+				if err != nil {
+					return err
+				}
+				return collectCommandOutcome(command.Context(), outcome)
 			},
 		}
 		if action == "install" {

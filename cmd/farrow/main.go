@@ -1435,17 +1435,21 @@ type sshConfigOptions struct {
 	Name    string
 }
 
-func runSSHConfig(parent context.Context, options sshConfigOptions, nodes []string, stdout, stderr io.Writer) int {
+func sshConfigOutcome(result sshconfig.Result, name string) commandOutcome {
+	return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
+		return writeText(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, name, result.Changed, result.Fragment, result.Config)
+	}}
+}
+
+func runSSHConfig(parent context.Context, options sshConfigOptions, nodes []string) (commandOutcome, error) {
 	if options.Install && options.Remove {
-		errorf(stderr, "--install and --remove are mutually exclusive")
-		return exitUsage
+		return commandOutcome{}, newUsageError(errors.New("--install and --remove are mutually exclusive"))
 	}
 	if options.Name == "" {
 		options.Name = "farrow"
 	}
 	if options.Remove && len(nodes) != 0 {
-		errorf(stderr, "ssh-config --remove removes the deployment fragment and does not accept node selectors")
-		return exitUsage
+		return commandOutcome{}, newUsageError(errors.New("ssh-config --remove removes the deployment fragment and does not accept node selectors"))
 	}
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
@@ -1456,54 +1460,33 @@ func runSSHConfig(parent context.Context, options sshConfigOptions, nodes []stri
 	if options.Remove {
 		result, err := removeSSHConfigFragment(options.Name)
 		if err != nil {
-			return reportSSHConfigFailure(result, err, stdout, stderr)
+			return commandOutcome{}, classifySSHConfigFailure(result, err)
 		}
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, result)
-		}
-		if err := writeText(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, options.Name, result.Changed, result.Fragment, result.Config); err != nil {
-			errorf(stderr, "write SSH config result: %v", err)
-			return exitRuntime
-		}
-		return exitOK
+		return sshConfigOutcome(result, options.Name), nil
 	}
 	resolved, resolveErr := currentProjectResolved()
 	if resolveErr != nil {
-		errorf(stderr, "no deployment state found; run `farrow up` first")
-		return exitConflict
+		return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
 	}
 	if resolved.Network != "private" {
-		errorf(stderr, "%s", legacyDeploymentMessage)
-		return exitConflict
+		return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
 	}
 	manager := privatevm.Manager{FarrowVersion: version.Version, Nodes: append([]string(nil), nodes...)}
 	if options.Install {
 		result, err := manager.InstallSSHConfig(ctx, options.Name, "")
 		if err != nil {
-			return reportSSHConfigFailure(result, err, stdout, stderr)
+			return commandOutcome{}, classifySSHConfigFailure(result, err)
 		}
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, result)
-		}
-		if err := writeText(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, options.Name, result.Changed, result.Fragment, result.Config); err != nil {
-			errorf(stderr, "write SSH config result: %v", err)
-			return exitRuntime
-		}
-		return exitOK
+		return sshConfigOutcome(result, options.Name), nil
 	}
 	text, err := manager.SSHConfig(ctx)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
-	if structuredOutput(stdout) {
-		return encodeJSON(stdout, stderr, map[string]string{"config": text})
-	}
-	if _, err := fmt.Fprint(stdout, text); err != nil {
-		errorf(stderr, "write SSH configuration: %v", err)
-		return exitRuntime
-	}
-	return exitOK
+	return commandOutcome{payload: map[string]string{"config": text}, text: func(stdout, _ io.Writer) error {
+		_, err := fmt.Fprint(stdout, text)
+		return err
+	}}, nil
 }
 
 // removeSSHConfigFragment is deliberately state-independent: destroy keeps
@@ -1517,31 +1500,26 @@ func removeSSHConfigFragment(name string) (sshconfig.Result, error) {
 	return sshconfig.Remove(home, name)
 }
 
-func reportSSHConfigFailure(result sshconfig.Result, err error, stdout, stderr io.Writer) int {
-	partial := result.Changed && strings.HasSuffix(result.Action, "-partial")
-	if structuredOutput(stdout) {
-		payload := struct {
-			Error   string           `json:"error"`
-			Message string           `json:"message"`
-			Partial bool             `json:"partial"`
-			Result  sshconfig.Result `json:"result"`
-		}{Error: "ssh_config", Message: err.Error(), Partial: partial, Result: result}
-		if code := encodeJSON(stdout, stderr, payload); code != exitOK {
-			return code
-		}
-	}
-	if partial {
-		errorf(stderr, "SSH config operation partially changed owned state; retry is safe (action=%s fragment=%s config=%s): %v", result.Action, result.Fragment, result.Config, err)
-	} else {
-		errorf(stderr, "%v", err)
-	}
-	return exitIntegrity
+type sshConfigFailurePayload struct {
+	Error   string           `json:"error"`
+	Message string           `json:"message"`
+	Partial bool             `json:"partial"`
+	Result  sshconfig.Result `json:"result"`
 }
 
-func runHosts(parent context.Context, action string, apply bool, stdout, stderr io.Writer) int {
+func classifySSHConfigFailure(result sshconfig.Result, err error) error {
+	partial := result.Changed && strings.HasSuffix(result.Action, "-partial")
+	payload := sshConfigFailurePayload{Error: "ssh_config", Message: err.Error(), Partial: partial, Result: result}
+	if partial {
+		err = fmt.Errorf("SSH config operation partially changed owned state; retry is safe (action=%s fragment=%s config=%s): %w", result.Action, result.Fragment, result.Config, err)
+		payload.Message = err.Error()
+	}
+	return newDetailedCommandError("ssh_config", exitIntegrity, err, "", payload)
+}
+
+func runHosts(parent context.Context, action string, apply bool, stderr io.Writer) (commandOutcome, error) {
 	if action != hostconfig.ActionInstall && action != hostconfig.ActionUninstall {
-		errorf(stderr, "unknown hosts action %q", action)
-		return exitUsage
+		return commandOutcome{}, newUsageError(fmt.Errorf("unknown hosts action %q", action))
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
@@ -1551,8 +1529,7 @@ func runHosts(parent context.Context, action string, apply bool, stdout, stderr 
 	if action == hostconfig.ActionInstall {
 		entries, err = manager.HostEntries(ctx)
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitCapability
+			return commandOutcome{}, newDetailedCommandError("capability", exitCapability, err, "", nil)
 		}
 	}
 	baseRunner := execx.OSRunner{Timeout: 30 * time.Second, OutputLimit: 1 << 20}
@@ -1561,8 +1538,7 @@ func runHosts(parent context.Context, action string, apply bool, stdout, stderr 
 		privilege := &sudoSession{base: baseRunner, stderr: stderr, scope: "hosts command"}
 		defer privilege.close()
 		if err := privilege.ensure(ctx, "apply the reviewed marker-owned /etc/hosts plan"); err != nil {
-			errorf(stderr, "%v", err)
-			return exitCapability
+			return commandOutcome{}, newDetailedCommandError("capability", exitCapability, err, "", nil)
 		}
 	}
 	debugf(stderr, "hosts action=%s entries=%d apply=%t", action, len(entries), apply)
@@ -1573,34 +1549,32 @@ func runHosts(parent context.Context, action string, apply bool, stdout, stderr 
 	progressItem := startProgress(ctx, stderr, progressMessage)
 	report, err := (hostconfig.Executor{Root: rootRunner}).Execute(ctx, action, entries, apply)
 	progressItem.Stop(err)
+	if errors.Is(parent.Err(), context.Canceled) {
+		return commandOutcome{}, ErrCancelled
+	}
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitIntegrity
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 	}
-	if structuredOutput(stdout) {
-		return encodeJSON(stdout, stderr, report)
-	}
-	textField(stdout, 16, "action", statusValue(stdout, report.Plan.Action))
-	textField(stdout, 16, "target", report.Plan.Target)
-	textField(stdout, 16, "changed", report.Plan.Changed)
-	textField(stdout, 16, "applied", report.Applied)
-	textField(stdout, 16, "before sha256", report.Plan.BeforeSHA256)
-	textField(stdout, 16, "after sha256", report.Plan.AfterSHA256)
-	textField(stdout, 16, "helper", report.Plan.HelperPath)
-	textField(stdout, 16, "helper sha256", report.Plan.HelperSHA256)
-	for _, line := range report.Plan.Lines {
-		if _, err := fmt.Fprintln(stdout, line); err != nil {
-			errorf(stderr, "write hosts plan: %v", err)
-			return exitRuntime
+	return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
+		textField(stdout, 16, "action", statusValue(stdout, report.Plan.Action))
+		textField(stdout, 16, "target", report.Plan.Target)
+		textField(stdout, 16, "changed", report.Plan.Changed)
+		textField(stdout, 16, "applied", report.Applied)
+		textField(stdout, 16, "before sha256", report.Plan.BeforeSHA256)
+		textField(stdout, 16, "after sha256", report.Plan.AfterSHA256)
+		textField(stdout, 16, "helper", report.Plan.HelperPath)
+		textField(stdout, 16, "helper sha256", report.Plan.HelperSHA256)
+		for _, line := range report.Plan.Lines {
+			if _, err := fmt.Fprintln(stdout, line); err != nil {
+				return err
+			}
 		}
-	}
-	if report.Plan.Changed && !report.Applied {
-		if _, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact marker-owned plan; Farrow will request sudo when needed"); err != nil {
-			errorf(stderr, "write hosts plan: %v", err)
-			return exitRuntime
+		if report.Plan.Changed && !report.Applied {
+			_, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact marker-owned plan; Farrow will request sudo when needed")
+			return err
 		}
-	}
-	return exitOK
+		return nil
+	}}, nil
 }
 
 type logResult struct {
@@ -1638,7 +1612,7 @@ type logOptions struct {
 	Follow bool
 }
 
-func runLogs(parent context.Context, options logOptions, requestedNode string, stdout, stderr io.Writer) int {
+func runLogs(parent context.Context, options logOptions, requestedNode string, stdout, stderr io.Writer) (commandOutcome, error) {
 	if options.Source == "" {
 		options.Source = "serial"
 	}
@@ -1646,25 +1620,21 @@ func runLogs(parent context.Context, options logOptions, requestedNode string, s
 	defer cancel()
 	resolved, resolveErr := currentProjectResolved()
 	if resolveErr != nil {
-		errorf(stderr, "no deployment state found; run `farrow up` first")
-		return exitConflict
+		return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
 	}
 	if resolved.Network != "private" {
-		errorf(stderr, "%s", legacyDeploymentMessage)
-		return exitConflict
+		return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
 	}
 	node := requestedNode
 	if options.Source == "events" {
 		if node != "" {
-			errorf(stderr, "--source events is the deployment-wide event log and does not accept a node")
-			return exitUsage
+			return commandOutcome{}, newUsageError(errors.New("--source events is the deployment-wide event log and does not accept a node"))
 		}
 		node = "deployment"
 	}
 	path, err := (privatevm.Manager{FarrowVersion: version.Version}).LogPath(requestedNode, options.Source)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
 	if node == "" {
 		for _, candidate := range resolved.Nodes {
@@ -1676,8 +1646,7 @@ func runLogs(parent context.Context, options logOptions, requestedNode string, s
 	}
 	handle, err := os.Open(path)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
 	defer func() {
 		// Log reads are read-only; content has already been consumed by the time
@@ -1687,24 +1656,22 @@ func runLogs(parent context.Context, options logOptions, requestedNode string, s
 	if structuredOutput(stdout) && !options.Follow {
 		info, err := handle.Stat()
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		capture := boundedCapture{limit: structuredCommandCaptureLimit}
 		if _, err := io.Copy(&capture, handle); err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		content := capture.String()
-		return encodeJSON(stdout, stderr, logResult{
+		result := logResult{
 			Node: node, Source: options.Source, Path: path, Content: content,
 			Bytes: len(content), TotalBytes: info.Size(), Truncated: capture.truncated,
-		})
+		}
+		return commandOutcome{payload: result}, nil
 	}
 	if structuredOutput(stdout) {
 		if err := encodeStreamOutput(stdout, logStreamRecord{Type: "start", Node: node, Source: options.Source, Path: path}); err != nil {
-			bestEffortf(stderr, "encode %s log stream: %v\n", outputFormatFor(stdout), err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 		reader := bufio.NewReaderSize(handle, structuredLogRecordLimit)
 		var sequence uint64
@@ -1716,43 +1683,48 @@ func runLogs(parent context.Context, options logOptions, requestedNode string, s
 					Type: "line", Node: node, Source: options.Source, Path: path, Sequence: sequence,
 					Content: chunk, Continued: continued,
 				}); err != nil {
-					bestEffortf(stderr, "encode %s log stream: %v\n", outputFormatFor(stdout), err)
-					return exitRuntime
+					return commandOutcome{}, newRuntimeError(err)
 				}
 			}
 			if readErr == nil {
 				continue
 			}
 			if !errors.Is(readErr, io.EOF) {
-				errorf(stderr, "%v", readErr)
-				return exitRuntime
+				return commandOutcome{}, newRuntimeError(readErr)
 			}
 			select {
 			case <-ctx.Done():
-				return exitOK
+				return commandOutcome{}, ErrCancelled
 			case <-time.After(250 * time.Millisecond):
 			}
 		}
 	}
+	if !options.Follow {
+		content, err := io.ReadAll(handle)
+		if err != nil {
+			return commandOutcome{}, newRuntimeError(err)
+		}
+		result := logResult{Node: node, Source: options.Source, Path: path, Content: string(content), Bytes: len(content), TotalBytes: int64(len(content))}
+		return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
+			_, err := stdout.Write(content)
+			return err
+		}}, nil
+	}
 	if _, err := io.Copy(stdout, handle); err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
-	if options.Follow {
-		bestEffortf(stderr, "%s following %s log for %s\n", styled(stderr, ansiCyan, "→"), options.Source, node)
-	}
+	bestEffortf(stderr, "%s following %s log for %s\n", styled(stderr, ansiCyan, "→"), options.Source, node)
 	for options.Follow {
 		select {
 		case <-ctx.Done():
-			return exitOK
+			return commandOutcome{}, ErrCancelled
 		case <-time.After(250 * time.Millisecond):
 			if _, err := io.Copy(stdout, handle); err != nil {
-				errorf(stderr, "%v", err)
-				return exitRuntime
+				return commandOutcome{}, newRuntimeError(err)
 			}
 		}
 	}
-	return exitOK
+	return commandOutcome{streamed: true}, nil
 }
 
 type validateResult struct {

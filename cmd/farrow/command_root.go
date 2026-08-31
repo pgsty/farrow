@@ -13,8 +13,9 @@ import (
 var ErrCancelled = errors.New("cancelled")
 
 type commandOutcome struct {
-	payload any
-	text    func(io.Writer, io.Writer) error
+	payload  any
+	text     func(io.Writer, io.Writer) error
+	streamed bool
 }
 
 type typedCommandError interface {
@@ -110,6 +111,9 @@ func collectCommandOutcome(ctx context.Context, outcome commandOutcome) error {
 
 func renderCommandOutcome(outcome *commandOutcome, stdout, stderr io.Writer) int {
 	if outcome == nil {
+		return exitOK
+	}
+	if outcome.streamed {
 		return exitOK
 	}
 	if structuredOutput(stdout) {
