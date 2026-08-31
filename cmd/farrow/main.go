@@ -1802,43 +1802,40 @@ func runLogs(parent context.Context, options logOptions, requestedNode string, s
 	return exitOK
 }
 
-func runValidate(filePath string, stdout, stderr io.Writer) int {
+type validateResult struct {
+	Valid    bool          `json:"valid"`
+	Source   string        `json:"source"`
+	SpecHash string        `json:"spec_hash"`
+	Resolved spec.Resolved `json:"resolved"`
+	Warnings []string      `json:"warnings,omitempty"`
+}
+
+func runValidate(filePath string) (commandOutcome, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
 	file, source, err := config.Discover(cwd, filePath)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitUsage
+		return commandOutcome{}, newUsageError(err)
 	}
 	resolved, err := file.Resolve()
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitUsage
+		return commandOutcome{}, newUsageError(err)
 	}
 	hash, err := spec.Hash(resolved)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
 	warnings := configurationWarnings(resolved)
-	result := struct {
-		Valid    bool          `json:"valid"`
-		Source   string        `json:"source"`
-		SpecHash string        `json:"spec_hash"`
-		Resolved spec.Resolved `json:"resolved"`
-		Warnings []string      `json:"warnings,omitempty"`
-	}{true, source, hash, resolved, warnings}
-	if structuredOutput(stdout) {
-		return encodeJSON(stdout, stderr, result)
-	}
-	printWarnings(stderr, warnings)
-	textField(stdout, 12, "status", statusValue(stdout, "valid"))
-	textField(stdout, 12, "source", source)
-	textField(stdout, 12, "spec hash", hash)
-	return exitOK
+	result := validateResult{Valid: true, Source: source, SpecHash: hash, Resolved: resolved, Warnings: warnings}
+	return commandOutcome{payload: result, text: func(stdout, stderr io.Writer) error {
+		printWarnings(stderr, warnings)
+		textField(stdout, 12, "status", statusValue(stdout, "valid"))
+		textField(stdout, 12, "source", source)
+		textField(stdout, 12, "spec hash", hash)
+		return nil
+	}}, nil
 }
 
 type initOptions struct {
@@ -1848,46 +1845,48 @@ type initOptions struct {
 	Force    bool
 }
 
-func runInit(options initOptions, stdout, stderr io.Writer) int {
+type initResult struct {
+	Template string `json:"template"`
+	Content  string `json:"content,omitempty"`
+	Path     string `json:"path,omitempty"`
+}
+
+func runInit(options initOptions) (commandOutcome, error) {
 	name := options.Template
 	if name == "" {
 		name = "meta"
 	}
 	data, err := config.Template(name, options.CIDR)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitUsage
+		return commandOutcome{}, newUsageError(err)
 	}
+	warnings := make([]string, 0, 1)
 	if options.CIDR != "" {
 		if layout, parseErr := subnet.Parse(options.CIDR); parseErr == nil {
 			if warning := layout.Warning(); warning != "" {
-				warningf(stderr, "%s", warning)
+				warnings = append(warnings, warning)
 			}
 		}
 	}
 	if options.Output == "-" {
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, struct {
-				Template string `json:"template"`
-				Content  string `json:"content"`
-			}{name, string(data)})
-		}
-		_, _ = stdout.Write(data)
-		return exitOK
+		result := initResult{Template: name, Content: string(data)}
+		return commandOutcome{payload: result, text: func(stdout, stderr io.Writer) error {
+			printWarnings(stderr, warnings)
+			_, err := stdout.Write(data)
+			return err
+		}}, nil
 	}
 	target := options.Output
 	if target == "" {
 		cwd, cwdErr := os.Getwd()
 		if cwdErr != nil {
-			errorf(stderr, "%v", cwdErr)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(cwdErr)
 		}
 		target = filepath.Join(cwd, "farrow.yml")
 	}
 	target, err = filepath.Abs(target)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitUsage
+		return commandOutcome{}, newUsageError(err)
 	}
 	if options.Force {
 		err = fsutil.AtomicWrite(target, data, 0o600)
@@ -1896,22 +1895,18 @@ func runInit(options initOptions, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			errorf(stderr, "%s already exists; edit it, pass --force to replace it, or -o for another path", target)
-			return exitConflict
+			return commandOutcome{}, newConflictError(fmt.Errorf("%s already exists; edit it, pass --force to replace it, or -o for another path", target))
 		}
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
-	if structuredOutput(stdout) {
-		return encodeJSON(stdout, stderr, struct {
-			Template string `json:"template"`
-			Path     string `json:"path"`
-		}{name, target})
-	}
-	textField(stdout, 10, "template", name)
-	textField(stdout, 10, "wrote", target)
-	textField(stdout, 10, "next", "farrow setup && farrow up")
-	return exitOK
+	result := initResult{Template: name, Path: target}
+	return commandOutcome{payload: result, text: func(stdout, stderr io.Writer) error {
+		printWarnings(stderr, warnings)
+		textField(stdout, 10, "template", name)
+		textField(stdout, 10, "wrote", target)
+		textField(stdout, 10, "next", "farrow setup && farrow up")
+		return nil
+	}}, nil
 }
 
 type imageOptions struct {

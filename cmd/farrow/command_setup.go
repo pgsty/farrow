@@ -65,11 +65,15 @@ inventory to stdout for inspection or composition.`,
   farrow init full -c 10.20.30.0/24 # generate a lab on another private /24`,
 		Args:              templateArgs,
 		ValidArgsFunction: templateCompletion,
-		RunE: func(_ *cobra.Command, arguments []string) error {
+		RunE: func(command *cobra.Command, arguments []string) error {
 			if len(arguments) == 1 {
 				options.Template = arguments[0]
 			}
-			return commandError(runInit(options, stdout, stderr))
+			outcome, err := runInit(options)
+			if err != nil {
+				return err
+			}
+			return collectCommandOutcome(command.Context(), outcome)
 		},
 	}
 	command.Flags().StringVarP(&options.CIDR, "cidr", "c", "", "rebase the generated template to a canonical RFC1918 IPv4 /24")
@@ -91,8 +95,12 @@ validate never falls back to the already-applied deployment state.`,
   farrow validate -f pigsty.yml  # validate one explicit inventory
   farrow --json validate         # emit the resolved specification as JSON`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return commandError(runValidate(filePath, stdout, stderr))
+		RunE: func(command *cobra.Command, _ []string) error {
+			outcome, err := runValidate(filePath)
+			if err != nil {
+				return err
+			}
+			return collectCommandOutcome(command.Context(), outcome)
 		},
 	}
 	command.Flags().StringVarP(&filePath, "file", "f", "", "inventory to validate (default: discover "+configDiscoverySummary+")")

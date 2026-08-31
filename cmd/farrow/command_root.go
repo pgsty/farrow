@@ -14,7 +14,45 @@ var ErrCancelled = errors.New("cancelled")
 
 type commandOutcome struct {
 	payload any
-	text    func(io.Writer) error
+	text    func(io.Writer, io.Writer) error
+}
+
+type typedCommandError interface {
+	error
+	commandFailure() commandFailure
+	exitCode() int
+}
+
+type commandBoundaryError struct {
+	failure commandFailure
+	code    int
+	cause   error
+}
+
+func (err *commandBoundaryError) Error() string { return err.failure.Message }
+func (err *commandBoundaryError) Unwrap() error { return err.cause }
+func (err *commandBoundaryError) commandFailure() commandFailure {
+	return err.failure
+}
+func (err *commandBoundaryError) exitCode() int { return err.code }
+
+type usageError struct{ *commandBoundaryError }
+type conflictError struct{ *commandBoundaryError }
+
+func newCommandBoundaryError(category string, code int, err error) *commandBoundaryError {
+	return &commandBoundaryError{failure: commandFailure{Error: category, Message: err.Error()}, code: code, cause: err}
+}
+
+func newUsageError(err error) error {
+	return &usageError{newCommandBoundaryError("usage", exitUsage, err)}
+}
+
+func newConflictError(err error) error {
+	return &conflictError{newCommandBoundaryError("conflict", exitConflict, err)}
+}
+
+func newRuntimeError(err error) error {
+	return newCommandBoundaryError("runtime", exitRuntime, err)
 }
 
 type commandOutcomeCollector struct {
@@ -45,7 +83,11 @@ func renderCommandOutcome(outcome *commandOutcome, stdout, stderr io.Writer) int
 	if outcome.text == nil {
 		return exitOK
 	}
-	if err := outcome.text(stdout); err != nil {
+	if err := outcome.text(stdout, stderr); err != nil {
+		errorf(stderr, "write command output: %v", err)
+		return exitRuntime
+	}
+	if err := outputWriteError(stdout); err != nil {
 		errorf(stderr, "write command output: %v", err)
 		return exitRuntime
 	}
@@ -260,6 +302,17 @@ func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Write
 	}
 	if executed == nil {
 		executed = root
+	}
+	var typed typedCommandError
+	if errors.As(err, &typed) {
+		failure := typed.commandFailure()
+		if structuredOutput(stdout) && !structuredPayloadWritten(stdout) {
+			if code := encodeJSON(stdout, stderr, failure); code != exitOK {
+				return code
+			}
+		}
+		errorf(stderr, "%s", failure.Message)
+		return typed.exitCode()
 	}
 	var coded commandExitError
 	if errors.As(err, &coded) {
