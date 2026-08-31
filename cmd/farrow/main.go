@@ -122,7 +122,7 @@ func confirmDestructive(force, interactive bool, action string, input io.Reader,
 		return fmt.Errorf("read %s confirmation: %w", action, err)
 	}
 	if strings.TrimSpace(line) != action {
-		return fmt.Errorf("%s confirmation did not match %q", action, action)
+		return fmt.Errorf("%w: %s confirmation did not match %q", ErrCancelled, action, action)
 	}
 	return nil
 }
@@ -1125,76 +1125,64 @@ func (failure *lifecycleSSHConfigFailure) Error() string {
 
 func (failure *lifecycleSSHConfigFailure) Unwrap() error { return failure.Err }
 
-func reportLifecycleSSHConfigFailure(failure *lifecycleSSHConfigFailure, stdout, stderr io.Writer) int {
-	if structuredOutput(stdout) {
-		payload := struct {
-			Error     string           `json:"error"`
-			Message   string           `json:"message"`
-			Command   string           `json:"command"`
-			Partial   bool             `json:"partial"`
-			Status    privatevm.Status `json:"status"`
-			SSHConfig sshconfig.Result `json:"ssh_config"`
-		}{Error: "ssh_config", Message: failure.Error(), Command: failure.Command, Partial: true, Status: failure.Status, SSHConfig: failure.Result}
-		if code := encodeJSON(stdout, stderr, payload); code != exitOK {
-			return code
-		}
-	} else {
-		if err := printPrivateStatus(stdout, failure.Status); err != nil {
-			errorf(stderr, "write lifecycle status: %v", err)
-			return exitRuntime
-		}
-	}
-	errorf(stderr, "%s", failure.Error())
-	return exitIntegrity
+type lifecycleSSHConfigFailurePayload struct {
+	Error     string           `json:"error"`
+	Message   string           `json:"message"`
+	Command   string           `json:"command"`
+	Partial   bool             `json:"partial"`
+	Status    privatevm.Status `json:"status"`
+	SSHConfig sshconfig.Result `json:"ssh_config"`
 }
 
-func reportPrivateLifecycleError(err error, operationID string, stdout, stderr io.Writer) int {
+func classifyLifecycleSSHConfigFailure(failure *lifecycleSSHConfigFailure) error {
+	payload := lifecycleSSHConfigFailurePayload{
+		Error: "ssh_config", Message: failure.Error(), Command: failure.Command,
+		Partial: true, Status: failure.Status, SSHConfig: failure.Result,
+	}
+	return newRenderedCommandError("ssh_config", exitIntegrity, failure, failure.Status.OperationID, payload, func(stdout, _ io.Writer) error {
+		return printPrivateStatus(stdout, failure.Status)
+	})
+}
+
+func classifyPrivateLifecycleError(err error, operationID string) error {
 	if errors.Is(err, privatevm.ErrRecreateRequired) {
-		return reportCommandFailure(stdout, stderr, "recreate_required", err.Error(), operationID, exitConflict)
+		return newDetailedCommandError("recreate_required", exitConflict, err, operationID, nil)
 	}
 	if errors.Is(err, privatevm.ErrNodesRemoved) {
-		return reportCommandFailure(stdout, stderr, "nodes_removed", err.Error(), operationID, exitConflict)
+		return newDetailedCommandError("nodes_removed", exitConflict, err, operationID, nil)
 	}
 	var networkPreflight *privatevm.NetworkPreflightError
 	if errors.As(err, &networkPreflight) {
-		if structuredOutput(stdout) {
-			if code := encodeJSON(stdout, stderr, networkPreflight.Report); code != exitOK {
-				return code
-			}
-		}
-		errorf(stderr, "%v", networkPreflight)
-		return networkPreflight.Report.ExitCode
+		return newDetailedCommandError("network_preflight", networkPreflight.Report.ExitCode, networkPreflight, operationID, networkPreflight.Report)
 	}
 	var capability *privatevm.CapabilityError
 	if errors.As(err, &capability) {
-		return reportCommandFailure(stdout, stderr, "capability", capability.Error(), operationID, exitCapability)
+		return newDetailedCommandError("capability", exitCapability, capability, operationID, nil)
 	}
 	var partial *privatevm.PartialError
 	if errors.As(err, &partial) {
-		if structuredOutput(stdout) {
-			payload := lifecyclePartialFailure{Error: "partial", Message: partial.Error(), OperationID: operationID, Nodes: partial.Nodes, RolledBack: partial.RolledBack}
-			if code := encodeJSON(stdout, stderr, payload); code != exitOK {
-				return code
-			}
-		}
-		errorf(stderr, "%v", partial)
-		return exitPartial
+		payload := lifecyclePartialFailure{Error: "partial", Message: partial.Error(), OperationID: operationID, Nodes: partial.Nodes, RolledBack: partial.RolledBack}
+		return newDetailedCommandError("partial", exitPartial, partial, operationID, payload)
 	}
 	var deleteErr *persistentDeleteError
 	if errors.As(err, &deleteErr) {
-		return reportCommandFailure(stdout, stderr, "persistent_delete", deleteErr.Error(), operationID, exitIntegrity)
+		return newDetailedCommandError("persistent_delete", exitIntegrity, deleteErr, operationID, nil)
 	}
-	return reportCommandFailure(stdout, stderr, "runtime", err.Error(), operationID, exitRuntime)
+	return newDetailedCommandError("runtime", exitRuntime, err, operationID, nil)
 }
 
-func runPrivateCommand(parent context.Context, command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, purge, noWait, rollback bool, stdout, stderr io.Writer) int {
+type lifecycleResult struct {
+	privatevm.Status
+	SSHConfig *sshconfig.Result `json:"ssh_config,omitempty"`
+}
+
+func runPrivateCommand(parent context.Context, command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, purge, noWait, rollback bool, stderr io.Writer) (commandOutcome, error) {
 	operationID := ""
 	if command != "status" && command != "plan" {
 		var err error
 		operationID, err = identity.NewUUID()
 		if err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
+			return commandOutcome{}, newRuntimeError(err)
 		}
 	}
 	var progressItem *progress
@@ -1205,25 +1193,24 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		defer cancel()
 		plan, err := manager.Plan(ctx, resolved)
 		if err != nil {
-			return reportPrivateLifecycleError(err, operationID, stdout, stderr)
+			return commandOutcome{}, classifyPrivateLifecycleError(err, operationID)
 		}
-		if structuredOutput(stdout) {
-			return encodeJSON(stdout, stderr, plan)
-		}
-		textField(stdout, 14, "action", statusValue(stdout, plan.Action))
-		textField(stdout, 14, "destructive", plan.Destructive)
-		textField(stdout, 14, "spec hash", plan.SpecHash)
-		textField(stdout, 14, "nodes", strings.Join(plan.Nodes, ","))
-		if len(plan.Create) != 0 {
-			textField(stdout, 14, "create", strings.Join(plan.Create, ","))
-		}
-		if len(plan.Recreate) != 0 {
-			textField(stdout, 14, "recreate", strings.Join(plan.Recreate, ",")+"  (apply: farrow recreate --force "+strings.Join(plan.Recreate, " ")+")")
-		}
-		if len(plan.Missing) != 0 {
-			textField(stdout, 14, "missing", strings.Join(plan.Missing, ",")+"  (config dropped them; remove with: farrow destroy "+strings.Join(plan.Missing, " ")+" --force)")
-		}
-		return exitOK
+		return commandOutcome{payload: plan, text: func(stdout, _ io.Writer) error {
+			textField(stdout, 14, "action", statusValue(stdout, plan.Action))
+			textField(stdout, 14, "destructive", plan.Destructive)
+			textField(stdout, 14, "spec hash", plan.SpecHash)
+			textField(stdout, 14, "nodes", strings.Join(plan.Nodes, ","))
+			if len(plan.Create) != 0 {
+				textField(stdout, 14, "create", strings.Join(plan.Create, ","))
+			}
+			if len(plan.Recreate) != 0 {
+				textField(stdout, 14, "recreate", strings.Join(plan.Recreate, ",")+"  (apply: farrow recreate --force "+strings.Join(plan.Recreate, " ")+")")
+			}
+			if len(plan.Missing) != 0 {
+				textField(stdout, 14, "missing", strings.Join(plan.Missing, ",")+"  (config dropped them; remove with: farrow destroy "+strings.Join(plan.Missing, " ")+" --force)")
+			}
+			return nil
+		}}, nil
 	}
 	timeout := 15 * time.Second
 	var operation func(context.Context) (privatevm.Status, error)
@@ -1242,8 +1229,10 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		operation = func(ctx context.Context) (privatevm.Status, error) { return manager.Reload(ctx, resolved) }
 	case "recreate":
 		if err := confirmCLIAction(force, "recreate", stderr); err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
+			if errors.Is(err, ErrCancelled) {
+				return commandOutcome{}, ErrCancelled
+			}
+			return commandOutcome{}, newUsageError(err)
 		}
 		timeout = withReadinessTimeout(20*time.Minute, resolved)
 		operation = func(ctx context.Context) (privatevm.Status, error) { return manager.RecreateResolved(ctx, resolved) }
@@ -1251,18 +1240,19 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		operation = manager.Status
 	case "destroy":
 		if len(nodes) != 0 && (deletePersistent || purge) {
-			errorf(stderr, "--delete-persistent and --purge apply to whole-deployment destroy only")
-			return exitUsage
+			return commandOutcome{}, newUsageError(errors.New("--delete-persistent and --purge apply to whole-deployment destroy only"))
 		}
 		if !force {
 			// State the exact scope before the typed confirmation.
 			if _, err := fmt.Fprintln(stderr, destroyScope(resolved, nodes, deletePersistent, purge)); err != nil {
-				return exitRuntime
+				return commandOutcome{}, newRuntimeError(err)
 			}
 		}
 		if err := confirmCLIAction(force, "destroy", stderr); err != nil {
-			errorf(stderr, "%v", err)
-			return exitUsage
+			if errors.Is(err, ErrCancelled) {
+				return commandOutcome{}, ErrCancelled
+			}
+			return commandOutcome{}, newUsageError(err)
 		}
 		timeout = 10 * time.Minute
 		operation = func(ctx context.Context) (privatevm.Status, error) {
@@ -1281,8 +1271,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			return status, nil
 		}
 	default:
-		errorf(stderr, "unsupported private command %q", command)
-		return exitUsage
+		return commandOutcome{}, newUsageError(fmt.Errorf("unsupported private command %q", command))
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
@@ -1294,7 +1283,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	status.OperationID = operationID
 	if errors.Is(parent.Err(), context.Canceled) {
 		progressItem.Stop(ErrCancelled)
-		return exitCancelled
+		return commandOutcome{}, ErrCancelled
 	}
 	lifecycleSucceeded := err == nil
 	var reconciledSSHConfig *sshconfig.Result
@@ -1347,14 +1336,14 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	}
 	progressItem.Stop(err)
 	if errors.Is(parent.Err(), context.Canceled) {
-		return exitCancelled
+		return commandOutcome{}, ErrCancelled
 	}
 	if err != nil {
 		var integrationFailure *lifecycleSSHConfigFailure
 		if errors.As(err, &integrationFailure) {
-			return reportLifecycleSSHConfigFailure(integrationFailure, stdout, stderr)
+			return commandOutcome{}, classifyLifecycleSSHConfigFailure(integrationFailure)
 		}
-		return reportPrivateLifecycleError(err, operationID, stdout, stderr)
+		return commandOutcome{}, classifyPrivateLifecycleError(err, operationID)
 	}
 	if command == "up" || command == "reload" {
 		suggestHostsPublication(resolved, stderr)
@@ -1378,28 +1367,23 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			}
 		}
 	}
-	if structuredOutput(stdout) {
-		payload := struct {
-			privatevm.Status
-			SSHConfig *sshconfig.Result `json:"ssh_config,omitempty"`
-		}{Status: status, SSHConfig: reconciledSSHConfig}
-		return encodeJSON(stdout, stderr, payload)
-	}
-	if err := printPrivateStatus(stdout, status); err != nil {
-		errorf(stderr, "write lifecycle status: %v", err)
-		return exitRuntime
-	}
-	if reconciledSSHConfig != nil {
-		textField(stdout, 12, "ssh config", fmt.Sprintf("%s (action=%s changed=%t)", reconciledSSHConfig.Fragment, reconciledSSHConfig.Action, reconciledSSHConfig.Changed))
-	}
-	return exitOK
+	result := lifecycleResult{Status: status, SSHConfig: reconciledSSHConfig}
+	return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
+		if err := printPrivateStatus(stdout, status); err != nil {
+			return err
+		}
+		if reconciledSSHConfig != nil {
+			textField(stdout, 12, "ssh config", fmt.Sprintf("%s (action=%s changed=%t)", reconciledSSHConfig.Fragment, reconciledSSHConfig.Action, reconciledSSHConfig.Changed))
+		}
+		return nil
+	}}, nil
 }
 
-func runLifecycleCommand(ctx context.Context, command string, options lifecycleOptions, nodes []string, stdout, stderr io.Writer) int {
+func runLifecycleCommand(ctx context.Context, command string, options lifecycleOptions, nodes []string, stderr io.Writer) (commandOutcome, error) {
 	if (options.DeletePersistent || options.Purge) && !options.Force && !term.IsTerminal(int(os.Stdin.Fd())) {
 		// On a terminal the interactive destroy confirmation covers the
 		// widened scope; without one, automation must state --force.
-		return reportCommandFailure(stdout, stderr, "usage", "--delete-persistent and --purge require the separate --force destroy confirmation", "", exitUsage)
+		return commandOutcome{}, newUsageError(errors.New("--delete-persistent and --purge require the separate --force destroy confirmation"))
 	}
 	if options.Purge {
 		// A purge is a terminal disposal; retained persistent disks make no
@@ -1408,7 +1392,7 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 	}
 	resolvedFile, hasConfig, err := loadLifecycleConfig(command, options.ConfigPath)
 	if err != nil {
-		return reportCommandFailure(stdout, stderr, "usage", err.Error(), "", exitUsage)
+		return commandOutcome{}, newUsageError(err)
 	}
 	persisted, persistedErr := currentProjectResolved()
 	switch {
@@ -1418,22 +1402,22 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 			hasConfig = true
 		}
 	case persistedErr == nil && persisted.Network == "user":
-		return reportCommandFailure(stdout, stderr, "conflict", legacyDeploymentMessage, "", exitConflict)
+		return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
 	}
 	if !hasConfig {
 		message := config.ErrNoConfig.Error()
 		if !lifecycleReadsConfig(command) {
 			message = "no deployment state found; run `farrow up` first"
 		}
-		return reportCommandFailure(stdout, stderr, "conflict", message, "", exitConflict)
+		return commandOutcome{}, newConflictError(errors.New(message))
 	}
 	// Selectors are checked against the same specification the engine will
 	// use, before host preflight, confirmation prompts, or any change.
 	if err := validateNodeSelectors(resolvedFile, nodes); err != nil {
-		return reportCommandFailure(stdout, stderr, "usage", err.Error(), "", exitUsage)
+		return commandOutcome{}, newUsageError(err)
 	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
-	return runPrivateCommand(ctx, command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stdout, stderr)
+	return runPrivateCommand(ctx, command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
 }
 
 func validateNodeSelectors(resolved spec.Resolved, nodes []string) error {

@@ -23,7 +23,7 @@ func runVersionCommand() commandOutcome {
 	result := versionResult{Name: "farrow", Version: version.Version, Commit: version.Commit, Built: version.Date, OS: runtime.GOOS, Arch: runtime.GOARCH}
 	return commandOutcome{
 		payload: result,
-		text: func(writer io.Writer) error {
+		text: func(writer, _ io.Writer) error {
 			_, err := fmt.Fprintf(writer, "farrow %s (commit %s, built %s, %s/%s)\n", result.Version, result.Commit, result.Built, result.OS, result.Arch)
 			return err
 		},

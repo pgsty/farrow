@@ -54,14 +54,6 @@ func emitCommandFailure(stdout, stderr io.Writer, category, message, operationID
 	return encodeJSON(stdout, stderr, commandFailure{Error: category, Message: message, OperationID: operationID})
 }
 
-func reportCommandFailure(stdout, stderr io.Writer, category, message, operationID string, code int) int {
-	if encodeCode := emitCommandFailure(stdout, stderr, category, message, operationID); encodeCode != exitOK {
-		return encodeCode
-	}
-	errorf(stderr, "%s", message)
-	return code
-}
-
 type outputWriter struct {
 	io.Writer
 	context *outputContext

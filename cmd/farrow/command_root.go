@@ -21,12 +21,15 @@ type typedCommandError interface {
 	error
 	commandFailure() commandFailure
 	exitCode() int
+	commandPayload() any
 }
 
 type commandBoundaryError struct {
 	failure commandFailure
 	code    int
 	cause   error
+	payload any
+	text    func(io.Writer, io.Writer) error
 }
 
 func (err *commandBoundaryError) Error() string { return err.failure.Message }
@@ -34,13 +37,27 @@ func (err *commandBoundaryError) Unwrap() error { return err.cause }
 func (err *commandBoundaryError) commandFailure() commandFailure {
 	return err.failure
 }
-func (err *commandBoundaryError) exitCode() int { return err.code }
+func (err *commandBoundaryError) exitCode() int       { return err.code }
+func (err *commandBoundaryError) commandPayload() any { return err.payload }
 
 type usageError struct{ *commandBoundaryError }
 type conflictError struct{ *commandBoundaryError }
 
 func newCommandBoundaryError(category string, code int, err error) *commandBoundaryError {
 	return &commandBoundaryError{failure: commandFailure{Error: category, Message: err.Error()}, code: code, cause: err}
+}
+
+func newDetailedCommandError(category string, code int, err error, operationID string, payload any) error {
+	return &commandBoundaryError{
+		failure: commandFailure{Error: category, Message: err.Error(), OperationID: operationID},
+		code:    code, cause: err, payload: payload,
+	}
+}
+
+func newRenderedCommandError(category string, code int, err error, operationID string, payload any, text func(io.Writer, io.Writer) error) error {
+	boundary := newDetailedCommandError(category, code, err, operationID, payload).(*commandBoundaryError)
+	boundary.text = text
+	return boundary
 }
 
 func newUsageError(err error) error {
@@ -305,14 +322,7 @@ func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Write
 	}
 	var typed typedCommandError
 	if errors.As(err, &typed) {
-		failure := typed.commandFailure()
-		if structuredOutput(stdout) && !structuredPayloadWritten(stdout) {
-			if code := encodeJSON(stdout, stderr, failure); code != exitOK {
-				return code
-			}
-		}
-		errorf(stderr, "%s", failure.Message)
-		return typed.exitCode()
+		return renderTypedCommandError(typed, stdout, stderr)
 	}
 	var coded commandExitError
 	if errors.As(err, &coded) {
@@ -335,6 +345,26 @@ func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Write
 		return exitRuntime
 	}
 	return exitUsage
+}
+
+func renderTypedCommandError(typed typedCommandError, stdout, stderr io.Writer) int {
+	failure := typed.commandFailure()
+	if structuredOutput(stdout) && !structuredPayloadWritten(stdout) {
+		payload := any(failure)
+		if typed.commandPayload() != nil {
+			payload = typed.commandPayload()
+		}
+		if code := encodeJSON(stdout, stderr, payload); code != exitOK {
+			return code
+		}
+	} else if boundary, ok := typed.(*commandBoundaryError); ok && boundary.text != nil {
+		if renderErr := boundary.text(stdout, stderr); renderErr != nil {
+			errorf(stderr, "write command failure: %v", renderErr)
+			return exitRuntime
+		}
+	}
+	errorf(stderr, "%s", failure.Message)
+	return typed.exitCode()
 }
 
 func reportCancelled(stdout, stderr io.Writer) int {

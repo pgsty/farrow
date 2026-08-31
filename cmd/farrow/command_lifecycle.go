@@ -139,7 +139,11 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 		noFileCompletions(command, "force", "delete-persistent", "purge")
 	}
 	command.RunE = func(command *cobra.Command, nodes []string) error {
-		return commandError(runLifecycleCommand(command.Context(), name, options, nodes, stdout, stderr))
+		outcome, err := runLifecycleCommand(command.Context(), name, options, nodes, stderr)
+		if err != nil {
+			return err
+		}
+		return collectCommandOutcome(command.Context(), outcome)
 	}
 	return command
 }

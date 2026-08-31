@@ -522,7 +522,11 @@ func TestLifecycleSSHConfigFailureEmitsOneStructuredPartialResult(t *testing.T) 
 		Err:     errors.New("unsafe SSH directory"),
 	}
 	failure.Status.SpecHash = "spec-1"
-	if code := reportLifecycleSSHConfigFailure(failure, preparedStdout, preparedStderr); code != exitIntegrity {
+	typed, ok := classifyLifecycleSSHConfigFailure(failure).(typedCommandError)
+	if !ok {
+		t.Fatal("lifecycle failure was not typed")
+	}
+	if code := renderTypedCommandError(typed, preparedStdout, preparedStderr); code != exitIntegrity {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	var payload struct {
