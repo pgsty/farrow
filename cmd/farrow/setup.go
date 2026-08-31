@@ -406,8 +406,18 @@ func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) er
 		return errors.New("setup needs --yes when stdin is not a terminal")
 	}
 	fmt.Fprint(stderr, "Continue with this setup? [Y/n] ")
+	return readSetupConfirmation(stdin)
+}
+
+// readSetupConfirmation applies the [Y/n] default only to an answered prompt.
+// End-of-input (Ctrl-D, a closed pipe) is a cancellation: nobody pressed
+// Enter, so nothing was agreed to.
+func readSetupConfirmation(stdin io.Reader) error {
 	line, err := bufio.NewReader(io.LimitReader(stdin, 64)).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+	if errors.Is(err, io.EOF) {
+		return errors.New("setup cancelled: no confirmation was entered")
+	}
+	if err != nil {
 		return err
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {

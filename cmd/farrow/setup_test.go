@@ -170,6 +170,22 @@ func TestEmitPrivatePendingNetworkDoesNotClaimUserNAT(t *testing.T) {
 	}
 }
 
+func TestSetupConfirmationTreatsEndOfInputAsCancellation(t *testing.T) {
+	t.Parallel()
+	for input, accepted := range map[string]bool{"\n": true, "y\n": true, "YES\n": true, "n\n": false, "no\n": false, "": false, "y": false} {
+		err := readSetupConfirmation(strings.NewReader(input))
+		if accepted && err != nil {
+			t.Errorf("input %q rejected: %v", input, err)
+		}
+		if !accepted && err == nil {
+			t.Errorf("input %q accepted; only an answered [Y/n] prompt may default to yes", input)
+		}
+	}
+	if err := readSetupConfirmation(strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "no confirmation was entered") {
+		t.Fatalf("EOF err = %v", err)
+	}
+}
+
 func TestRunSetupEmitsStructuredEarlyFailure(t *testing.T) {
 	t.Parallel()
 	var stdout bytes.Buffer
