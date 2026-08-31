@@ -29,7 +29,11 @@ func readBounded(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer handle.Close()
+	defer func() {
+		// The configuration handle is read-only; accepted bytes are already
+		// bounded in memory, so closing cannot change the parsed result.
+		_ = handle.Close()
+	}()
 	data, err := io.ReadAll(io.LimitReader(handle, maxInventoryBytes+1))
 	if err != nil {
 		return nil, err

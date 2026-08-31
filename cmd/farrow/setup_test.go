@@ -376,7 +376,9 @@ func TestSetupPlanShowsProxyNamesWithoutValues(t *testing.T) {
 		Installation: netpreflight.Installation{Status: "exact", Healthy: true, Mode: "host"},
 	}
 	var output bytes.Buffer
-	printSetupPlan(&output, plan, selection, &report, true)
+	if err := printSetupPlan(&output, plan, selection, &report, true); err != nil {
+		t.Fatal(err)
+	}
 	got := output.String()
 	if !strings.Contains(got, "proxy environment: HTTPS_PROXY (values hidden)") {
 		t.Fatalf("setup plan omitted proxy evidence: %q", got)

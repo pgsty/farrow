@@ -256,7 +256,7 @@ func (e Executor) helperAttachSmoke(ctx context.Context, helper string) (returnE
 	return nil
 }
 
-func (e Executor) InstallConfig(ctx context.Context, config Config, apply bool) (InstallReport, error) {
+func (e Executor) InstallConfig(ctx context.Context, config Config, apply bool) (_ InstallReport, returnErr error) {
 	plan, err := e.PlanInstallConfig(ctx, config)
 	if err != nil {
 		return InstallReport{}, err
@@ -281,7 +281,11 @@ func (e Executor) InstallConfig(ctx context.Context, config Config, apply bool) 
 	if err := os.Chmod(staging, 0o700); err != nil {
 		return report, err
 	}
-	defer os.RemoveAll(staging)
+	defer func() {
+		if err := os.RemoveAll(staging); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("remove Linux network staging: %w", err))
+		}
+	}()
 	staged, err := StageInstallPlan(plan, staging)
 	if err != nil {
 		return report, err
@@ -410,7 +414,7 @@ func (e Executor) rootRmdir(ctx context.Context, path string) error {
 	return nil
 }
 
-func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, error) {
+func (e Executor) Uninstall(ctx context.Context, apply bool) (_ UninstallReport, returnErr error) {
 	plan, manifest, err := e.PlanUninstall(ctx)
 	if err != nil {
 		return UninstallReport{}, err
@@ -470,7 +474,11 @@ func (e Executor) Uninstall(ctx context.Context, apply bool) (UninstallReport, e
 		if err != nil {
 			return report, err
 		}
-		defer os.RemoveAll(staging)
+		defer func() {
+			if err := os.RemoveAll(staging); err != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("remove Linux bridge-restore staging: %w", err))
+			}
+		}()
 		source := filepath.Join(staging, "bridge.conf")
 		if err := os.WriteFile(source, []byte(manifest.OriginalBridgeConf), 0o600); err != nil {
 			return report, err

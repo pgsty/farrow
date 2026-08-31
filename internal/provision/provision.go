@@ -73,7 +73,11 @@ func LoadScript(path string) (Script, error) {
 		_ = unix.Close(descriptor)
 		return Script{}, errors.New("open provision script handle")
 	}
-	defer handle.Close()
+	defer func() {
+		// The no-follow script handle is read-only; content is already bounded
+		// in memory before the script is accepted.
+		_ = handle.Close()
+	}()
 	opened, err := handle.Stat()
 	if err != nil {
 		return Script{}, fmt.Errorf("stat opened provision script: %w", err)

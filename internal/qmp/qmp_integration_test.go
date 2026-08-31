@@ -26,7 +26,11 @@ func TestIntegrationRealQEMUHandshakeIdentityAndQuit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove QMP integration directory: %v", err)
+		}
+	})
 	socket := filepath.Join(dir, "qmp.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

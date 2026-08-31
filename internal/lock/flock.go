@@ -97,3 +97,13 @@ func (f *File) Release() error {
 	}
 	return closeErr
 }
+
+// JoinRelease preserves the operation error while making a failed unlock or
+// close visible to the caller. Lock release is part of every state mutation's
+// durability boundary, not best-effort cleanup.
+func JoinRelease(current error, held *File, description string) error {
+	if err := held.Release(); err != nil {
+		return errors.Join(current, fmt.Errorf("release %s: %w", description, err))
+	}
+	return current
+}

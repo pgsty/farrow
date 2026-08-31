@@ -120,7 +120,11 @@ func CopyToTemp(source, targetDir, pattern string, mode os.FileMode, maxBytes in
 	if err != nil {
 		return "", 0, err
 	}
-	defer input.Close()
+	defer func() {
+		// The source is read-only. Target Write, Sync, and Close errors remain
+		// mandatory below because they determine whether bytes can be published.
+		_ = input.Close()
+	}()
 	output, err := os.CreateTemp(targetDir, pattern)
 	if err != nil {
 		return "", 0, err

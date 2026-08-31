@@ -36,7 +36,11 @@ func TestIntegrationEmbeddedMatchesLocalCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer handle.Close()
+	t.Cleanup(func() {
+		if err := handle.Close(); err != nil {
+			t.Errorf("close image corpus manifest: %v", err)
+		}
+	})
 	reader := csv.NewReader(handle)
 	reader.Comma = '\t'
 	rows, err := reader.ReadAll()
@@ -143,7 +147,11 @@ func hashFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer handle.Close()
+	defer func() {
+		// The corpus hash helper reads only; io.Copy below determines whether the
+		// full fixture was accepted.
+		_ = handle.Close()
+	}()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, handle); err != nil {
 		return "", err

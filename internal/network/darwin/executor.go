@@ -529,7 +529,11 @@ func (e Executor) install(ctx context.Context, origin installOrigin, interfaceID
 	if err != nil {
 		return report, err
 	}
-	defer os.RemoveAll(staging)
+	defer func() {
+		if err := os.RemoveAll(staging); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("remove Darwin network staging: %w", err))
+		}
+	}()
 	if err := os.Chmod(staging, 0o700); err != nil {
 		return report, err
 	}

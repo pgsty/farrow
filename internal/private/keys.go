@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/sshkeys"
@@ -55,7 +56,7 @@ func ensureNoRetainedNodes(ctx context.Context, projectValue Deployment) error {
 // PurgeKeys remains available after a full destroy removes state.json: it refuses
 // while node artifacts or retained persistent disks exist, then removes
 // exactly the allowlisted key files.
-func (m Manager) PurgeKeys(ctx context.Context, apply bool) (KeyPurgeReport, error) {
+func (m Manager) PurgeKeys(ctx context.Context, apply bool) (_ KeyPurgeReport, returnErr error) {
 	projectValue, err := m.openProject(false)
 	if err != nil {
 		return KeyPurgeReport{}, err
@@ -66,7 +67,9 @@ func (m Manager) PurgeKeys(ctx context.Context, apply bool) (KeyPurgeReport, err
 	if err != nil {
 		return KeyPurgeReport{}, err
 	}
-	defer projectLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment key purge lock")
+	}()
 	if err := ensureNoRetainedNodes(ctx, projectValue); err != nil {
 		return KeyPurgeReport{}, err
 	}

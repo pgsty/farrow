@@ -37,6 +37,7 @@ type outputContext struct {
 	mu          sync.Mutex
 	stdoutBytes int64
 	lastError   string
+	writeErr    error
 }
 
 type commandFailure struct {
@@ -68,12 +69,27 @@ type outputWriter struct {
 
 func (writer *outputWriter) Write(data []byte) (int, error) {
 	written, err := writer.Writer.Write(data)
-	if writer.context != nil && !writer.stderr && written > 0 {
+	if writer.context != nil && !writer.stderr {
 		writer.context.mu.Lock()
-		writer.context.stdoutBytes += int64(written)
+		if written > 0 {
+			writer.context.stdoutBytes += int64(written)
+		}
+		if err != nil && writer.context.writeErr == nil {
+			writer.context.writeErr = err
+		}
 		writer.context.mu.Unlock()
 	}
 	return written, err
+}
+
+func outputWriteError(writer io.Writer) error {
+	state := outputContextFrom(writer)
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.writeErr
 }
 
 func structuredPayloadWritten(writer io.Writer) bool {
@@ -410,19 +426,35 @@ func styled(writer io.Writer, style, text string) string {
 	return style + text + ansiReset
 }
 
+// bestEffortf and bestEffortln are limited to diagnostics and progress. A
+// failure to decorate stderr must not replace the business result or its exit
+// status; command result renderers handle their writer errors directly.
+func bestEffortf(writer io.Writer, format string, arguments ...any) {
+	_, _ = fmt.Fprintf(writer, format, arguments...)
+}
+
+func bestEffortln(writer io.Writer, arguments ...any) {
+	_, _ = fmt.Fprintln(writer, arguments...)
+}
+
+func writeText(writer io.Writer, format string, arguments ...any) error {
+	_, err := fmt.Fprintf(writer, format, arguments...)
+	return err
+}
+
 func debugf(stderr io.Writer, format string, arguments ...any) {
 	if !verboseOutput(stderr) {
 		return
 	}
 	message := fmt.Sprintf(format, arguments...)
-	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiDim, "debug:"), message)
+	bestEffortf(stderr, "%s %s\n", styled(stderr, ansiDim, "debug:"), message)
 }
 
 func warningf(stderr io.Writer, format string, arguments ...any) {
 	message := strings.TrimSpace(fmt.Sprintf(format, arguments...))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "WARNING:"))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "warning:"))
-	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiYellow, "warning:"), message)
+	bestEffortf(stderr, "%s %s\n", styled(stderr, ansiYellow, "warning:"), message)
 }
 
 func errorf(stderr io.Writer, format string, arguments ...any) {
@@ -430,13 +462,13 @@ func errorf(stderr io.Writer, format string, arguments ...any) {
 	message = strings.TrimSpace(strings.TrimPrefix(message, "ERROR:"))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "error:"))
 	recordCommandError(stderr, message)
-	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiRed, "error:"), message)
+	bestEffortf(stderr, "%s %s\n", styled(stderr, ansiRed, "error:"), message)
 }
 
 func textField(writer io.Writer, width int, label string, value any) {
 	label = strings.TrimSuffix(label, ":") + ":"
 	padded := fmt.Sprintf("%-*s", width, label)
-	fmt.Fprintf(writer, "%s %v\n", styled(writer, ansiDim, padded), value)
+	bestEffortf(writer, "%s %v\n", styled(writer, ansiDim, padded), value)
 }
 
 func statusStyle(value string) string {
@@ -623,20 +655,20 @@ func (item *progress) Report(event activity.Event) {
 		marker = styled(item.stderr, ansiGreen, "✓")
 	}
 	if !item.tty {
-		fmt.Fprintf(item.stderr, "%s %s\n", marker, message)
+		bestEffortf(item.stderr, "%s %s\n", marker, message)
 		return
 	}
 	if event.Done {
 		// A completed phase persists as a checklist row; the live line
 		// falls back to the overall command summary until the next phase.
-		fmt.Fprintf(item.stderr, "\r\x1b[2K%s %s\n", marker, message)
+		bestEffortf(item.stderr, "\r\x1b[2K%s %s\n", marker, message)
 		item.message = item.summary
 		item.currentBytes = 0
 		item.totalBytes = 0
 		item.byteProgress = false
 		return
 	}
-	fmt.Fprintf(item.stderr, "\r\x1b[2K%s %s", marker, item.liveTTYMessage(now))
+	bestEffortf(item.stderr, "\r\x1b[2K%s %s", marker, item.liveTTYMessage(now))
 }
 
 // tickf persists an already-satisfied step as a completed checklist row, so a
@@ -646,7 +678,7 @@ func tickf(stderr io.Writer, format string, arguments ...any) {
 	if state == nil || (!state.stderrFile && !state.verbose) {
 		return
 	}
-	fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiGreen, "✓"), fmt.Sprintf(format, arguments...))
+	bestEffortf(stderr, "%s %s\n", styled(stderr, ansiGreen, "✓"), fmt.Sprintf(format, arguments...))
 }
 
 func deferredProgressReporter(item **progress) activity.Reporter {
@@ -671,9 +703,9 @@ func startProgress(parent context.Context, stderr io.Writer, message string) *pr
 	ctx, cancel := context.WithCancel(parent)
 	item.cancel = cancel
 	if item.tty {
-		fmt.Fprintf(stderr, "%s %s", styled(stderr, ansiCyan, "→"), item.liveTTYMessage(item.started))
+		bestEffortf(stderr, "%s %s", styled(stderr, ansiCyan, "→"), item.liveTTYMessage(item.started))
 	} else {
-		fmt.Fprintf(stderr, "%s %s\n", styled(stderr, ansiCyan, "→"), message)
+		bestEffortf(stderr, "%s %s\n", styled(stderr, ansiCyan, "→"), message)
 	}
 	interval := time.Minute
 	if item.tty {
@@ -694,9 +726,9 @@ func startProgress(parent context.Context, stderr io.Writer, message string) *pr
 				elapsed := now.Sub(item.started).Round(time.Second)
 				item.mu.Lock()
 				if item.tty {
-					fmt.Fprintf(stderr, "\r\x1b[2K%s %s", styled(stderr, ansiCyan, "→"), item.liveTTYMessage(now))
+					bestEffortf(stderr, "\r\x1b[2K%s %s", styled(stderr, ansiCyan, "→"), item.liveTTYMessage(now))
 				} else {
-					fmt.Fprintf(stderr, "%s %s (%s elapsed)\n", styled(stderr, ansiDim, "·"), item.message, elapsed)
+					bestEffortf(stderr, "%s %s (%s elapsed)\n", styled(stderr, ansiDim, "·"), item.message, elapsed)
 				}
 				item.mu.Unlock()
 			}
@@ -719,9 +751,11 @@ func (item *progress) Stop(err error) {
 			status = styled(item.stderr, ansiRed, "!")
 		}
 		if item.tty {
-			fmt.Fprint(item.stderr, "\r\x1b[2K")
+			// Clearing a TTY progress line is best-effort presentation; it must
+			// not replace the operation's result or exit status.
+			bestEffortf(item.stderr, "\r\x1b[2K")
 		}
-		fmt.Fprintf(item.stderr, "%s %s (%s)\n", status, item.summary, time.Since(item.started).Round(time.Millisecond))
+		bestEffortf(item.stderr, "%s %s (%s)\n", status, item.summary, time.Since(item.started).Round(time.Millisecond))
 	})
 }
 

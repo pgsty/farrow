@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/spec"
@@ -126,7 +127,7 @@ func (m Manager) removeKnownHostEntries(ctx context.Context, projectValue Deploy
 	return fsutil.SyncDir(keysDir)
 }
 
-func (m Manager) Destroy(ctx context.Context) (Status, error) {
+func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 	projectValue, err := m.openProject(false)
 	if err != nil {
 		return Status{}, err
@@ -172,7 +173,9 @@ func (m Manager) Destroy(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	defer projectLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment destroy lock")
+	}()
 	nodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
 	allNodes := make([]state.NodeState, 0, len(projectState.Resolved.Nodes))
 	targets := make(map[string][]string)

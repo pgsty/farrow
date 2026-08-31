@@ -10,6 +10,7 @@ import (
 
 	"github.com/pgsty/farrow/internal/disk"
 	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
@@ -138,7 +139,7 @@ func (m Manager) PersistentDisks() ([]persistent.Record, error) {
 // DeletePersistent is the only private API which deletes retained data disks.
 // Every node must already be destroyed and the global lease inactive. CLI
 // confirmation is intentionally kept outside this filesystem boundary.
-func (m Manager) DeletePersistent(ctx context.Context) ([]persistent.Record, error) {
+func (m Manager) DeletePersistent(ctx context.Context) (_ []persistent.Record, returnErr error) {
 	projectValue, err := m.openProject(false)
 	if err != nil {
 		return nil, err
@@ -149,7 +150,9 @@ func (m Manager) DeletePersistent(ctx context.Context) ([]persistent.Record, err
 	if err != nil {
 		return nil, err
 	}
-	defer projectLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, projectLock, "persistent disk deletion lock")
+	}()
 	nodesDir := filepath.Join(projectValue.Root, "nodes")
 	entries, err := os.ReadDir(nodesDir)
 	if err == nil && len(entries) != 0 {

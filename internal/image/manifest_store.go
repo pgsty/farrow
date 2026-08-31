@@ -415,7 +415,11 @@ func (m ManifestManager) download(ctx context.Context, source string, limit int6
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		// The bounded response is read-only and is verified before acceptance;
+		// closing only affects HTTP connection reuse.
+		_ = response.Body.Close()
+	}()
 	if response.StatusCode != http.StatusOK || response.ContentLength > limit {
 		return nil, fmt.Errorf("manifest download failed status/size policy: %s", response.Status)
 	}
@@ -468,7 +472,7 @@ func (m ManifestManager) readSource(ctx context.Context, source string) ([]byte,
 	return data, signatureText, "local:" + absolute, err
 }
 
-func (m ManifestManager) Sync(ctx context.Context, source string, allowDowngrade bool) (ManifestState, error) {
+func (m ManifestManager) Sync(ctx context.Context, source string, allowDowngrade bool) (_ ManifestState, returnErr error) {
 	if err := m.validate(); err != nil {
 		return ManifestState{}, err
 	}
@@ -502,7 +506,9 @@ func (m ManifestManager) Sync(ctx context.Context, source string, allowDowngrade
 	if err != nil {
 		return ManifestState{}, err
 	}
-	defer manifestLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, manifestLock, "manifest registry lock")
+	}()
 	stateKey, err := m.stateKey()
 	if err != nil {
 		return ManifestState{}, err
@@ -576,7 +582,7 @@ func (m ManifestManager) Sync(ctx context.Context, source string, allowDowngrade
 	return state, nil
 }
 
-func (m ManifestManager) Reset(ctx context.Context) (ManifestState, error) {
+func (m ManifestManager) Reset(ctx context.Context) (_ ManifestState, returnErr error) {
 	if err := m.validate(); err != nil {
 		return ManifestState{}, err
 	}
@@ -586,7 +592,9 @@ func (m ManifestManager) Reset(ctx context.Context) (ManifestState, error) {
 	if err != nil {
 		return ManifestState{}, err
 	}
-	defer manifestLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, manifestLock, "manifest registry lock")
+	}()
 	stateKey, err := m.stateKey()
 	if err != nil {
 		return ManifestState{}, err

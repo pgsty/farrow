@@ -50,7 +50,11 @@ func TestAppendEventConcurrentAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer handle.Close()
+	t.Cleanup(func() {
+		if err := handle.Close(); err != nil {
+			t.Errorf("close event log: %v", err)
+		}
+	})
 	seen := make(map[string]struct{})
 	scanner := bufio.NewScanner(handle)
 	for scanner.Scan() {
@@ -127,7 +131,11 @@ func TestDiagnosticLogRetentionKeepsCompleteNewestRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer handle.Close()
+	t.Cleanup(func() {
+		if err := handle.Close(); err != nil {
+			t.Errorf("close retained QEMU log: %v", err)
+		}
+	})
 	scanner := bufio.NewScanner(handle)
 	lastAction := ""
 	count := 0

@@ -714,14 +714,16 @@ func runtimeDriftNodes(store state.Store, resolved spec.Resolved, expected platf
 	return drifted, nil
 }
 
-func (m Manager) ensureKeys(ctx context.Context, projectValue Deployment) (string, string, string, error) {
+func (m Manager) ensureKeys(ctx context.Context, projectValue Deployment) (_ string, _ string, _ string, returnErr error) {
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		return "", "", "", err
 	}
-	defer projectLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment key initialization lock")
+	}()
 	return sshkeys.EnsureKeys(ctx, m.runner(), projectValue.Root)
 }
 
@@ -878,14 +880,16 @@ func (m Manager) statusForLocked(ctx context.Context, projectValue Deployment, m
 	return result, nil
 }
 
-func (m Manager) statusFor(ctx context.Context, projectValue Deployment, message string) (Status, error) {
+func (m Manager) statusFor(ctx context.Context, projectValue Deployment, message string) (_ Status, returnErr error) {
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	projectLock, err := acquireDeploymentLock(lockContext, projectValue.Root, false)
 	if err != nil {
 		return Status{}, err
 	}
-	defer projectLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment status lock")
+	}()
 	return m.statusForLocked(ctx, projectValue, message)
 }
 
@@ -1122,7 +1126,7 @@ func (m Manager) Reload(ctx context.Context, requested spec.Resolved) (Status, e
 	return m.Up(ctx, requested)
 }
 
-func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error) {
+func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, returnErr error) {
 	m.report("preflight", "Checking the fixed-IP network and QEMU capabilities")
 	var err error
 	if err := validateResolved(requested); err != nil {
@@ -1267,7 +1271,9 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	if err != nil {
 		return Status{}, err
 	}
-	defer allocator.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, allocator, "deployment allocator lock")
+	}()
 	resolved, sshPorts, err := materializeMissingNodePorts(requested, createNodes, make(map[uint16]struct{}), state.Store{Root: projectValue.Root})
 	if err != nil {
 		return Status{}, err
@@ -1359,7 +1365,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (Status, error
 	return m.statusFor(ctx, projectValue, "created and started the deployment")
 }
 
-func (m Manager) startExisting(ctx context.Context, projectValue Deployment, projectState state.DeploymentState, profile platform.Profile, backend Backend) (Status, error) {
+func (m Manager) startExisting(ctx context.Context, projectValue Deployment, projectState state.DeploymentState, profile platform.Profile, backend Backend) (_ Status, returnErr error) {
 	m.report("preflight", "Checking the existing deployment before start")
 	verifiedBackend, err := m.preflight(ctx, profile, projectState.Resolved)
 	if err != nil {
@@ -1407,7 +1413,9 @@ func (m Manager) startExisting(ctx context.Context, projectValue Deployment, pro
 	if err != nil {
 		return Status{}, err
 	}
-	defer projectLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment start lock")
+	}()
 	sshPath, err := m.lookPath("ssh")
 	if err != nil {
 		return Status{}, err
@@ -1500,7 +1508,7 @@ func (m Manager) Start(ctx context.Context) (Status, error) {
 	return m.startExisting(ctx, projectValue, projectState, profile, backend)
 }
 
-func (m Manager) Stop(ctx context.Context) (Status, error) {
+func (m Manager) Stop(ctx context.Context) (_ Status, returnErr error) {
 	projectValue, err := m.openProject(false)
 	if err != nil {
 		return Status{}, err
@@ -1515,7 +1523,9 @@ func (m Manager) Stop(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	defer projectLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment stop lock")
+	}()
 	names, err := selectedNodeNames(projectState.Resolved, m.Nodes)
 	if err != nil {
 		return Status{}, err

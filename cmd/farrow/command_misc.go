@@ -21,7 +21,10 @@ func runVersionCommand(stdout, stderr io.Writer) int {
 			Arch    string `json:"arch"`
 		}{Name: "farrow", Version: version.Version, Commit: version.Commit, Built: version.Date, OS: runtime.GOOS, Arch: runtime.GOARCH})
 	}
-	fmt.Fprintf(stdout, "farrow %s (commit %s, built %s, %s/%s)\n", version.Version, version.Commit, version.Date, runtime.GOOS, runtime.GOARCH)
+	if _, err := fmt.Fprintf(stdout, "farrow %s (commit %s, built %s, %s/%s)\n", version.Version, version.Commit, version.Date, runtime.GOOS, runtime.GOARCH); err != nil {
+		errorf(stderr, "write version output: %v", err)
+		return exitRuntime
+	}
 	return exitOK
 }
 

@@ -405,7 +405,9 @@ func confirmSetup(yes bool, mutating bool, stdin io.Reader, stderr io.Writer) er
 	if !ok || !term.IsTerminal(int(terminal.Fd())) {
 		return errors.New("setup needs --yes when stdin is not a terminal")
 	}
-	fmt.Fprint(stderr, "Continue with this setup? [Y/n] ")
+	if _, err := fmt.Fprint(stderr, "Continue with this setup? [Y/n] "); err != nil {
+		return fmt.Errorf("write setup confirmation prompt: %w", err)
+	}
 	return readSetupConfirmation(stdin)
 }
 
@@ -449,12 +451,16 @@ func (session *sudoSession) ensure(ctx context.Context, reason string) error {
 		return nil
 	}
 	if reason != "" {
-		fmt.Fprintf(session.stderr, "%s sudo needed: %s\n", styled(session.stderr, ansiCyan, "→"), reason)
+		if err := writeText(session.stderr, "%s sudo needed: %s\n", styled(session.stderr, ansiCyan, "→"), reason); err != nil {
+			return fmt.Errorf("write sudo explanation: %w", err)
+		}
 		scope := session.scope
 		if scope == "" {
 			scope = "command"
 		}
-		fmt.Fprintf(session.stderr, "  one password prompt covers this whole %s\n", scope)
+		if err := writeText(session.stderr, "  one password prompt covers this whole %s\n", scope); err != nil {
+			return fmt.Errorf("write sudo scope: %w", err)
+		}
 	}
 	const sudo = "/usr/bin/sudo"
 	if term.IsTerminal(int(os.Stdin.Fd())) {
@@ -631,7 +637,7 @@ func setupHomebrewSocketVMNet(ctx context.Context, base execx.Runner, stderr io.
 		_, installErr := base.Run(ctx, brew, "install", darwinnet.SocketVMNetFormula)
 		progressItem.Stop(installErr)
 		if installErr != nil {
-			fmt.Fprintf(stderr, "%s brew install %s failed; falling back to the digest-pinned release download\n", styled(stderr, ansiYellow, "!"), darwinnet.SocketVMNetFormula)
+			bestEffortf(stderr, "%s brew install %s failed; falling back to the digest-pinned release download\n", styled(stderr, ansiYellow, "!"), darwinnet.SocketVMNetFormula)
 			return darwinnet.LocalBinaries{}, false
 		}
 		discovery, err = probe.Discover(ctx)
@@ -820,17 +826,35 @@ func setupNodesSummary(resolved spec.Resolved) string {
 }
 
 func planRow(stderr io.Writer, label, format string, arguments ...any) {
-	fmt.Fprintf(stderr, "  %s %s\n", styled(stderr, ansiDim, fmt.Sprintf("%-13s", label)), fmt.Sprintf(format, arguments...))
+	bestEffortf(stderr, "  %s %s\n", styled(stderr, ansiDim, fmt.Sprintf("%-13s", label)), fmt.Sprintf(format, arguments...))
+}
+
+type setupPlanWriter struct {
+	io.Writer
+	err error
+}
+
+func (writer *setupPlanWriter) Write(data []byte) (int, error) {
+	if writer.err != nil {
+		return 0, writer.err
+	}
+	written, err := writer.Writer.Write(data)
+	if err != nil {
+		writer.err = err
+	}
+	return written, err
 }
 
 // printSetupPlan tells the user exactly what will happen, which parts need
 // root and why, and where any download would come from — before the single
 // confirmation prompt.
-func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection setupSelection, report *netpreflight.Report, dryRun bool) {
+func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection setupSelection, report *netpreflight.Report, dryRun bool) error {
+	tracked := &setupPlanWriter{Writer: stderr}
+	stderr = tracked
 	if dryRun {
-		fmt.Fprintf(stderr, "%s setup plan (dry run, no changes)\n", styled(stderr, ansiCyan, "→"))
+		bestEffortf(stderr, "%s setup plan (dry run, no changes)\n", styled(stderr, ansiCyan, "→"))
 	} else {
-		fmt.Fprintf(stderr, "%s setup plan\n", styled(stderr, ansiCyan, "→"))
+		bestEffortf(stderr, "%s setup plan\n", styled(stderr, ansiCyan, "→"))
 	}
 	sudoFor := make([]string, 0, 3)
 
@@ -846,7 +870,7 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 	} else {
 		planRow(stderr, "dependencies", "install via %s: %s", plan.Manager, strings.Join(plan.Missing, ", "))
 		if proxyNames := setuphost.ProxyEnvironmentNames(); len(proxyNames) > 0 {
-			fmt.Fprintf(stderr, "                proxy environment: %s (values hidden)\n", strings.Join(proxyNames, ", "))
+			bestEffortf(stderr, "                proxy environment: %s (values hidden)\n", strings.Join(proxyNames, ", "))
 		}
 		for _, command := range plan.Commands {
 			if command.Root {
@@ -878,21 +902,21 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 		if runtime.GOOS == "darwin" {
 			switch {
 			case os.Getenv("FARROW_VMNET_ARCHIVE") != "":
-				fmt.Fprintf(stderr, "                backend socket_vmnet %s from FARROW_VMNET_ARCHIVE (digest-verified)\n", darwinnet.ReleaseVersion)
+				bestEffortf(stderr, "                backend socket_vmnet %s from FARROW_VMNET_ARCHIVE (digest-verified)\n", darwinnet.ReleaseVersion)
 			case setuphost.SocketVMNetCached(runtime.GOARCH):
-				fmt.Fprintf(stderr, "                backend socket_vmnet %s already cached and verified; no download\n", darwinnet.ReleaseVersion)
+				bestEffortf(stderr, "                backend socket_vmnet %s already cached and verified; no download\n", darwinnet.ReleaseVersion)
 			default:
 				if _, ok := (darwinnet.HomebrewProbe{}).Brew(); ok {
-					fmt.Fprintf(stderr, "                backend socket_vmnet %s via Homebrew (brew install %s), copied into root-owned /opt/farrow\n", darwinnet.ReleaseVersion, darwinnet.SocketVMNetFormula)
-					fmt.Fprintln(stderr, "                fallback: digest-pinned download (FARROW_REPO mirror, github.com/lima-vm)")
+					bestEffortf(stderr, "                backend socket_vmnet %s via Homebrew (brew install %s), copied into root-owned /opt/farrow\n", darwinnet.ReleaseVersion, darwinnet.SocketVMNetFormula)
+					bestEffortln(stderr, "                fallback: digest-pinned download (FARROW_REPO mirror, github.com/lima-vm)")
 				} else {
-					fmt.Fprintf(stderr, "                downloads socket_vmnet %s (<4 MiB, SHA-256 pinned) from github.com/lima-vm\n", darwinnet.ReleaseVersion)
-					fmt.Fprintln(stderr, "                mirrors: FARROW_REPO/<repo>/socket_vmnet/ or FARROW_VMNET_ARCHIVE=/path/to.tar.gz")
+					bestEffortf(stderr, "                downloads socket_vmnet %s (<4 MiB, SHA-256 pinned) from github.com/lima-vm\n", darwinnet.ReleaseVersion)
+					bestEffortln(stderr, "                mirrors: FARROW_REPO/<repo>/socket_vmnet/ or FARROW_VMNET_ARCHIVE=/path/to.tar.gz")
 				}
 			}
 			sudoFor = append(sudoFor, "network service installation (socket_vmnet under /opt/farrow, root-owned)")
 		} else {
-			fmt.Fprintln(stderr, "                backend: farrow0 bridge via the active network manager; nothing is downloaded")
+			bestEffortln(stderr, "                backend: farrow0 bridge via the active network manager; nothing is downloaded")
 			sudoFor = append(sudoFor, "network installation (root-owned farrow0 bridge)")
 		}
 	}
@@ -908,8 +932,9 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 		planRow(stderr, "privileges", "none; no root action in this plan")
 	} else {
 		planRow(stderr, "privileges", "sudo used for: %s", strings.Join(sudoFor, "; "))
-		fmt.Fprintln(stderr, "                at most one password prompt; the first privileged step explains itself")
+		bestEffortln(stderr, "                at most one password prompt; the first privileged step explains itself")
 	}
+	return tracked.err
 }
 
 func emitSetupResult(result setupResult, stdout, stderr io.Writer) int {
@@ -1102,7 +1127,9 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		result.Network = networkReport
 		result.NetworkMode = networkMode
 	}
-	printSetupPlan(stderr, dependencyPlan, selection, networkReport, options.DryRun)
+	if err := printSetupPlan(stderr, dependencyPlan, selection, networkReport, options.DryRun); err != nil {
+		return failSetup(&result, exitRuntime, fmt.Errorf("write setup plan: %w", err), stdout, stderr)
+	}
 	result.Config = selection.ConfigPath
 	result.Dependencies = dependencyPlan
 	result.Network = networkReport

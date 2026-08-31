@@ -36,6 +36,15 @@ func (buffer *lockedBuffer) String() string {
 	return buffer.buffer.String()
 }
 
+func cleanupIntegrationClose(t *testing.T, name string, closer interface{ Close() error }) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := closer.Close(); err != nil {
+			t.Errorf("close %s: %v", name, err)
+		}
+	})
+}
+
 func waitForPath(path string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -134,7 +143,6 @@ func TestIntegrationQEMUStreamReconnectMS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
 	qmpSocket := filepath.Join(dir, "qmp.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -161,7 +169,7 @@ func TestIntegrationQEMUStreamReconnectMS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart fake daemon listener: %v", err)
 	}
-	defer restarted.Close()
+	cleanupIntegrationClose(t, "restarted stream listener", restarted)
 	if err := restarted.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -194,22 +202,22 @@ func TestIntegrationQEMUSocketFD3SurvivesDaemonize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	cleanupIntegrationClose(t, "daemonize stream listener", listener)
 	dialed, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: serverSocket, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dialed.Close()
+	cleanupIntegrationClose(t, "daemonize client connection", dialed)
 	accepted, err := listener.AcceptUnix()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer accepted.Close()
+	cleanupIntegrationClose(t, "daemonize server connection", accepted)
 	fdFile, err := dialed.File()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fdFile.Close()
+	cleanupIntegrationClose(t, "daemonize inherited file", fdFile)
 	qmpSocket := filepath.Join(dir, "qmp.sock")
 	pidfile := filepath.Join(dir, "qemu.pid")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -281,22 +289,22 @@ func TestIntegrationQEMUSocketFD3Fallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	cleanupIntegrationClose(t, "fallback stream listener", listener)
 	dialed, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: serverSocket, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dialed.Close()
+	cleanupIntegrationClose(t, "fallback client connection", dialed)
 	accepted, err := listener.AcceptUnix()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer accepted.Close()
+	cleanupIntegrationClose(t, "fallback server connection", accepted)
 	fdFile, err := dialed.File()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fdFile.Close()
+	cleanupIntegrationClose(t, "fallback inherited file", fdFile)
 	qmpSocket := filepath.Join(dir, "qmp.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

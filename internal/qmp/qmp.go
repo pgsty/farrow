@@ -70,7 +70,7 @@ func (c *Client) maxRead() int64 {
 
 // Execute opens a new Unix connection, negotiates capabilities, runs one
 // command, demultiplexes interleaved events, and closes the connection.
-func (c *Client) Execute(ctx context.Context, socket, command string, arguments any, result any) error {
+func (c *Client) Execute(ctx context.Context, socket, command string, arguments any, result any) (returnErr error) {
 	if socket == "" || command == "" {
 		return errors.New("QMP socket and command must be non-empty")
 	}
@@ -79,7 +79,11 @@ func (c *Client) Execute(ctx context.Context, socket, command string, arguments 
 	if err != nil {
 		return fmt.Errorf("dial QMP socket %s: %w", socket, err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("close QMP connection: %w", err))
+		}
+	}()
 
 	deadline := time.Now().Add(c.timeout())
 	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {

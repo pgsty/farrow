@@ -15,7 +15,11 @@ func TestExclusiveLockHonorsContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Release()
+	t.Cleanup(func() {
+		if err := first.Release(); err != nil {
+			t.Errorf("release first lock: %v", err)
+		}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
 	defer cancel()
 	if _, err := Acquire(ctx, path, false); !errors.Is(err, context.DeadlineExceeded) {
@@ -58,8 +62,27 @@ func TestValidateExclusiveRejectsWrongReleasedAndSharedTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer shared.Release()
+	t.Cleanup(func() {
+		if err := shared.Release(); err != nil {
+			t.Errorf("release shared lock: %v", err)
+		}
+	})
 	if err := shared.ValidateExclusive(path); err == nil {
 		t.Fatal("shared token was accepted as exclusive")
+	}
+}
+
+func TestJoinReleasePreservesOperationAndReleaseErrors(t *testing.T) {
+	held, err := Acquire(context.Background(), filepath.Join(t.TempDir(), "join.lock"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := held.handle.Close(); err != nil {
+		t.Fatal(err)
+	}
+	operationErr := errors.New("operation failed")
+	joined := JoinRelease(operationErr, held, "fixture lock")
+	if !errors.Is(joined, operationErr) || joined == operationErr {
+		t.Fatalf("joined error = %v", joined)
 	}
 }

@@ -67,12 +67,16 @@ func (l NativeLifecycle) privateNetworkFile() (*os.File, error) {
 	return file, nil
 }
 
-func (l NativeLifecycle) Start(ctx context.Context, node state.NodeState) (process.Identity, error) {
+func (l NativeLifecycle) Start(ctx context.Context, node state.NodeState) (_ process.Identity, returnErr error) {
 	bundle, err := openPrivateNodeShares(l.Project, l.Shares, node)
 	if err != nil {
 		return process.Identity{}, err
 	}
-	defer bundle.Close()
+	defer func() {
+		if err := bundle.Close(); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("close inherited host-share files: %w", err))
+		}
+	}()
 
 	shareFiles := bundle.Files()
 	extraFiles := make([]*os.File, 0, len(shareFiles)+1)
@@ -81,7 +85,11 @@ func (l NativeLifecycle) Start(ctx context.Context, node state.NodeState) (proce
 		if err != nil {
 			return process.Identity{}, err
 		}
-		defer file.Close()
+		defer func() {
+			if err := file.Close(); err != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("close inherited private-network file: %w", err))
+			}
+		}()
 		extraFiles = append(extraFiles, file)
 	}
 	extraFiles = append(extraFiles, shareFiles...)

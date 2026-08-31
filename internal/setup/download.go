@@ -273,7 +273,11 @@ func fetchBoundedArchive(ctx context.Context, client HTTPDoer, fetchURL string, 
 	if err != nil {
 		return result, fmt.Errorf("download socket_vmnet from %s: %w", parsed.Host, err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		// The bounded response is read-only and the archive is SHA-256 verified;
+		// closing only affects HTTP connection reuse.
+		_ = response.Body.Close()
+	}()
 	if response.Request != nil && response.Request.URL != nil && response.Request.URL.Scheme != "https" {
 		return result, errors.New("socket_vmnet response URL is not HTTPS")
 	}

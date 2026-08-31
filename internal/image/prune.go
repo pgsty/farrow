@@ -145,7 +145,7 @@ func (s Store) scanPrune(ctx context.Context, referenced map[string]struct{}, ap
 	return report, nil
 }
 
-func (s Store) Prune(ctx context.Context, apply bool, resolveReferences func() (map[string]struct{}, error)) (PruneReport, error) {
+func (s Store) Prune(ctx context.Context, apply bool, resolveReferences func() (map[string]struct{}, error)) (_ PruneReport, returnErr error) {
 	if s.DataRoot == "" || !filepath.IsAbs(s.DataRoot) || s.QEMUImg == "" || s.Runner == nil {
 		return PruneReport{}, errors.New("image prune store is incomplete")
 	}
@@ -172,7 +172,9 @@ func (s Store) Prune(ctx context.Context, apply bool, resolveReferences func() (
 	if err != nil {
 		return PruneReport{}, err
 	}
-	defer imageLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, imageLock, "image prune lock")
+	}()
 	referenced, err := resolveReferences()
 	if err != nil {
 		return PruneReport{}, err

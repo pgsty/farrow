@@ -112,7 +112,9 @@ func confirmDestructive(force, interactive bool, action string, input io.Reader,
 	if !interactive {
 		return fmt.Errorf("%s requires --force when stdin is not a TTY", action)
 	}
-	fmt.Fprintf(output, "Confirm scoped Farrow %s by typing %q: ", action, action)
+	if _, err := fmt.Fprintf(output, "Confirm scoped Farrow %s by typing %q: ", action, action); err != nil {
+		return fmt.Errorf("write %s confirmation prompt: %w", action, err)
+	}
 	line, err := bufio.NewReader(io.LimitReader(input, 256)).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read %s confirmation: %w", action, err)
@@ -232,7 +234,9 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 					_ = encodeJSON(stdout, stderr, preflightReport)
 				} else {
 					for _, finding := range preflightReport.Findings {
-						fmt.Fprintf(stderr, "%s %s: %s\n", finding.Severity, finding.Code, finding.Evidence)
+						if _, err := fmt.Fprintf(stderr, "%s %s: %s\n", finding.Severity, finding.Code, finding.Evidence); err != nil {
+							return exitRuntime
+						}
 					}
 				}
 				return preflightReport.ExitCode
@@ -268,13 +272,22 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 				for _, warning := range report.Warnings {
 					warningf(stderr, "%s", warning)
 				}
-				fmt.Fprintf(stdout, "action: %s\napplied: %t\n", report.Action, report.Applied)
+				if _, err := fmt.Fprintf(stdout, "action: %s\napplied: %t\n", report.Action, report.Applied); err != nil {
+					errorf(stderr, "write Darwin network plan: %v", err)
+					return exitRuntime
+				}
 				for _, path := range sortedMapKeys(report.Targets) {
 					metadata := report.Targets[path]
-					fmt.Fprintf(stdout, "%s %s\n", path, metadata)
+					if _, err := fmt.Fprintf(stdout, "%s %s\n", path, metadata); err != nil {
+						errorf(stderr, "write Darwin network plan: %v", err)
+						return exitRuntime
+					}
 				}
 				if !report.Applied && report.Action != "none" {
-					fmt.Fprintln(stdout, "rerun with --yes using the same --archive and --interface-id; Farrow will request sudo when needed")
+					if _, err := fmt.Fprintln(stdout, "rerun with --yes using the same --archive and --interface-id; Farrow will request sudo when needed"); err != nil {
+						errorf(stderr, "write Darwin network plan: %v", err)
+						return exitRuntime
+					}
 				}
 				return exitOK
 			}
@@ -289,15 +302,24 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 				return encodeJSON(stdout, stderr, report)
 			}
 			for _, path := range report.RemoveFiles {
-				fmt.Fprintf(stdout, "remove file %s\n", path)
+				if _, err := fmt.Fprintf(stdout, "remove file %s\n", path); err != nil {
+					errorf(stderr, "write Darwin network uninstall plan: %v", err)
+					return exitRuntime
+				}
 			}
 			for _, path := range report.RemoveDirs {
-				fmt.Fprintf(stdout, "rmdir %s\n", path)
+				if _, err := fmt.Fprintf(stdout, "rmdir %s\n", path); err != nil {
+					errorf(stderr, "write Darwin network uninstall plan: %v", err)
+					return exitRuntime
+				}
 			}
 			if report.Recovered {
 				warningf(stderr, "protected network.json was unavailable; uninstall ownership was recovered from byte-identical interface evidence, the exact launchd plist, and installed binary digests")
 			}
-			fmt.Fprintf(stdout, "applied: %t\n", report.Applied)
+			if _, err := fmt.Fprintf(stdout, "applied: %t\n", report.Applied); err != nil {
+				errorf(stderr, "write Darwin network uninstall plan: %v", err)
+				return exitRuntime
+			}
 			return exitOK
 		}
 		executor := linuxnet.Executor{User: baseRunner, Root: rootRunner, InUse: deploymentInUse}
@@ -321,20 +343,38 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 				warningf(stderr, "%s", warning)
 			}
 			for _, directory := range report.Plan.Directories {
-				fmt.Fprintf(stdout, "directory %s %s %s\n", directory.Path, directory.Owner, directory.Mode)
-			}
-			for _, file := range report.Plan.Files {
-				fmt.Fprintf(stdout, "file %s %s %s\n", file.Path, file.Owner, file.Mode)
-			}
-			for _, phase := range report.Plan.Phases {
-				fmt.Fprintf(stdout, "phase %s\n", phase.Name)
-				for _, action := range phase.Commands {
-					fmt.Fprintf(stdout, "  %s\n", execx.Display(action.Binary, action.Args...))
+				if err := writeText(stdout, "directory %s %s %s\n", directory.Path, directory.Owner, directory.Mode); err != nil {
+					errorf(stderr, "write Linux network install plan: %v", err)
+					return exitRuntime
 				}
 			}
-			fmt.Fprintf(stdout, "applied: %t\n", report.Applied)
+			for _, file := range report.Plan.Files {
+				if err := writeText(stdout, "file %s %s %s\n", file.Path, file.Owner, file.Mode); err != nil {
+					errorf(stderr, "write Linux network install plan: %v", err)
+					return exitRuntime
+				}
+			}
+			for _, phase := range report.Plan.Phases {
+				if err := writeText(stdout, "phase %s\n", phase.Name); err != nil {
+					errorf(stderr, "write Linux network install plan: %v", err)
+					return exitRuntime
+				}
+				for _, action := range phase.Commands {
+					if err := writeText(stdout, "  %s\n", execx.Display(action.Binary, action.Args...)); err != nil {
+						errorf(stderr, "write Linux network install plan: %v", err)
+						return exitRuntime
+					}
+				}
+			}
+			if err := writeText(stdout, "applied: %t\n", report.Applied); err != nil {
+				errorf(stderr, "write Linux network install plan: %v", err)
+				return exitRuntime
+			}
 			if !report.Applied {
-				fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
+				if _, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed"); err != nil {
+					errorf(stderr, "write Linux network install plan: %v", err)
+					return exitRuntime
+				}
 			}
 			return exitOK
 		}
@@ -349,14 +389,26 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 			return encodeJSON(stdout, stderr, report)
 		}
 		for _, path := range report.Plan.RemoveFiles {
-			fmt.Fprintf(stdout, "remove file %s\n", path)
+			if err := writeText(stdout, "remove file %s\n", path); err != nil {
+				errorf(stderr, "write Linux network uninstall plan: %v", err)
+				return exitRuntime
+			}
 		}
 		for _, directory := range report.Plan.RemoveDirectories {
-			fmt.Fprintf(stdout, "rmdir %s\n", directory)
+			if err := writeText(stdout, "rmdir %s\n", directory); err != nil {
+				errorf(stderr, "write Linux network uninstall plan: %v", err)
+				return exitRuntime
+			}
 		}
-		fmt.Fprintf(stdout, "applied: %t\n", report.Applied)
+		if err := writeText(stdout, "applied: %t\n", report.Applied); err != nil {
+			errorf(stderr, "write Linux network uninstall plan: %v", err)
+			return exitRuntime
+		}
 		if !report.Applied {
-			fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed")
+			if _, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact plan; Farrow will request sudo when needed"); err != nil {
+				errorf(stderr, "write Linux network uninstall plan: %v", err)
+				return exitRuntime
+			}
 		}
 		return exitOK
 	}
@@ -408,12 +460,21 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 			return code
 		}
 	} else {
-		fmt.Fprintf(stdout, "network: %s ready=%t installation=%s\n", preflightReport.CIDR, preflightReport.Ready, preflightReport.Installation.Status)
+		if err := writeText(stdout, "network: %s ready=%t installation=%s\n", preflightReport.CIDR, preflightReport.Ready, preflightReport.Installation.Status); err != nil {
+			errorf(stderr, "write network status: %v", err)
+			return exitRuntime
+		}
 		for _, finding := range preflightReport.Findings {
-			fmt.Fprintf(stdout, "[%s] %s: %s\n", finding.Severity, finding.Code, finding.Evidence)
+			if err := writeText(stdout, "[%s] %s: %s\n", finding.Severity, finding.Code, finding.Evidence); err != nil {
+				errorf(stderr, "write network status: %v", err)
+				return exitRuntime
+			}
 		}
 		for _, check := range checks {
-			fmt.Fprintf(stdout, "[%s] %s: %s\n", check.Status, check.Name, check.Evidence)
+			if err := writeText(stdout, "[%s] %s: %s\n", check.Status, check.Name, check.Evidence); err != nil {
+				errorf(stderr, "write network status: %v", err)
+				return exitRuntime
+			}
 		}
 	}
 	if hasError {
@@ -614,7 +675,7 @@ func runSSH(commandName string, args []string, stdout, stderr io.Writer) int {
 	return runPrivateSSH(commandName, args, resolved, stdout, stderr)
 }
 
-func printProvisionReport(stdout, stderr io.Writer, report provision.Report) {
+func printProvisionReport(stdout, stderr io.Writer, report provision.Report) error {
 	textField(stdout, 10, "script", report.Script.Name)
 	textField(stdout, 10, "sha256", report.Script.SHA256)
 	textField(stdout, 10, "bytes", report.Script.Size)
@@ -625,30 +686,46 @@ func printProvisionReport(stdout, stderr io.Writer, report provision.Report) {
 		if result.Success {
 			state = "success"
 		}
-		fmt.Fprintf(stdout, "%-16s %s  exit=%d  duration=%dms\n", result.Node, statusValue(stdout, state), result.ExitCode, result.DurationMS)
+		if err := writeText(stdout, "%-16s %s  exit=%d  duration=%dms\n", result.Node, statusValue(stdout, state), result.ExitCode, result.DurationMS); err != nil {
+			return fmt.Errorf("write provision result: %w", err)
+		}
 		if result.Stdout != "" {
-			fmt.Fprintf(stdout, "--- %s stdout ---\n%s", result.Node, result.Stdout)
+			if err := writeText(stdout, "--- %s stdout ---\n%s", result.Node, result.Stdout); err != nil {
+				return fmt.Errorf("write provision stdout: %w", err)
+			}
 			if !strings.HasSuffix(result.Stdout, "\n") {
-				fmt.Fprintln(stdout)
+				if _, err := fmt.Fprintln(stdout); err != nil {
+					return fmt.Errorf("write provision stdout separator: %w", err)
+				}
 			}
 		}
 		if result.Stderr != "" {
-			fmt.Fprintf(stderr, "--- %s stderr ---\n%s", result.Node, result.Stderr)
+			if err := writeText(stderr, "--- %s stderr ---\n%s", result.Node, result.Stderr); err != nil {
+				return fmt.Errorf("write provision stderr: %w", err)
+			}
 			if !strings.HasSuffix(result.Stderr, "\n") {
-				fmt.Fprintln(stderr)
+				if _, err := fmt.Fprintln(stderr); err != nil {
+					return fmt.Errorf("write provision stderr separator: %w", err)
+				}
 			}
 		}
 		if result.StdoutTruncated {
-			fmt.Fprintf(stderr, "[%s] stdout was truncated at the bounded capture limit\n", result.Node)
+			if err := writeText(stderr, "[%s] stdout was truncated at the bounded capture limit\n", result.Node); err != nil {
+				return fmt.Errorf("write provision truncation warning: %w", err)
+			}
 		}
 		if result.StderrTruncated {
-			fmt.Fprintf(stderr, "[%s] stderr was truncated at the bounded capture limit\n", result.Node)
+			if err := writeText(stderr, "[%s] stderr was truncated at the bounded capture limit\n", result.Node); err != nil {
+				return fmt.Errorf("write provision truncation warning: %w", err)
+			}
 		}
 		if result.Error != "" {
-			fmt.Fprintf(stderr, "[%s] %s\n", result.Node, result.Error)
+			if err := writeText(stderr, "[%s] %s\n", result.Node, result.Error); err != nil {
+				return fmt.Errorf("write provision error: %w", err)
+			}
 		}
 	}
-	fmt.Fprintf(stdout, "%s %d successful, %d failed, %dms total\n", styled(stdout, ansiBold, "provisioned"), report.Successful, report.Failed, report.DurationMS)
+	return writeText(stdout, "%s %d successful, %d failed, %dms total\n", styled(stdout, ansiBold, "provisioned"), report.Successful, report.Failed, report.DurationMS)
 }
 
 func provisionConnectionExit(err error) int {
@@ -876,7 +953,10 @@ func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Wr
 			return code
 		}
 	} else {
-		printProvisionReport(stdout, stderr, report)
+		if err := printProvisionReport(stdout, stderr, report); err != nil {
+			errorf(stderr, "%v", err)
+			return exitRuntime
+		}
 	}
 	if report.AuditError != "" {
 		errorf(stderr, "%s", report.AuditError)
@@ -899,7 +979,7 @@ func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Wr
 
 func encodeJSON(out, errOut io.Writer, value any) int {
 	if err := encodeOutput(out, value); err != nil {
-		fmt.Fprintf(errOut, "encode %s output: %v\n", outputFormatFor(out), err)
+		bestEffortf(errOut, "encode %s output: %v\n", outputFormatFor(out), err)
 		return exitRuntime
 	}
 	return exitOK
@@ -939,18 +1019,27 @@ func currentProjectResolved() (spec.Resolved, error) {
 	return deploymentState.Resolved, nil
 }
 
-func printPrivateStatus(out io.Writer, status privatevm.Status) {
+func printPrivateStatus(out io.Writer, status privatevm.Status) error {
 	textField(out, 12, "spec hash", status.SpecHash)
 	for _, node := range status.Nodes {
-		fmt.Fprintf(out, "%-16s %s  runtime=%s  arch=%s  accel=%s  address=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.GuestArch, node.Accel, node.Address, node.SSHHost, node.SSHPort)
-		if node.ProcessID > 0 {
-			fmt.Fprintf(out, " pid=%d", node.ProcessID)
+		if _, err := fmt.Fprintf(out, "%-16s %s  runtime=%s  arch=%s  accel=%s  address=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.GuestArch, node.Accel, node.Address, node.SSHHost, node.SSHPort); err != nil {
+			return err
 		}
-		fmt.Fprintln(out)
+		if node.ProcessID > 0 {
+			if _, err := fmt.Fprintf(out, " pid=%d", node.ProcessID); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
 	}
 	if status.Message != "" {
-		fmt.Fprintln(out, status.Message)
+		if _, err := fmt.Fprintln(out, status.Message); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 type persistentDeleteError struct{ err error }
@@ -1034,7 +1123,10 @@ func reportLifecycleSSHConfigFailure(failure *lifecycleSSHConfigFailure, stdout,
 			return code
 		}
 	} else {
-		printPrivateStatus(stdout, failure.Status)
+		if err := printPrivateStatus(stdout, failure.Status); err != nil {
+			errorf(stderr, "write lifecycle status: %v", err)
+			return exitRuntime
+		}
 	}
 	errorf(stderr, "%s", failure.Error())
 	return exitIntegrity
@@ -1148,7 +1240,9 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		}
 		if !force {
 			// State the exact scope before the typed confirmation.
-			fmt.Fprintln(stderr, destroyScope(resolved, nodes, deletePersistent, purge))
+			if _, err := fmt.Fprintln(stderr, destroyScope(resolved, nodes, deletePersistent, purge)); err != nil {
+				return exitRuntime
+			}
 		}
 		if err := confirmCLIAction(force, "destroy", stderr); err != nil {
 			errorf(stderr, "%v", err)
@@ -1268,7 +1362,10 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		}{Status: status, SSHConfig: reconciledSSHConfig}
 		return encodeJSON(stdout, stderr, payload)
 	}
-	printPrivateStatus(stdout, status)
+	if err := printPrivateStatus(stdout, status); err != nil {
+		errorf(stderr, "write lifecycle status: %v", err)
+		return exitRuntime
+	}
 	if reconciledSSHConfig != nil {
 		textField(stdout, 12, "ssh config", fmt.Sprintf("%s (action=%s changed=%t)", reconciledSSHConfig.Fragment, reconciledSSHConfig.Action, reconciledSSHConfig.Changed))
 	}
@@ -1388,7 +1485,10 @@ func runSSHConfig(options sshConfigOptions, nodes []string, stdout, stderr io.Wr
 		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, result)
 		}
-		fmt.Fprintf(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, options.Name, result.Changed, result.Fragment, result.Config)
+		if err := writeText(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, options.Name, result.Changed, result.Fragment, result.Config); err != nil {
+			errorf(stderr, "write SSH config result: %v", err)
+			return exitRuntime
+		}
 		return exitOK
 	}
 	resolved, resolveErr := currentProjectResolved()
@@ -1409,7 +1509,10 @@ func runSSHConfig(options sshConfigOptions, nodes []string, stdout, stderr io.Wr
 		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, result)
 		}
-		fmt.Fprintf(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, options.Name, result.Changed, result.Fragment, result.Config)
+		if err := writeText(stdout, "%s SSH config %s (changed=%t)\nfragment: %s\nconfig: %s\n", result.Action, options.Name, result.Changed, result.Fragment, result.Config); err != nil {
+			errorf(stderr, "write SSH config result: %v", err)
+			return exitRuntime
+		}
 		return exitOK
 	}
 	text, err := manager.SSHConfig(ctx)
@@ -1420,7 +1523,10 @@ func runSSHConfig(options sshConfigOptions, nodes []string, stdout, stderr io.Wr
 	if structuredOutput(stdout) {
 		return encodeJSON(stdout, stderr, map[string]string{"config": text})
 	}
-	fmt.Fprint(stdout, text)
+	if _, err := fmt.Fprint(stdout, text); err != nil {
+		errorf(stderr, "write SSH configuration: %v", err)
+		return exitRuntime
+	}
 	return exitOK
 }
 
@@ -1507,10 +1613,16 @@ func runHosts(action string, apply bool, stdout, stderr io.Writer) int {
 	textField(stdout, 16, "helper", report.Plan.HelperPath)
 	textField(stdout, 16, "helper sha256", report.Plan.HelperSHA256)
 	for _, line := range report.Plan.Lines {
-		fmt.Fprintln(stdout, line)
+		if _, err := fmt.Fprintln(stdout, line); err != nil {
+			errorf(stderr, "write hosts plan: %v", err)
+			return exitRuntime
+		}
 	}
 	if report.Plan.Changed && !report.Applied {
-		fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact marker-owned plan; Farrow will request sudo when needed")
+		if _, err := fmt.Fprintln(stdout, "rerun with --yes after reviewing this exact marker-owned plan; Farrow will request sudo when needed"); err != nil {
+			errorf(stderr, "write hosts plan: %v", err)
+			return exitRuntime
+		}
 	}
 	return exitOK
 }
@@ -1591,7 +1703,11 @@ func runLogs(options logOptions, requestedNode string, stdout, stderr io.Writer)
 		errorf(stderr, "%v", err)
 		return exitRuntime
 	}
-	defer handle.Close()
+	defer func() {
+		// Log reads are read-only; content has already been consumed by the time
+		// this descriptor is released.
+		_ = handle.Close()
+	}()
 	if structuredOutput(stdout) && !options.Follow {
 		info, err := handle.Stat()
 		if err != nil {
@@ -1611,7 +1727,7 @@ func runLogs(options logOptions, requestedNode string, stdout, stderr io.Writer)
 	}
 	if structuredOutput(stdout) {
 		if err := encodeStreamOutput(stdout, logStreamRecord{Type: "start", Node: node, Source: options.Source, Path: path}); err != nil {
-			fmt.Fprintf(stderr, "encode %s log stream: %v\n", outputFormatFor(stdout), err)
+			bestEffortf(stderr, "encode %s log stream: %v\n", outputFormatFor(stdout), err)
 			return exitRuntime
 		}
 		reader := bufio.NewReaderSize(handle, structuredLogRecordLimit)
@@ -1624,7 +1740,7 @@ func runLogs(options logOptions, requestedNode string, stdout, stderr io.Writer)
 					Type: "line", Node: node, Source: options.Source, Path: path, Sequence: sequence,
 					Content: chunk, Continued: continued,
 				}); err != nil {
-					fmt.Fprintf(stderr, "encode %s log stream: %v\n", outputFormatFor(stdout), err)
+					bestEffortf(stderr, "encode %s log stream: %v\n", outputFormatFor(stdout), err)
 					return exitRuntime
 				}
 			}
@@ -1647,7 +1763,7 @@ func runLogs(options logOptions, requestedNode string, stdout, stderr io.Writer)
 		return exitRuntime
 	}
 	if options.Follow {
-		fmt.Fprintf(stderr, "%s following %s log for %s\n", styled(stderr, ansiCyan, "→"), options.Source, node)
+		bestEffortf(stderr, "%s following %s log for %s\n", styled(stderr, ansiCyan, "→"), options.Source, node)
 	}
 	for options.Follow {
 		select {
@@ -1820,7 +1936,10 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 			if len(entry.Channels) != 0 {
 				channels = strings.Join(entry.Channels, ",")
 			}
-			fmt.Fprintf(stdout, "%s %s %s channels=%s status=%s sha256:%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status, entry.SHA256)
+			if err := writeText(stdout, "%s %s %s channels=%s status=%s sha256:%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status, entry.SHA256); err != nil {
+				errorf(stderr, "write image list: %v", err)
+				return exitRuntime
+			}
 		}
 		return exitOK
 	case "info", "pull":
@@ -1857,9 +1976,15 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, info)
 		}
-		fmt.Fprintf(stdout, "%s %s %s status=%s sha256:%s cached=%t\n", info.Entry.Alias, info.Entry.Release, info.Entry.Arch, info.Entry.Status, info.Entry.SHA256, info.Cached)
+		if err := writeText(stdout, "%s %s %s status=%s sha256:%s cached=%t\n", info.Entry.Alias, info.Entry.Release, info.Entry.Arch, info.Entry.Status, info.Entry.SHA256, info.Cached); err != nil {
+			errorf(stderr, "write image info: %v", err)
+			return exitRuntime
+		}
 		if info.Path != "" {
-			fmt.Fprintf(stdout, "path: %s\n", info.Path)
+			if err := writeText(stdout, "path: %s\n", info.Path); err != nil {
+				errorf(stderr, "write image info: %v", err)
+				return exitRuntime
+			}
 		}
 		return exitOK
 	case "repo-scan", "repo-build", "repo-verify":
@@ -1935,7 +2060,10 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 			return encodeJSON(stdout, stderr, report)
 		}
 		if len(report.Items) == 0 {
-			fmt.Fprintln(stdout, "no unreferenced cache images")
+			if err := writeText(stdout, "no unreferenced cache images\n"); err != nil {
+				errorf(stderr, "write image prune result: %v", err)
+				return exitRuntime
+			}
 			return exitOK
 		}
 		for _, item := range report.Items {
@@ -1944,9 +2072,15 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 				action = "deleted"
 			}
 			if item.Digest == "" {
-				fmt.Fprintf(stdout, "%s %s (%d bytes, %s)\n", action, item.ImagePath, item.Bytes, item.Kind)
+				if err := writeText(stdout, "%s %s (%d bytes, %s)\n", action, item.ImagePath, item.Bytes, item.Kind); err != nil {
+					errorf(stderr, "write image prune result: %v", err)
+					return exitRuntime
+				}
 			} else {
-				fmt.Fprintf(stdout, "%s %s sha256:%s (%d bytes)\n", action, item.ImagePath, item.Digest, item.Bytes)
+				if err := writeText(stdout, "%s %s sha256:%s (%d bytes)\n", action, item.ImagePath, item.Digest, item.Bytes); err != nil {
+					errorf(stderr, "write image prune result: %v", err)
+					return exitRuntime
+				}
 			}
 		}
 		return exitOK
@@ -1974,7 +2108,10 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, state)
 		}
-		fmt.Fprintf(stdout, "activated manifest version %d digest %s key %s\n", state.ActiveVersion, state.ActiveDigest, state.KeyID)
+		if err := writeText(stdout, "activated manifest version %d digest %s key %s\n", state.ActiveVersion, state.ActiveDigest, state.KeyID); err != nil {
+			errorf(stderr, "write manifest sync result: %v", err)
+			return exitRuntime
+		}
 		return exitOK
 	case "reset-manifest":
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1992,7 +2129,10 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		if structuredOutput(stdout) {
 			return encodeJSON(stdout, stderr, state)
 		}
-		fmt.Fprintf(stdout, "active manifest reset to embedded version %d; high-water mark %d preserved\n", state.ActiveVersion, state.HighestVersion)
+		if err := writeText(stdout, "active manifest reset to embedded version %d; high-water mark %d preserved\n", state.ActiveVersion, state.HighestVersion); err != nil {
+			errorf(stderr, "write manifest reset result: %v", err)
+			return exitRuntime
+		}
 		return exitOK
 	case "import":
 		if options.Path == "" {
@@ -2042,7 +2182,10 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 				return code
 			}
 		} else if path != "" {
-			fmt.Fprintf(stdout, "imported %s\nsha256 %s\n", path, metadata.Digest)
+			if writeErr := writeText(stdout, "imported %s\nsha256 %s\n", path, metadata.Digest); writeErr != nil {
+				errorf(stderr, "write image import result: %v", writeErr)
+				return exitRuntime
+			}
 		}
 		if err != nil {
 			errorf(stderr, "%v", err)
@@ -2080,18 +2223,33 @@ func runDoctor(stdout, stderr io.Writer) int {
 		textField(stdout, 10, "host", fmt.Sprintf("%s/%s", report.OS, report.Arch))
 		textField(stdout, 10, "tier", report.Tier)
 		for _, check := range report.Checks {
-			fmt.Fprintf(stdout, "%s %-20s %s\n", statusCell(stdout, 10, doctorCheckLabel(check)), check.Name, check.Evidence)
+			if err := writeText(stdout, "%s %-20s %s\n", statusCell(stdout, 10, doctorCheckLabel(check)), check.Name, check.Evidence); err != nil {
+				errorf(stderr, "write doctor result: %v", err)
+				return exitRuntime
+			}
 			if check.Fix != "" {
-				fmt.Fprintf(stdout, "  fix: %s\n", check.Fix)
+				if err := writeText(stdout, "  fix: %s\n", check.Fix); err != nil {
+					errorf(stderr, "write doctor result: %v", err)
+					return exitRuntime
+				}
 			}
 		}
 		if report.HasErrors() {
-			fmt.Fprintln(stdout, "this host cannot run Farrow guests until the errors above are resolved")
+			if err := writeText(stdout, "this host cannot run Farrow guests until the errors above are resolved\n"); err != nil {
+				errorf(stderr, "write doctor result: %v", err)
+				return exitRuntime
+			}
 		} else {
-			fmt.Fprintln(stdout, "host compute capability is ready")
+			if err := writeText(stdout, "host compute capability is ready\n"); err != nil {
+				errorf(stderr, "write doctor result: %v", err)
+				return exitRuntime
+			}
 		}
 		if !report.NetworkReady() {
-			fmt.Fprintln(stdout, "the host-global network is not ready; run `farrow setup` to prepare it")
+			if err := writeText(stdout, "the host-global network is not ready; run `farrow setup` to prepare it\n"); err != nil {
+				errorf(stderr, "write doctor result: %v", err)
+				return exitRuntime
+			}
 		}
 	}
 	if report.HasErrors() {
@@ -2138,5 +2296,5 @@ func suggestHostsPublication(resolved spec.Resolved, stderr io.Writer) {
 	if strings.Contains(string(data), "# farrow:begin") {
 		return
 	}
-	fmt.Fprintln(stderr, "declared host aliases are not published; run `farrow hosts install --yes` to add them to "+target)
+	warningf(stderr, "declared host aliases are not published; run `farrow hosts install --yes` to add them to %s", target)
 }

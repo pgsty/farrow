@@ -67,7 +67,11 @@ func fileDigest(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer handle.Close()
+	defer func() {
+		// The archive handle is read-only; its bounded digest is already held
+		// by the caller before this descriptor is released.
+		_ = handle.Close()
+	}()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, io.LimitReader(handle, 4<<20)); err != nil {
 		return "", err
@@ -106,7 +110,11 @@ func inspectArchive(reader io.Reader) (ArchiveInfo, error) {
 	if err != nil {
 		return ArchiveInfo{}, fmt.Errorf("open socket_vmnet gzip: %w", err)
 	}
-	defer gzipReader.Close()
+	defer func() {
+		// Full archive consumption performs the format/checksum checks; Close
+		// only releases read-side gzip state.
+		_ = gzipReader.Close()
+	}()
 	tarReader := tar.NewReader(gzipReader)
 	var info ArchiveInfo
 	seenSocket, seenClient := false, false
@@ -174,7 +182,11 @@ func VerifyArchive(archivePath, arch string) (ArchiveInfo, error) {
 	if err != nil {
 		return ArchiveInfo{}, err
 	}
-	defer handle.Close()
+	defer func() {
+		// Archive inspection is read-only and consumes the bounded stream before
+		// returning its verified inventory.
+		_ = handle.Close()
+	}()
 	return inspectArchive(handle)
 }
 
@@ -183,12 +195,20 @@ func extractOne(archivePath, targetName, targetPath, expectedDigest string) erro
 	if err != nil {
 		return err
 	}
-	defer handle.Close()
+	defer func() {
+		// Extraction reads from a digest-verified archive; target publication
+		// handles its own Write, Sync, and Close failures.
+		_ = handle.Close()
+	}()
 	gzipReader, err := gzip.NewReader(handle)
 	if err != nil {
 		return err
 	}
-	defer gzipReader.Close()
+	defer func() {
+		// Full archive consumption performs the format/checksum checks; Close
+		// only releases read-side gzip state.
+		_ = gzipReader.Close()
+	}()
 	tarReader := tar.NewReader(gzipReader)
 	for {
 		header, nextErr := tarReader.Next()
@@ -300,7 +320,11 @@ func stageOne(sourcePath, targetPath, expectedDigest string) error {
 	if err != nil {
 		return err
 	}
-	defer source.Close()
+	defer func() {
+		// The source archive is read-only and its copied bytes are verified
+		// before publication.
+		_ = source.Close()
+	}()
 	output, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
 	if err != nil {
 		return err

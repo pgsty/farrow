@@ -57,7 +57,11 @@ func TestBundleLayoutValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer bundle.Close()
+	t.Cleanup(func() {
+		if err := bundle.Close(); err != nil {
+			t.Errorf("close share bundle: %v", err)
+		}
+	})
 	tag := spec.ShareTag(shares[0])
 	invocation := qemu.Invocation{InheritedFiles: []qemu.InheritedFile{{FD: 3, Kind: "share", ID: tag}}}
 	if err := bundle.ValidateInvocation(invocation, 0); err != nil {

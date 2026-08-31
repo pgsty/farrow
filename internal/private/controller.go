@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/activity"
+	"github.com/pgsty/farrow/internal/lock"
 )
 
 type PartialError struct {
@@ -81,7 +82,9 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 	if err != nil {
 		return result, err
 	}
-	defer projectLock.Release()
+	defer func() {
+		err = lock.JoinRelease(err, projectLock, "deployment controller lock")
+	}()
 	createNames, err := selectedNodeNames(controller.Prepare.Resolved, controller.CreateNodes)
 	if err != nil {
 		return result, err

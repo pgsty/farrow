@@ -119,7 +119,11 @@ func ReadISO(path string) (string, map[string][]byte, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	defer handle.Close()
+	defer func() {
+		// ISO verification is read-only and all accepted files are copied into
+		// memory before this descriptor is released.
+		_ = handle.Close()
+	}()
 	info, err := handle.Stat()
 	if err != nil {
 		return "", nil, err

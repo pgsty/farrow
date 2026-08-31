@@ -26,7 +26,7 @@ func integrationHome(home string) (string, error) {
 	return os.UserHomeDir()
 }
 
-func (m Manager) integrationSnapshot(ctx context.Context) (Deployment, state.DeploymentState, []state.NodeState, error) {
+func (m Manager) integrationSnapshot(ctx context.Context) (_ Deployment, _ state.DeploymentState, _ []state.NodeState, returnErr error) {
 	projectValue, err := m.openProject(false)
 	if err != nil {
 		return Deployment{}, state.DeploymentState{}, nil, err
@@ -37,7 +37,9 @@ func (m Manager) integrationSnapshot(ctx context.Context) (Deployment, state.Dep
 	if err != nil {
 		return Deployment{}, state.DeploymentState{}, nil, err
 	}
-	defer projectLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment integration snapshot lock")
+	}()
 	return m.integrationSnapshotLocked(projectValue)
 }
 
@@ -87,7 +89,7 @@ func validateSSHArtifacts(projectValue Deployment) (string, string, error) {
 
 // Connections resolves and verifies a selected batch while holding the
 // project exclusive lock across the complete snapshot and runtime checks.
-func (m Manager) Connections(ctx context.Context) ([]Connection, error) {
+func (m Manager) Connections(ctx context.Context) (_ []Connection, returnErr error) {
 	projectValue, err := m.openProject(false)
 	if err != nil {
 		return nil, err
@@ -98,7 +100,9 @@ func (m Manager) Connections(ctx context.Context) ([]Connection, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer projectLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, projectLock, "deployment connections lock")
+	}()
 	projectValue, err = m.openProject(false)
 	if err != nil {
 		return nil, err

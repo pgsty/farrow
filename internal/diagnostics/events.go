@@ -71,7 +71,7 @@ func lockEventFile(ctx context.Context, descriptor int) error {
 	}
 }
 
-func appendJSONLine(ctx context.Context, pathname, basename string, value any) error {
+func appendJSONLine(ctx context.Context, pathname, basename string, value any) (returnErr error) {
 	if pathname == "" || !filepath.IsAbs(pathname) || filepath.Base(pathname) != basename {
 		return fmt.Errorf("diagnostic path must be an absolute %s path", basename)
 	}
@@ -94,10 +94,19 @@ func appendJSONLine(ctx context.Context, pathname, basename string, value any) e
 	}
 	handle := os.NewFile(uintptr(descriptor), pathname)
 	if handle == nil {
-		_ = unix.Close(descriptor)
-		return errors.New("open diagnostic file handle")
+		return errors.Join(errors.New("open diagnostic file handle"), unix.Close(descriptor))
 	}
-	defer handle.Close()
+	locked := false
+	defer func() {
+		if locked {
+			if err := unix.Flock(descriptor, unix.LOCK_UN); err != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("unlock diagnostic file: %w", err))
+			}
+		}
+		if err := handle.Close(); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("close diagnostic file: %w", err))
+		}
+	}()
 	info, err := handle.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return errors.New("diagnostic target is not a regular file")
@@ -108,7 +117,7 @@ func appendJSONLine(ctx context.Context, pathname, basename string, value any) e
 	if err := lockEventFile(ctx, descriptor); err != nil {
 		return err
 	}
-	defer unix.Flock(descriptor, unix.LOCK_UN)
+	locked = true
 	info, err = handle.Stat()
 	if err != nil {
 		return err

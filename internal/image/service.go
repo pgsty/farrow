@@ -338,14 +338,16 @@ func (s Service) PruneAll(ctx context.Context, apply bool, nodeRefs func(context
 	if err != nil {
 		return PruneReport{}, err
 	}
-	resolve := func() (map[string]struct{}, error) {
+	resolve := func() (_ map[string]struct{}, returnErr error) {
 		lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		allocator, err := lock.Acquire(lockContext, filepath.Join(s.DataRoot, "locks", "allocator.lock"), false)
 		if err != nil {
 			return nil, err
 		}
-		defer allocator.Release()
+		defer func() {
+			returnErr = lock.JoinRelease(returnErr, allocator, "image reference allocator lock")
+		}()
 		references := make(map[string]struct{})
 		catalog, _, _, err := s.catalog(ctx, false)
 		if err != nil {

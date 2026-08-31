@@ -57,7 +57,11 @@ func TestOSRunnerPassesExtraFileAsFD3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close extra-file fixture: %v", err)
+		}
+	})
 	if _, err := file.WriteString("inherited-fd-3"); err != nil {
 		t.Fatal(err)
 	}

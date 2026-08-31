@@ -103,7 +103,7 @@ func localEntry(alias LocalAlias) Entry {
 	}
 }
 
-func (s Store) RegisterLocalAlias(ctx context.Context, name, pathname string, metadata Metadata, arch, boot, sourceUser string) (Entry, string, Metadata, error) {
+func (s Store) RegisterLocalAlias(ctx context.Context, name, pathname string, metadata Metadata, arch, boot, sourceUser string) (_ Entry, _ string, _ Metadata, returnErr error) {
 	if err := s.validate(); err != nil {
 		return Entry{}, "", Metadata{}, err
 	}
@@ -122,7 +122,9 @@ func (s Store) RegisterLocalAlias(ctx context.Context, name, pathname string, me
 	if err != nil {
 		return Entry{}, "", Metadata{}, err
 	}
-	defer cacheLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, cacheLock, "local image registry lock")
+	}()
 	entry := localEntry(value)
 	path, metadata, err := s.ValidateCached(ctx, entry)
 	if err != nil {

@@ -183,6 +183,10 @@ func executeCLI(arguments []string, stdout, stderr io.Writer) int {
 	root := newRootCommand(stdout, stderr)
 	root.SetArgs(arguments)
 	executed, err := root.ExecuteC()
+	if writeErr := outputWriteError(stdout); writeErr != nil {
+		errorf(stderr, "write command output: %v", writeErr)
+		return exitRuntime
+	}
 	if err == nil {
 		return exitOK
 	}
@@ -206,7 +210,9 @@ func executeCLI(arguments []string, stdout, stderr io.Writer) int {
 		_ = emitCommandFailure(stdout, stderr, "usage", err.Error(), "")
 	}
 	errorf(stderr, "%v", err)
-	fmt.Fprintf(stderr, "run '%s --help' for usage\n", executed.CommandPath())
+	if _, writeErr := fmt.Fprintf(stderr, "run '%s --help' for usage\n", executed.CommandPath()); writeErr != nil {
+		return exitRuntime
+	}
 	return exitUsage
 }
 

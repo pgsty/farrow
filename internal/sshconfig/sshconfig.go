@@ -164,7 +164,11 @@ func readOptionalRegular(pathname string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	defer handle.Close()
+	defer func() {
+		// The existing SSH config is read-only and bounded in memory; atomic
+		// publication below handles every target Write, Sync, and Close error.
+		_ = handle.Close()
+	}()
 	data, err := io.ReadAll(io.LimitReader(handle, maxConfigBytes+1))
 	if err != nil || len(data) > maxConfigBytes {
 		return nil, false, errors.New("SSH config exceeds 1 MiB limit")

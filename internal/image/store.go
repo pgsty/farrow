@@ -220,7 +220,11 @@ func digestFileWithProgress(pathname string, reporter activity.Reporter, event a
 	if err != nil {
 		return "", 0, err
 	}
-	defer handle.Close()
+	defer func() {
+		// Digesting is read-only; the accepted byte count and hash are complete
+		// before this descriptor is released.
+		_ = handle.Close()
+	}()
 	hash := sha256.New()
 	event.TotalBytes = info.Size()
 	written, err := copyWithProgress(hash, handle, MaxArtifactSize+1, reporter, event)
@@ -326,7 +330,7 @@ func (s Store) publish(ctx context.Context, tempPath string, entry Entry, source
 	return target, metadata, nil
 }
 
-func (s Store) Import(ctx context.Context, source, expectedDigest string) (string, Metadata, error) {
+func (s Store) Import(ctx context.Context, source, expectedDigest string) (_ string, _ Metadata, returnErr error) {
 	if err := s.validate(); err != nil {
 		return "", Metadata{}, err
 	}
@@ -352,7 +356,9 @@ func (s Store) Import(ctx context.Context, source, expectedDigest string) (strin
 	if err != nil {
 		return "", Metadata{}, err
 	}
-	defer imageLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, imageLock, "image import lock")
+	}()
 	directory, err := s.ensureImageDirectory(entry)
 	if err != nil {
 		return "", Metadata{}, err
@@ -512,7 +518,11 @@ func (s Store) stageHTTP(ctx context.Context, source, directory string, entry En
 	if err != nil {
 		return "", resumeFrom, stallAwareError(downloadContext, err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		// The bounded response is read-only and its bytes are digest-verified;
+		// closing only affects HTTP connection reuse.
+		_ = response.Body.Close()
+	}()
 	switch response.StatusCode {
 	case http.StatusOK:
 		// The source ignored the range request, so the body starts at byte zero and
@@ -622,7 +632,7 @@ func (s Store) stageSource(ctx context.Context, source, directory string, entry 
 	return tempPath, copied, err
 }
 
-func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) {
+func (s Store) Pull(ctx context.Context, entry Entry) (_ string, _ Metadata, returnErr error) {
 	if err := s.validate(); err != nil {
 		return "", Metadata{}, err
 	}
@@ -644,7 +654,9 @@ func (s Store) Pull(ctx context.Context, entry Entry) (string, Metadata, error) 
 	if err != nil {
 		return "", Metadata{}, err
 	}
-	defer imageLock.Release()
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, imageLock, "image pull lock")
+	}()
 	directory, err := s.ensureImageDirectory(entry)
 	if err != nil {
 		return "", Metadata{}, err

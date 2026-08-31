@@ -118,7 +118,11 @@ func TestConnectionsLockedRequiresAndReusesExclusiveDeploymentLock(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer projectLock.Release()
+	t.Cleanup(func() {
+		if err := projectLock.Release(); err != nil {
+			t.Errorf("release integration test lock: %v", err)
+		}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, err = manager.ConnectionsLocked(ctx, startConfig.Project, projectLock)

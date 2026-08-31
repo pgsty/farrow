@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os/exec"
 	"strings"
 	"testing"
@@ -14,6 +15,36 @@ import (
 	"github.com/pgsty/farrow/internal/activity"
 	"go.yaml.in/yaml/v3"
 )
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("fixture write failure")
+}
+
+func TestWriterFailureBoundaries(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := runVersionCommand(failingWriter{}, &stderr); code != exitRuntime || !strings.Contains(stderr.String(), "write version output") {
+		t.Fatalf("version writer failure code=%d stderr=%q", code, stderr.String())
+	}
+	if err := confirmDestructive(false, true, "destroy", strings.NewReader("destroy\n"), failingWriter{}); err == nil || !strings.Contains(err.Error(), "confirmation prompt") {
+		t.Fatalf("confirmation writer failure = %v", err)
+	}
+	if err := writeText(failingWriter{}, "result"); err == nil {
+		t.Fatal("command result writer failure was discarded")
+	}
+	_, out, _, err := prepareOutput(nil, failingWriter{}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	textField(out, 8, "field", "value")
+	if outputWriteError(out) == nil {
+		t.Fatal("void text-field writer failure was not captured at the root boundary")
+	}
+	// Diagnostic decoration is deliberately best-effort and must not replace
+	// the business result; this call proves a failed diagnostic writer is safe.
+	bestEffortf(failingWriter{}, "diagnostic")
+}
 
 func TestPrepareOutputDefaultsToTextAndExtractsGlobalFlags(t *testing.T) {
 	var stdout bytes.Buffer

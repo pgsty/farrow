@@ -72,7 +72,11 @@ func ValidateSSHArtifacts(root string) (privateKey, knownHosts string, err error
 		_ = unix.Close(descriptor)
 		return "", "", errors.New("open SSH keys directory handle")
 	}
-	defer directory.Close()
+	defer func() {
+		// The no-follow directory descriptor is read-only and exists only to
+		// bind later identity checks to the validated keys directory.
+		_ = directory.Close()
+	}()
 	openedDirectory, err := directory.Stat()
 	if err != nil || !os.SameFile(keysInfo, openedDirectory) || !openedDirectory.IsDir() || openedDirectory.Mode().Perm() != 0o700 {
 		return "", "", errors.New("SSH keys directory identity changed while opening")

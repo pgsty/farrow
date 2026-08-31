@@ -311,7 +311,11 @@ func secureRead(path string, limit int64) ([]byte, os.FileInfo, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer handle.Close()
+	defer func() {
+		// This identity-checked hosts handle is read-only; the reviewed write
+		// transaction handles every target Write, Sync, and Close error.
+		_ = handle.Close()
+	}()
 	opened, err := handle.Stat()
 	if err != nil || !os.SameFile(before, opened) || !opened.Mode().IsRegular() {
 		return nil, nil, errors.New("hosts file identity changed while opening")

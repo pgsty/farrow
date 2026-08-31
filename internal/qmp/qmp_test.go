@@ -3,6 +3,7 @@ package qmp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -33,8 +34,8 @@ func startServer(t *testing.T, handler func(*json.Decoder, *json.Encoder) error)
 			done <- acceptErr
 			return
 		}
-		defer conn.Close()
-		done <- handler(json.NewDecoder(conn), json.NewEncoder(conn))
+		handlerErr := handler(json.NewDecoder(conn), json.NewEncoder(conn))
+		done <- errors.Join(handlerErr, conn.Close())
 	}()
 	t.Cleanup(func() {
 		select {
