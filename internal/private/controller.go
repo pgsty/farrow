@@ -71,7 +71,7 @@ func failedCreateNodes(result CreateResult) []string {
 	return resultNames
 }
 
-func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, error) {
+func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult, returnErr error) {
 	result := CreateResult{}
 	if controller.Deployment.Root == "" || controller.Prepare.DeploymentRoot != controller.Deployment.Root || controller.Lifecycle == nil || controller.Version == "" {
 		return result, fmt.Errorf("private controller deployment, prepare, lifecycle, or version is incomplete")
@@ -83,7 +83,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (CreateResult, 
 		return result, err
 	}
 	defer func() {
-		err = lock.JoinRelease(err, deploymentLock, "deployment controller lock")
+		returnErr = lock.JoinRelease(returnErr, deploymentLock, "deployment controller lock")
 	}()
 	createNames, err := selectedNodeNames(controller.Prepare.Resolved, controller.CreateNodes)
 	if err != nil {
