@@ -31,8 +31,8 @@ row names its architecture; info and pull select the native one.`,
   farrow image list --repo https://mirror.example/farrow
   farrow --json image list`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return commandError(runImage(listOptions, stdout, stderr))
+		RunE: func(command *cobra.Command, _ []string) error {
+			return commandError(runImage(command.Context(), listOptions, stdout, stderr))
 		},
 	}
 	list.Flags().StringVarP(&listOptions.Repository, "repo", "r", "", repositoryFlagHelp)
@@ -67,11 +67,11 @@ activation.`
 				}
 				return validateChoice("--arch", options.Arch, "amd64", "arm64")
 			},
-			RunE: func(_ *cobra.Command, arguments []string) error {
+			RunE: func(command *cobra.Command, arguments []string) error {
 				if len(arguments) != 0 {
 					options.Alias = arguments[0]
 				}
-				return commandError(runImage(options, stdout, stderr))
+				return commandError(runImage(command.Context(), options, stdout, stderr))
 			},
 		}
 		if action == "info" {
@@ -97,8 +97,8 @@ staging files. The default and --dry-run are read-only; deletion requires
   farrow image prune --dry-run   # explicit read-only scan
   farrow image prune --yes       # delete the displayed candidates`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return commandError(runImage(pruneOptions, stdout, stderr))
+		RunE: func(command *cobra.Command, _ []string) error {
+			return commandError(runImage(command.Context(), pruneOptions, stdout, stderr))
 		},
 	}
 	prune.Flags().BoolVarP(&pruneOptions.DryRun, "dry-run", "d", false, "show unreferenced images and stale staging files without deleting")
@@ -120,9 +120,9 @@ atomically.`,
   farrow image sync /srv/farrow/catalog.json
   farrow image sync --allow-downgrade /srv/recovery/catalog.json`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, arguments []string) error {
+		RunE: func(command *cobra.Command, arguments []string) error {
 			syncOptions.Source = arguments[0]
-			return commandError(runImage(syncOptions, stdout, stderr))
+			return commandError(runImage(command.Context(), syncOptions, stdout, stderr))
 		},
 	}
 	syncCommand.Flags().BoolVar(&syncOptions.AllowDowngrade, "allow-downgrade", false, "allow activation below the catalog high-water mark")
@@ -139,8 +139,8 @@ signed-catalog high-water mark used to prevent silent downgrade.`,
 		Example: `  farrow image reset-manifest
   farrow --json image reset-manifest`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return commandError(runImage(resetOptions, stdout, stderr))
+		RunE: func(command *cobra.Command, _ []string) error {
+			return commandError(runImage(command.Context(), resetOptions, stdout, stderr))
 		},
 	}
 	reset.Flags().StringVarP(&resetOptions.Repository, "repo", "r", "", "repository whose active catalog is reset to the embedded baseline")
@@ -164,9 +164,9 @@ prefixed alias and therefore also requires --boot and --source-user.`,
 			}
 			return validateChoice("--boot", importOptions.Boot, "bios", "uefi")
 		},
-		RunE: func(_ *cobra.Command, arguments []string) error {
+		RunE: func(command *cobra.Command, arguments []string) error {
 			importOptions.Path = arguments[0]
-			return commandError(runImage(importOptions, stdout, stderr))
+			return commandError(runImage(command.Context(), importOptions, stdout, stderr))
 		},
 	}
 	importCommand.Flags().StringVarP(&importOptions.ExpectedSHA256, "sha256", "s", "", "optional expected SHA-256")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"reflect"
@@ -619,7 +620,7 @@ func TestVerboseShorthandCombinationsReachTheOutputContext(t *testing.T) {
 		if verboseOutput(errOut) {
 			t.Fatalf("prepareOutput(%v) consumed a Cobra-only shorthand form", arguments)
 		}
-		if code := executeCLI(prepared, out, errOut); code != exitOK {
+		if code := executeCLI(context.TODO(), prepared, out, errOut); code != exitOK {
 			t.Fatalf("executeCLI(%v) code=%d stderr=%s", prepared, code, stderr.String())
 		}
 		if !verboseOutput(errOut) {

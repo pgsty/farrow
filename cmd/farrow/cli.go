@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type commandRunner func([]string, io.Writer, io.Writer) int
+type commandRunner func(context.Context, []string, io.Writer, io.Writer) int
 
 const (
 	configDiscoverySummary = "farrow.yml, farrow.yaml, pigsty.yml, or pigsty.yaml"
@@ -69,7 +70,7 @@ func rawOperation(use, short, long, example string, stdout, stderr io.Writer, ru
 		if helpBeforeSeparator(arguments) {
 			return command.Help()
 		}
-		return commandError(runner(arguments, stdout, stderr))
+		return commandError(runner(command.Context(), arguments, stdout, stderr))
 	}
 	return command
 }

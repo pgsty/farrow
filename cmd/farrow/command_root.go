@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -113,8 +114,8 @@ is refused instead of being run as a command on the control node.`,
   farrow ssh meta             # open one named node
   farrow ssh meta -- uptime   # run a remote command
   farrow --json ssh meta -- uname -a`,
-		stdout, stderr, func(arguments []string, stdout, stderr io.Writer) int {
-			return runSSH("ssh", arguments, stdout, stderr)
+		stdout, stderr, func(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
+			return runSSH(ctx, "ssh", arguments, stdout, stderr)
 		})
 	ssh.ValidArgsFunction = nodeCompletion(false, true)
 	ssh.GroupID = "access"
@@ -128,8 +129,8 @@ nothing or one known node.`,
 		`  farrow exec -- hostname
   farrow exec meta -- systemctl is-active postgresql
   farrow --json exec meta -- uname -a`,
-		stdout, stderr, func(arguments []string, stdout, stderr io.Writer) int {
-			return runSSH("exec", arguments, stdout, stderr)
+		stdout, stderr, func(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
+			return runSSH(ctx, "exec", arguments, stdout, stderr)
 		})
 	execCommand.ValidArgsFunction = nodeCompletion(false, true)
 	execCommand.Aliases = []string{"ex"}
@@ -164,8 +165,8 @@ missing compute capability exits 3.`,
   farrow doctor --verbose`,
 		Args:    cobra.NoArgs,
 		GroupID: "host",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return commandError(runDoctor(stdout, stderr))
+		RunE: func(command *cobra.Command, _ []string) error {
+			return commandError(runDoctor(command.Context(), stdout, stderr))
 		},
 	}
 	network := newNetworkCommand(stdout, stderr)
@@ -194,10 +195,10 @@ architecture.`,
 	return root
 }
 
-func executeCLI(arguments []string, stdout, stderr io.Writer) int {
+func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
 	root := newRootCommand(stdout, stderr)
 	root.SetArgs(arguments)
-	executed, err := root.ExecuteC()
+	executed, err := root.ExecuteContextC(ctx)
 	if writeErr := outputWriteError(stdout); writeErr != nil {
 		errorf(stderr, "write command output: %v", writeErr)
 		return exitRuntime

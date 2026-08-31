@@ -184,7 +184,7 @@ func sortedMapKeys[V any](values map[string]V) []string {
 	return keys
 }
 
-func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
+func runNetwork(parent context.Context, options networkOptions, stdout, stderr io.Writer) int {
 	command := options.Action
 	if command == "install" || command == "uninstall" {
 		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
@@ -222,7 +222,7 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 			}
 		}
 		baseRunner := execx.OSRunner{Timeout: 2 * time.Minute, OutputLimit: 1 << 20}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 		defer cancel()
 		if command == "install" {
 			addresses := withoutRecordedAddresses(layout.StaticAddresses())
@@ -416,7 +416,7 @@ func runNetwork(options networkOptions, stdout, stderr io.Writer) int {
 		errorf(stderr, "unknown network action %q", command)
 		return exitUsage
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 60*time.Second)
 	defer cancel()
 	cidr := options.CIDR
 	if cidr == "" {
@@ -611,7 +611,7 @@ func splitRemoteInvocation(arguments []string, resolved spec.Resolved) (string, 
 	return "", arguments, nil
 }
 
-func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, stdout, stderr io.Writer) int {
+func runPrivateSSH(parent context.Context, commandName string, args []string, resolved spec.Resolved, stdout, stderr io.Writer) int {
 	node, command, err := splitRemoteInvocation(args, resolved)
 	if err != nil {
 		errorf(stderr, "%v", err)
@@ -622,7 +622,7 @@ func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, st
 		return exitUsage
 	}
 	manager := privatevm.Manager{FarrowVersion: version.Version}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	connection, err := manager.Connection(ctx, node)
 	if err != nil {
@@ -662,7 +662,7 @@ func runPrivateSSH(commandName string, args []string, resolved spec.Resolved, st
 	return exitOK
 }
 
-func runSSH(commandName string, args []string, stdout, stderr io.Writer) int {
+func runSSH(ctx context.Context, commandName string, args []string, stdout, stderr io.Writer) int {
 	resolved, err := currentProjectResolved()
 	if err != nil {
 		errorf(stderr, "no deployment state found; run `farrow up` first")
@@ -672,7 +672,7 @@ func runSSH(commandName string, args []string, stdout, stderr io.Writer) int {
 		errorf(stderr, "%s", legacyDeploymentMessage)
 		return exitConflict
 	}
-	return runPrivateSSH(commandName, args, resolved, stdout, stderr)
+	return runPrivateSSH(ctx, commandName, args, resolved, stdout, stderr)
 }
 
 func printProvisionReport(stdout, stderr io.Writer, report provision.Report) error {
@@ -826,7 +826,7 @@ type provisionOptions struct {
 	Timeout     time.Duration
 }
 
-func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Writer) int {
+func runProvision(parent context.Context, options provisionOptions, nodes []string, stdout, stderr io.Writer) int {
 	if options.ScriptPath == "" {
 		errorf(stderr, "--script is required")
 		return exitUsage
@@ -857,7 +857,7 @@ func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Wr
 		errorf(stderr, "%v", err)
 		return exitRuntime
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), options.Timeout)
+	ctx, cancel := context.WithTimeout(parent, options.Timeout)
 	defer cancel()
 	deploymentLock, err := privatevm.AcquireLock(ctx, deployment, false)
 	if err != nil {
@@ -934,7 +934,7 @@ func runProvision(options provisionOptions, nodes []string, stdout, stderr io.Wr
 	if report.Failed != 0 {
 		level = "error"
 	}
-	auditContext, auditCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	auditContext, auditCancel := context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
 	auditErr := recordEvent(auditContext, "provision", level, fmt.Sprintf("completed script_sha256=%s successful=%d failed=%d results=%s", script.SHA256, report.Successful, report.Failed, strings.Join(resultParts, ";")))
 	auditCancel()
 	if auditErr != nil {
@@ -1171,7 +1171,7 @@ func reportPrivateLifecycleError(err error, operationID string, stdout, stderr i
 	return reportCommandFailure(stdout, stderr, "runtime", err.Error(), operationID, exitRuntime)
 }
 
-func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, purge, noWait, rollback bool, stdout, stderr io.Writer) int {
+func runPrivateCommand(parent context.Context, command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, purge, noWait, rollback bool, stdout, stderr io.Writer) int {
 	operationID := ""
 	if command != "status" && command != "plan" {
 		var err error
@@ -1185,7 +1185,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	manager := privatevm.Manager{FarrowVersion: version.Version, OperationID: operationID, Repository: repository, NoWait: noWait, RollbackFailed: rollback, Nodes: append([]string(nil), nodes...)}
 	manager.Progress = deferredProgressReporter(&progressItem)
 	if command == "plan" {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ctx, cancel := context.WithTimeout(parent, time.Minute)
 		defer cancel()
 		plan, err := manager.Plan(ctx, resolved)
 		if err != nil {
@@ -1268,7 +1268,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 		errorf(stderr, "unsupported private command %q", command)
 		return exitUsage
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	debugf(stderr, "lifecycle=%s mode=private timeout=%s operation_id=%s nodes=%d", command, timeout, operationID, len(resolved.Nodes))
 	if command != "status" {
@@ -1372,7 +1372,7 @@ func runPrivateCommand(command string, resolved spec.Resolved, nodes []string, r
 	return exitOK
 }
 
-func runLifecycleCommand(command string, options lifecycleOptions, nodes []string, stdout, stderr io.Writer) int {
+func runLifecycleCommand(ctx context.Context, command string, options lifecycleOptions, nodes []string, stdout, stderr io.Writer) int {
 	if (options.DeletePersistent || options.Purge) && !options.Force && !term.IsTerminal(int(os.Stdin.Fd())) {
 		// On a terminal the interactive destroy confirmation covers the
 		// widened scope; without one, automation must state --force.
@@ -1410,7 +1410,7 @@ func runLifecycleCommand(command string, options lifecycleOptions, nodes []strin
 		return reportCommandFailure(stdout, stderr, "usage", err.Error(), "", exitUsage)
 	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
-	return runPrivateCommand(command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stdout, stderr)
+	return runPrivateCommand(ctx, command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stdout, stderr)
 }
 
 func validateNodeSelectors(resolved spec.Resolved, nodes []string) error {
@@ -1459,7 +1459,7 @@ type sshConfigOptions struct {
 	Name    string
 }
 
-func runSSHConfig(options sshConfigOptions, nodes []string, stdout, stderr io.Writer) int {
+func runSSHConfig(parent context.Context, options sshConfigOptions, nodes []string, stdout, stderr io.Writer) int {
 	if options.Install && options.Remove {
 		errorf(stderr, "--install and --remove are mutually exclusive")
 		return exitUsage
@@ -1471,7 +1471,7 @@ func runSSHConfig(options sshConfigOptions, nodes []string, stdout, stderr io.Wr
 		errorf(stderr, "ssh-config --remove removes the deployment fragment and does not accept node selectors")
 		return exitUsage
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	// Removal is intentionally state-independent: destroy preserves the
 	// deployment state, and sshconfig.Remove itself deletes only the exact
@@ -1562,12 +1562,12 @@ func reportSSHConfigFailure(result sshconfig.Result, err error, stdout, stderr i
 	return exitIntegrity
 }
 
-func runHosts(action string, apply bool, stdout, stderr io.Writer) int {
+func runHosts(parent context.Context, action string, apply bool, stdout, stderr io.Writer) int {
 	if action != hostconfig.ActionInstall && action != hostconfig.ActionUninstall {
 		errorf(stderr, "unknown hosts action %q", action)
 		return exitUsage
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	manager := privatevm.Manager{FarrowVersion: version.Version}
 	var entries []hostconfig.Entry
@@ -1662,11 +1662,11 @@ type logOptions struct {
 	Follow bool
 }
 
-func runLogs(options logOptions, requestedNode string, stdout, stderr io.Writer) int {
+func runLogs(parent context.Context, options logOptions, requestedNode string, stdout, stderr io.Writer) int {
 	if options.Source == "" {
 		options.Source = "serial"
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	resolved, resolveErr := currentProjectResolved()
 	if resolveErr != nil {
@@ -1907,10 +1907,10 @@ type imageOptions struct {
 	AllowDowngrade bool
 }
 
-func runImage(options imageOptions, stdout, stderr io.Writer) int {
+func runImage(parent context.Context, options imageOptions, stdout, stderr io.Writer) int {
 	switch options.Action {
 	case "list":
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		service, err := imageService(options.Repository, nil)
 		if err != nil {
@@ -1943,7 +1943,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	case "info", "pull":
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 		defer cancel()
 		var progressItem *progress
 		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
@@ -2014,7 +2014,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 			errorf(stderr, "repository %s requires qemu-img: %v", strings.TrimPrefix(options.Action, "repo-"), err)
 			return exitCapability
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 		defer cancel()
 		builder := image.RepoBuilder{QEMUImg: qemuImg, Runner: execx.OSRunner{Timeout: 10 * time.Minute, OutputLimit: 1 << 20}}
 		var result image.RepoBuildResult
@@ -2040,7 +2040,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 			errorf(stderr, "--dry-run and --yes are mutually exclusive")
 			return exitUsage
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 		defer cancel()
 		service, err := imageService(options.Repository, nil)
 		if err != nil {
@@ -2089,7 +2089,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 			errorf(stderr, "image sync requires a URL or path")
 			return exitUsage
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", progressSource(options.Source), options.AllowDowngrade)
 		service, err := imageService(options.Repository, nil)
@@ -2114,7 +2114,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	case "reset-manifest":
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()
 		service, err := imageService(options.Repository, nil)
 		if err != nil {
@@ -2144,7 +2144,7 @@ func runImage(options imageOptions, stdout, stderr io.Writer) int {
 			errorf(stderr, "--name requires --boot bios|uefi and --source-user; alias metadata is immutable")
 			return exitUsage
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 		defer cancel()
 		service, err := imageService("", nil)
 		if err != nil {
@@ -2209,8 +2209,8 @@ func doctorCheckLabel(check doctor.Check) string {
 	return string(check.Status)
 }
 
-func runDoctor(stdout, stderr io.Writer) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func runDoctor(parent context.Context, stdout, stderr io.Writer) int {
+	ctx, cancel := context.WithTimeout(parent, 60*time.Second)
 	defer cancel()
 	progressItem := startProgress(ctx, stderr, "Checking host capabilities")
 	report := (doctor.Probe{}).Run(ctx)
@@ -2258,7 +2258,7 @@ func runDoctor(stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	prepared, preparedStdout, preparedStderr, err := prepareOutput(args, stdout, stderr)
 	if err != nil {
 		errorf(stderr, "%v", err)
@@ -2267,7 +2267,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(prepared) > 0 {
 		debugf(preparedStderr, "command=%s format=%s stdout_tty=%t stderr_tty=%t", prepared[0], outputFormatFor(preparedStdout), writerTTY(preparedStdout), writerTTY(preparedStderr))
 	}
-	return executeCLI(prepared, preparedStdout, preparedStderr)
+	return executeCLI(ctx, prepared, preparedStdout, preparedStderr)
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	return runContext(context.TODO(), args, stdout, stderr)
 }
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

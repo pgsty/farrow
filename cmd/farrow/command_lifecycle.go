@@ -138,8 +138,8 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 		command.Flags().BoolVar(&options.Purge, "purge", false, "terminal disposal: also delete persistent disks, keys, and deployment state")
 		noFileCompletions(command, "force", "delete-persistent", "purge")
 	}
-	command.RunE = func(_ *cobra.Command, nodes []string) error {
-		return commandError(runLifecycleCommand(name, options, nodes, stdout, stderr))
+	command.RunE = func(command *cobra.Command, nodes []string) error {
+		return commandError(runLifecycleCommand(command.Context(), name, options, nodes, stdout, stderr))
 	}
 	return command
 }

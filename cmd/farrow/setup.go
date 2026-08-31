@@ -730,7 +730,7 @@ func ensureSetupHostsHelper(ctx context.Context, base execx.Runner, sudo *sudoSe
 	staged := filepath.Join(filepath.Dir(hostconfig.InstalledHelperPath), ".farrow-hosts-helper.next-"+stageID)
 	defer func() {
 		if staged != "" {
-			_, _ = root.Run(context.Background(), "/bin/rm", "-f", "--", staged)
+			_, _ = root.Run(context.WithoutCancel(ctx), "/bin/rm", "-f", "--", staged)
 		}
 	}()
 	progressItem := startProgress(ctx, stderr, "Installing the hosts helper")
@@ -1065,7 +1065,7 @@ func formatSetupCommand(arguments []string) (string, []string) {
 	return strings.Join(quoted, " "), arguments
 }
 
-func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr io.Writer) int {
+func runSetupCommand(parent context.Context, profileName string, options setupCLIOptions, stdout, stderr io.Writer) int {
 	result := setupResult{
 		Schema: 1, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Steps: make([]setupStep, 0, 6), NextArgv: nil,
@@ -1108,7 +1108,7 @@ func runSetupCommand(profileName string, options setupCLIOptions, stdout, stderr
 		return failSetup(&result, exitCapability, errors.New(dependencyPlan.Resolution), stdout, stderr)
 	}
 	base := execx.OSRunner{Timeout: 20 * time.Minute, OutputLimit: 64 << 10}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 45*time.Minute)
 	defer cancel()
 	sudoSession := &sudoSession{base: base, stderr: stderr, scope: "setup run"}
 	defer sudoSession.close()

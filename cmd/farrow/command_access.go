@@ -32,8 +32,8 @@ script digest, and never uploads the script as a persistent guest file.`,
 			}
 			return nil
 		},
-		RunE: func(_ *cobra.Command, nodes []string) error {
-			return commandError(runProvision(options, nodes, stdout, stderr))
+		RunE: func(command *cobra.Command, nodes []string) error {
+			return commandError(runProvision(command.Context(), options, nodes, stdout, stderr))
 		},
 	}
 	command.Flags().StringVarP(&options.ScriptPath, "script", "s", "", "local Bash script to stream to each selected guest")
@@ -71,8 +71,8 @@ limited to selected nodes; removal is state-independent and accepts no nodes.`,
 			}
 			return nil
 		},
-		RunE: func(_ *cobra.Command, nodes []string) error {
-			return commandError(runSSHConfig(options, nodes, stdout, stderr))
+		RunE: func(command *cobra.Command, nodes []string) error {
+			return commandError(runSSHConfig(command.Context(), options, nodes, stdout, stderr))
 		},
 	}
 	command.Flags().BoolVarP(&options.Install, "install", "i", false, "install a marker-owned Include and deployment fragment")
@@ -105,12 +105,12 @@ names, and the installed fragment prefix defaults to 'farrow'.`,
   farrow ss --name lab   # use lab-* as the prefixed aliases`,
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: nodeCompletion(false, false),
-		RunE: func(_ *cobra.Command, nodes []string) error {
+		RunE: func(command *cobra.Command, nodes []string) error {
 			options, err := sshShortcutOptions(name)
 			if err != nil {
 				return err
 			}
-			return commandError(runSSHConfig(options, nodes, stdout, stderr))
+			return commandError(runSSHConfig(command.Context(), options, nodes, stdout, stderr))
 		},
 	}
 	command.Flags().StringVarP(&name, "name", "n", "", "SSH fragment prefix (default: farrow)")
@@ -137,12 +137,12 @@ remains machine-readable.`,
 		PreRunE: func(_ *cobra.Command, _ []string) error {
 			return validateChoice("--source", options.Source, "serial", "qemu", "events")
 		},
-		RunE: func(_ *cobra.Command, arguments []string) error {
+		RunE: func(command *cobra.Command, arguments []string) error {
 			node := ""
 			if len(arguments) == 1 {
 				node = arguments[0]
 			}
-			return commandError(runLogs(options, node, stdout, stderr))
+			return commandError(runLogs(command.Context(), options, node, stdout, stderr))
 		},
 	}
 	command.Flags().StringVarP(&options.Source, "source", "s", options.Source, "log source: serial, qemu, or events")
@@ -179,8 +179,8 @@ before applying it.`,
 			Long:    short + " through the digest-matched helper. Without --yes, print the exact privileged plan and change nothing.",
 			Example: example,
 			Args:    cobra.NoArgs,
-			RunE: func(_ *cobra.Command, _ []string) error {
-				return commandError(runHosts(action, apply, stdout, stderr))
+			RunE: func(command *cobra.Command, _ []string) error {
+				return commandError(runHosts(command.Context(), action, apply, stdout, stderr))
 			},
 		}
 		if action == "install" {

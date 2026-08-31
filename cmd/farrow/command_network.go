@@ -35,8 +35,8 @@ read-only preflight findings used before lifecycle mutation.`,
   farrow network status --cidr 10.10.10.0/24
   farrow --json network status`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return commandError(runNetwork(statusOptions, stdout, stderr))
+		RunE: func(command *cobra.Command, _ []string) error {
+			return commandError(runNetwork(command.Context(), statusOptions, stdout, stderr))
 		},
 	}
 	status.Flags().StringVarP(&statusOptions.CIDR, "cidr", "c", "", "expected host-global RFC1918 IPv4 /24")
@@ -67,8 +67,8 @@ manager backend. Without --yes the command is a read-only plan.`,
 			}
 			return nil
 		},
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return commandError(runNetwork(installOptions, stdout, stderr))
+		RunE: func(command *cobra.Command, _ []string) error {
+			return commandError(runNetwork(command.Context(), installOptions, stdout, stderr))
 		},
 	}
 	install.Flags().StringVarP(&installOptions.CIDR, "cidr", "c", installOptions.CIDR, "host-global RFC1918 IPv4 /24")
@@ -91,8 +91,8 @@ nothing without --yes.`,
 		Example: `  farrow network uninstall       # inspect the removal plan
   farrow network uninstall --yes # apply after the deployment is stopped`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return commandError(runNetwork(uninstallOptions, stdout, stderr))
+		RunE: func(command *cobra.Command, _ []string) error {
+			return commandError(runNetwork(command.Context(), uninstallOptions, stdout, stderr))
 		},
 	}
 	uninstall.Flags().BoolVarP(&uninstallOptions.Apply, "yes", "y", false, "apply the displayed privileged plan without confirmation (sudo may still ask for a password)")

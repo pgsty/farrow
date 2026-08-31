@@ -190,10 +190,10 @@ func TestRunSetupEmitsStructuredEarlyFailure(t *testing.T) {
 	t.Parallel()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	context := &outputContext{format: outputJSON}
-	out := &outputWriter{Writer: &stdout, context: context}
-	errOut := &outputWriter{Writer: &stderr, context: context, stderr: true}
-	code := runSetupCommand("profile-that-does-not-exist", setupCLIOptions{Mode: "host"}, out, errOut)
+	outputState := &outputContext{format: outputJSON}
+	out := &outputWriter{Writer: &stdout, context: outputState}
+	errOut := &outputWriter{Writer: &stderr, context: outputState, stderr: true}
+	code := runSetupCommand(context.TODO(), "profile-that-does-not-exist", setupCLIOptions{Mode: "host"}, out, errOut)
 	if code != exitUsage {
 		t.Fatalf("code = %d, stderr = %s", code, stderr.String())
 	}

@@ -32,9 +32,9 @@ build never changes repo.yaml or image bytes.`,
 			Long:    short + ". The repository root contains repo.yaml, catalog.json, and a flat images/ directory.",
 			Example: "  farrow repo " + action + " /srv/farrow",
 			Args:    cobra.ExactArgs(1),
-			RunE: func(_ *cobra.Command, arguments []string) error {
+			RunE: func(command *cobra.Command, arguments []string) error {
 				options.Path = arguments[0]
-				return commandError(runImage(options, stdout, stderr))
+				return commandError(runImage(command.Context(), options, stdout, stderr))
 			},
 		}
 		parent.AddCommand(command)
