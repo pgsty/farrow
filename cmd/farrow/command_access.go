@@ -33,7 +33,11 @@ script digest, and never uploads the script as a persistent guest file.`,
 			return nil
 		},
 		RunE: func(command *cobra.Command, nodes []string) error {
-			return commandError(runProvision(command.Context(), options, nodes, stdout, stderr))
+			outcome, err := runProvision(command.Context(), options, nodes, stderr)
+			if err != nil {
+				return err
+			}
+			return collectCommandOutcome(command.Context(), outcome)
 		},
 	}
 	command.Flags().StringVarP(&options.ScriptPath, "script", "s", "", "local Bash script to stream to each selected guest")

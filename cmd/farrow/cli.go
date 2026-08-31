@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type commandRunner func(context.Context, []string, io.Writer, io.Writer) int
+type commandRunner func(context.Context, []string, io.Writer, io.Writer) (commandOutcome, error)
 
 const (
 	configDiscoverySummary = "farrow.yml, farrow.yaml, pigsty.yml, or pigsty.yaml"
@@ -70,7 +70,11 @@ func rawOperation(use, short, long, example string, stdout, stderr io.Writer, ru
 		if helpBeforeSeparator(arguments) {
 			return command.Help()
 		}
-		return commandError(runner(command.Context(), arguments, stdout, stderr))
+		outcome, err := runner(command.Context(), arguments, stdout, stderr)
+		if err != nil {
+			return err
+		}
+		return collectCommandOutcome(command.Context(), outcome)
 	}
 	return command
 }

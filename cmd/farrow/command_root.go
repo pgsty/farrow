@@ -30,6 +30,7 @@ type commandBoundaryError struct {
 	cause   error
 	payload any
 	text    func(io.Writer, io.Writer) error
+	silent  bool
 }
 
 func (err *commandBoundaryError) Error() string { return err.failure.Message }
@@ -60,6 +61,12 @@ func newRenderedCommandError(category string, code int, err error, operationID s
 	return boundary
 }
 
+func newSilentRenderedCommandError(category string, code int, err error, payload any, text func(io.Writer, io.Writer) error) error {
+	boundary := newRenderedCommandError(category, code, err, "", payload, text).(*commandBoundaryError)
+	boundary.silent = true
+	return boundary
+}
+
 func newUsageError(err error) error {
 	return &usageError{newCommandBoundaryError("usage", exitUsage, err)}
 }
@@ -70,6 +77,17 @@ func newConflictError(err error) error {
 
 func newRuntimeError(err error) error {
 	return newCommandBoundaryError("runtime", exitRuntime, err)
+}
+
+func newExitError(code int, err error) error {
+	return newCommandBoundaryError(exitCategory(code), code, err)
+}
+
+func newRemoteExitError(code int, result remoteCommandResult) error {
+	err := fmt.Errorf("remote command exited with status %d", code)
+	boundary := newDetailedCommandError("remote_exit", code, err, "", result).(*commandBoundaryError)
+	boundary.silent = true
+	return boundary
 }
 
 type commandOutcomeCollector struct {
@@ -216,7 +234,7 @@ is refused instead of being run as a command on the control node.`,
   farrow ssh meta             # open one named node
   farrow ssh meta -- uptime   # run a remote command
   farrow --json ssh meta -- uname -a`,
-		stdout, stderr, func(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
+		stdout, stderr, func(ctx context.Context, arguments []string, stdout, stderr io.Writer) (commandOutcome, error) {
 			return runSSH(ctx, "ssh", arguments, stdout, stderr)
 		})
 	ssh.ValidArgsFunction = nodeCompletion(false, true)
@@ -231,7 +249,7 @@ nothing or one known node.`,
 		`  farrow exec -- hostname
   farrow exec meta -- systemctl is-active postgresql
   farrow --json exec meta -- uname -a`,
-		stdout, stderr, func(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
+		stdout, stderr, func(ctx context.Context, arguments []string, stdout, stderr io.Writer) (commandOutcome, error) {
 			return runSSH(ctx, "exec", arguments, stdout, stderr)
 		})
 	execCommand.ValidArgsFunction = nodeCompletion(false, true)
@@ -363,7 +381,9 @@ func renderTypedCommandError(typed typedCommandError, stdout, stderr io.Writer) 
 			return exitRuntime
 		}
 	}
-	errorf(stderr, "%s", failure.Message)
+	if boundary, ok := typed.(*commandBoundaryError); !ok || !boundary.silent {
+		errorf(stderr, "%s", failure.Message)
+	}
 	return typed.exitCode()
 }
 

@@ -627,66 +627,56 @@ func splitRemoteInvocation(arguments []string, resolved spec.Resolved) (string, 
 	return "", arguments, nil
 }
 
-func runPrivateSSH(parent context.Context, commandName string, args []string, resolved spec.Resolved, stdout, stderr io.Writer) int {
+func runPrivateSSH(parent context.Context, commandName string, args []string, resolved spec.Resolved, stdout, stderr io.Writer) (commandOutcome, error) {
 	node, command, err := splitRemoteInvocation(args, resolved)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitUsage
+		return commandOutcome{}, newUsageError(err)
 	}
 	if commandName == "exec" && len(command) == 0 {
-		errorf(stderr, "exec requires a remote command: farrow exec [node] -- command [args...]")
-		return exitUsage
+		return commandOutcome{}, newUsageError(errors.New("exec requires a remote command: farrow exec [node] -- command [args...]"))
 	}
 	manager := privatevm.Manager{FarrowVersion: version.Version}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	connection, err := manager.Connection(ctx, node)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
 	sshPath, err := exec.LookPath("ssh")
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitCapability
+		return commandOutcome{}, newDetailedCommandError("capability", exitCapability, err, "", nil)
 	}
 	sshArgs := vm.SSHArgsForUser(connection.User, connection.PrivateKey, connection.KnownHosts, connection.Port, command...)
 	if sshArgs == nil {
-		errorf(stderr, "resolved private SSH user is unsafe")
-		return exitIntegrity
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, errors.New("resolved private SSH user is unsafe"), "", nil)
 	}
 	debugf(stderr, "ssh mode=private node=%s user=%s host=%s port=%d arguments=%d", connection.Node, connection.User, connection.Host, connection.Port, len(command))
 	result, runErr := executeSSHProcess(ctx, commandName, connection.Node, connection.User, connection.Host, connection.Port, sshPath, sshArgs, command, stdout, stderr)
-	if structuredOutput(stdout) {
-		if code := encodeJSON(stdout, stderr, result); code != exitOK {
-			return code
-		}
+	if errors.Is(parent.Err(), context.Canceled) {
+		return commandOutcome{}, ErrCancelled
 	}
+	outcome := commandOutcome{payload: result}
 	if runErr != nil {
 		var exitError *exec.ExitError
 		if errors.As(runErr, &exitError) {
+			code := exitError.ExitCode()
 			if exitError.ExitCode() == 255 {
-				return exitRuntime
+				code = exitRuntime
 			}
-			return exitError.ExitCode()
+			return commandOutcome{}, newRemoteExitError(code, result)
 		}
-		if !structuredOutput(stdout) {
-			errorf(stderr, "%v", runErr)
-		}
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(runErr)
 	}
-	return exitOK
+	return outcome, nil
 }
 
-func runSSH(ctx context.Context, commandName string, args []string, stdout, stderr io.Writer) int {
+func runSSH(ctx context.Context, commandName string, args []string, stdout, stderr io.Writer) (commandOutcome, error) {
 	resolved, err := currentProjectResolved()
 	if err != nil {
-		errorf(stderr, "no deployment state found; run `farrow up` first")
-		return exitConflict
+		return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
 	}
 	if resolved.Network != "private" {
-		errorf(stderr, "%s", legacyDeploymentMessage)
-		return exitConflict
+		return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
 	}
 	return runPrivateSSH(ctx, commandName, args, resolved, stdout, stderr)
 }
@@ -842,43 +832,36 @@ type provisionOptions struct {
 	Timeout     time.Duration
 }
 
-func runProvision(parent context.Context, options provisionOptions, nodes []string, stdout, stderr io.Writer) int {
+func runProvision(parent context.Context, options provisionOptions, nodes []string, stderr io.Writer) (commandOutcome, error) {
 	if options.ScriptPath == "" {
-		errorf(stderr, "--script is required")
-		return exitUsage
+		return commandOutcome{}, newUsageError(errors.New("--script is required"))
 	}
 	if options.Parallelism < 1 || options.Parallelism > provision.MaxParallelism {
-		errorf(stderr, "provision parallelism must be 1..%d", provision.MaxParallelism)
-		return exitUsage
+		return commandOutcome{}, newUsageError(fmt.Errorf("provision parallelism must be 1..%d", provision.MaxParallelism))
 	}
 	if options.Timeout <= 0 || options.Timeout > 24*time.Hour {
-		errorf(stderr, "provision timeout must be greater than zero and no more than 24h")
-		return exitUsage
+		return commandOutcome{}, newUsageError(errors.New("provision timeout must be greater than zero and no more than 24h"))
 	}
 	script, err := provision.LoadScript(options.ScriptPath)
 	if err != nil {
-		errorf(stderr, "%v", err)
 		if errors.Is(err, os.ErrNotExist) {
-			return exitUsage
+			return commandOutcome{}, newUsageError(err)
 		}
-		return exitIntegrity
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 	}
 	operationID, err := identity.NewUUID()
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
 	deployment, err := privatevm.Open()
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
 	ctx, cancel := context.WithTimeout(parent, options.Timeout)
 	defer cancel()
 	deploymentLock, err := privatevm.AcquireLock(ctx, deployment, false)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitConflict
+		return commandOutcome{}, newConflictError(err)
 	}
 	locked := true
 	defer func() {
@@ -888,8 +871,7 @@ func runProvision(parent context.Context, options provisionOptions, nodes []stri
 	}()
 	deploymentState, err := (state.Store{Root: deployment.Root}).ReadDeployment()
 	if err != nil {
-		errorf(stderr, "provision requires an existing running deployment: %v", err)
-		return exitConflict
+		return commandOutcome{}, newConflictError(fmt.Errorf("provision requires an existing running deployment: %w", err))
 	}
 	resolved := deploymentState.Resolved
 
@@ -900,37 +882,31 @@ func runProvision(parent context.Context, options provisionOptions, nodes []stri
 		manager := privatevm.Manager{FarrowVersion: version.Version, OperationID: operationID, Nodes: append([]string(nil), nodes...)}
 		connections, connectionErr := manager.ConnectionsLocked(ctx, deployment, deploymentLock)
 		if connectionErr != nil {
-			errorf(stderr, "%v", connectionErr)
-			return provisionConnectionExit(connectionErr)
+			return commandOutcome{}, newExitError(provisionConnectionExit(connectionErr), connectionErr)
 		}
 		for _, connection := range connections {
 			if connection.Host != "127.0.0.1" {
-				errorf(stderr, "refuse non-loopback provision endpoint for node %s", connection.Node)
-				return exitIntegrity
+				return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, fmt.Errorf("refuse non-loopback provision endpoint for node %s", connection.Node), "", nil)
 			}
 			targets = append(targets, provision.Target{Node: connection.Node, User: connection.User, Port: connection.Port, PrivateKey: connection.PrivateKey, KnownHosts: connection.KnownHosts})
 			selectedNames = append(selectedNames, connection.Node)
 		}
 		recordEvent = manager.RecordEvent
 	} else {
-		errorf(stderr, "unsupported deployment network %q", resolved.Network)
-		return exitIntegrity
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, fmt.Errorf("unsupported deployment network %q", resolved.Network), "", nil)
 	}
 
 	sshPath, err := exec.LookPath("ssh")
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitCapability
+		return commandOutcome{}, newDetailedCommandError("capability", exitCapability, err, "", nil)
 	}
 	sshPath, err = filepath.Abs(sshPath)
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitCapability
+		return commandOutcome{}, newDetailedCommandError("capability", exitCapability, err, "", nil)
 	}
 	startMessage := fmt.Sprintf("script_sha256=%s bytes=%d sudo=%t parallel=%d targets=%s", script.SHA256, script.Size, options.Sudo, options.Parallelism, strings.Join(selectedNames, ","))
 	if err := recordEvent(ctx, "provision", "info", "starting "+startMessage); err != nil {
-		errorf(stderr, "refuse provision without an auditable event append: %v", err)
-		return exitIntegrity
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, fmt.Errorf("refuse provision without an auditable event append: %w", err), operationID, nil)
 	}
 	debugf(stderr, "provision operation_id=%s targets=%s timeout=%s parallel=%d sudo=%t script_sha256=%s", operationID, strings.Join(selectedNames, ","), options.Timeout, options.Parallelism, options.Sudo, script.SHA256)
 	progressItem := startProgress(ctx, stderr, fmt.Sprintf("Provisioning %d node(s)", len(targets)))
@@ -938,9 +914,11 @@ func runProvision(parent context.Context, options provisionOptions, nodes []stri
 		Runner: provision.SSHRunner{SSHPath: sshPath}, Parallelism: options.Parallelism, OperationID: operationID,
 	}).Execute(ctx, script, targets, options.Sudo)
 	progressItem.Stop(err)
+	if errors.Is(parent.Err(), context.Canceled) {
+		return commandOutcome{}, ErrCancelled
+	}
 	if err != nil {
-		errorf(stderr, "%v", err)
-		return exitRuntime
+		return commandOutcome{}, newRuntimeError(err)
 	}
 	resultParts := make([]string, 0, len(report.Results))
 	for _, result := range report.Results {
@@ -964,33 +942,24 @@ func runProvision(parent context.Context, options provisionOptions, nodes []stri
 		}
 		report.AuditError += "release deployment lock: " + releaseErr.Error()
 	}
-	if structuredOutput(stdout) {
-		if code := encodeJSON(stdout, stderr, report); code != exitOK {
-			return code
-		}
-	} else {
-		if err := printProvisionReport(stdout, stderr, report); err != nil {
-			errorf(stderr, "%v", err)
-			return exitRuntime
-		}
-	}
+	renderText := func(stdout, stderr io.Writer) error { return printProvisionReport(stdout, stderr, report) }
+	outcome := commandOutcome{payload: report, text: renderText}
 	if report.AuditError != "" {
-		errorf(stderr, "%s", report.AuditError)
-		return exitIntegrity
+		return commandOutcome{}, newRenderedCommandError("integrity", exitIntegrity, errors.New(report.AuditError), operationID, report, renderText)
 	}
 	if report.Failed == 0 {
-		return exitOK
+		return outcome, nil
 	}
 	if report.Successful > 0 {
-		return exitPartial
+		return commandOutcome{}, newSilentRenderedCommandError("partial", exitPartial, errors.New("provision partially failed"), report, renderText)
 	}
 	if len(report.Results) == 1 {
 		code := report.Results[0].ExitCode
 		if code > 0 && code != 255 {
-			return code
+			return commandOutcome{}, newSilentRenderedCommandError("remote_exit", code, fmt.Errorf("remote provision exited with status %d", code), report, renderText)
 		}
 	}
-	return exitRuntime
+	return commandOutcome{}, newSilentRenderedCommandError("runtime", exitRuntime, errors.New("provision failed"), report, renderText)
 }
 
 func encodeJSON(out, errOut io.Writer, value any) int {
