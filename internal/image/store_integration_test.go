@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -141,6 +142,34 @@ func TestIntegrationHTTPSPull(t *testing.T) {
 	}
 	if !downloaded || !verified || !ready {
 		t.Fatalf("progress stages download=%t verify=%t ready=%t events=%+v", downloaded, verified, ready, events)
+	}
+}
+
+func TestPullHonorsCancellation(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		close(started)
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+	store := Store{
+		DataRoot: filepath.Join(t.TempDir(), "data"), QEMUImg: "qemu-img",
+		Runner: execx.OSRunner{Timeout: time.Minute}, HTTPClient: server.Client(),
+	}
+	entry := Entry{
+		Alias: "cancel", Release: "1", Arch: "arm64", File: "cancel/image.qcow2",
+		Upstream: server.URL + "/image.qcow2", SHA256: strings.Repeat("a", 64), Format: "qcow2", ArtifactSize: 1,
+	}
+	ctx, cancel := context.WithCancel(context.TODO())
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := store.Pull(ctx, entry)
+		result <- err
+	}()
+	<-started
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("pull cancellation error = %v", err)
 	}
 }
 

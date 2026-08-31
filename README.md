@@ -112,6 +112,7 @@ Presentation flags never change an exit status.
 | 5 | partial success across selected nodes |
 | 6 | resource conflict (address or port in use) |
 | 7 | integrity failure (digest, signature, or state mismatch) |
+| 130 | cancelled by `SIGINT` or `SIGTERM` |
 
 `ssh`, `exec`, and a single-node `provision` pass the guest command's own exit
 status through unchanged, so their non-zero codes are the remote program's,

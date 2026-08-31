@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 )
@@ -70,6 +71,32 @@ func TestDownloadSocketVMNetReleaseRejectsPlainHTTP(t *testing.T) {
 	_, err := downloadSocketVMNetRelease(context.Background(), release, "arm64", t.TempDir(), nil, Sources{}, func(string, string) error { return nil })
 	if err == nil {
 		t.Fatal("plain HTTP release accepted")
+	}
+}
+
+func TestDownloadSocketVMNetReleaseHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.TODO())
+	started := make(chan struct{})
+	client := doerFunc(func(request *http.Request) (*http.Response, error) {
+		close(started)
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})
+	release := sourcesFixtureRelease("https://example.invalid/socket_vmnet-test.tar.gz")
+	cacheDirectory := t.TempDir()
+	result := make(chan error, 1)
+	go func() {
+		_, err := downloadSocketVMNetRelease(ctx, release, "arm64", cacheDirectory, client, Sources{}, func(string, string) error { return errors.New("not cached") })
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("download request did not start")
+	}
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("download cancellation error = %v", err)
 	}
 }
 

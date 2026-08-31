@@ -9,6 +9,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// ErrCancelled is the one command-layer cancellation identity.
+var ErrCancelled = errors.New("cancelled")
+
 func noFileCompletions(command *cobra.Command, names ...string) {
 	for _, name := range names {
 		if _, exists := command.GetFlagCompletionFunc(name); exists {
@@ -198,7 +201,14 @@ architecture.`,
 func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
 	root := newRootCommand(stdout, stderr)
 	root.SetArgs(arguments)
+	setCommandContext(stdout, ctx)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return reportCancelled(stdout, stderr)
+	}
 	executed, err := root.ExecuteContextC(ctx)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return reportCancelled(stdout, stderr)
+	}
 	if writeErr := outputWriteError(stdout); writeErr != nil {
 		errorf(stderr, "write command output: %v", writeErr)
 		return exitRuntime
@@ -232,6 +242,19 @@ func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Write
 	return exitUsage
 }
 
+func reportCancelled(stdout, stderr io.Writer) int {
+	if structuredOutput(stdout) && !structuredPayloadWritten(stdout) {
+		if code := encodeJSON(stdout, stderr, struct {
+			Error string `json:"error"`
+		}{Error: ErrCancelled.Error()}); code != exitOK {
+			return code
+		}
+	}
+	recordCommandError(stderr, ErrCancelled.Error())
+	bestEffortf(stderr, "%s %s\n", styled(stderr, ansiRed, "error:"), ErrCancelled.Error())
+	return exitCancelled
+}
+
 func exitCategory(code int) string {
 	switch code {
 	case exitUsage:
@@ -246,6 +269,8 @@ func exitCategory(code int) string {
 		return "resource_conflict"
 	case exitIntegrity:
 		return "integrity"
+	case exitCancelled:
+		return "cancelled"
 	default:
 		return "runtime"
 	}

@@ -8,6 +8,9 @@ Notable user-visible changes. This project follows
 
 ### Fixed
 
+- `SIGINT`/`SIGTERM` now cancel long-running commands through Cobra's context,
+  stop progress output, release normal deferred resources, and exit 130 with
+  one structured cancellation result; Ctrl-C inside SSH remains remote.
 - `farrow reload` is one engine operation: definition drift and removed
   nodes are refused before any node stops, and `--json`/`--yaml` emit a
   single document instead of one per phase.

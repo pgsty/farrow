@@ -991,6 +991,9 @@ func emitSetupResult(result setupResult, stdout, stderr io.Writer) int {
 }
 
 func failSetup(result *setupResult, code int, failure error, stdout, stderr io.Writer) int {
+	if commandContextCancelled(stdout) {
+		return exitCancelled
+	}
 	result.Ready = false
 	result.ExitCode = code
 	result.Error = failure.Error()

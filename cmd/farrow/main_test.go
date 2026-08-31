@@ -35,7 +35,7 @@ func (r *recordingDarwinInstaller) InstallModeNetwork(_ context.Context, _, _, _
 
 func TestDarwinInstallForwardsSharedMode(t *testing.T) {
 	recorder := &recordingDarwinInstaller{}
-	report, err := installDarwinNetwork(context.Background(), recorder, "/archive", "uuid", "arm64", "shared", "172.31.251.0/24", true)
+	report, err := installDarwinNetwork(context.TODO(), recorder, "/archive", "uuid", "arm64", "shared", "172.31.251.0/24", true)
 	if err != nil || recorder.mode != "shared" || recorder.cidr != "172.31.251.0/24" || !recorder.apply || !report.Applied {
 		t.Fatalf("mode=%q cidr=%q apply=%t report=%#v err=%v", recorder.mode, recorder.cidr, recorder.apply, report, err)
 	}
@@ -366,7 +366,7 @@ func TestLifecycleSSHConfigReconciliationPolicy(t *testing.T) {
 	} {
 		t.Run(test.command+"_"+test.action, func(t *testing.T) {
 			reconciler := &recordingSSHConfigReconciler{}
-			result, err := reconcileLifecycleSSHConfig(context.Background(), test.command, test.deploymentHasNodes, reconciler)
+			result, err := reconcileLifecycleSSHConfig(context.TODO(), test.command, test.deploymentHasNodes, reconciler)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -460,7 +460,7 @@ func TestSelectedUpReconciliationKeepsEveryDeploymentSSHEntry(t *testing.T) {
 		}
 	}
 	selected := fullDeploymentSSHManager(privatevm.Manager{FarrowVersion: "test", Nodes: []string{"meta"}})
-	result, err := reconcileLifecycleSSHConfig(context.Background(), "up", true, selected)
+	result, err := reconcileLifecycleSSHConfig(context.TODO(), "up", true, selected)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestSelectedUpReconciliationKeepsEveryDeploymentSSHEntry(t *testing.T) {
 	if err := store.WriteDeployment(state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: remainingHash, Resolved: remaining, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	result, err = reconcileLifecycleSSHConfig(context.Background(), "destroy", true, selected)
+	result, err = reconcileLifecycleSSHConfig(context.TODO(), "destroy", true, selected)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +493,7 @@ func TestSelectedUpReconciliationKeepsEveryDeploymentSSHEntry(t *testing.T) {
 	if !strings.Contains(string(fragment), "farrow-meta meta") || strings.Contains(string(fragment), "node-1") {
 		t.Fatalf("node destroy did not reconcile the remaining deployment:\n%s", fragment)
 	}
-	result, err = reconcileLifecycleSSHConfig(context.Background(), "destroy", false, selected)
+	result, err = reconcileLifecycleSSHConfig(context.TODO(), "destroy", false, selected)
 	if err != nil || result.Action != "remove" {
 		t.Fatalf("whole destroy reconciliation result=%#v err=%v", result, err)
 	}
@@ -504,7 +504,7 @@ func TestSelectedUpReconciliationKeepsEveryDeploymentSSHEntry(t *testing.T) {
 
 func TestLifecycleSSHConfigFailurePreservesThePartialResult(t *testing.T) {
 	reconciler := &recordingSSHConfigReconciler{err: errors.New("unsafe SSH directory")}
-	result, err := reconcileLifecycleSSHConfig(context.Background(), "up", true, reconciler)
+	result, err := reconcileLifecycleSSHConfig(context.TODO(), "up", true, reconciler)
 	if err == nil || result == nil || result.Action != "install" || !strings.Contains(err.Error(), "unsafe SSH directory") {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}

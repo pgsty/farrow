@@ -693,6 +693,9 @@ func (s Store) Pull(ctx context.Context, entry Entry) (_ string, _ Metadata, ret
 	for index, candidate := range candidates {
 		tempPath, copied, stageErr := s.stageSource(ctx, candidate.source, directory, entry)
 		if stageErr != nil {
+			if err := ctx.Err(); err != nil {
+				return "", Metadata{}, err
+			}
 			gone = gone && errors.Is(stageErr, errSourceGone)
 			message := fmt.Sprintf("Image %s source %s failed", entry.Alias, candidate.kind)
 			if index+1 < len(candidates) {
@@ -708,6 +711,9 @@ func (s Store) Pull(ctx context.Context, entry Entry) (_ string, _ Metadata, ret
 				Phase: "image-ready", Message: fmt.Sprintf("Image %s %s (%s) is ready", entry.Alias, entry.Release, entry.Arch), Done: true,
 			})
 			return pathname, metadata, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return "", Metadata{}, err
 		}
 		_ = os.Remove(tempPath)
 		gone = false

@@ -267,7 +267,7 @@ func TestSetupSudoSessionAsksAtMostOnce(t *testing.T) {
 	var stderr bytes.Buffer
 	session := &sudoSession{base: runner, stderr: &stderr, scope: "setup run"}
 	defer session.close()
-	ctx := context.Background()
+	ctx := context.TODO()
 	if err := session.ensure(ctx, "install the network"); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestSetupSudoSessionAcceptsPasswordlessCommandPolicy(t *testing.T) {
 	runner := &passwordlessSetupRunner{}
 	session := &sudoSession{base: runner, stderr: &bytes.Buffer{}}
 	defer session.close()
-	if err := session.ensure(context.Background(), "install the network"); err != nil {
+	if err := session.ensure(context.TODO(), "install the network"); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"/usr/bin/sudo -n -v", "/usr/bin/sudo -n -- /usr/bin/true"}
@@ -332,7 +332,7 @@ func TestSetupCommandFailureSeparatesChangedFromUncertain(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &setupSequenceRunner{failAt: test.failAt}
 			sudo := &sudoSession{base: runner, stderr: &bytes.Buffer{}}
-			changed, uncertain, err := runSetupCommands(context.Background(), commands, runner, sudo, &bytes.Buffer{})
+			changed, uncertain, err := runSetupCommands(context.TODO(), commands, runner, sudo, &bytes.Buffer{})
 			if err == nil || changed != test.wantChanged || !uncertain {
 				t.Fatalf("changed=%t uncertain=%t err=%v", changed, uncertain, err)
 			}
@@ -346,7 +346,7 @@ func TestSudoRunnerPreservesOnlyNamedProxyEnvironment(t *testing.T) {
 		base:                runner,
 		preserveEnvironment: []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"},
 	}
-	if _, err := wrapped.Run(context.Background(), "/usr/bin/apt-get", "update"); err != nil {
+	if _, err := wrapped.Run(context.TODO(), "/usr/bin/apt-get", "update"); err != nil {
 		t.Fatal(err)
 	}
 	want := "/usr/bin/sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY -- /usr/bin/apt-get update"

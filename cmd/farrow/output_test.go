@@ -275,7 +275,7 @@ func TestDiagnosticsAndProgressDoNotPolluteStructuredStdout(t *testing.T) {
 	}
 	warningf(errOut, "check the selected subnet")
 	debugf(errOut, "phase=preflight")
-	item := startProgress(context.Background(), errOut, "Checking readiness")
+	item := startProgress(context.TODO(), errOut, "Checking readiness")
 	item.Stop(nil)
 	if err := encodeOutput(out, map[string]any{"ready": true}); err != nil {
 		t.Fatal(err)
@@ -309,7 +309,7 @@ func TestProgressUsesNoANSIWhenTerminalStylingIsDisabled(t *testing.T) {
 	state := &outputContext{format: outputText, verbose: true, stderrTTY: true, color: false}
 	var stderr bytes.Buffer
 	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
-	item := startProgress(context.Background(), errOut, "Checking readiness")
+	item := startProgress(context.TODO(), errOut, "Checking readiness")
 	item.Stop(nil)
 	if strings.Contains(stderr.String(), "\x1b[") {
 		t.Fatalf("plain terminal progress contains ANSI: %q", stderr.String())
@@ -365,7 +365,7 @@ func TestProgressReportsDetailedStagesOnlyOnStderr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := startProgress(context.Background(), errOut, "Preparing and starting the project")
+	item := startProgress(context.TODO(), errOut, "Preparing and starting the project")
 	item.Report(activity.Event{
 		Phase:        "image-download",
 		Message:      "Downloading image u24",
@@ -392,7 +392,7 @@ func TestProgressPersistsCompletedPhasesAsChecklistOnTTY(t *testing.T) {
 	state := &outputContext{format: outputText, stderrFile: true, stderrTTY: true, color: true}
 	var stderr bytes.Buffer
 	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
-	item := startProgress(context.Background(), errOut, "Preparing and starting the project")
+	item := startProgress(context.TODO(), errOut, "Preparing and starting the project")
 	item.Report(activity.Event{Phase: "preflight", Message: "Running preflight"})
 	item.Report(activity.Event{Phase: "preflight", Message: "Preflight passed", Done: true})
 	item.Report(activity.Event{Phase: "guest-ready", Message: "Guest meta is ready", Done: true})
@@ -445,7 +445,7 @@ func TestExecuteSSHProcessCapturesStructuredRemoteResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, runErr := executeSSHProcess(
-		context.Background(), "exec", "meta", "dba", "127.0.0.1", 2222,
+		context.TODO(), "exec", "meta", "dba", "127.0.0.1", 2222,
 		"/bin/sh", []string{"-c", "printf remote-out; printf remote-err >&2; exit 7"}, []string{"false"}, out, errOut,
 	)
 	var exitError *exec.ExitError
@@ -574,7 +574,7 @@ func TestStructuredInteractiveSSHKeepsSessionOffStdout(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, runErr := executeSSHProcess(
-				context.Background(), "ssh", "meta", "dba", "127.0.0.1", 2222,
+				context.TODO(), "ssh", "meta", "dba", "127.0.0.1", 2222,
 				"/bin/sh", []string{"-c", "printf interactive-session"}, nil, out, errOut,
 			)
 			if runErr != nil || !result.Interactive || result.SessionStream != "stderr" || result.ExitCode != 0 {

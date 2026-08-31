@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -49,6 +50,7 @@ const (
 	exitPartial    = 5
 	exitResource   = 6
 	exitIntegrity  = 7
+	exitCancelled  = 130
 
 	// Compatibility expiry: user-network-state-v0 in CONTRIBUTING.md#compatibility-expiry.
 	legacyDeploymentMessage = "this deployment predates the fixed-IP redesign; preserve any needed disks, then move or remove the selected FARROW_HOME and run `farrow setup && farrow up`"
@@ -556,7 +558,7 @@ func executeSSHProcess(ctx context.Context, commandName, node, user, host string
 		sshCommand.Stderr = rawWriter(stderr)
 	}
 	started := time.Now()
-	err := sshCommand.Run()
+	err := runSSHChild(sshCommand)
 	result.DurationMS = time.Since(started).Milliseconds()
 	result.Stdout = capturedStdout.String()
 	result.Stderr = capturedStderr.String()
@@ -574,6 +576,20 @@ func executeSSHProcess(ctx context.Context, commandName, node, user, host string
 		result.Error = err.Error()
 	}
 	return result, err
+}
+
+func runSSHChild(command *exec.Cmd) error {
+	if err := command.Start(); err != nil {
+		return err
+	}
+	// Start first so the exec'd ssh process receives the terminal's normal
+	// signal disposition. While it owns the foreground session, Farrow ignores
+	// SIGINT: raw-mode Ctrl-C is an SSH byte, and non-raw Ctrl-C belongs to the
+	// child process group rather than local command cancellation. SIGTERM still
+	// reaches the command context and CommandContext terminates the child.
+	signal.Ignore(os.Interrupt)
+	defer signal.Reset(os.Interrupt)
+	return command.Wait()
 }
 
 // splitRemoteInvocation separates the optional node selector from the remote
@@ -1276,6 +1292,10 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	}
 	status, err := operation(ctx)
 	status.OperationID = operationID
+	if errors.Is(parent.Err(), context.Canceled) {
+		progressItem.Stop(ErrCancelled)
+		return exitCancelled
+	}
 	lifecycleSucceeded := err == nil
 	var reconciledSSHConfig *sshconfig.Result
 	if err == nil {
@@ -1326,6 +1346,9 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		}
 	}
 	progressItem.Stop(err)
+	if errors.Is(parent.Err(), context.Canceled) {
+		return exitCancelled
+	}
 	if err != nil {
 		var integrationFailure *lifecycleSSHConfigFailure
 		if errors.As(err, &integrationFailure) {
@@ -2166,6 +2189,9 @@ func runImage(parent context.Context, options imageOptions, stdout, stderr io.Wr
 			}
 		}
 		progressItem.Stop(err)
+		if errors.Is(parent.Err(), context.Canceled) {
+			return exitCancelled
+		}
 		result := struct {
 			Path     string         `json:"path"`
 			Metadata image.Metadata `json:"metadata"`
@@ -2274,7 +2300,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return runContext(context.TODO(), args, stdout, stderr)
 }
 
-func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := runContext(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
+}
 
 // suggestHostsPublication reminds the user once per up that declared host
 // aliases are reachable by name only after `farrow hosts install`. Best

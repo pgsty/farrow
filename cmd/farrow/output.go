@@ -38,6 +38,7 @@ type outputContext struct {
 	stdoutBytes int64
 	lastError   string
 	writeErr    error
+	commandCtx  context.Context
 }
 
 type commandFailure struct {
@@ -90,6 +91,27 @@ func outputWriteError(writer io.Writer) error {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	return state.writeErr
+}
+
+func setCommandContext(writer io.Writer, ctx context.Context) {
+	state := outputContextFrom(writer)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.commandCtx = ctx
+	state.mu.Unlock()
+}
+
+func commandContextCancelled(writer io.Writer) bool {
+	state := outputContextFrom(writer)
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	ctx := state.commandCtx
+	state.mu.Unlock()
+	return ctx != nil && errors.Is(ctx.Err(), context.Canceled)
 }
 
 func structuredPayloadWritten(writer io.Writer) bool {
@@ -458,6 +480,9 @@ func warningf(stderr io.Writer, format string, arguments ...any) {
 }
 
 func errorf(stderr io.Writer, format string, arguments ...any) {
+	if commandContextCancelled(stderr) {
+		return
+	}
 	message := strings.TrimSpace(fmt.Sprintf(format, arguments...))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "ERROR:"))
 	message = strings.TrimSpace(strings.TrimPrefix(message, "error:"))
