@@ -12,6 +12,46 @@ import (
 // ErrCancelled is the one command-layer cancellation identity.
 var ErrCancelled = errors.New("cancelled")
 
+type commandOutcome struct {
+	payload any
+	text    func(io.Writer) error
+}
+
+type commandOutcomeCollector struct {
+	value *commandOutcome
+}
+
+type commandOutcomeContextKey struct{}
+
+func collectCommandOutcome(ctx context.Context, outcome commandOutcome) error {
+	collector, ok := ctx.Value(commandOutcomeContextKey{}).(*commandOutcomeCollector)
+	if !ok || collector == nil {
+		return errors.New("command outcome collector is missing")
+	}
+	if collector.value != nil {
+		return errors.New("command produced more than one outcome")
+	}
+	collector.value = &outcome
+	return nil
+}
+
+func renderCommandOutcome(outcome *commandOutcome, stdout, stderr io.Writer) int {
+	if outcome == nil {
+		return exitOK
+	}
+	if structuredOutput(stdout) {
+		return encodeJSON(stdout, stderr, outcome.payload)
+	}
+	if outcome.text == nil {
+		return exitOK
+	}
+	if err := outcome.text(stdout); err != nil {
+		errorf(stderr, "write command output: %v", err)
+		return exitRuntime
+	}
+	return exitOK
+}
+
 func noFileCompletions(command *cobra.Command, names ...string) {
 	for _, name := range names {
 		if _, exists := command.GetFlagCompletionFunc(name); exists {
@@ -186,8 +226,8 @@ architecture.`,
   farrow --json version`,
 		Args:    cobra.NoArgs,
 		GroupID: "advanced",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return commandError(runVersionCommand(stdout, stderr))
+		RunE: func(command *cobra.Command, _ []string) error {
+			return collectCommandOutcome(command.Context(), runVersionCommand())
 		},
 	}
 	completion := newCompletionCommand(root, stdout, stderr)
@@ -199,6 +239,8 @@ architecture.`,
 }
 
 func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
+	collector := &commandOutcomeCollector{}
+	ctx = context.WithValue(ctx, commandOutcomeContextKey{}, collector)
 	root := newRootCommand(stdout, stderr)
 	root.SetArgs(arguments)
 	setCommandContext(stdout, ctx)
@@ -214,7 +256,7 @@ func executeCLI(ctx context.Context, arguments []string, stdout, stderr io.Write
 		return exitRuntime
 	}
 	if err == nil {
-		return exitOK
+		return renderCommandOutcome(collector.value, stdout, stderr)
 	}
 	if executed == nil {
 		executed = root

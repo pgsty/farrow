@@ -24,7 +24,8 @@ func (failingWriter) Write([]byte) (int, error) {
 
 func TestWriterFailureBoundaries(t *testing.T) {
 	var stderr bytes.Buffer
-	if code := runVersionCommand(failingWriter{}, &stderr); code != exitRuntime || !strings.Contains(stderr.String(), "write version output") {
+	version := runVersionCommand()
+	if code := renderCommandOutcome(&version, failingWriter{}, &stderr); code != exitRuntime || !strings.Contains(stderr.String(), "write command output") {
 		t.Fatalf("version writer failure code=%d stderr=%q", code, stderr.String())
 	}
 	if err := confirmDestructive(false, true, "destroy", strings.NewReader("destroy\n"), failingWriter{}); err == nil || !strings.Contains(err.Error(), "confirmation prompt") {

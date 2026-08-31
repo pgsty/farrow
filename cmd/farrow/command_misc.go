@@ -10,22 +10,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runVersionCommand(stdout, stderr io.Writer) int {
-	if structuredOutput(stdout) {
-		return encodeJSON(stdout, stderr, struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-			Commit  string `json:"commit"`
-			Built   string `json:"built"`
-			OS      string `json:"os"`
-			Arch    string `json:"arch"`
-		}{Name: "farrow", Version: version.Version, Commit: version.Commit, Built: version.Date, OS: runtime.GOOS, Arch: runtime.GOARCH})
+type versionResult struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Built   string `json:"built"`
+	OS      string `json:"os"`
+	Arch    string `json:"arch"`
+}
+
+func runVersionCommand() commandOutcome {
+	result := versionResult{Name: "farrow", Version: version.Version, Commit: version.Commit, Built: version.Date, OS: runtime.GOOS, Arch: runtime.GOARCH}
+	return commandOutcome{
+		payload: result,
+		text: func(writer io.Writer) error {
+			_, err := fmt.Fprintf(writer, "farrow %s (commit %s, built %s, %s/%s)\n", result.Version, result.Commit, result.Built, result.OS, result.Arch)
+			return err
+		},
 	}
-	if _, err := fmt.Fprintf(stdout, "farrow %s (commit %s, built %s, %s/%s)\n", version.Version, version.Commit, version.Date, runtime.GOOS, runtime.GOARCH); err != nil {
-		errorf(stderr, "write version output: %v", err)
-		return exitRuntime
-	}
-	return exitOK
 }
 
 func newCompletionCommand(root *cobra.Command, stdout, stderr io.Writer) *cobra.Command {
