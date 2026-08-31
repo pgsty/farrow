@@ -6,6 +6,14 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+## [0.1.1]
+
+A correctness and hygiene release: every command boundary behaves the same
+way under signals, structured output, and misspelled input, and the tree now
+carries the gates that keep it that way. The engine, the inventory format, the
+state layout, and the embedded image catalog (revision 2026082903) are
+unchanged.
+
 ### Fixed
 
 - `SIGINT`/`SIGTERM` now cancel long-running commands through Cobra's context,
@@ -100,5 +108,6 @@ Pigsty-compatible local labs.
   Cosign is available, and explains that pre-1.0 GitHub pre-releases require an
   explicit `FARROW_VERSION`.
 
-[Unreleased]: https://github.com/pgsty/farrow/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pgsty/farrow/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/pgsty/farrow/releases/tag/v0.1.1
 [0.1.0]: https://github.com/pgsty/farrow/releases/tag/v0.1.0
