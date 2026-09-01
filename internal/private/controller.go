@@ -5,22 +5,38 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/lock"
 )
 
+type NodeFailure struct {
+	Node  string `json:"node"`
+	Stage string `json:"stage"`
+	Error string `json:"error"`
+}
+
 type PartialError struct {
 	Nodes      []string
+	Failures   []NodeFailure
 	RolledBack []string
 }
 
 func (e *PartialError) Error() string {
-	if len(e.RolledBack) != 0 {
-		return fmt.Sprintf("private multi-node operation partially succeeded; failed nodes: %v; safely rolled back prepare artifacts: %v", e.Nodes, e.RolledBack)
+	message := fmt.Sprintf("private multi-node operation partially succeeded; failed nodes: %v", e.Nodes)
+	if len(e.Failures) != 0 {
+		details := make([]string, 0, len(e.Failures))
+		for _, failure := range e.Failures {
+			details = append(details, fmt.Sprintf("%s (%s: %s)", failure.Node, failure.Stage, strings.Join(strings.Fields(failure.Error), " ")))
+		}
+		message += "; failures: " + strings.Join(details, "; ")
 	}
-	return fmt.Sprintf("private multi-node operation partially succeeded; failed nodes: %v", e.Nodes)
+	if len(e.RolledBack) != 0 {
+		message += fmt.Sprintf("; safely rolled back prepare artifacts: %v", e.RolledBack)
+	}
+	return message
 }
 
 type Controller struct {
@@ -48,27 +64,65 @@ type FailedRollback struct {
 	Result RollbackResult `json:"result"`
 }
 
-func failedCreateNodes(result CreateResult) []string {
-	failed := make(map[string]struct{})
+func newPartialError(failures []NodeFailure) *PartialError {
+	ordered := append([]NodeFailure(nil), failures...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Node < ordered[j].Node })
+	nodes := make([]string, 0, len(ordered))
+	for _, failure := range ordered {
+		nodes = append(nodes, failure.Node)
+	}
+	return &PartialError{Nodes: nodes, Failures: ordered}
+}
+
+func startFailures(outcomes []StartOutcome) []NodeFailure {
+	failures := make([]NodeFailure, 0)
+	for _, outcome := range outcomes {
+		if outcome.Error == "" && outcome.Ready {
+			continue
+		}
+		stage := "start"
+		if outcome.Running {
+			stage = "readiness"
+		}
+		message := outcome.Error
+		if message == "" {
+			message = "guest readiness was not confirmed"
+		}
+		failures = append(failures, NodeFailure{Node: outcome.Node, Stage: stage, Error: message})
+	}
+	return failures
+}
+
+func readyCount(outcomes []StartOutcome) int {
+	count := 0
+	for _, outcome := range outcomes {
+		if outcome.Ready {
+			count++
+		}
+	}
+	return count
+}
+
+func createFailures(result CreateResult) []NodeFailure {
+	failed := make(map[string]NodeFailure)
 	for _, outcome := range result.Prepare {
 		if outcome.Error != "" {
-			failed[outcome.Node] = struct{}{}
+			failed[outcome.Node] = NodeFailure{Node: outcome.Node, Stage: "prepare", Error: outcome.Error}
 		}
 	}
 	for _, node := range result.Commit.Failed {
-		failed[node] = struct{}{}
-	}
-	for _, outcome := range result.Start {
-		if outcome.Error != "" || !outcome.Ready {
-			failed[outcome.Node] = struct{}{}
+		if _, exists := failed[node]; !exists {
+			failed[node] = NodeFailure{Node: node, Stage: "commit", Error: "prepared node state was not committed"}
 		}
 	}
-	resultNames := make([]string, 0, len(failed))
-	for name := range failed {
-		resultNames = append(resultNames, name)
+	for _, failure := range startFailures(result.Start) {
+		failed[failure.Node] = failure
 	}
-	sort.Strings(resultNames)
-	return resultNames
+	failures := make([]NodeFailure, 0, len(failed))
+	for _, failure := range failed {
+		failures = append(failures, failure)
+	}
+	return failures
 }
 
 func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult, returnErr error) {
@@ -98,8 +152,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult
 		return result, err
 	}
 	if len(result.Commit.Nodes) == 0 {
-		failed := failedCreateNodes(result)
-		return result, &PartialError{Nodes: failed}
+		return result, newPartialError(createFailures(result))
 	}
 	for _, node := range result.Commit.Nodes {
 		if err := FinalizePrepared(controller.Deployment, node.Node); err != nil {
@@ -142,15 +195,20 @@ func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult
 		if err != nil {
 			return result, err
 		}
+	}
+	failures := createFailures(result)
+	if len(failures) > 0 {
+		if len(startNames) != 0 {
+			controller.Progress.Report(activity.Event{Phase: "guest-ready", Message: fmt.Sprintf("%d node(s) ready; %d node(s) failed", readyCount(result.Start), len(failures))})
+		}
+		return result, newPartialError(failures)
+	}
+	if len(startNames) != 0 {
 		readyMessage := fmt.Sprintf("All %d node(s) are ready", len(startNames))
 		if controller.NoWait {
 			readyMessage = fmt.Sprintf("QEMU is running for %d node(s); guest readiness was skipped", len(startNames))
 		}
 		controller.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
-	}
-	failed := failedCreateNodes(result)
-	if len(failed) > 0 {
-		return result, &PartialError{Nodes: failed}
 	}
 	return result, nil
 }

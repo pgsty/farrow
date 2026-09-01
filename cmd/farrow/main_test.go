@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -577,6 +578,24 @@ func TestLifecycleSSHConfigFailureEmitsOneStructuredPartialResult(t *testing.T) 
 	}
 	if payload.Error != "ssh_config" || payload.Command != "recreate" || !payload.Partial || payload.Status["spec_hash"] != "spec-1" || payload.SSHConfig.Action != "install" || !strings.Contains(stderr.String(), "recreate completed its VM lifecycle step") {
 		t.Fatalf("payload=%#v stderr=%q", payload, stderr.String())
+	}
+}
+
+func TestLifecyclePartialFailurePreservesPerNodeDetails(t *testing.T) {
+	partial := &privatevm.PartialError{
+		Nodes: []string{"d12-1"},
+		Failures: []privatevm.NodeFailure{{
+			Node: "d12-1", Stage: "readiness", Error: "guest bootstrap failed during data-disks",
+		}},
+	}
+	wrapped := fmt.Errorf("%w; SSH client configuration reconciliation also failed: unsafe fragment", partial)
+	typed, ok := classifyPrivateLifecycleError(wrapped, "op-1").(typedCommandError)
+	if !ok {
+		t.Fatal("partial failure was not typed")
+	}
+	payload, ok := typed.commandPayload().(lifecyclePartialFailure)
+	if !ok || len(payload.Failures) != 1 || payload.Failures[0].Stage != "readiness" || payload.OperationID != "op-1" || !strings.Contains(payload.Message, "unsafe fragment") {
+		t.Fatalf("partial payload = %#v", typed.commandPayload())
 	}
 }
 

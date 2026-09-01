@@ -1319,14 +1319,6 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 			if len(createNodes) != 0 {
 				reusableDeployment = &existing
 			} else if allRunning {
-				status, err := m.statusFor(ctx, existing, "already running")
-				if err != nil {
-					return Status{}, err
-				}
-				if statusNodesRunning(status) {
-					m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected nodes are already running", Done: true})
-					return status, nil
-				}
 				return m.startExisting(ctx, existing, persisted, hostProfile, backend)
 			} else if allRunnable {
 				return m.startExisting(ctx, existing, persisted, hostProfile, backend)
@@ -1553,6 +1545,7 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 	keysDir := filepath.Join(deploymentValue.Root, "keys")
 	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}, Deployment: deploymentValue, Shares: shareSourcesByNode(deploymentState.Resolved), SSHPath: sshPath, PrivateKey: filepath.Join(keysDir, "id_ed25519"), KnownHosts: filepath.Join(keysDir, "known_hosts"), DarwinSocket: backend.DarwinSocket}
 	names := make([]string, 0, len(deploymentState.Resolved.Nodes))
+	runningNames := make([]string, 0, len(deploymentState.Resolved.Nodes))
 	store := preStartStore
 	for _, definition := range deploymentState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
@@ -1564,6 +1557,9 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 		}
 		switch node.Phase {
 		case state.Running:
+			if !m.NoWait {
+				runningNames = append(runningNames, node.Node)
+			}
 			continue
 		case state.Prepared, state.Stopped:
 			names = append(names, node.Node)
@@ -1571,7 +1567,7 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 			return Status{}, fmt.Errorf("private node %s phase %s requires `farrow status` convergence before start", node.Node, node.Phase)
 		}
 	}
-	if len(names) == 0 {
+	if len(names) == 0 && len(runningNames) == 0 {
 		m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected nodes are already running", Done: true})
 		return m.statusForLocked(ctx, deploymentValue, "already running")
 	}
@@ -1579,43 +1575,43 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 	if err != nil {
 		return Status{}, err
 	}
-	startMessage := fmt.Sprintf("Starting %d node(s) and waiting up to %s for guest readiness", len(names), readyTimeout)
-	if m.NoWait {
-		startMessage = fmt.Sprintf("Starting %d node(s) without waiting for guest readiness", len(names))
+	outcomes := make([]StartOutcome, 0, len(names)+len(runningNames))
+	if len(names) != 0 {
+		startMessage := fmt.Sprintf("Starting %d node(s) and waiting up to %s for guest readiness", len(names), readyTimeout)
+		if m.NoWait {
+			startMessage = fmt.Sprintf("Starting %d node(s) without waiting for guest readiness", len(names))
+		}
+		m.report("guest-ready", startMessage)
+		started, startErr := StartPrepared(ctx, StartConfig{Deployment: deploymentValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait})
+		if startErr != nil {
+			return Status{}, startErr
+		}
+		outcomes = append(outcomes, started...)
 	}
-	m.report("guest-ready", startMessage)
-	outcomes, err := StartPrepared(ctx, StartConfig{Deployment: deploymentValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait})
-	if err != nil {
-		return Status{}, err
+	if len(runningNames) != 0 {
+		m.report("guest-ready", fmt.Sprintf("Checking guest readiness for %d running node(s)", len(runningNames)))
+		checked, readyErr := waitRunningReady(ctx, readyConfig{Deployment: deploymentValue, Lifecycle: lifecycle, Nodes: runningNames, Concurrency: boundedConcurrency(len(runningNames)), ReadyTimeout: readyTimeout})
+		if readyErr != nil {
+			return Status{}, readyErr
+		}
+		outcomes = append(outcomes, checked...)
 	}
-	if failed := failedStartNames(outcomes); len(failed) > 0 {
-		return Status{}, &PartialError{Nodes: failed}
+	if failures := startFailures(outcomes); len(failures) > 0 {
+		m.Progress.Report(activity.Event{Phase: "guest-ready", Message: fmt.Sprintf("%d node(s) ready; %d node(s) failed", readyCount(outcomes), len(failures))})
+		return Status{}, newPartialError(failures)
 	}
-	readyMessage := fmt.Sprintf("All %d node(s) are ready", len(names))
+	readyMessage := fmt.Sprintf("All %d node(s) are ready", len(outcomes))
 	if m.NoWait {
 		readyMessage = fmt.Sprintf("QEMU is running for %d node(s); guest readiness was skipped", len(names))
 	}
 	m.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
-	return m.statusForLocked(ctx, deploymentValue, "started the deployment")
-}
-
-func statusNodesRunning(status Status) bool {
-	for _, node := range status.Nodes {
-		if node.State != state.Running || node.Runtime != "running" {
-			return false
-		}
+	statusMessage := "started the deployment"
+	if len(names) == 0 {
+		statusMessage = "guest readiness confirmed"
+	} else if len(runningNames) != 0 {
+		statusMessage = "started selected nodes and confirmed guest readiness"
 	}
-	return len(status.Nodes) > 0
-}
-
-func failedStartNames(outcomes []StartOutcome) []string {
-	failed := make([]string, 0)
-	for _, outcome := range outcomes {
-		if outcome.Error != "" || !outcome.Ready {
-			failed = append(failed, outcome.Node)
-		}
-	}
-	return failed
+	return m.statusForLocked(ctx, deploymentValue, statusMessage)
 }
 
 func (m Manager) Start(ctx context.Context) (Status, error) {
@@ -1662,14 +1658,18 @@ func (m Manager) Stop(ctx context.Context) (_ Status, returnErr error) {
 	if err != nil {
 		return Status{}, err
 	}
-	failed := make([]string, 0)
+	failures := make([]NodeFailure, 0)
 	for _, outcome := range outcomes {
 		if outcome.Error != "" || !outcome.Stopped {
-			failed = append(failed, outcome.Node)
+			message := outcome.Error
+			if message == "" {
+				message = "node did not stop"
+			}
+			failures = append(failures, NodeFailure{Node: outcome.Node, Stage: "stop", Error: message})
 		}
 	}
-	if len(failed) > 0 {
-		return Status{}, &PartialError{Nodes: failed}
+	if len(failures) > 0 {
+		return Status{}, newPartialError(failures)
 	}
 	return m.statusForLocked(ctx, deploymentValue, "stopped selected nodes")
 }

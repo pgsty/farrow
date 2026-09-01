@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/pgsty/farrow/internal/activity"
 	"github.com/pgsty/farrow/internal/state"
 )
 
@@ -95,6 +97,32 @@ func TestControllerCreateAndStartReturnsTypedPartialAndKeepsSuccess(t *testing.T
 	}
 	if _, err := os.Lstat(filepath.Join(controller.Deployment.Root, "nodes", "meta", "state.json")); err != nil {
 		t.Fatalf("failed-node rollback touched successful node: %v", err)
+	}
+}
+
+func TestControllerPartialReadinessKeepsDetailsAndDoesNotReportAllReady(t *testing.T) {
+	lifecycle := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{"node-1": true}}
+	controller := controllerFixture(t, &fakePrivateDisks{}, lifecycle)
+	events := make([]activity.Event, 0)
+	controller.Progress = func(event activity.Event) { events = append(events, event) }
+	_, err := controller.CreateAndStart(context.Background())
+	var partial *PartialError
+	if !errors.As(err, &partial) || len(partial.Failures) != 1 {
+		t.Fatalf("partial readiness error=%v details=%#v", err, partial)
+	}
+	failure := partial.Failures[0]
+	if failure.Node != "node-1" || failure.Stage != "readiness" || !strings.Contains(failure.Error, "injected readiness failure") {
+		t.Fatalf("readiness failure = %#v", failure)
+	}
+	foundCount := false
+	for _, event := range events {
+		if event.Done && strings.Contains(event.Message, "All 2 node(s) are ready") {
+			t.Fatalf("partial readiness reported full success: %#v", events)
+		}
+		foundCount = foundCount || strings.Contains(event.Message, "1 node(s) ready; 1 node(s) failed")
+	}
+	if !foundCount {
+		t.Fatalf("partial readiness count missing: %#v", events)
 	}
 }
 

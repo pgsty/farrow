@@ -135,6 +135,14 @@ type StartOutcome struct {
 	Error   string `json:"error,omitempty"`
 }
 
+type readyConfig struct {
+	Deployment   Deployment
+	Lifecycle    NodeLifecycle
+	Nodes        []string
+	Concurrency  int
+	ReadyTimeout time.Duration
+}
+
 func (config StartConfig) now() time.Time {
 	if config.Now != nil {
 		return config.Now().UTC()
@@ -279,6 +287,67 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, err
 					outcomes[index].Ready = true
 					continue
 				}
+				if err := config.Lifecycle.WaitReady(ctx, node, config.ReadyTimeout); err != nil {
+					outcomes[index].Error = err.Error()
+					continue
+				}
+				outcomes[index].Ready = true
+			}
+		}()
+	}
+	for index := range nodes {
+		jobs <- index
+	}
+	close(jobs)
+	wait.Wait()
+	return outcomes, nil
+}
+
+// waitRunningReady rechecks the guest contract without restarting an already
+// running QEMU process. This lets a later `up` converge a prior partial run.
+func waitRunningReady(ctx context.Context, config readyConfig) ([]StartOutcome, error) {
+	if config.Deployment.Root == "" || config.Lifecycle == nil {
+		return nil, errors.New("private readiness deployment or lifecycle is incomplete")
+	}
+	if len(config.Nodes) == 0 {
+		return nil, errors.New("private readiness requires at least one node")
+	}
+	if config.Concurrency <= 0 {
+		config.Concurrency = 4
+	}
+	if config.Concurrency > 16 {
+		config.Concurrency = 16
+	}
+	if config.ReadyTimeout <= 0 {
+		config.ReadyTimeout = 180 * time.Second
+	}
+	store := state.Store{Root: config.Deployment.Root}
+	nodes := make([]state.NodeState, 0, len(config.Nodes))
+	seen := make(map[string]struct{}, len(config.Nodes))
+	for _, name := range config.Nodes {
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("private readiness repeats node %s", name)
+		}
+		seen[name] = struct{}{}
+		node, err := store.ReadNode(name)
+		if err != nil {
+			return nil, err
+		}
+		if node.Phase != state.Running || node.Process.PID <= 0 {
+			return nil, fmt.Errorf("private node %s is not running for readiness", name)
+		}
+		nodes = append(nodes, node)
+	}
+	outcomes := make([]StartOutcome, len(nodes))
+	jobs := make(chan int)
+	var wait sync.WaitGroup
+	for worker := 0; worker < config.Concurrency; worker++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range jobs {
+				node := nodes[index]
+				outcomes[index] = StartOutcome{Node: node.Node, Running: true}
 				if err := config.Lifecycle.WaitReady(ctx, node, config.ReadyTimeout); err != nil {
 					outcomes[index].Error = err.Error()
 					continue

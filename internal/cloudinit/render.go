@@ -251,15 +251,30 @@ func renderDiskScript(disks []Disk) string {
   done
   [[ -b "${dev}" ]] || { echo "missing Farrow disk ${dev}" >&2; return 1; }
   if ! blkid "${dev}" >/dev/null 2>&1; then
-    if [[ "${requested}" == "xfs" ]] || { [[ "${requested}" == "auto" ]] && command -v mkfs.xfs >/dev/null 2>&1; }; then
-      mkfs.xfs -f "${dev}"
-    elif [[ "${requested}" == "ext4" ]] || [[ "${requested}" == "auto" ]]; then
-      command -v mkfs.ext4 >/dev/null 2>&1 || { echo "mkfs.ext4 missing" >&2; return 1; }
-      mkfs.ext4 -F "${dev}"
-    else
-      echo "unsupported filesystem ${requested}" >&2
-      return 1
-    fi
+    case "${requested}" in
+      xfs)
+        command -v mkfs.xfs >/dev/null 2>&1 || { echo "xfs requested but mkfs.xfs is unavailable" >&2; return 1; }
+        mkfs.xfs -f "${dev}"
+        ;;
+      ext4)
+        command -v mkfs.ext4 >/dev/null 2>&1 || { echo "ext4 requested but mkfs.ext4 is unavailable" >&2; return 1; }
+        mkfs.ext4 -F "${dev}"
+        ;;
+      auto)
+        if command -v mkfs.xfs >/dev/null 2>&1; then
+          mkfs.xfs -f "${dev}"
+        elif command -v mkfs.ext4 >/dev/null 2>&1; then
+          mkfs.ext4 -F "${dev}"
+        else
+          echo "no supported filesystem formatter is available" >&2
+          return 1
+        fi
+        ;;
+      *)
+        echo "unsupported filesystem ${requested}" >&2
+        return 1
+        ;;
+    esac
   fi
   local uuid fstype
 	  uuid=$(blkid -s UUID -o value "${dev}")
@@ -527,11 +542,24 @@ func renderHostsScript(hosts []Host) string {
 func renderNetworkCheckScript() string {
 	return `#!/bin/bash
 set -euo pipefail
+for attempt in 1 2 3; do
+  if response=$(timeout 10s /bin/bash -c '
 exec 3<>/dev/tcp/example.com/80
-printf 'HEAD / HTTP/1.0\r\nHost: example.com\r\n\r\n' >&3
+printf "HEAD / HTTP/1.0\r\nHost: example.com\r\n\r\n" >&3
 IFS= read -r response <&3
-[[ "${response}" == HTTP/* ]]
-printf '%s\n' "${response}"
+printf "%s\n" "${response}"
+'); then
+    if [[ "${response}" == HTTP/* ]]; then
+      printf '%s\n' "${response}"
+      exit 0
+    fi
+  fi
+  if (( attempt < 3 )); then
+    sleep 2
+  fi
+done
+echo 'management egress probe failed after 3 bounded attempts' >&2
+exit 1
 `
 }
 
@@ -540,31 +568,42 @@ func renderPrivateContractScript(network PrivateNetwork) string {
 set -euo pipefail
 expected=%q
 expected_host=%q
-ip link show dev private0 >/dev/null
-ip link show dev private0 | grep -Eq '<[^>]*UP[^>]*>'
-ip -4 -o address show dev private0 scope global | awk '{print $4}' | grep -Fxq "${expected}"
-if ip -4 route show default | grep -Eq '(^|[[:space:]])dev[[:space:]]+private0([[:space:]]|$)'; then
-  echo 'private0 owns a default route' >&2
+expected_mac=%q
+interface=
+for candidate in /sys/class/net/*; do
+  [[ -r "${candidate}/address" ]] || continue
+  read -r actual_mac <"${candidate}/address" || continue
+  if [[ "${actual_mac,,}" == "${expected_mac}" ]]; then
+    [[ -z "${interface}" ]] || { echo "multiple interfaces have private MAC ${expected_mac}" >&2; exit 1; }
+    interface=${candidate##*/}
+  fi
+done
+[[ -n "${interface}" ]] || { echo "private interface with MAC ${expected_mac} was not found" >&2; exit 1; }
+ip link show dev "${interface}" >/dev/null
+ip link show dev "${interface}" | grep -Eq '<[^>]*UP[^>]*>'
+ip -4 -o address show dev "${interface}" scope global | awk '{print $4}' | grep -Fxq "${expected}"
+if ip -4 route show default dev "${interface}" | grep -q .; then
+  echo "private interface ${interface} owns a default route" >&2
   exit 1
 fi
 if command -v resolvectl >/dev/null 2>&1; then
-  dns=$(resolvectl dns private0 2>/dev/null || true)
+  dns=$(resolvectl dns "${interface}" 2>/dev/null || true)
   dns=${dns#*:}
 	  dns=$(printf '%%s' "${dns}" | tr -d '[:space:]')
   if [[ -n "${dns}" && "${dns}" != "-" ]]; then
-    echo "private0 has DNS: ${dns}" >&2
+    echo "private interface ${interface} has DNS: ${dns}" >&2
     exit 1
   fi
 elif command -v nmcli >/dev/null 2>&1; then
-  dns=$(nmcli -g IP4.DNS device show private0 2>/dev/null || true)
+  dns=$(nmcli -g IP4.DNS device show "${interface}" 2>/dev/null || true)
   if [[ -n "${dns}" ]]; then
-    echo "private0 has DNS: ${dns}" >&2
+    echo "private interface ${interface} has DNS: ${dns}" >&2
     exit 1
   fi
 fi
 printf 'farrow-arp-refresh\n' >"/dev/udp/${expected_host}/9"
-printf 'private0 %%s is up with no default route or DNS\n' "${expected}"
-`, fmt.Sprintf("%s/%d", network.Address, network.Prefix), network.HostAddress)
+printf 'private interface %%s %%s is up with no default route or DNS\n' "${interface}" "${expected}"
+`, fmt.Sprintf("%s/%d", network.Address, network.Prefix), network.HostAddress, strings.ToLower(network.MAC))
 }
 
 func renderControlSSHInstallScript(user string) string {
@@ -620,9 +659,10 @@ printf 'login identity %%s uid=%%s gid=%%s home=%%s\n' "${user}" "${uid}" "${gid
 
 func renderFinalizeScript(controlSSH, privateNetwork, shares bool) string {
 	var out strings.Builder
-	out.WriteString("#!/bin/bash\nset -euo pipefail\n")
-	if shares {
-		out.WriteString(`install -d -o root -g root -m 0755 /var/lib/farrow
+	out.WriteString(`#!/bin/bash
+set -euo pipefail
+install -d -o root -g root -m 0755 /var/lib/farrow
+stage=bootstrap
 failure_line=0
 trap 'failure_line=${LINENO}' ERR
 finalize_exit() {
@@ -631,7 +671,7 @@ finalize_exit() {
   trap - ERR EXIT
   if (( status != 0 )); then
     if error_tmp=$(mktemp /var/lib/farrow/error.json.XXXXXX); then
-      if printf '{"exit_status":%d,"line":%d}\n' "${status}" "${failure_line}" > "${error_tmp}" &&
+      if printf '{"exit_status":%d,"line":%d,"stage":"%s"}\n' "${status}" "${failure_line}" "${stage}" > "${error_tmp}" &&
         chown root:root "${error_tmp}" && chmod 0644 "${error_tmp}"; then
         mv -f -- "${error_tmp}" /var/lib/farrow/error.json || rm -f -- "${error_tmp}" || true
       else
@@ -640,31 +680,28 @@ finalize_exit() {
     fi
   fi
 `)
-		if controlSSH {
-			out.WriteString("  rm -f -- /var/lib/farrow/control-id_ed25519 /var/lib/farrow/control-ssh-config || true\n")
-		}
-		out.WriteString(`  exit "${status}"
+	if controlSSH {
+		out.WriteString("  rm -f -- /var/lib/farrow/control-id_ed25519 /var/lib/farrow/control-ssh-config || true\n")
+	}
+	out.WriteString(`  exit "${status}"
 }
 trap finalize_exit EXIT
 rm -f -- /var/lib/farrow/ready.json /var/lib/farrow/error.json
 `)
-	} else if controlSSH {
-		out.WriteString("trap 'rm -f -- /var/lib/farrow/control-id_ed25519 /var/lib/farrow/control-ssh-config' EXIT\n")
-	}
-	out.WriteString("/usr/local/libexec/farrow-identity-contract\n")
-	out.WriteString("/usr/local/libexec/farrow-hosts\n")
-	out.WriteString("/usr/local/libexec/farrow-network-check\n")
-	out.WriteString("/usr/local/libexec/farrow-init-disks\n")
+	out.WriteString("stage=identity\n/usr/local/libexec/farrow-identity-contract\n")
+	out.WriteString("stage=hosts\n/usr/local/libexec/farrow-hosts\n")
+	out.WriteString("stage=management-network\n/usr/local/libexec/farrow-network-check\n")
+	out.WriteString("stage=data-disks\n/usr/local/libexec/farrow-init-disks\n")
 	if shares {
-		out.WriteString("/usr/local/libexec/farrow-init-shares\n")
+		out.WriteString("stage=shares\n/usr/local/libexec/farrow-init-shares\n")
 	}
 	if controlSSH {
-		out.WriteString("/usr/local/libexec/farrow-install-control-ssh\n")
+		out.WriteString("stage=control-ssh\n/usr/local/libexec/farrow-install-control-ssh\n")
 	}
 	if privateNetwork {
-		out.WriteString("/usr/local/libexec/farrow-private-contract\n")
+		out.WriteString("stage=private-network\n/usr/local/libexec/farrow-private-contract\n")
 	}
-	out.WriteString("/usr/local/libexec/farrow-ready\n")
+	out.WriteString("stage=ready\n/usr/local/libexec/farrow-ready\n")
 	return out.String()
 }
 
@@ -689,11 +726,11 @@ func renderNetwork(input Input) []byte {
 	var out strings.Builder
 	out.WriteString("version: 2\nethernets:\n  management:\n    match:\n      macaddress: ")
 	out.WriteString(yamlQuote(strings.ToLower(input.MgmtMAC)))
-	out.WriteString("\n    set-name: mgmt0\n    dhcp4: true\n    dhcp6: false\n    dhcp4-overrides:\n      route-metric: 100\n")
+	out.WriteString("\n    dhcp4: true\n    dhcp6: false\n    dhcp4-overrides:\n      route-metric: 100\n")
 	if input.Private != nil {
 		out.WriteString("  private:\n    match:\n      macaddress: ")
 		out.WriteString(yamlQuote(strings.ToLower(input.Private.MAC)))
-		out.WriteString("\n    set-name: private0\n    dhcp4: false\n    dhcp6: false\n    accept-ra: false\n    link-local: []\n    addresses:\n      - ")
+		out.WriteString("\n    dhcp4: false\n    dhcp6: false\n    accept-ra: false\n    link-local: []\n    addresses:\n      - ")
 		out.WriteString(yamlQuote(fmt.Sprintf("%s/%d", input.Private.Address, input.Private.Prefix)))
 		out.WriteString("\n")
 	}

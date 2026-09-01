@@ -10,6 +10,11 @@ Notable user-visible changes. This project follows
 
 - `farrow update` explicitly refreshes, verifies, and atomically activates the
   configured image catalog without updating the Farrow executable.
+- Pigsty inventory `vm_disks[].fs` accepts explicit `auto`: blank disks prefer
+  XFS when its formatter is available and otherwise use ext4. Omitting `fs`
+  retains the released XFS default for deployment-state compatibility.
+- Partial multi-node failures include each node's lifecycle stage and bounded
+  error detail in text and structured output.
 
 ### Changed
 
@@ -20,6 +25,23 @@ Notable user-visible changes. This project follows
   merely to record freshness. Automatic refresh failure for an explicitly
   configured repository is therefore no longer fatal when trusted local
   metadata and cached or immutable-upstream image bytes can satisfy the request.
+- Guest network configuration matches deterministic MAC addresses without
+  renaming interfaces; distribution-native names are no longer a Farrow
+  contract. Private-address, route, and DNS readiness checks follow the matched
+  interface instead.
+- `up` and `start` recheck readiness for already-running guests without
+  restarting QEMU. `--no-wait` retains the process-only escape hatch.
+- Management-egress readiness uses three bounded attempts instead of one
+  unbounded connection.
+
+### Fixed
+
+- Guest bootstrap failures publish an atomic stage marker so readiness returns
+  the failing phase instead of waiting for the full SSH timeout.
+- A partial successful lifecycle operation still reconciles the marker-owned
+  SSH client fragment for every committed node.
+- Multi-node create no longer reports every guest ready before inspecting the
+  per-node readiness outcomes.
 
 ## [0.2.0]
 

@@ -35,7 +35,7 @@ func TestRenderSeedsPrivateContractAndKeyBoundary(t *testing.T) {
 		t.Fatal("deployment private key crossed the control-node boundary")
 	}
 	for name, seed := range files {
-		for _, want := range []string{"meta", "10.10.10.10", "node-1", "10.10.10.11", "private0", "dhcp4: false"} {
+		for _, want := range []string{"meta", "10.10.10.10", "node-1", "10.10.10.11", "expected_mac=", "dhcp4: false"} {
 			combined := string(seed.UserData) + string(seed.NetworkConfig)
 			if !strings.Contains(combined, want) {
 				t.Errorf("seed %s missing %q", name, want)
@@ -43,6 +43,9 @@ func TestRenderSeedsPrivateContractAndKeyBoundary(t *testing.T) {
 		}
 		if strings.Contains(string(seed.NetworkConfig), "gateway") || strings.Contains(string(seed.NetworkConfig), "nameservers") {
 			t.Errorf("seed %s private NIC gained gateway/DNS: %s", name, seed.NetworkConfig)
+		}
+		if strings.Contains(string(seed.NetworkConfig), "set-name:") {
+			t.Errorf("seed %s renames a guest interface: %s", name, seed.NetworkConfig)
 		}
 	}
 	if !bytes.Contains(control.UserData, []byte("/data")) || !bytes.Contains(control.UserData, []byte("ext4")) {

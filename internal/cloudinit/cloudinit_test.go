@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func TestRenderQuickContract(t *testing.T) {
 		}
 	}
 	userData := string(files.UserData)
-	for _, want := range []string{"#cloud-config", `name: "dba"`, "uid: 88", "primary_group: admin", "create_groups: false", "/usr/sbin/groupadd --gid 88 admin", "/usr/sbin/groupmod --gid 88 admin", "lock_passwd: true", "ssh_deletekeys: false", "ntp:\n  enabled: true", "/dev/disk/by-id/virtio-", "UUID=%s", "defaults,nofail", `mountpoint -q "${mountpoint}"`, "xfs_growfs", "resize2fs", "/usr/local/libexec/farrow-network-check", "/usr/local/libexec/farrow-identity-contract", "login identity", "/dev/tcp/example.com/80", "/var/lib/farrow/ready.json"} {
+	for _, want := range []string{"#cloud-config", `name: "dba"`, "uid: 88", "primary_group: admin", "create_groups: false", "/usr/sbin/groupadd --gid 88 admin", "/usr/sbin/groupmod --gid 88 admin", "lock_passwd: true", "ssh_deletekeys: false", "ntp:\n  enabled: true", "/dev/disk/by-id/virtio-", "UUID=%s", "defaults,nofail", `mountpoint -q "${mountpoint}"`, "xfs_growfs", "resize2fs", "xfs requested but mkfs.xfs is unavailable", "no supported filesystem formatter is available", "/usr/local/libexec/farrow-network-check", "/usr/local/libexec/farrow-identity-contract", "login identity", "for attempt in 1 2 3", "timeout 10s /bin/bash", "/dev/tcp/example.com/80", "/var/lib/farrow/ready.json", "/var/lib/farrow/error.json", "stage=data-disks"} {
 		if !strings.Contains(userData, want) {
 			t.Errorf("user-data missing %q", want)
 		}
@@ -62,11 +63,37 @@ func TestRenderQuickContract(t *testing.T) {
 	if strings.Contains(userData, "BEGIN OPENSSH PRIVATE KEY") || strings.Contains(userData, "StrictHostKeyChecking no") {
 		t.Fatal("quick seed contains a private key or disables host-key checking")
 	}
-	if strings.Contains(userData, "farrow-init-shares") || strings.Contains(userData, "FARROW SHARES") || strings.Contains(userData, "/var/lib/farrow/error.json") {
-		t.Fatal("no-share quick seed contains share-specific files, markers, or traps")
+	if strings.Contains(userData, "farrow-init-shares") || strings.Contains(userData, "FARROW SHARES") {
+		t.Fatal("no-share quick seed contains share-specific files or markers")
 	}
 	if strings.Contains(string(files.NetworkConfig), "private:") {
 		t.Fatal("quick network unexpectedly contains a private NIC")
+	}
+}
+
+func TestGeneratedScriptsParseWithBash(t *testing.T) {
+	t.Parallel()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	scripts := map[string]string{
+		"disk":                renderDiskScript(testInput().Disks),
+		"network":             renderNetworkCheckScript(),
+		"private":             renderPrivateContractScript(PrivateNetwork{MAC: "02:aa:bb:cc:dd:ee", Address: "10.10.10.10", Prefix: 24, HostAddress: "10.10.10.1"}),
+		"finalizer":           renderFinalizeScript(true, true, true),
+		"finalizer-no-shares": renderFinalizeScript(false, true, false),
+	}
+	for name, script := range scripts {
+		name, script := name, script
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			command := exec.Command(bash, "-n")
+			command.Stdin = strings.NewReader(script)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("generated %s script is invalid: %v\n%s\n%s", name, err, output, script)
+			}
+		})
 	}
 }
 
@@ -84,8 +111,11 @@ func TestRenderPrivateControlKeyBoundary(t *testing.T) {
 	if !strings.Contains(string(files.NetworkConfig), `"10.10.10.10/24"`) || !strings.Contains(string(files.NetworkConfig), "accept-ra: false") || !strings.Contains(string(files.NetworkConfig), "link-local: []") || strings.Contains(string(files.NetworkConfig), "gateway") || strings.Contains(string(files.NetworkConfig), "nameservers") {
 		t.Fatalf("private network contract mismatch:\n%s", files.NetworkConfig)
 	}
-	if !bytes.Contains(files.UserData, []byte("farrow-private-contract")) || !bytes.Contains(files.UserData, []byte("private0 owns a default route")) {
+	if !bytes.Contains(files.UserData, []byte("farrow-private-contract")) || !bytes.Contains(files.UserData, []byte("private interface ${interface} owns a default route")) || !bytes.Contains(files.UserData, []byte(`expected_mac="02:aa:bb:cc:dd:ee"`)) {
 		t.Fatal("private runtime contract checker missing")
+	}
+	if bytes.Contains(files.NetworkConfig, []byte("set-name:")) || bytes.Contains(files.NetworkConfig, []byte("mgmt0")) || bytes.Contains(files.NetworkConfig, []byte("private0")) {
+		t.Fatalf("network config still renames interfaces:\n%s", files.NetworkConfig)
 	}
 	if bytes.Contains(files.UserData, []byte(`ping -c`)) || !bytes.Contains(files.UserData, []byte(`printf 'farrow-arp-refresh\n' >"/dev/udp/${expected_host}/9"`)) || !bytes.Contains(files.UserData, []byte(`expected_host="10.10.10.1"`)) {
 		t.Fatal("private ready contract does not refresh/verify the host neighbor path")
@@ -214,7 +244,7 @@ func TestRenderShareContract(t *testing.T) {
 		`has_mount_option "${mounted_options}" rw`,
 		`refuse non-empty Farrow share mountpoint`,
 		`mv -f -- "${fstab_tmp}" "${fstab}"`,
-		`printf '{"exit_status":%d,"line":%d}\n'`,
+		`printf '{"exit_status":%d,"line":%d,"stage":"%s"}\n'`,
 	} {
 		if !strings.Contains(userData, want) {
 			t.Errorf("share contract missing %q", want)

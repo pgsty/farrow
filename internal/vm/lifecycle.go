@@ -77,6 +77,12 @@ type ReadyMarker struct {
 	SpecHash   string `json:"spec_hash"`
 }
 
+type bootstrapErrorMarker struct {
+	ExitStatus int    `json:"exit_status"`
+	Line       int    `json:"line"`
+	Stage      string `json:"stage,omitempty"`
+}
+
 func (l Lifecycle) validate() error {
 	if l.Runner == nil || l.QMP == nil {
 		return errors.New("VM lifecycle requires command runner and QMP client")
@@ -542,6 +548,25 @@ func (l Lifecycle) WaitReady(ctx context.Context, sshPath, key, knownHosts strin
 			}
 		} else {
 			lastErr = err
+		}
+		errorArgs := SSHArgsForUser(l.sshUser(), key, knownHosts, port, "cat", "/var/lib/farrow/error.json")
+		errorResult, errorErr := l.Runner.Run(ctx, sshPath, errorArgs...)
+		if errorErr == nil {
+			var marker bootstrapErrorMarker
+			if decodeErr := json.Unmarshal(errorResult.Stdout, &marker); decodeErr != nil {
+				return fmt.Errorf("invalid guest bootstrap error marker: %w", decodeErr)
+			}
+			if marker.ExitStatus <= 0 || marker.Line < 0 || len(marker.Stage) > 64 {
+				return fmt.Errorf("invalid guest bootstrap error marker: %#v", marker)
+			}
+			stage := marker.Stage
+			if stage == "" {
+				stage = "bootstrap"
+			}
+			if marker.Line == 0 {
+				return fmt.Errorf("guest bootstrap failed during %s (exit status %d, line unknown)", stage, marker.ExitStatus)
+			}
+			return fmt.Errorf("guest bootstrap failed during %s (exit status %d, line %d)", stage, marker.ExitStatus, marker.Line)
 		}
 		select {
 		case <-ctx.Done():

@@ -98,7 +98,7 @@ func TestParseInventoryFullLab(t *testing.T) {
 	if nodeOne.CPUs != 2 || int64(nodeOne.Memory) != 4096<<20 {
 		t.Fatalf("node-1 defaults: %+v", nodeOne)
 	}
-	if len(nodeOne.Disks) != 1 || int64(nodeOne.Disks[0].Size) != 64*spec.GiB {
+	if len(nodeOne.Disks) != 1 || int64(nodeOne.Disks[0].Size) != 64*spec.GiB || nodeOne.Disks[0].Filesystem != "xfs" {
 		t.Fatalf("group-level vm_disks: %+v", nodeOne.Disks)
 	}
 
@@ -127,6 +127,24 @@ all:
 	}
 	if node.Image != "d13" || !node.Control {
 		t.Fatalf("bare host image/control: %+v", node)
+	}
+}
+
+func TestParseInventoryDiskFilesystemSelection(t *testing.T) {
+	file := mustParseInventory(t, `
+all:
+  children:
+    nodes:
+      hosts:
+        10.10.10.10: { vm_disks: [{ path: /auto, size: 8, fs: auto }] }
+        10.10.10.11: { vm_disks: [{ path: /xfs, size: 8, fs: xfs }] }
+        10.10.10.12: { vm_disks: [{ path: /ext4, size: 8, fs: ext4 }] }
+`)
+	want := []string{"auto", "xfs", "ext4"}
+	for index, node := range file.Nodes {
+		if len(node.Disks) != 1 || node.Disks[0].Filesystem != want[index] {
+			t.Fatalf("node %d filesystem = %+v, want %s", index, node.Disks, want[index])
+		}
 	}
 }
 

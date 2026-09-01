@@ -141,6 +141,30 @@ func TestStartPreparedPreservesRunningPeerOnReadinessFailure(t *testing.T) {
 	}
 }
 
+func TestWaitRunningReadyRechecksWithoutRestart(t *testing.T) {
+	config, _ := preparedStartFixture(t)
+	started := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
+	config.Lifecycle = started
+	config.NoWait = true
+	if _, err := StartPrepared(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+	recheck := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{"node-1": true}}
+	outcomes, err := waitRunningReady(context.Background(), readyConfig{
+		Deployment: config.Deployment, Lifecycle: recheck, Nodes: config.Nodes,
+		Concurrency: 2, ReadyTimeout: time.Second,
+	})
+	if err != nil || len(runningNames(outcomes)) != 2 || len(readyNames(outcomes)) != 1 || outcomes[1].Error == "" {
+		t.Fatalf("running readiness outcomes=%#v err=%v", outcomes, err)
+	}
+	recheck.mu.Lock()
+	waitCalls := recheck.waitCalls
+	recheck.mu.Unlock()
+	if waitCalls != 2 {
+		t.Fatalf("running readiness calls = %d, want 2", waitCalls)
+	}
+}
+
 func TestStartPreparedLeavesFailedStartRecorded(t *testing.T) {
 	config, _ := preparedStartFixture(t)
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{"node-1": true}, failReady: map[string]bool{}}

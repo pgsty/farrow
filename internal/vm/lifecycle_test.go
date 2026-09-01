@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -87,6 +88,54 @@ type startErrorRunner struct{ err error }
 
 func (runner startErrorRunner) Run(context.Context, string, ...string) (execx.Result, error) {
 	return execx.Result{}, runner.err
+}
+
+type readinessRunner struct {
+	ready []byte
+	error []byte
+}
+
+func (runner readinessRunner) Run(_ context.Context, _ string, args ...string) (execx.Result, error) {
+	command := args[len(args)-1]
+	switch {
+	case strings.Contains(command, "/var/lib/farrow/ready.json") && runner.ready != nil:
+		return execx.Result{Stdout: runner.ready}, nil
+	case strings.Contains(command, "/var/lib/farrow/error.json") && runner.error != nil:
+		return execx.Result{Stdout: runner.error}, nil
+	default:
+		return execx.Result{}, errors.New("marker is not present")
+	}
+}
+
+func TestWaitReadyAcceptsMatchingMarker(t *testing.T) {
+	t.Parallel()
+	expected := ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}
+	data, err := json.Marshal(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := Lifecycle{Runner: readinessRunner{ready: data}, SSHUser: "dba"}
+	if err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, expected, time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWaitReadyReturnsGuestBootstrapFailure(t *testing.T) {
+	t.Parallel()
+	lifecycle := Lifecycle{Runner: readinessRunner{error: []byte(`{"exit_status":1,"line":27,"stage":"data-disks"}`)}, SSHUser: "dba"}
+	err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "guest bootstrap failed during data-disks (exit status 1, line 27)") {
+		t.Fatalf("bootstrap failure = %v", err)
+	}
+}
+
+func TestWaitReadyAcceptsGuestBootstrapFailureWithUnknownLine(t *testing.T) {
+	t.Parallel()
+	lifecycle := Lifecycle{Runner: readinessRunner{error: []byte(`{"exit_status":2,"line":0,"stage":"identity"}`)}, SSHUser: "dba"}
+	err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "guest bootstrap failed during identity (exit status 2, line unknown)") {
+		t.Fatalf("unknown-line bootstrap failure = %v", err)
+	}
 }
 
 type qmpResult[T any] struct {

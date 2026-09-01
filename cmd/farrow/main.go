@@ -947,11 +947,12 @@ func (e *persistentDeleteError) Error() string { return "delete persistent disks
 func (e *persistentDeleteError) Unwrap() error { return e.err }
 
 type lifecyclePartialFailure struct {
-	Error       string   `json:"error"`
-	Message     string   `json:"message"`
-	OperationID string   `json:"operation_id,omitempty"`
-	Nodes       []string `json:"nodes"`
-	RolledBack  []string `json:"rolled_back"`
+	Error       string                  `json:"error"`
+	Message     string                  `json:"message"`
+	OperationID string                  `json:"operation_id,omitempty"`
+	Nodes       []string                `json:"nodes"`
+	Failures    []privatevm.NodeFailure `json:"failures,omitempty"`
+	RolledBack  []string                `json:"rolled_back"`
 }
 
 type sshConfigReconciler interface {
@@ -1045,8 +1046,8 @@ func classifyPrivateLifecycleError(err error, operationID string) error {
 	}
 	var partial *privatevm.PartialError
 	if errors.As(err, &partial) {
-		payload := lifecyclePartialFailure{Error: "partial", Message: partial.Error(), OperationID: operationID, Nodes: partial.Nodes, RolledBack: partial.RolledBack}
-		return newDetailedCommandError("partial", exitPartial, partial, operationID, payload)
+		payload := lifecyclePartialFailure{Error: "partial", Message: err.Error(), OperationID: operationID, Nodes: partial.Nodes, Failures: partial.Failures, RolledBack: partial.RolledBack}
+		return newDetailedCommandError("partial", exitPartial, err, operationID, payload)
 	}
 	var deleteErr *persistentDeleteError
 	if errors.As(err, &deleteErr) {
@@ -1172,7 +1173,12 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	}
 	lifecycleSucceeded := err == nil
 	var reconciledSSHConfig *sshconfig.Result
-	if err == nil {
+	reconcileSSHConfig := err == nil
+	if err != nil && (command == "up" || command == "reload" || command == "recreate") {
+		var partial *privatevm.PartialError
+		reconcileSSHConfig = errors.As(err, &partial)
+	}
+	if reconcileSSHConfig {
 		deploymentHasNodes := true
 		if command == "destroy" {
 			// A successful destroy has already validated selectors as known and
@@ -1181,13 +1187,17 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			// to read state that is intentionally gone.
 			deploymentHasNodes = destroyLeavesDeploymentNodes(resolved, nodes)
 		}
-		if action := lifecycleSSHConfigAction(command, deploymentHasNodes); err == nil && action != "" {
+		if action := lifecycleSSHConfigAction(command, deploymentHasNodes); action != "" {
 			progressItem.Report(activity.Event{Phase: "ssh-config", Message: "Reconciling the marker-owned SSH client configuration"})
 			var integrationErr error
 			reconciler := fullDeploymentSSHManager(manager)
 			reconciledSSHConfig, integrationErr = reconcileLifecycleSSHConfig(ctx, command, deploymentHasNodes, reconciler)
 			if integrationErr != nil {
-				err = &lifecycleSSHConfigFailure{Command: command, Status: status, Result: *reconciledSSHConfig, Err: integrationErr}
+				if err != nil {
+					err = fmt.Errorf("%w; SSH client configuration reconciliation also failed: %v", err, integrationErr)
+				} else {
+					err = &lifecycleSSHConfigFailure{Command: command, Status: status, Result: *reconciledSSHConfig, Err: integrationErr}
+				}
 			} else {
 				progressItem.Report(activity.Event{Phase: "ssh-config", Message: "SSH client configuration is synchronized", Done: true})
 			}
