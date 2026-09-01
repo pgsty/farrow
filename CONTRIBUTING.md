@@ -74,7 +74,7 @@ development key and rejects tampered checksums:
 make cosign-test COSIGN_CHECKSUMS=/absolute/checksums.txt
 ```
 
-`make release-dev VERSION=0.1.1-dev.1 SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)`
+`make release-dev VERSION=0.2.1-dev.1 SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)`
 builds and verifies the older unsigned development-archive path. The packaging
 workflow runs it alongside the GoReleaser snapshot and the Cosign round-trip;
 neither path publishes anything.
@@ -136,7 +136,7 @@ enough unless the migration or refusal condition is also satisfied.
 | `user-network-state-v0` | `cmd/farrow/main.go`: a deployment whose resolved network is `user` gets the fixed-IP redesign refusal instead of being interpreted as current state | pre-0.1 development builds | 0.2.x | Earliest 0.3.0, after the 0.2 migration window and release notes have told users to preserve disks and rebuild; never add a parser for another user-NAT shape. |
 | `manifest-state-v1` | `internal/image/manifest_store.go`: the single-repository manifest state is wrapped as the `default` entry in the registry | pre-0.1 development builds | 0.2.x | Earliest 0.3.0, after a 0.2 release rewrites the registry in place on successful sync/reset and the real legacy fixture proves that migration. |
 | `linux-network-backend-v0` | `internal/network/linux/plan.go`: a root-owned network manifest without `backend` means `systemd-networkd` | pre-0.1 development builds | 0.2.x | Earliest 0.3.0, after 0.2 has rewritten or explicitly uninstalled every accepted backend-less manifest and the uninstall fixture no longer needs the default. |
-| `guest-hosts-marker-v0` | `internal/cloudinit/render.go`: marker-owned guest `/etc/hosts` rows use `# farrow-project-host` | 0.1.x | 0.3.x | Freeze the old writer before 0.2.0, have 0.2.x and 0.3.x remove both old and replacement markers, and remove the old marker no earlier than 0.4.0 after two minor release lines have converged guests. |
+| `guest-hosts-marker-v0` | `internal/cloudinit/render.go`: marker-owned guest `/etc/hosts` rows use `# farrow-project-host` | 0.1.0 | 0.3.x | 0.2.x and 0.3.x write `# farrow-deployment-host` and remove both markers; remove the old marker no earlier than 0.4.0 after two minor release lines have converged guests. |
 | `inherited-files-v0` | `internal/private/shares.go`: an empty typed inherited-file list may still describe the Darwin network FD in argv; shares never use that representation | pre-0.1 development builds | 0.2.x | Earliest 0.3.0, after recreate has rewritten retained invocations with typed inherited files and the legacy network-FD fixture has been retired; never accept an untyped share. |
 
 ## Release checklist

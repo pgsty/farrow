@@ -6,7 +6,7 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
-## [0.1.1]
+## [0.2.0]
 
 A correctness and hygiene release: every command boundary behaves the same
 way under signals, structured output, and misspelled input, and the tree now
@@ -16,6 +16,21 @@ unchanged.
 
 ### Fixed
 
+- Fixed-IP network preflight now permits less-specific VPN exclusion routes,
+  such as a physical-interface `10.0.0.0/8` surrounding Farrow's owned
+  `10.10.10.0/24`; equal or more-specific foreign routes, overlapping
+  interfaces, and a missing owned route remain hard failures.
+- New and recreated guests remove both the released
+  `# farrow-project-host` marker and its replacement before writing only
+  `# farrow-deployment-host`, so the 0.2 terminology migration converges
+  without duplicate `/etc/hosts` rows.
+- Selected `up` and incremental scale-out now resolve/download images only for
+  nodes being created, preserve committed peer ports and UUIDs, show desired
+  nodes without state as `absent`, and generate SSH/host integrations from the
+  committed node set instead of failing on uncreated inventory peers.
+- Whole start/stop/restart/destroy and persistent-disk validation now tolerate
+  desired nodes that have not been created while retaining fail-closed checks
+  for every committed node and retained disk.
 - `SIGINT`/`SIGTERM` now cancel long-running commands through Cobra's context,
   stop progress output, release normal deferred resources, and exit 130 with
   one structured cancellation result; Ctrl-C inside SSH remains remote.
@@ -46,13 +61,16 @@ unchanged.
 
 ### Changed
 
+- Marker-owned guest `/etc/hosts` rows now use deployment terminology; the
+  0.1.0 marker remains cleanup-only compatibility through the documented
+  migration window.
 - Inventory validation and migration diagnostics now consistently call the
   single owner-scoped state a deployment rather than a project.
 - The post-`up` reminder to run `farrow hosts install --yes` is printed as a
   warning line.
 - Ambiguous `farrow ssh`/`farrow exec` invocations without `--` now warn once
-  when the first token is treated as a remote command; the 0.1.x grammar and
-  exit status remain unchanged.
+  when the first token is treated as a remote command; the existing
+  compatibility grammar and exit status remain unchanged.
 - Installer and development builds retain at most three verified release
   directories by default; set `FARROW_INSTALL_KEEP=N` to choose another bound
   or `FARROW_INSTALL_KEEP=0` to disable pruning.
@@ -108,6 +126,6 @@ Pigsty-compatible local labs.
   Cosign is available, and explains that pre-1.0 GitHub pre-releases require an
   explicit `FARROW_VERSION`.
 
-[Unreleased]: https://github.com/pgsty/farrow/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/pgsty/farrow/releases/tag/v0.1.1
+[Unreleased]: https://github.com/pgsty/farrow/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pgsty/farrow/releases/tag/v0.2.0
 [0.1.0]: https://github.com/pgsty/farrow/releases/tag/v0.1.0
