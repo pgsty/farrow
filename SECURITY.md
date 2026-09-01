@@ -61,31 +61,20 @@ into that exact Farrow build, so a mismatched or substituted helper is not run.
 
 - Release archives, Linux packages, SPDX SBOMs, the Homebrew formula, the
   installer, and the release metadata are all listed in `checksums.txt`.
-- `checksums.txt` is signed with keyless Sigstore
-  (`checksums.txt.sigstore.json`), and its SLSA provenance is attested
-  (`checksums.provenance.sigstore.json`). The release workflow verifies both
-  against its own GitHub Actions OIDC identity before publishing.
-- Builds are reproducible: `-trimpath`, `-buildid=`, and `SOURCE_DATE_EPOCH`
-  derived from the tagged commit.
-- The Go toolchain, GoReleaser, nFPM, Syft, Cosign, Staticcheck, and
-  govulncheck are all version-pinned in `packaging/toolchain.env` and verified
-  at release time.
+- GitHub Actions checks out the exact tag, runs the complete source gates,
+  builds the release assets, and creates a draft Release only after package,
+  archive, SBOM, and checksum verification succeeds.
+- Archive and package payloads bind the tagged commit and its
+  `SOURCE_DATE_EPOCH`; binaries use `-trimpath` and an empty Go build ID.
+- The Go toolchain, GoReleaser, nFPM, Syft, Staticcheck, and govulncheck are
+  version-pinned in `packaging/toolchain.env` and verified at release time.
 
-The user-scoped installer always verifies the selected archive against
-`checksums.txt`. When Cosign is installed it additionally requires and verifies
-`checksums.txt.sigstore.json`; a missing or invalid bundle is fatal. The narrow
-`FARROW_INSTALL_ALLOW_UNSIGNED=1` escape hatch applies only to a missing bundle
-for an explicitly trusted development/fork release. It never overrides a
-signature-verification failure, and the installer prints an unmissable warning
-plus an unsigned result label when used.
+The user-scoped installer always verifies the selected archive against the
+`checksums.txt` produced by that GitHub Release.
 
 Verify a release before trusting it:
 
 ```bash
-cosign verify-blob --bundle checksums.txt.sigstore.json \
-  --certificate-identity "https://github.com/pgsty/farrow/.github/workflows/release.yml@refs/tags/v<version>" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
 ```
 

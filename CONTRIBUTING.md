@@ -65,19 +65,15 @@ make catalog-sign CATALOG_KEY=/absolute/private/farrow-catalog-next.key CATALOG_
 make catalog-verify CATALOG_PUBLIC_KEY=/absolute/private/farrow-catalog-next.pub CATALOG_FILE=/absolute/catalog.json
 ```
 
-Catalog signatures and release signatures are distinct trust domains. The
-former are Minisign files consumed by Farrow; the latter are Sigstore bundles
-for release checksums and provenance. This offline test creates only a temporary
-development key and rejects tampered checksums:
-
-```bash
-make cosign-test COSIGN_CHECKSUMS=/absolute/checksums.txt
-```
+Catalog Minisign signatures are consumed by Farrow and remain independent of
+application delivery. Application archives and packages are built by GitHub
+Actions and listed in `checksums.txt`; no separate application-release signing
+or provenance bundle is produced.
 
 `make release-dev VERSION=0.2.1-dev.1 SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)`
 builds and verifies the older unsigned development-archive path. The packaging
-workflow runs it alongside the GoReleaser snapshot and the Cosign round-trip;
-neither path publishes anything.
+workflow runs it alongside the GoReleaser snapshot; neither path publishes
+anything.
 
 The maintenance inventory below names files whose owner is otherwise indirect.
 `make maintenance-check` fails when a new file under `tools/` or `packaging/`
@@ -95,7 +91,6 @@ has no Make, workflow, or inventory reference.
   `packaging/image-pipeline/recipe-v1.json`, and
   `packaging/image-pipeline/.gitignore`.
 - Repository fixture: `packaging/image-repository/repo.yaml`.
-- Signing boundary: `packaging/test-cosign-roundtrip.sh`.
 
 ## House style
 

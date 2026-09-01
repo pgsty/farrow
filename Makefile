@@ -3,7 +3,7 @@
 	amd arm cross build-cross cross-check \
 	module-check shell-check maintenance-check test race vet staticcheck deadcode errcheck vuln check license-check \
 	image-pipeline-test image-pipeline-native-test install-test \
-	catalog-export catalog-keygen catalog-sign catalog-verify cosign-test \
+	catalog-export catalog-keygen catalog-sign catalog-verify \
 	release-check release-snapshot release-local gr-check gr-snapshot gr-local release-dev
 
 SNAPSHOT_DIST ?= .goreleaser-snapshot
@@ -130,10 +130,6 @@ catalog-verify:
 	@test -n "$(CATALOG_PUBLIC_KEY)" || { echo "CATALOG_PUBLIC_KEY is required" >&2; exit 2; }
 	@test -n "$(CATALOG_FILE)" || { echo "CATALOG_FILE is required" >&2; exit 2; }
 	go run ./tools/catalogsign verify "$(CATALOG_PUBLIC_KEY)" "$(CATALOG_FILE)"
-
-cosign-test:
-	@test -n "$(COSIGN_CHECKSUMS)" || { echo "COSIGN_CHECKSUMS is required" >&2; exit 2; }
-	./packaging/test-cosign-roundtrip.sh "$(abspath $(COSIGN_CHECKSUMS))"
 
 release-check:
 	./packaging/check-toolchain.sh goreleaser

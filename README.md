@@ -72,9 +72,9 @@ sudo dnf install ./farrow_<version>_linux_amd64.rpm
 ```
 
 GitHub does not expose pre-1.0 prereleases through `/releases/latest`, so
-`FARROW_VERSION` is required until a stable release exists. If Cosign is
-installed, the installer requires the workflow's signature bundle and refuses
-to downgrade silently to same-origin checksums.
+`FARROW_VERSION` is required until a stable release exists. The installer
+always verifies the selected archive against the `checksums.txt` produced by
+the GitHub release workflow.
 
 From source:
 

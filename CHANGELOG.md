@@ -78,6 +78,9 @@ unchanged.
   are read directly; Viper and its nine transitive modules are gone from the
   dependency graph and the shipped license inventory.
 - Retired the unreachable user-NAT setup branches and four dead APIs.
+- Application releases are built and checksummed by GitHub Actions without a
+  separate release-signature or provenance bundle; guest-image Catalog
+  Minisign verification remains unchanged.
 
 ## [0.1.0]
 

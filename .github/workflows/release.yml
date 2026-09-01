@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -46,11 +45,6 @@ jobs:
           go-version: "1.27.0"
           check-latest: false
           cache: true
-
-      - name: Install pinned Cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        with:
-          cosign-release: v3.1.3
 
       - name: Install pinned GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
@@ -98,40 +92,13 @@ jobs:
             "${FARROW_VERSION}" "${GITHUB_SHA}" "${SOURCE_DATE_EPOCH}" \
             "${GITHUB_WORKSPACE}/.goreleaser-dist"
 
-      - name: Assemble final checksum manifest and provenance predicate
+      - name: Assemble final checksum manifest
         shell: bash
-        env:
-          FARROW_RELEASE_SIGNED: "true"
-          FARROW_RELEASE_ATTESTED: "true"
-          FARROW_BUILDER_ID: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
-          FARROW_INVOCATION_ID: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
         run: |
           set -euo pipefail
           ./packaging/assemble-release.sh "${FARROW_VERSION}" "${GITHUB_SHA}" \
             "${SOURCE_DATE_EPOCH}" "${GITHUB_WORKSPACE}/.goreleaser-dist" \
             "${GITHUB_WORKSPACE}/.goreleaser-dist" "${GITHUB_WORKSPACE}/release-assets"
-
-      - name: Keyless-sign checksums and attest provenance
-        shell: bash
-        run: |
-          set -euo pipefail
-          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
-          cosign sign-blob --yes \
-            --bundle release-assets/checksums.txt.sigstore.json \
-            release-assets/checksums.txt
-          cosign attest-blob --yes --type slsaprovenance1 \
-            --predicate release-assets/provenance-predicate.json \
-            --bundle release-assets/checksums.provenance.sigstore.json \
-            release-assets/checksums.txt
-          cosign verify-blob --bundle release-assets/checksums.txt.sigstore.json \
-            --certificate-identity "${identity}" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            release-assets/checksums.txt
-          cosign verify-blob-attestation \
-            --bundle release-assets/checksums.provenance.sigstore.json \
-            --certificate-identity "${identity}" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --type slsaprovenance1 release-assets/checksums.txt
 
       - name: Create immutable draft release
         shell: bash

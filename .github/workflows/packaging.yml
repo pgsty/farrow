@@ -51,11 +51,6 @@ jobs:
           check-latest: false
           cache: true
 
-      - name: Install pinned Cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        with:
-          cosign-release: v3.1.3
-
       - name: Install pinned GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
@@ -111,9 +106,6 @@ jobs:
           # A snapshot is never 1.0.0, so the shared pre-1.0 rule must classify it
           # as a prerelease. This is the same check the release workflow runs.
           test "$(jq -r .channel release-assets/release.json)" = prerelease
-
-      - name: Exercise offline signing and provenance round trips
-        run: make cosign-test COSIGN_CHECKSUMS="${GITHUB_WORKSPACE}/release-assets/checksums.txt"
 
       - name: Upload the snapshot asset set for inspection
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

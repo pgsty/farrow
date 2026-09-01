@@ -2,11 +2,8 @@
 set -euo pipefail
 
 # User-scoped release installer. It installs no package manager, never uses
-# sudo, and verifies the selected archive against the release checksum file.
-# When cosign happens to be installed it also verifies that checksum file
-# against the release workflow's own signing identity, so the trust root
-# improves for people who have the tool without becoming a requirement for
-# people who do not.
+# sudo, and verifies the selected archive against the checksum file produced by
+# the GitHub release workflow.
 
 is_semver() {
   local value=${1:-} base metadata prerelease core identifier
@@ -42,11 +39,6 @@ repository=${FARROW_RELEASE_REPOSITORY:-pgsty/farrow}
 home_directory=$(cd "${HOME:?HOME is required}" && pwd -P)
 install_directory=${FARROW_INSTALL_DIR:-${home_directory}/.local/bin}
 version=${FARROW_VERSION:-}
-allow_unsigned=${FARROW_INSTALL_ALLOW_UNSIGNED:-}
-if [[ -n ${allow_unsigned} && ${allow_unsigned} != 1 ]]; then
-  printf 'FARROW_INSTALL_ALLOW_UNSIGNED must be empty or 1\n' >&2
-  exit 2
-fi
 install_keep=${FARROW_INSTALL_KEEP:-3}
 if [[ ! ${install_keep} =~ ^[0-9]+$ || ${#install_keep} -gt 9 ]]; then
   printf 'FARROW_INSTALL_KEEP must be a non-negative integer of at most nine digits\n' >&2
@@ -270,33 +262,6 @@ trap cleanup EXIT
 printf 'Downloading Farrow %s for %s/%s...\n' "${version}" "${goos}" "${goarch}"
 curl -fsSLo "${temporary}/${asset}" "${base}/${asset}"
 curl -fsSLo "${temporary}/checksums.txt" "${base}/checksums.txt"
-signature_bypassed=false
-if command -v cosign >/dev/null 2>&1; then
-  identity="https://github.com/${repository}/.github/workflows/release.yml@refs/tags/v${version}"
-  if curl -fsSLo "${temporary}/checksums.txt.sigstore.json" "${base}/checksums.txt.sigstore.json"; then
-    if cosign verify-blob \
-      --bundle "${temporary}/checksums.txt.sigstore.json" \
-      --certificate-identity "${identity}" \
-      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-      "${temporary}/checksums.txt" >/dev/null 2>&1; then
-      printf 'Verified the release signature of %s\n' "${identity}"
-    else
-      printf 'release checksum signature did not verify against %s\n' "${identity}" >&2
-      exit 7
-    fi
-  elif [[ ${allow_unsigned} == 1 ]]; then
-    signature_bypassed=true
-    printf 'WARNING: RELEASE SIGNATURE BUNDLE IS MISSING\n' >&2
-    printf 'WARNING: FARROW_INSTALL_ALLOW_UNSIGNED=1 permits checksum-only installation from %s\n' "${base}" >&2
-    printf 'WARNING: signature identity %s was NOT verified\n' "${identity}" >&2
-  else
-    printf 'cosign is installed but the required release signature bundle is missing: %s/checksums.txt.sigstore.json\n' "${base}" >&2
-    printf 'refusing checksum-only downgrade; retry the release or explicitly set FARROW_INSTALL_ALLOW_UNSIGNED=1 for a trusted development/fork release\n' >&2
-    exit 7
-  fi
-else
-  printf 'cosign is not installed; release signature was not verified (archive checksum verification remains mandatory)\n' >&2
-fi
 expected=$(awk -v asset="${asset}" '$2 == asset {print $1}' "${temporary}/checksums.txt")
 [[ ${expected} =~ ^[0-9a-f]{64}$ ]] || { printf 'release checksum entry is missing or ambiguous: %s\n' "${asset}" >&2; exit 7; }
 actual=$(sha256_file "${temporary}/${asset}")
@@ -446,11 +411,7 @@ if [[ ${current_release} != "${release_root}" ]]; then
   exit 7
 fi
 prune_retained_releases "${releases}" "${current_release}" "${install_keep}"
-if [[ ${signature_bypassed} == true ]]; then
-  printf 'Installed Farrow %s in %s (signature NOT verified)\n' "${version}" "${install_directory}"
-else
-  printf 'Installed Farrow %s in %s\n' "${version}" "${install_directory}"
-fi
+printf 'Installed Farrow %s in %s\n' "${version}" "${install_directory}"
 case :${PATH}: in
   *:"${install_directory}":*) ;;
   *) printf "For this shell, run: export PATH=%q:\"\$PATH\"\n" "${install_directory}" ;;

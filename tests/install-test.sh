@@ -53,7 +53,6 @@ make_fixture_release() {
     digest=$(sha256sum "${release}/${asset}" | awk '{print $1}')
   fi
   printf '%s  %s\n' "${digest}" "${asset}" >"${release}/checksums.txt"
-  printf '{"fixture":"signature bundle"}\n' >"${release}/checksums.txt.sigstore.json"
 }
 
 make_fixture_release 9.9.9 9.9.9
@@ -91,9 +90,6 @@ if [[ ${url} == */releases/latest ]]; then
   exit 0
 fi
 name=${url##*/}
-if [[ ${name} == checksums.txt.sigstore.json && ${FAKE_BUNDLE_MISSING:-0} == 1 ]]; then
-  exit 22
-fi
 [[ -n ${output} && -f ${FAKE_RELEASE_ROOT}/${name} ]] || {
   printf 'unexpected fake curl request: %s -> %s\n' "${url}" "${output}" >&2
   exit 99
@@ -102,16 +98,8 @@ fi
 CURL_SHIM
 chmod 0755 "${shim}/curl"
 
-cat >"${shim}/cosign" <<'COSIGN_SHIM'
-#!/usr/bin/env bash
-set -euo pipefail
-[[ ${1:-} == verify-blob ]] || { printf 'unexpected fake cosign command\n' >&2; exit 99; }
-exit "${FAKE_COSIGN_EXIT:-0}"
-COSIGN_SHIM
-chmod 0755 "${shim}/cosign"
-
 run_installer() {
-  local name=$1 expected=$2 bundle_missing=$3 cosign_exit=$4 allow_unsigned=$5 explicit_version=$6
+  local name=$1 expected=$2 explicit_version=$3
   local install_dir=${work}/install-${name}
   local stdout=${work}/${name}.stdout stderr=${work}/${name}.stderr
   local -a environment=(
@@ -120,19 +108,14 @@ run_installer() {
     "FARROW_INSTALL_DIR=${install_dir}"
     "FARROW_RELEASE_REPOSITORY=pgsty/farrow"
     "FAKE_RELEASE_ROOT=${release}"
-    "FAKE_BUNDLE_MISSING=${bundle_missing}"
-    "FAKE_COSIGN_EXIT=${cosign_exit}"
   )
-  if [[ ${allow_unsigned} == 1 ]]; then
-    environment+=("FARROW_INSTALL_ALLOW_UNSIGNED=1")
-  fi
   if [[ ${explicit_version} == 1 ]]; then
     environment+=("FARROW_VERSION=${version}")
   else
     environment+=("FAKE_LATEST_URL=https://github.com/pgsty/farrow/releases")
   fi
   set +e
-  env -u FARROW_VERSION -u FARROW_INSTALL_ALLOW_UNSIGNED -u FARROW_INSTALL_KEEP "${environment[@]}" bash "${repo}/packaging/install.sh" >"${stdout}" 2>"${stderr}"
+  env -u FARROW_VERSION -u FARROW_INSTALL_KEEP "${environment[@]}" bash "${repo}/packaging/install.sh" >"${stdout}" 2>"${stderr}"
   status=$?
   set -e
   [[ ${status} -eq ${expected} ]] || {
@@ -147,7 +130,7 @@ run_retention_installer() {
   local name=$1 install_dir=$2 keep=$3 expected=$4
   local stdout=${work}/${name}.stdout stderr=${work}/${name}.stderr status
   set +e
-  env -u FARROW_VERSION -u FARROW_INSTALL_ALLOW_UNSIGNED -u FARROW_INSTALL_KEEP \
+  env -u FARROW_VERSION -u FARROW_INSTALL_KEEP \
     "PATH=${shim}" \
     "TMPDIR=${tmp}" \
     "FARROW_INSTALL_DIR=${install_dir}" \
@@ -155,8 +138,6 @@ run_retention_installer() {
     "FARROW_RELEASE_REPOSITORY=pgsty/farrow" \
     "FARROW_VERSION=${version}" \
     "FAKE_RELEASE_ROOT=${release}" \
-    "FAKE_BUNDLE_MISSING=0" \
-    "FAKE_COSIGN_EXIT=0" \
     bash "${repo}/packaging/install.sh" >"${stdout}" 2>"${stderr}"
   status=$?
   set -e
@@ -179,21 +160,15 @@ count_release_directories() {
   printf '%d\n' "${count}"
 }
 
-run_installer signed 0 0 0 0 1
-grep -q 'Verified the release signature' "${work}/signed.stdout"
-[[ -x ${work}/install-signed/farrow && -x ${work}/install-signed/farrow-hosts-helper ]]
+run_installer checksum 0 1
+[[ -x ${work}/install-checksum/farrow && -x ${work}/install-checksum/farrow-hosts-helper ]]
 
-run_installer missing-bundle 7 1 0 0 1
-grep -q 'refusing checksum-only downgrade' "${work}/missing-bundle.stderr"
+printf 'tamper\n' >>"${release}/${asset}"
+run_installer checksum-mismatch 7 1
+grep -q 'release archive checksum mismatch' "${work}/checksum-mismatch.stderr"
+make_fixture_release 9.9.9 9.9.9
 
-run_installer unsigned-override 0 1 0 1 1
-grep -q 'SIGNATURE BUNDLE IS MISSING' "${work}/unsigned-override.stderr"
-grep -q 'signature NOT verified' "${work}/unsigned-override.stdout"
-
-run_installer invalid-signature 7 0 9 1 1
-grep -q 'signature did not verify' "${work}/invalid-signature.stderr"
-
-run_installer prerelease-latest 2 0 0 0 0
+run_installer prerelease-latest 2 0
 grep -q 'set FARROW_VERSION explicitly' "${work}/prerelease-latest.stderr"
 
 retained_install=${work}/install-retained
@@ -245,4 +220,4 @@ done
 [[ -x ${dev_output}/farrow && -x ${dev_output}/farrow-hosts-helper ]]
 [[ $(dirname "$(readlink "${dev_output}/farrow")") == $(dirname "$(readlink "${dev_output}/farrow-hosts-helper")") ]]
 
-printf 'installer signature, retained-release, and development-pair boundaries passed\n'
+printf 'installer checksum, retained-release, and development-pair boundaries passed\n'

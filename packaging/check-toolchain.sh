@@ -2,7 +2,7 @@
 set -euo pipefail
 
 mode=${1:-all}
-case ${mode} in go|packages|goreleaser|signing|quality|all) ;; *) printf 'usage: %s go|packages|goreleaser|signing|quality|all\n' "$0" >&2; exit 2 ;; esac
+case ${mode} in go|packages|goreleaser|quality|all) ;; *) printf 'usage: %s go|packages|goreleaser|quality|all\n' "$0" >&2; exit 2 ;; esac
 root=$(cd "$(dirname "$0")" && pwd -P)
 # shellcheck disable=SC1091
 source "${root}/toolchain.env"
@@ -51,10 +51,6 @@ check_syft() {
   command -v syft >/dev/null || { printf 'syft is missing\n' >&2; exit 3; }
   require_version syft "$(syft version | awk '/^Version:/ {gsub(/^v/, "", $2); print $2; exit}')" "${FARROW_SYFT_VERSION}"
 }
-check_cosign() {
-  command -v cosign >/dev/null || { printf 'cosign is missing\n' >&2; exit 3; }
-  require_version cosign "$(cosign version | awk '/^GitVersion:/ {gsub(/^v/, "", $2); print $2; exit}')" "${FARROW_COSIGN_VERSION}"
-}
 check_staticcheck() {
   command -v staticcheck >/dev/null || { printf 'staticcheck is missing\n' >&2; exit 3; }
   require_version staticcheck "$(staticcheck -version | awk '{print $2; exit}')" "${FARROW_STATICCHECK_VERSION}"
@@ -82,7 +78,6 @@ case ${mode} in
   go) check_go ;;
   packages) check_go; check_nfpm; check_syft ;;
   goreleaser) check_go; check_goreleaser; check_syft ;;
-  signing) check_cosign ;;
   quality) check_go; check_staticcheck; check_deadcode; check_golangci_lint; check_govulncheck ;;
-  all) check_go; check_goreleaser; check_nfpm; check_syft; check_cosign; check_staticcheck; check_deadcode; check_golangci_lint; check_govulncheck ;;
+  all) check_go; check_goreleaser; check_nfpm; check_syft; check_staticcheck; check_deadcode; check_golangci_lint; check_govulncheck ;;
 esac
