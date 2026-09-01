@@ -118,6 +118,8 @@ type Manager struct {
 	RollbackFailed      bool
 	ResolveImage        ImageResolver
 	LookupImage         ImageLookup
+	imageSession        *image.CatalogSession
+	openImageSession    func(context.Context, image.Service, image.CatalogRefreshPolicy) (*image.CatalogSession, error)
 	HostPreflight       HostPreflightFunc
 	NetworkPreflight    NetworkPreflightFunc
 	ForceDarwinFD       bool
@@ -609,9 +611,41 @@ func (m Manager) imageDataRoot() (string, error) {
 	return state.ResolveDataRoot()
 }
 
+func (m *Manager) ensureImageSession(ctx context.Context, policy image.CatalogRefreshPolicy) error {
+	if m.imageSession != nil || (m.ResolveImage != nil && m.LookupImage != nil && m.openImageSession == nil) {
+		return nil
+	}
+	// Test and embedding hooks own one side of resolution explicitly. Keep the
+	// other side local-only so an injected resolver never gains an implicit
+	// network dependency.
+	if m.ResolveImage != nil || m.LookupImage != nil {
+		policy = image.CatalogLocalOnly
+	}
+	dataRoot, err := m.imageDataRoot()
+	if err != nil {
+		return err
+	}
+	service := image.Service{DataRoot: dataRoot, Repository: m.Repository, Runner: m.Runner, Progress: m.Progress}
+	open := m.openImageSession
+	if open == nil {
+		open = func(openCtx context.Context, openService image.Service, openPolicy image.CatalogRefreshPolicy) (*image.CatalogSession, error) {
+			return openService.OpenCatalog(openCtx, openPolicy)
+		}
+	}
+	session, err := open(ctx, service, policy)
+	if err != nil {
+		return err
+	}
+	m.imageSession = session
+	return nil
+}
+
 func (m Manager) resolveOneImage(ctx context.Context, alias, arch string) (image.Entry, string, image.Metadata, error) {
 	if m.ResolveImage != nil {
 		return m.ResolveImage(ctx, alias, arch)
+	}
+	if m.imageSession != nil {
+		return m.imageSession.ResolveArch(ctx, alias, arch)
 	}
 	dataRoot, err := m.imageDataRoot()
 	if err != nil {
@@ -624,6 +658,9 @@ func (m Manager) resolveOneImage(ctx context.Context, alias, arch string) (image
 func (m Manager) lookupOneImage(ctx context.Context, alias, arch string) (image.Entry, error) {
 	if m.LookupImage != nil {
 		return m.LookupImage(ctx, alias, arch)
+	}
+	if m.imageSession != nil {
+		return m.imageSession.LookupArch(ctx, alias, arch)
 	}
 	dataRoot, err := m.imageDataRoot()
 	if err != nil {
@@ -1326,6 +1363,9 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 	if err != nil {
 		return Status{}, err
 	}
+	if err := m.ensureImageSession(ctx, image.CatalogRefreshIfDue); err != nil {
+		return Status{}, err
+	}
 	boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)
 	if err != nil {
 		return Status{}, err
@@ -1694,6 +1734,9 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	}
 	if runtime.Profile.Emulated {
 		if _, _, err := m.resolveRuntimeQEMU(ctx, runtime.Profile, backend); err != nil {
+			return LifecyclePlan{}, err
+		}
+		if err := m.ensureImageSession(ctx, image.CatalogLocalOnly); err != nil {
 			return LifecyclePlan{}, err
 		}
 		boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)

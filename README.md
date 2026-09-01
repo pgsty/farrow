@@ -90,6 +90,7 @@ farrow init full             # a four-node inventory instead of one
 farrow validate              # parse and resolve without touching anything
 farrow plan                  # what would change, and why
 farrow up                    # converge
+farrow update                # refresh the signed image catalog now
 farrow status                # audit/converge selected runtime state, from anywhere
 farrow ssh meta -- uptime    # run something in a guest
 farrow ss                    # teach plain `ssh` about the nodes
@@ -127,6 +128,12 @@ the signed catalog. Applied-state commands therefore work from any directory,
 and removing that one tree removes Farrow's footprint apart from the host
 network and the hosts-file entries, which have their own `uninstall` and
 `remove` commands.
+
+Catalog metadata is cached per image repository. The first image-resolving
+operation attempts one refresh; after a successful check, Farrow reuses the
+same trusted local catalog for seven days. An automatic refresh failure falls
+back to the cached or embedded catalog, while `farrow update` bypasses the cache
+lifetime and reports a refresh failure directly.
 
 ## Development
 

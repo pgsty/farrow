@@ -271,11 +271,13 @@ nothing or one known node.`,
 	logs.GroupID = "access"
 	root.AddCommand(ssh, execCommand, logs, provision, sshConfig, ss, hosts)
 
+	update := newUpdateCommand(stdout, stderr)
+	update.GroupID = "images"
 	images := newImageCommand(stdout, stderr)
 	images.GroupID = "images"
 	repository := newRepoCommand(stdout, stderr)
 	repository.GroupID = "images"
-	root.AddCommand(images, repository)
+	root.AddCommand(update, images, repository)
 
 	doctor := &cobra.Command{
 		Use:     "doctor",

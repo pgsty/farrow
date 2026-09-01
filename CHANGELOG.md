@@ -6,6 +6,21 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- `farrow update` explicitly refreshes, verifies, and atomically activates the
+  configured image catalog without updating the Farrow executable.
+
+### Changed
+
+- Image-resolving commands reuse one catalog snapshot for the complete command.
+  Catalogs refresh at most once after a seven-day cache lifetime, failed
+  automatic checks back off for one hour and continue from trusted local or
+  embedded metadata, and immutable versioned catalog files are never touched
+  merely to record freshness. Automatic refresh failure for an explicitly
+  configured repository is therefore no longer fatal when trusted local
+  metadata and cached or immutable-upstream image bytes can satisfy the request.
+
 ## [0.2.0]
 
 A correctness and hygiene release: every command boundary behaves the same

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
+	"github.com/pgsty/farrow/internal/image"
 	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/process"
@@ -393,6 +394,9 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	}
 	qemuPath, _, err := m.resolveRuntimeQEMU(ctx, runtime.Profile, backend)
 	if err != nil {
+		return Status{}, err
+	}
+	if err := m.ensureImageSession(ctx, image.CatalogRefreshIfDue); err != nil {
 		return Status{}, err
 	}
 	boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)

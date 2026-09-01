@@ -144,6 +144,9 @@ func TestSyncAndResetHonorFARROWREPOStateKey(t *testing.T) {
 	if state, err := service.SyncManifest(context.Background(), source, false); err != nil || state.ActiveVersion != 1 {
 		t.Fatalf("environment repository sync = %#v, %v", state, err)
 	}
+	if session, err := service.OpenCatalog(context.Background(), CatalogRefreshIfDue); err != nil || session.Refresh().Attempted || session.Manifest().ActiveVersion != 1 {
+		t.Fatalf("manual sync freshness = %#v, %v", session, err)
+	}
 	manager := ManifestManager{DataRoot: dataRoot, Repository: repository, AllowUnsigned: true}
 	if state, err := manager.readState(); err != nil || state.ActiveVersion != 1 {
 		t.Fatalf("environment repository state = %#v, %v", state, err)
@@ -153,5 +156,8 @@ func TestSyncAndResetHonorFARROWREPOStateKey(t *testing.T) {
 	}
 	if state, err := manager.readState(); err != nil || state.Active != "embedded" || state.HighestVersion != 1 {
 		t.Fatalf("environment repository reset lost high-water state: %#v, %v", state, err)
+	}
+	if session, err := service.OpenCatalog(context.Background(), CatalogRefreshIfDue); err != nil || session.Refresh().Attempted || session.Manifest().Active != "embedded" {
+		t.Fatalf("manual reset freshness = %#v, %v", session, err)
 	}
 }

@@ -6,6 +6,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func newUpdateCommand(stdout, stderr io.Writer) *cobra.Command {
+	options := imageOptions{Action: "update"}
+	command := &cobra.Command{
+		Use:   "update",
+		Short: "Refresh the cached image catalog",
+		Long: `Refresh the configured image repository catalog immediately, verify its
+signature and downgrade boundary, and atomically activate it. This bypasses the
+seven-day automatic cache lifetime; it does not update the Farrow executable.`,
+		Example: `  farrow update
+  farrow update --repo https://mirror.example/farrow
+  farrow --json update`,
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			return collectImageCommand(command, options, stdout, stderr)
+		},
+	}
+	command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
+	return command
+}
+
 func collectImageCommand(command *cobra.Command, options imageOptions, _ io.Writer, stderr io.Writer) error {
 	outcome, err := runImage(command.Context(), options, stderr)
 	if err != nil {
@@ -32,9 +52,10 @@ import local qcow2 files, and manage the active signed catalog.`,
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List available images",
-		Long: `Refresh the configured signed catalog when available, then list every
-catalog entry for every architecture plus the registered local images. Each
-row names its architecture; info and pull select the native one.`,
+		Long: `Use the trusted local catalog, refreshing it only when its seven-day cache
+lifetime has expired, then list every catalog entry for every architecture plus
+the registered local images. Each row names its architecture; info and pull
+select the native one.`,
 		Example: `  farrow image list
   farrow image list --repo https://mirror.example/farrow
   farrow --json image list`,

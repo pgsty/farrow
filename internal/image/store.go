@@ -728,7 +728,7 @@ func (s Store) Pull(ctx context.Context, entry Entry) (_ string, _ Metadata, ret
 	if gone {
 		// Distribution mirrors prune dated artifacts. When every source agrees the
 		// bytes are simply gone, retrying is pointless; say what actually helps.
-		return "", Metadata{}, fmt.Errorf("%w\n\nThe pinned artifact is no longer published upstream. Refresh the catalog with a newer Farrow release or `farrow image sync <catalog-url>`, point --repo/$FARROW_REPO at a mirror that still carries it, or `farrow image import` a local copy", message)
+		return "", Metadata{}, fmt.Errorf("%w\n\nThe pinned artifact is no longer published upstream. Run `farrow update` (or `farrow image sync <catalog-url>` for an exact source), point --repo/$FARROW_REPO at a mirror that still carries it, or `farrow image import` a local copy", message)
 	}
 	return "", Metadata{}, message
 }

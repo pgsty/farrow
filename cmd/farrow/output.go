@@ -620,14 +620,16 @@ func (item *progress) Report(event activity.Event) {
 	item.phase = event.Phase
 	item.last = now
 	marker := styled(item.stderr, ansiCyan, "→")
-	if event.Done {
+	if event.Warning {
+		marker = styled(item.stderr, ansiYellow, "!")
+	} else if event.Done {
 		marker = styled(item.stderr, ansiGreen, "✓")
 	}
 	if !item.tty {
 		bestEffortf(item.stderr, "%s %s\n", marker, message)
 		return
 	}
-	if event.Done {
+	if event.Done || event.Warning {
 		// A completed phase persists as a checklist row; the live line
 		// falls back to the overall command summary until the next phase.
 		bestEffortf(item.stderr, "\r\x1b[2K%s %s\n", marker, message)
@@ -655,6 +657,17 @@ func deferredProgressReporter(item **progress) activity.Reporter {
 		if item != nil && *item != nil {
 			(*item).Report(event)
 		}
+	}
+}
+
+func warningProgressReporter(item **progress, stderr io.Writer) activity.Reporter {
+	deferred := deferredProgressReporter(item)
+	return func(event activity.Event) {
+		if event.Warning && (item == nil || *item == nil || !(*item).enabled) {
+			warningf(stderr, "%s", event.Message)
+			return
+		}
+		deferred.Report(event)
 	}
 }
 

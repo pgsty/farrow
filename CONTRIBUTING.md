@@ -138,6 +138,9 @@ enough unless the migration or refusal condition is also satisfied.
 
 - Review this table and remove expired compatibility entries only when both the
   version window and the row-specific migration gate have passed.
+- Never republish an image Catalog revision with different bytes. The embedded
+  default and public `catalog.json` must be byte-identical at the same revision;
+  same-revision differences are rejected as signed equivocation.
 
 ## Commits and pull requests
 

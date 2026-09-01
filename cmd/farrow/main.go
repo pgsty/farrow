@@ -1071,7 +1071,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	}
 	var progressItem *progress
 	manager := privatevm.Manager{FarrowVersion: version.Version, OperationID: operationID, Repository: repository, NoWait: noWait, RollbackFailed: rollback, Nodes: append([]string(nil), nodes...)}
-	manager.Progress = deferredProgressReporter(&progressItem)
+	manager.Progress = warningProgressReporter(&progressItem, stderr)
 	if command == "plan" {
 		ctx, cancel := context.WithTimeout(parent, time.Minute)
 		defer cancel()
@@ -1236,18 +1236,20 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	if command == "up" || command == "reload" || command == "start" || command == "restart" || command == "recreate" {
 		seen := make(map[string]struct{})
 		guestArch := lifecycleImageArch(resolved)
-		for _, node := range resolved.Nodes {
-			alias := node.Image
-			if alias == "" {
-				alias = resolved.Image
-			}
-			if _, duplicate := seen[alias]; duplicate {
-				continue
-			}
-			seen[alias] = struct{}{}
-			if service, serviceErr := imageService(repository, nil); serviceErr == nil {
-				if info, infoErr := service.InfoArch(ctx, alias, guestArch); infoErr == nil {
-					printImageStatusWarning(stderr, info.Entry)
+		if service, serviceErr := imageService(repository, nil); serviceErr == nil {
+			if session, sessionErr := service.OpenCatalog(ctx, image.CatalogLocalOnly); sessionErr == nil {
+				for _, node := range resolved.Nodes {
+					alias := node.Image
+					if alias == "" {
+						alias = resolved.Image
+					}
+					if _, duplicate := seen[alias]; duplicate {
+						continue
+					}
+					seen[alias] = struct{}{}
+					if entry, entryErr := session.LookupArch(ctx, alias, guestArch); entryErr == nil {
+						printImageStatusWarning(stderr, entry)
+					}
 				}
 			}
 		}
@@ -1783,10 +1785,37 @@ type imageOptions struct {
 
 func runImage(parent context.Context, options imageOptions, stderr io.Writer) (commandOutcome, error) {
 	switch options.Action {
+	case "update":
+		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+		defer cancel()
+		var progressItem *progress
+		service, err := imageService(options.Repository, warningProgressReporter(&progressItem, stderr))
+		if err != nil {
+			return commandOutcome{}, newRuntimeError(err)
+		}
+		progressItem = startProgress(ctx, stderr, "Updating the image catalog")
+		result, err := service.UpdateCatalog(ctx)
+		progressItem.Stop(err)
+		if errors.Is(parent.Err(), context.Canceled) {
+			return commandOutcome{}, ErrCancelled
+		}
+		if err != nil {
+			return commandOutcome{}, newRuntimeError(err)
+		}
+		return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
+			if result.Updated {
+				bestEffortf(stdout, "updated image catalog from revision %d to %d\n", result.PreviousVersion, result.ActiveVersion)
+			} else {
+				bestEffortf(stdout, "image catalog revision %d is current\n", result.ActiveVersion)
+			}
+			textField(stdout, 12, "repository", result.Repository)
+			textField(stdout, 12, "checked", result.CheckedAt.Format(time.RFC3339))
+			return nil
+		}}, nil
 	case "list":
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
-		service, err := imageService(options.Repository, nil)
+		service, err := imageService(options.Repository, warningProgressReporter(nil, stderr))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -1815,7 +1844,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 		defer cancel()
 		var progressItem *progress
-		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
+		service, err := imageService(options.Repository, warningProgressReporter(&progressItem, stderr))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -1939,11 +1968,12 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", progressSource(options.Source), options.AllowDowngrade)
-		service, err := imageService(options.Repository, nil)
+		var progressItem *progress
+		service, err := imageService(options.Repository, warningProgressReporter(&progressItem, stderr))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
-		progressItem := startProgress(ctx, stderr, "Synchronizing the image manifest")
+		progressItem = startProgress(ctx, stderr, "Synchronizing the image manifest")
 		state, err := service.SyncManifest(ctx, options.Source, options.AllowDowngrade)
 		progressItem.Stop(err)
 		if errors.Is(parent.Err(), context.Canceled) {
@@ -1959,7 +1989,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 	case "reset-manifest":
 		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()
-		service, err := imageService(options.Repository, nil)
+		service, err := imageService(options.Repository, warningProgressReporter(nil, stderr))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
