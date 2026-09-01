@@ -52,21 +52,18 @@ func (m Manager) integrationSnapshotLocked(deploymentValue Deployment) (Deployme
 	if deploymentState.Resolved.Network != "private" {
 		return Deployment{}, state.DeploymentState{}, nil, errors.New("the deployment state is not private")
 	}
-	selected, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
+	selected, err := committedNodeNames(store, deploymentState.Resolved, m.Nodes)
 	if err != nil {
 		return Deployment{}, state.DeploymentState{}, nil, err
 	}
 	selectedSet := nodeNameSet(selected)
 	filtered := cloneResolved(deploymentState.Resolved)
 	filtered.Nodes = filtered.Nodes[:0]
+	nodes := make([]state.NodeState, 0, len(selected))
 	for _, definition := range deploymentState.Resolved.Nodes {
-		if _, include := selectedSet[definition.Name]; include {
-			filtered.Nodes = append(filtered.Nodes, definition)
+		if _, include := selectedSet[definition.Name]; !include {
+			continue
 		}
-	}
-	deploymentState.Resolved = filtered
-	nodes := make([]state.NodeState, 0, len(filtered.Nodes))
-	for _, definition := range filtered.Nodes {
 		node, err := store.ReadNode(definition.Name)
 		if err != nil {
 			return Deployment{}, state.DeploymentState{}, nil, err
@@ -78,8 +75,10 @@ func (m Manager) integrationSnapshotLocked(deploymentValue Deployment) (Deployme
 		if node.SSHPort == 0 || node.Phase == state.Absent {
 			return Deployment{}, state.DeploymentState{}, nil, fmt.Errorf("private node %s has no installable SSH endpoint", definition.Name)
 		}
+		filtered.Nodes = append(filtered.Nodes, cloneNode(definition))
 		nodes = append(nodes, node)
 	}
+	deploymentState.Resolved = filtered
 	return deploymentValue, deploymentState, nodes, nil
 }
 

@@ -517,9 +517,9 @@ func renderHostsScript(hosts []Host) string {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	var out strings.Builder
 	out.WriteString("#!/bin/bash\nset -euo pipefail\n")
-	out.WriteString("sed -i.bak '/# farrow-project-host$/d' /etc/hosts\n")
+	out.WriteString("sed -i.bak -e '/# farrow-project-host$/d' -e '/# farrow-deployment-host$/d' /etc/hosts\n")
 	for _, host := range sorted {
-		fmt.Fprintf(&out, "printf '%%s %%s # farrow-project-host\\n' %s %s >> /etc/hosts\n", host.Address, host.Name)
+		fmt.Fprintf(&out, "printf '%%s %%s # farrow-deployment-host\\n' %s %s >> /etc/hosts\n", host.Address, host.Name)
 	}
 	return out.String()
 }

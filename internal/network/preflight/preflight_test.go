@@ -17,12 +17,38 @@ func TestEvaluateCleanAbsentAndCustomWarning(t *testing.T) {
 	}
 }
 
-func TestEvaluateBroadRouteAndInterfaceOverlap(t *testing.T) {
+func TestEvaluateRouteLongestPrefixPrecedence(t *testing.T) {
+	layout := subnet.Default()
+	for _, test := range []struct {
+		name      string
+		prefix    string
+		wantReady bool
+	}{
+		{name: "less-specific VPN exclusion", prefix: "10.0.0.0/8", wantReady: true},
+		{name: "exact foreign route", prefix: "10.10.10.0/24", wantReady: false},
+		{name: "more-specific foreign subnet", prefix: "10.10.10.128/25", wantReady: false},
+		{name: "foreign host route", prefix: "10.10.10.99/32", wantReady: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := Evaluate(Request{OS: "linux", Arch: "amd64", Purpose: Install, Layout: layout}, Snapshot{
+				Installation: Installation{Status: "absent"},
+				Routes:       []Route{{Prefix: mustPrefix(test.prefix), Interface: "tun0", Evidence: test.prefix + " dev tun0"}},
+			})
+			if report.Ready != test.wantReady {
+				t.Fatalf("ready=%t, want %t; report=%#v", report.Ready, test.wantReady, report)
+			}
+			if !test.wantReady && report.ExitCode != 6 {
+				t.Fatalf("exit=%d, want 6; report=%#v", report.ExitCode, report)
+			}
+		})
+	}
+}
+
+func TestEvaluateBroadInterfaceOverlapStillConflicts(t *testing.T) {
 	layout := subnet.Default()
 	report := Evaluate(Request{OS: "linux", Arch: "amd64", Purpose: Install, Layout: layout}, Snapshot{
 		Installation: Installation{Status: "absent"},
-		Routes:       []Route{{Prefix: mustPrefix("10.0.0.0/8"), Interface: "tun0", Evidence: "10.0.0.0/8 dev tun0"}},
-		Interfaces:   []InterfaceAddress{{Prefix: mustPrefix("10.10.10.99/32"), Interface: "eth1", Evidence: "10.10.10.99/32"}},
+		Interfaces:   []InterfaceAddress{{Address: netip.MustParseAddr("10.0.0.2"), Prefix: mustPrefix("10.0.0.2/8"), Interface: "eth1", Evidence: "10.0.0.2/8"}},
 	})
 	if report.Ready || report.ExitCode != 6 {
 		t.Fatalf("report=%#v", report)
@@ -67,6 +93,7 @@ func TestEvaluateInstalledRequiresOnlyExactOwnedRouteAndAddress(t *testing.T) {
 	installation := Installation{Status: "exact", CIDR: layout.CIDR(), HostAddress: layout.HostAddress(), Interface: "farrow0", Healthy: true}
 	missing := Evaluate(Request{OS: "linux", Arch: "amd64", Purpose: Use, Layout: layout}, Snapshot{
 		Installation: installation,
+		Routes:       []Route{{Prefix: mustPrefix("10.0.0.0/8"), Interface: "tun0", Evidence: "less-specific VPN route"}},
 		Interfaces:   []InterfaceAddress{{Address: netip.MustParseAddr("10.10.10.1"), Prefix: mustPrefix("10.10.10.1/24"), Interface: "farrow0", Evidence: "owned"}},
 	})
 	if missing.Ready || missing.ExitCode != 3 {
@@ -81,19 +108,28 @@ func TestEvaluateInstalledRequiresOnlyExactOwnedRouteAndAddress(t *testing.T) {
 		t.Fatalf("blackhole exact route report=%#v", blackhole)
 	}
 
-	conflict := Evaluate(Request{OS: "linux", Arch: "amd64", Purpose: Use, Layout: layout}, Snapshot{
+	covering := Evaluate(Request{OS: "linux", Arch: "amd64", Purpose: Use, Layout: layout}, Snapshot{
 		Installation: installation,
 		Routes: []Route{
 			{Prefix: layout.Prefix(), Interface: "farrow0", Evidence: "owned exact route"},
-			{Prefix: mustPrefix("10.0.0.0/8"), Interface: "farrow0", Evidence: "unexpected broad route"},
+			{Prefix: mustPrefix("10.0.0.0/8"), Interface: "en7", Evidence: "VPN exclusion through the physical gateway"},
 		},
+		Interfaces: []InterfaceAddress{{Address: netip.MustParseAddr("10.10.10.1"), Prefix: mustPrefix("10.10.10.1/24"), Interface: "farrow0", Evidence: "owned exact address"}},
+	})
+	if !covering.Ready || covering.ExitCode != 0 {
+		t.Fatalf("less-specific covering route report=%#v", covering)
+	}
+
+	conflict := Evaluate(Request{OS: "linux", Arch: "amd64", Purpose: Use, Layout: layout}, Snapshot{
+		Installation: installation,
+		Routes:       []Route{{Prefix: layout.Prefix(), Interface: "farrow0", Evidence: "owned exact route"}},
 		Interfaces: []InterfaceAddress{
 			{Address: netip.MustParseAddr("10.10.10.1"), Prefix: mustPrefix("10.10.10.1/24"), Interface: "farrow0", Evidence: "owned exact address"},
 			{Address: netip.MustParseAddr("10.10.10.2"), Prefix: mustPrefix("10.10.10.2/24"), Interface: "farrow0", Evidence: "unexpected extra address"},
 		},
 	})
 	if conflict.Ready || conflict.ExitCode != 6 {
-		t.Fatalf("broad same-interface conflict report=%#v", conflict)
+		t.Fatalf("unexpected extra interface address report=%#v", conflict)
 	}
 }
 

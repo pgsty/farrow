@@ -61,6 +61,37 @@ func TestPrivateSSHConfigInstallContainsEveryNodeAndAddress(t *testing.T) {
 	}
 }
 
+func TestPrivateSSHConfigSkipsDesiredNodesWithoutCommittedState(t *testing.T) {
+	startConfig, _ := preparedStartFixture(t)
+	t.Setenv("FARROW_HOME", startConfig.Deployment.Root)
+	if err := os.Remove(filepath.Join(startConfig.Deployment.Root, "nodes", "node-1", "state.json")); err != nil {
+		t.Fatal(err)
+	}
+	keysDir := filepath.Join(startConfig.Deployment.Root, "keys")
+	if err := os.Mkdir(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"id_ed25519", "known_hosts"} {
+		if err := os.WriteFile(filepath.Join(keysDir, name), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := (Manager{FarrowVersion: "test"}).InstallSSHConfig(context.Background(), "farrow", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragment, err := os.ReadFile(result.Fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fragment), "farrow-meta meta") || strings.Contains(string(fragment), "node-1") {
+		t.Fatalf("partial deployment SSH fragment:\n%s", fragment)
+	}
+	if _, err := (Manager{FarrowVersion: "test", Nodes: []string{"node-1"}}).InstallSSHConfig(context.Background(), "farrow", t.TempDir()); err == nil || !strings.Contains(err.Error(), "no committed state") {
+		t.Fatalf("explicit missing-node SSH config error = %v", err)
+	}
+}
+
 func TestPrivateHostEntriesIncludeDeclaredAliases(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
 	t.Setenv("FARROW_HOME", startConfig.Deployment.Root)

@@ -64,6 +64,35 @@ func TestSelectedStatusConnectionAndStopIgnoreDegradedPeer(t *testing.T) {
 	}
 }
 
+func TestStatusReportsDesiredNodeWithoutCommittedStateAsAbsent(t *testing.T) {
+	config, _ := statusFixture(t)
+	if err := os.Remove(filepath.Join(config.Deployment.Root, "nodes", "node-1", "state.json")); err != nil {
+		t.Fatal(err)
+	}
+	status, err := (Manager{FarrowVersion: "test"}).Status(context.Background())
+	if err != nil || len(status.Nodes) != 2 {
+		t.Fatalf("partial deployment status = %#v, %v", status, err)
+	}
+	if status.Nodes[1].Name != "node-1" || status.Nodes[1].State != state.Absent || status.Nodes[1].Runtime != "absent" || status.Nodes[1].SSHPort != 0 {
+		t.Fatalf("missing desired node status = %#v", status.Nodes[1])
+	}
+	selected, err := (Manager{FarrowVersion: "test", Nodes: []string{"node-1"}}).Status(context.Background())
+	if err != nil || len(selected.Nodes) != 1 || selected.Nodes[0].State != state.Absent {
+		t.Fatalf("selected missing node status = %#v, %v", selected, err)
+	}
+}
+
+func TestDefaultConnectionSkipsMissingControlNode(t *testing.T) {
+	config, _ := statusFixture(t)
+	if err := os.Remove(filepath.Join(config.Deployment.Root, "nodes", "meta", "state.json")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (Manager{FarrowVersion: "test"}).Connection(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "node-1 is not running") || strings.Contains(err.Error(), "meta") {
+		t.Fatalf("default partial connection error = %v", err)
+	}
+}
+
 func startStatusProcess(t *testing.T) (*exec.Cmd, qemu.Invocation) {
 	t.Helper()
 	sleep, err := exec.LookPath("sleep")

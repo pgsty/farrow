@@ -106,6 +106,15 @@ func overlap(left, right netip.Prefix) bool {
 	return left.IsValid() && right.IsValid() && (left.Contains(right.Addr()) || right.Contains(left.Addr()))
 }
 
+// routeCompetes reports whether an overlapping route can win for any address
+// in the requested network. A less-specific covering route cannot override the
+// requested route once its exact prefix is installed because IP forwarding
+// uses longest-prefix match. Equal and more-specific routes can still divert
+// all or part of the network and remain hard conflicts.
+func routeCompetes(route, network netip.Prefix) bool {
+	return overlap(route, network) && route.Bits() >= network.Bits()
+}
+
 func add(report *Report, finding Finding) {
 	report.Findings = append(report.Findings, finding)
 }
@@ -145,7 +154,7 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 
 	exactOwnedRoute := false
 	for _, route := range snapshot.Routes {
-		if !overlap(route.Prefix, request.Layout.Prefix()) {
+		if !routeCompetes(route.Prefix, request.Layout.Prefix()) {
 			continue
 		}
 		host, _ := netip.ParseAddr(request.Layout.HostAddress())

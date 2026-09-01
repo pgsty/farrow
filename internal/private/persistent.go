@@ -64,6 +64,10 @@ func validatePrivatePersistentState(deploymentValue Deployment, deploymentState 
 	if _, err := persistent.ValidateDesired(deploymentValue.Root, desired); err != nil {
 		return nil, err
 	}
+	desiredDisks := make(map[string]persistent.Identity, len(desired))
+	for _, identityValue := range desired {
+		desiredDisks[identityValue.Node+"\x00"+identityValue.Name] = identityValue
+	}
 	stateDisks := make(map[string]state.DataDisk)
 	for _, node := range nodes {
 		for _, dataDisk := range node.DataDisks {
@@ -75,12 +79,12 @@ func validatePrivatePersistentState(deploymentValue Deployment, deploymentState 
 			}
 		}
 	}
-	if len(stateDisks) != len(desired) {
-		return nil, errors.New("private persistent disk state differs from resolved configuration")
-	}
-	for _, identityValue := range desired {
-		dataDisk, ok := stateDisks[identityValue.Node+"\x00"+identityValue.Name]
-		if !ok || dataDisk.Serial != identityValue.Serial || dataDisk.Size != identityValue.Size || dataDisk.Mount != identityValue.Mount {
+	for key, dataDisk := range stateDisks {
+		identityValue, ok := desiredDisks[key]
+		if !ok {
+			return nil, errors.New("private persistent disk state is not present in the resolved configuration")
+		}
+		if dataDisk.Serial != identityValue.Serial || dataDisk.Size != identityValue.Size || dataDisk.Mount != identityValue.Mount {
 			return nil, fmt.Errorf("private persistent disk %s/%s has incompatible size, mount, or serial", identityValue.Node, identityValue.Name)
 		}
 	}

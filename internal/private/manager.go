@@ -314,6 +314,40 @@ func nodeNameSet(names []string) map[string]struct{} {
 	return result
 }
 
+func selectedNodeList(names []string, selected map[string]struct{}) []string {
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		if _, include := selected[name]; include {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+func committedNodeNames(store state.Store, resolved spec.Resolved, names []string) ([]string, error) {
+	selected, err := selectedNodeNames(resolved, names)
+	if err != nil {
+		return nil, err
+	}
+	explicit := len(names) != 0
+	result := make([]string, 0, len(selected))
+	for _, name := range selected {
+		if _, err := store.ReadNode(name); err == nil {
+			result = append(result, name)
+		} else if missingPath(err) && !explicit {
+			continue
+		} else if missingPath(err) {
+			return nil, fmt.Errorf("private node %s has no committed state; run `farrow up %s` first", name, name)
+		} else {
+			return nil, err
+		}
+	}
+	if len(result) == 0 {
+		return nil, errors.New("the deployment has no committed nodes")
+	}
+	return result, nil
+}
+
 func (m Manager) preflight(ctx context.Context, profile platform.Profile, resolved spec.Resolved) (Backend, error) {
 	if resolved.Private == nil {
 		return Backend{}, &CapabilityError{Reason: "private host preflight requires a resolved network"}
@@ -368,6 +402,15 @@ func (m Manager) openDeployment(create bool) (Deployment, error) {
 	return openDeployment(create)
 }
 
+func cloneNode(node spec.Node) spec.Node {
+	result := node
+	result.Aliases = append([]string(nil), node.Aliases...)
+	result.Disks = append([]spec.Disk(nil), node.Disks...)
+	result.Forwards = append([]spec.Forward(nil), node.Forwards...)
+	result.Shares = append([]spec.Share(nil), node.Shares...)
+	return result
+}
+
 func cloneResolved(value spec.Resolved) spec.Resolved {
 	result := value
 	if value.Private != nil {
@@ -376,11 +419,19 @@ func cloneResolved(value spec.Resolved) spec.Resolved {
 	}
 	result.Nodes = make([]spec.Node, len(value.Nodes))
 	for index, node := range value.Nodes {
-		result.Nodes[index] = node
-		result.Nodes[index].Aliases = append([]string(nil), node.Aliases...)
-		result.Nodes[index].Disks = append([]spec.Disk(nil), node.Disks...)
-		result.Nodes[index].Forwards = append([]spec.Forward(nil), node.Forwards...)
-		result.Nodes[index].Shares = append([]spec.Share(nil), node.Shares...)
+		result.Nodes[index] = cloneNode(node)
+	}
+	return result
+}
+
+func resolvedNodeSelection(value spec.Resolved, names []string) spec.Resolved {
+	selected := nodeNameSet(names)
+	result := cloneResolved(value)
+	result.Nodes = result.Nodes[:0]
+	for _, node := range value.Nodes {
+		if _, include := selected[node.Name]; include {
+			result.Nodes = append(result.Nodes, cloneNode(node))
+		}
 	}
 	return result
 }
@@ -404,8 +455,8 @@ func materializeExistingForwardPorts(desired, existing spec.Resolved) spec.Resol
 	return result
 }
 
-func materializePorts(value spec.Resolved, reserved map[uint16]struct{}) (spec.Resolved, map[string]uint16, error) {
-	return materializePortsWithProbe(value, reserved, func(bind string, port uint16) bool {
+func materializeMissingNodePorts(value spec.Resolved, createNames []string, reserved map[uint16]struct{}, store state.Store) (spec.Resolved, map[string]uint16, error) {
+	return materializeMissingNodePortsWithProbe(value, createNames, reserved, store, func(bind string, port uint16) bool {
 		listener, err := net.Listen("tcp", net.JoinHostPort(bind, strconv.Itoa(int(port))))
 		if err != nil {
 			return false
@@ -415,40 +466,38 @@ func materializePorts(value spec.Resolved, reserved map[uint16]struct{}) (spec.R
 	})
 }
 
-func materializeMissingNodePorts(value spec.Resolved, createNames []string, reserved map[uint16]struct{}, store state.Store) (spec.Resolved, map[string]uint16, error) {
+func materializeMissingNodePortsWithProbe(value spec.Resolved, createNames []string, reserved map[uint16]struct{}, store state.Store, probe func(string, uint16) bool) (spec.Resolved, map[string]uint16, error) {
 	if len(createNames) == 0 {
-		return materializePorts(value, reserved)
+		return materializePortsWithProbe(value, reserved, probe)
 	}
+	resolved := cloneResolved(value)
 	createSet := nodeNameSet(createNames)
 	ports := make(map[string]uint16, len(value.Nodes))
 	available := func(bind string, port uint16) bool {
 		if _, exists := reserved[port]; exists {
 			return false
 		}
-		listener, err := net.Listen("tcp", net.JoinHostPort(bind, strconv.Itoa(int(port))))
-		if err != nil {
-			return false
-		}
-		_ = listener.Close()
-		return true
+		return probe(bind, port)
 	}
-	for _, definition := range value.Nodes {
+	for _, definition := range resolved.Nodes {
 		if _, create := createSet[definition.Name]; create {
-			for _, forward := range definition.Forwards {
-				if !available(forward.Bind, forward.Host) {
-					return spec.Resolved{}, nil, fmt.Errorf("partial recreate requires exact forward %s:%d for node %s, but it is unavailable", forward.Bind, forward.Host, definition.Name)
-				}
-				reserved[forward.Host] = struct{}{}
-			}
 			continue
 		}
 		node, err := store.ReadNode(definition.Name)
+		if missingPath(err) {
+			continue
+		}
 		if err != nil {
 			return spec.Resolved{}, nil, err
 		}
 		ports[definition.Name] = node.SSHPort
+		reserved[node.SSHPort] = struct{}{}
+		for _, forward := range definition.Forwards {
+			reserved[forward.Host] = struct{}{}
+		}
 	}
-	for index, definition := range value.Nodes {
+	for index := range resolved.Nodes {
+		definition := &resolved.Nodes[index]
 		if _, create := createSet[definition.Name]; !create {
 			continue
 		}
@@ -458,8 +507,17 @@ func materializeMissingNodePorts(value spec.Resolved, createNames []string, rese
 		}
 		reserved[port] = struct{}{}
 		ports[definition.Name] = port
+		for forwardIndex := range definition.Forwards {
+			forward := &definition.Forwards[forwardIndex]
+			port, err := portalloc.Choose(spec.RequestedHostPort(*forward), func(port uint16) bool { return available(forward.Bind, port) })
+			if err != nil {
+				return spec.Resolved{}, nil, fmt.Errorf("allocate forward for %s: %w", definition.Name, err)
+			}
+			reserved[port] = struct{}{}
+			*forward = spec.WithMaterializedHost(*forward, port)
+		}
 	}
-	return cloneResolved(value), ports, nil
+	return resolved, ports, nil
 }
 
 func materializePortsWithProbe(value spec.Resolved, reserved map[uint16]struct{}, probe func(string, uint16) bool) (spec.Resolved, map[string]uint16, error) {
@@ -714,6 +772,25 @@ func runtimeDriftNodes(store state.Store, resolved spec.Resolved, expected platf
 	return drifted, nil
 }
 
+func committedNodeUUIDs(store state.Store, resolved spec.Resolved, creating []string) (map[string]string, error) {
+	createSet := nodeNameSet(creating)
+	result := make(map[string]string)
+	for _, definition := range resolved.Nodes {
+		if _, create := createSet[definition.Name]; create {
+			continue
+		}
+		node, err := store.ReadNode(definition.Name)
+		if missingPath(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		result[node.Node] = node.VMUUID
+	}
+	return result, nil
+}
+
 func (m Manager) ensureKeys(ctx context.Context, deploymentValue Deployment) (_ string, _ string, _ string, returnErr error) {
 	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -754,6 +831,9 @@ func (m Manager) statusForLocked(ctx context.Context, deploymentValue Deployment
 			continue
 		}
 		node, err := store.ReadNode(definition.Name)
+		if missingPath(err) {
+			continue
+		}
 		if err != nil {
 			return Status{}, err
 		}
@@ -778,6 +858,9 @@ func (m Manager) statusForLocked(ctx context.Context, deploymentValue Deployment
 	for _, definition := range deploymentState.Resolved.Nodes {
 		node, include := nodes[definition.Name]
 		if !include {
+			if _, selected := selectedSet[definition.Name]; selected {
+				result.Nodes = append(result.Nodes, NodeStatus{Name: definition.Name, Address: definition.Address, State: state.Absent, Runtime: "absent"})
+			}
 			continue
 		}
 		runtimeState := "inactive"
@@ -901,6 +984,20 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 	return m.statusFor(ctx, deploymentValue, "deployment status")
 }
 
+func defaultCommittedNode(store state.Store, resolved spec.Resolved) (string, error) {
+	committed, err := committedNodeNames(store, resolved, nil)
+	if err != nil {
+		return "", err
+	}
+	committedSet := nodeNameSet(committed)
+	for _, node := range resolved.Nodes {
+		if _, exists := committedSet[node.Name]; exists && node.Control {
+			return node.Name, nil
+		}
+	}
+	return committed[0], nil
+}
+
 func (m Manager) Connection(ctx context.Context, requestedNode string) (Connection, error) {
 	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
@@ -911,14 +1008,9 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 		return Connection{}, errors.New("the deployment has no valid private state")
 	}
 	if requestedNode == "" {
-		for _, node := range deploymentState.Resolved.Nodes {
-			if node.Control {
-				requestedNode = node.Name
-				break
-			}
-		}
-		if requestedNode == "" && len(deploymentState.Resolved.Nodes) > 0 {
-			requestedNode = deploymentState.Resolved.Nodes[0].Name
+		requestedNode, err = defaultCommittedNode(state.Store{Root: deploymentValue.Root}, deploymentState.Resolved)
+		if err != nil {
+			return Connection{}, err
 		}
 	}
 	knownNode := false
@@ -976,11 +1068,9 @@ func (m Manager) LogPath(nodeName, source string) (string, error) {
 		return "", fmt.Errorf("unsupported private log source %q", source)
 	}
 	if nodeName == "" {
-		for _, node := range deploymentState.Resolved.Nodes {
-			if node.Control {
-				nodeName = node.Name
-				break
-			}
+		nodeName, err = defaultCommittedNode(state.Store{Root: deploymentValue.Root}, deploymentState.Resolved)
+		if err != nil {
+			return "", err
 		}
 	}
 	nodeDir, err := deploymentValue.NodeDir(nodeName)
@@ -1132,19 +1222,20 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 	if err := validateResolved(requested); err != nil {
 		return Status{}, err
 	}
-	hostProfile, err := m.nativeProfile()
-	if err != nil {
-		return Status{}, err
-	}
-	backend, err := m.preflight(ctx, hostProfile, requested)
-	if err != nil {
-		return Status{}, err
-	}
-	m.Progress.Report(activity.Event{Phase: "preflight", Message: "Network and QEMU preflight passed", Done: true})
 	selected, err := selectedNodeNames(requested, m.Nodes)
 	if err != nil {
 		return Status{}, err
 	}
+	selectedRequested := resolvedNodeSelection(requested, selected)
+	hostProfile, err := m.nativeProfile()
+	if err != nil {
+		return Status{}, err
+	}
+	backend, err := m.preflight(ctx, hostProfile, selectedRequested)
+	if err != nil {
+		return Status{}, err
+	}
+	m.Progress.Report(activity.Event{Phase: "preflight", Message: "Network and QEMU preflight passed", Done: true})
 	selectedSet := nodeNameSet(selected)
 	var reusableDeployment *Deployment
 	createNodes := []string(nil)
@@ -1209,7 +1300,10 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 	} else if !missingPath(openErr) {
 		return Status{}, openErr
 	}
-	if err := m.ensureSSHAddressesUnused(nodesWithoutCommittedState(requested.Nodes)); err != nil {
+	if !hadExistingState {
+		createNodes = append([]string(nil), selected...)
+	}
+	if err := m.ensureSSHAddressesUnused(nodesWithoutCommittedState(selectedRequested.Nodes)); err != nil {
 		return Status{}, err
 	}
 	runtime, err := selectRuntime(hostProfile, requested)
@@ -1232,8 +1326,12 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 	if err != nil {
 		return Status{}, err
 	}
-	m.report("image-resolve", fmt.Sprintf("Resolving images for %d node(s)", len(selected)))
-	bases, boot, err := m.resolveBases(ctx, runtime.Profile, requested)
+	boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)
+	if err != nil {
+		return Status{}, err
+	}
+	m.report("image-resolve", fmt.Sprintf("Resolving images for %d node(s)", len(createNodes)))
+	bases, _, err := m.resolveBases(ctx, runtime.Profile, resolvedNodeSelection(requested, createNodes))
 	if err != nil {
 		return Status{}, err
 	}
@@ -1296,17 +1394,9 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 	}
 	knownUUIDs := make(map[string]string)
 	if hadExistingState {
-		createSet := nodeNameSet(createNodes)
-		store := state.Store{Root: deploymentValue.Root}
-		for _, definition := range resolved.Nodes {
-			if _, create := createSet[definition.Name]; create {
-				continue
-			}
-			node, readErr := store.ReadNode(definition.Name)
-			if readErr != nil {
-				return Status{}, readErr
-			}
-			knownUUIDs[node.Node] = node.VMUUID
+		knownUUIDs, err = committedNodeUUIDs(state.Store{Root: deploymentValue.Root}, resolved, createNodes)
+		if err != nil {
+			return Status{}, err
 		}
 	}
 	plan, err := Build(resolved, os.Getuid(), knownUUIDs, nil)
@@ -1367,19 +1457,19 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 
 func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, deploymentState state.DeploymentState, profile platform.Profile, backend Backend) (_ Status, returnErr error) {
 	m.report("preflight", "Checking the existing deployment before start")
-	verifiedBackend, err := m.preflight(ctx, profile, deploymentState.Resolved)
+	preStartStore := state.Store{Root: deploymentValue.Root}
+	selected, selectionErr := committedNodeNames(preStartStore, deploymentState.Resolved, m.Nodes)
+	verifiedBackend, err := m.preflight(ctx, profile, resolvedNodeSelection(deploymentState.Resolved, selected))
 	if err != nil {
 		return Status{}, err
+	}
+	if selectionErr != nil {
+		return Status{}, selectionErr
 	}
 	backend = verifiedBackend
-	selected, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
-	if err != nil {
-		return Status{}, err
-	}
 	if err := selectedShareSources(deploymentValue, deploymentState.Resolved, selected); err != nil {
 		return Status{}, err
 	}
-	preStartStore := state.Store{Root: deploymentValue.Root}
 	shareBinaries, err := selectedShareInvocationBinaries(preStartStore, deploymentState.Resolved, selected)
 	if err != nil {
 		return Status{}, err
@@ -1423,7 +1513,7 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 	keysDir := filepath.Join(deploymentValue.Root, "keys")
 	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}, Deployment: deploymentValue, Shares: shareSourcesByNode(deploymentState.Resolved), SSHPath: sshPath, PrivateKey: filepath.Join(keysDir, "id_ed25519"), KnownHosts: filepath.Join(keysDir, "known_hosts"), DarwinSocket: backend.DarwinSocket}
 	names := make([]string, 0, len(deploymentState.Resolved.Nodes))
-	store := state.Store{Root: deploymentValue.Root}
+	store := preStartStore
 	for _, definition := range deploymentState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
 			continue
@@ -1501,11 +1591,7 @@ func (m Manager) Start(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	backend, err := m.preflight(ctx, profile, deploymentState.Resolved)
-	if err != nil {
-		return Status{}, err
-	}
-	return m.startExisting(ctx, deploymentValue, deploymentState, profile, backend)
+	return m.startExisting(ctx, deploymentValue, deploymentState, profile, Backend{})
 }
 
 func (m Manager) Stop(ctx context.Context) (_ Status, returnErr error) {
@@ -1526,7 +1612,8 @@ func (m Manager) Stop(ctx context.Context) (_ Status, returnErr error) {
 	defer func() {
 		returnErr = lock.JoinRelease(returnErr, deploymentLock, "deployment stop lock")
 	}()
-	names, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
+	store := state.Store{Root: deploymentValue.Root}
+	names, err := committedNodeNames(store, deploymentState.Resolved, m.Nodes)
 	if err != nil {
 		return Status{}, err
 	}
@@ -1560,12 +1647,12 @@ func (m Manager) Restart(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	if _, err := m.preflight(ctx, profile, deploymentState.Resolved); err != nil {
+	selected, selectionErr := committedNodeNames(state.Store{Root: deploymentValue.Root}, deploymentState.Resolved, m.Nodes)
+	if _, err := m.preflight(ctx, profile, resolvedNodeSelection(deploymentState.Resolved, selected)); err != nil {
 		return Status{}, err
 	}
-	selected, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
-	if err != nil {
-		return Status{}, err
+	if selectionErr != nil {
+		return Status{}, selectionErr
 	}
 	if err := selectedShareSources(deploymentValue, deploymentState.Resolved, selected); err != nil {
 		return Status{}, err
@@ -1588,6 +1675,11 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	if err := validateResolved(requested); err != nil {
 		return LifecyclePlan{}, err
 	}
+	selected, err := selectedNodeNames(requested, m.Nodes)
+	if err != nil {
+		return LifecyclePlan{}, err
+	}
+	selectedRequested := resolvedNodeSelection(requested, selected)
 	profile, err := m.nativeProfile()
 	if err != nil {
 		return LifecyclePlan{}, err
@@ -1596,7 +1688,7 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	if err != nil {
 		return LifecyclePlan{}, err
 	}
-	backend, err := m.preflight(ctx, profile, requested)
+	backend, err := m.preflight(ctx, profile, selectedRequested)
 	if err != nil {
 		return LifecyclePlan{}, err
 	}
@@ -1616,13 +1708,9 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 	if err != nil {
 		return LifecyclePlan{}, err
 	}
-	selected, err := selectedNodeNames(requested, m.Nodes)
-	if err != nil {
-		return LifecyclePlan{}, err
-	}
 	selectedSet := nodeNameSet(selected)
 	result := LifecyclePlan{Schema: 1, Action: "create", SpecHash: hash, Nodes: append([]string(nil), selected...)}
-	if err := m.ensureSSHAddressesUnused(nodesWithoutCommittedState(requested.Nodes)); err != nil {
+	if err := m.ensureSSHAddressesUnused(nodesWithoutCommittedState(selectedRequested.Nodes)); err != nil {
 		return LifecyclePlan{}, err
 	}
 	deploymentValue, err := m.openDeployment(false)
@@ -1651,9 +1739,15 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 		return readErr == nil
 	}
 	diff := diffResolved(deploymentState.Resolved, requested, hasState)
-	result.Create = append([]string(nil), diff.Create...)
-	result.Recreate = append([]string(nil), diff.Changed...)
-	result.Missing = append([]string(nil), diff.Removed...)
+	if len(m.Nodes) == 0 {
+		result.Create = append([]string(nil), diff.Create...)
+		result.Recreate = append([]string(nil), diff.Changed...)
+		result.Missing = append([]string(nil), diff.Removed...)
+	} else {
+		result.Create = selectedNodeList(diff.Create, selectedSet)
+		result.Recreate = selectedNodeList(diff.Changed, selectedSet)
+		result.Missing = selectedNodeList(diff.Removed, selectedSet)
+	}
 	runtimeDrift, err := runtimeDriftNodes(store, requested, runtime.Profile)
 	if err != nil {
 		return LifecyclePlan{}, err

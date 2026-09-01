@@ -47,6 +47,131 @@ func TestMaterializePrivatePortsIsDeterministicAndNonColliding(t *testing.T) {
 	}
 }
 
+func TestResolvedNodeSelectionIsDeepAndOrdered(t *testing.T) {
+	t.Parallel()
+	resolved := singlePrivateResolved()
+	resolved.Nodes = append(resolved.Nodes,
+		spec.Node{Name: "node-1", Address: "10.10.10.11", Image: "el9", Aliases: []string{"worker"}, CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+		spec.Node{Name: "node-2", Address: "10.10.10.12", Image: "el10", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+	)
+	selected := resolvedNodeSelection(resolved, []string{"node-2", "node-1"})
+	if len(selected.Nodes) != 2 || selected.Nodes[0].Name != "node-1" || selected.Nodes[1].Name != "node-2" {
+		t.Fatalf("resolved selection = %#v", selected.Nodes)
+	}
+	selected.Nodes[0].Aliases[0] = "changed"
+	if resolved.Nodes[1].Aliases[0] != "worker" {
+		t.Fatal("resolved selection aliases caller-owned node state")
+	}
+}
+
+func TestMaterializeMissingNodePortsSkipsUnselectedMissingPeersAndReservesExisting(t *testing.T) {
+	t.Parallel()
+	resolved := singlePrivateResolved()
+	resolved.Nodes[0].Forwards = []spec.Forward{{Bind: "127.0.0.1", Host: 15432, Guest: 5432, Protocol: "tcp"}}
+	resolved.Nodes = append(resolved.Nodes,
+		spec.Node{Name: "node-1", Address: "10.10.10.11", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB, Forwards: []spec.Forward{{Bind: "127.0.0.1", Host: 15432, Guest: 5432, Protocol: "tcp"}}},
+		spec.Node{Name: "node-2", Address: "10.10.10.12", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+	)
+	store := state.Store{Root: t.TempDir()}
+	if err := store.WriteNode(state.NodeState{
+		Schema: state.NodeSchema, FarrowVersion: "test", Node: "meta", SSHPort: 2223,
+		VMUUID: "018f4b8e-1234-4abc-9def-0123456789ab", Phase: state.Stopped, Generation: 1,
+		SpecHash: strings.Repeat("a", 64), CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	materialized, ports, err := materializeMissingNodePortsWithProbe(resolved, []string{"node-1"}, map[uint16]struct{}{}, store, func(string, uint16) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ports) != 2 || ports["meta"] != 2223 || ports["node-1"] != 12223 {
+		t.Fatalf("partial materialized ports = %v", ports)
+	}
+	if materialized.Nodes[1].Forwards[0].Host != 25432 || materialized.Nodes[1].Forwards[0].RequestedHost != 15432 {
+		t.Fatalf("partial materialized forward = %#v", materialized.Nodes[1].Forwards[0])
+	}
+	if resolved.Nodes[1].Forwards[0].Host != 15432 {
+		t.Fatal("partial port materialization mutated caller-owned spec")
+	}
+}
+
+func TestCommittedNodeUUIDsSkipsDesiredNodesWithoutState(t *testing.T) {
+	t.Parallel()
+	resolved := singlePrivateResolved()
+	resolved.Nodes = append(resolved.Nodes,
+		spec.Node{Name: "node-1", Address: "10.10.10.11", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+		spec.Node{Name: "node-2", Address: "10.10.10.12", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+	)
+	store := state.Store{Root: t.TempDir()}
+	if err := store.WriteNode(state.NodeState{
+		Schema: state.NodeSchema, FarrowVersion: "test", Node: "meta", SSHPort: 2222,
+		VMUUID: "018f4b8e-1234-4abc-9def-0123456789ab", Phase: state.Stopped, Generation: 1,
+		SpecHash: strings.Repeat("a", 64), CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	uuids, err := committedNodeUUIDs(store, resolved, []string{"node-1"})
+	if err != nil || len(uuids) != 1 || uuids["meta"] != "018f4b8e-1234-4abc-9def-0123456789ab" {
+		t.Fatalf("committed UUIDs = %v, %v", uuids, err)
+	}
+}
+
+type failAfterSelectedImageRunner struct{}
+
+func (failAfterSelectedImageRunner) Run(context.Context, string, ...string) (execx.Result, error) {
+	return execx.Result{}, errors.New("stop after selected image resolution")
+}
+
+func TestPrivateSelectedFreshUpResolvesOnlySelectedImageAndAddress(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data")
+	t.Setenv("FARROW_HOME", root)
+	if err := os.MkdirAll(filepath.Join(root, "locks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resolved := singlePrivateResolved()
+	resolved.Nodes[0].Image = "el9"
+	resolved.Nodes = append(resolved.Nodes,
+		spec.Node{Name: "node-1", Address: "10.10.10.11", Image: "el10", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+		spec.Node{Name: "node-2", Address: "10.10.10.12", Image: "u24", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+	)
+	profile, err := platform.Resolve("darwin", "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedImages := make([]string, 0)
+	preflightAddresses := make([]string, 0)
+	manager := Manager{
+		Nodes: []string{"node-2"}, FarrowVersion: "test", Runner: failAfterSelectedImageRunner{},
+		NativeProfile: func() (platform.Profile, error) { return profile, nil },
+		NetworkPreflight: func(_ context.Context, _ platform.Profile, request netpreflight.Request, _ execx.Runner) netpreflight.Report {
+			preflightAddresses = append(preflightAddresses, request.Addresses...)
+			return netpreflight.Report{Ready: true}
+		},
+		HostPreflight: func(context.Context, platform.Profile, *spec.PrivateNetwork, execx.Runner) (Backend, error) {
+			return Backend{DarwinSocket: "/fixture/vmnet.sock"}, nil
+		},
+		DialSSHAddress: func(string, string) (net.Conn, error) { return nil, errors.New("unused") },
+		LookPath:       func(name string) (string, error) { return "/fixture/" + name, nil },
+		LookupImage: func(_ context.Context, alias, arch string) (image.Entry, error) {
+			return image.Entry{Alias: alias, Release: "test", Arch: arch, Boot: "uefi", SHA256: strings.Repeat("a", 64)}, nil
+		},
+		ResolveImage: func(_ context.Context, alias, arch string) (image.Entry, string, image.Metadata, error) {
+			resolvedImages = append(resolvedImages, alias)
+			return image.Entry{Alias: alias, Release: "test", Arch: arch, Boot: "uefi", SHA256: strings.Repeat("a", 64)}, "/fixture/base.qcow2", image.Metadata{VirtualSize: 8 * spec.GiB}, nil
+		},
+	}
+	_, err = manager.Up(context.Background(), resolved)
+	if err == nil || !strings.Contains(err.Error(), "stop after selected image resolution") {
+		t.Fatalf("selected up error = %v", err)
+	}
+	if strings.Join(resolvedImages, ",") != "u24" {
+		t.Fatalf("selected up resolved images = %v", resolvedImages)
+	}
+	if strings.Join(preflightAddresses, ",") != "10.10.10.12" {
+		t.Fatalf("selected up preflight addresses = %v", preflightAddresses)
+	}
+}
+
 func planFixtureManager(t *testing.T) Manager {
 	t.Helper()
 	profile, err := platform.Resolve("darwin", "arm64")
@@ -90,6 +215,42 @@ func TestPrivatePlanTreatsEmptyDataRootWithoutStateAsCreate(t *testing.T) {
 	plan, err := manager.Plan(context.Background(), singlePrivateResolved())
 	if err != nil || plan.Action != "create" || plan.Destructive {
 		t.Fatalf("empty-root plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestPrivatePlanFiltersPendingPeersToSelection(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	resolved := singlePrivateResolved()
+	resolved.Nodes = append(resolved.Nodes,
+		spec.Node{Name: "node-1", Address: "10.10.10.11", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+		spec.Node{Name: "node-2", Address: "10.10.10.12", CPUs: 1, Memory: 2 * spec.GiB, RootDisk: 8 * spec.GiB},
+	)
+	hash, err := spec.Hash(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := state.Store{Root: root}
+	if err := store.WriteDeployment(state.DeploymentState{Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash, Resolved: resolved, UpdatedAt: time.Unix(1, 0).UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	metaHash, err := spec.NodeHash(resolved, "meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteNode(state.NodeState{
+		Schema: state.NodeSchema, FarrowVersion: "test", Node: "meta", SSHPort: 2222,
+		VMUUID: "018f4b8e-1234-4abc-9def-0123456789ab", Phase: state.Stopped, Generation: 1,
+		SpecHash: metaHash, Invocation: qemu.Invocation{Binary: "/fixture/qemu-system-aarch64", Args: []string{"-accel", "hvf"}},
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := planFixtureManager(t)
+	manager.Nodes = []string{"node-1"}
+	plan, err := manager.Plan(context.Background(), resolved)
+	if err != nil || plan.Action != "converge" || strings.Join(plan.Nodes, ",") != "node-1" || strings.Join(plan.Create, ",") != "node-1" || len(plan.Recreate) != 0 || len(plan.Missing) != 0 {
+		t.Fatalf("selected partial plan = %#v, %v", plan, err)
 	}
 }
 

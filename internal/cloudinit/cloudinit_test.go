@@ -130,6 +130,25 @@ func TestRenderPrivateControlKeyBoundary(t *testing.T) {
 	}
 }
 
+func TestRenderHostsMarkerMigration(t *testing.T) {
+	t.Parallel()
+	script := renderHostsScript([]Host{{Name: "node-1", Address: "10.10.10.11"}, {Name: "meta", Address: "10.10.10.10"}})
+	for _, marker := range []string{"/# farrow-project-host$/d", "/# farrow-deployment-host$/d"} {
+		if !strings.Contains(script, marker) {
+			t.Fatalf("hosts script does not remove marker %q:\n%s", marker, script)
+		}
+	}
+	if strings.Contains(script, "printf '%s %s # farrow-project-host") {
+		t.Fatalf("hosts script still writes the retired project marker:\n%s", script)
+	}
+	if strings.Count(script, "# farrow-deployment-host\\n") != 2 {
+		t.Fatalf("hosts script does not write the deployment marker exactly once per host:\n%s", script)
+	}
+	if strings.Index(script, "10.10.10.10 meta") > strings.Index(script, "10.10.10.11 node-1") {
+		t.Fatalf("hosts script is not sorted by node name:\n%s", script)
+	}
+}
+
 func TestRenderCustomUserDoesNotClaimPigstyIdentity(t *testing.T) {
 	t.Parallel()
 	input := testInput()

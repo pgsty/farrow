@@ -147,6 +147,7 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 	}
 	selectedSet := nodeNameSet(selected)
 	needsStop := false
+	stopNodes := make([]string, 0, len(selected))
 	for _, definition := range deploymentState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
 			continue
@@ -160,10 +161,13 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 		if err != nil {
 			return Status{}, err
 		}
+		stopNodes = append(stopNodes, definition.Name)
 		needsStop = needsStop || node.Phase == state.Running || node.Phase == state.Prepared
 	}
 	if needsStop {
-		if _, err := m.Stop(ctx); err != nil {
+		stopper := m
+		stopper.Nodes = stopNodes
+		if _, err := stopper.Stop(ctx); err != nil {
 			return Status{}, err
 		}
 	}
@@ -367,11 +371,19 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err := validatePrivateRecreatePersistent(deploymentValue, deploymentState.Resolved, requested); err != nil {
 		return Status{}, err
 	}
+	selected, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
+	if err != nil {
+		return Status{}, err
+	}
+	requestedSelection, err := selectedNodeNames(requested, m.Nodes)
+	if err != nil {
+		return Status{}, err
+	}
 	profile, err := m.nativeProfile()
 	if err != nil {
 		return Status{}, err
 	}
-	backend, err := m.preflight(ctx, profile, requested)
+	backend, err := m.preflight(ctx, profile, resolvedNodeSelection(requested, requestedSelection))
 	if err != nil {
 		return Status{}, err
 	}
@@ -383,22 +395,17 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err != nil {
 		return Status{}, err
 	}
-	_, boot, err := m.resolveBases(ctx, runtime.Profile, requested)
+	boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)
 	if err != nil {
+		return Status{}, err
+	}
+	if _, _, err := m.resolveBases(ctx, runtime.Profile, resolvedNodeSelection(requested, requestedSelection)); err != nil {
 		return Status{}, err
 	}
 	if _, err := m.firmwareForBoot(runtime.Profile, boot); err != nil {
 		return Status{}, err
 	}
 	destroyManager := m
-	selected, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
-	if err != nil {
-		return Status{}, err
-	}
-	requestedSelection, err := selectedNodeNames(requested, m.Nodes)
-	if err != nil {
-		return Status{}, err
-	}
 	if len(m.Nodes) != 0 {
 		drifted, driftErr := runtimeDriftNodes(state.Store{Root: deploymentValue.Root}, requested, runtime.Profile)
 		if driftErr != nil {

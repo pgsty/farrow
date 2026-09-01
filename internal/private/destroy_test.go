@@ -182,6 +182,27 @@ func TestPrivateDestroyPreservesAndPrepareReattachesPersistentDisk(t *testing.T)
 	}
 }
 
+func TestPrivatePersistentValidationAllowsUncreatedDesiredDisk(t *testing.T) {
+	startConfig, _ := preparedStartFixture(t)
+	store := state.Store{Root: startConfig.Deployment.Root}
+	deploymentState, err := store.ReadDeployment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deploymentState.Resolved.Nodes[1].Disks = []spec.Disk{{Name: "data", Size: 4 * spec.GiB, Mount: "/data", Filesystem: "ext4", Persistent: true}}
+	if err := os.Remove(filepath.Join(startConfig.Deployment.Root, "nodes", deploymentState.Resolved.Nodes[1].Name, "state.json")); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := store.ReadNode(deploymentState.Resolved.Nodes[0].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities, err := validatePrivatePersistentState(startConfig.Deployment, deploymentState, []state.NodeState{meta})
+	if err != nil || len(identities) != 1 || identities[0].Node != deploymentState.Resolved.Nodes[1].Name {
+		t.Fatalf("uncreated desired persistent disk = %#v, %v", identities, err)
+	}
+}
+
 func TestPrivatePersistentDeleteRequiresDestroyedNodes(t *testing.T) {
 	startConfig, _ := preparedStartFixture(t)
 	deploymentValue := startConfig.Deployment

@@ -45,8 +45,8 @@ func TestParseDarwinInterfacesAndRoutes(t *testing.T) {
 	if len(interfaces) != 2 || interfaces[1].Interface != "bridge100" || interfaces[1].Prefix.Bits() != 24 {
 		t.Fatalf("interfaces=%#v", interfaces)
 	}
-	routes := parseDarwinRoutes("Routing tables\n\nInternet:\nDestination Gateway Flags Netif Expire\ndefault 192.168.0.1 UGScg en0\n10.10.10/24 link#24 UCS bridge100 !\n10.10.10.128/25 10.0.0.1 UGSc utun9\n10.10.10.10 aa:bb:cc:dd:ee:ff UHLWI bridge100 100\n")
-	if len(routes) != 2 || routes[0].Prefix.String() != "10.10.10.0/24" || routes[0].Interface != "bridge100" || routes[1].Prefix.String() != "10.10.10.128/25" || routes[1].Interface != "utun9" {
+	routes := parseDarwinRoutes("Routing tables\n\nInternet:\nDestination Gateway Flags Netif Expire\ndefault 192.168.0.1 UGScg en0\n10 192.168.0.1 UGSc en7\n10.10.10/24 link#24 UCS bridge100 !\n10.10.10.128/25 10.0.0.1 UGSc utun9\n10.10.10.10 aa:bb:cc:dd:ee:ff UHLWI bridge100 100\n")
+	if len(routes) != 3 || routes[0].Prefix.String() != "10.0.0.0/8" || routes[0].Interface != "en7" || routes[1].Prefix.String() != "10.10.10.0/24" || routes[1].Interface != "bridge100" || routes[2].Prefix.String() != "10.10.10.128/25" || routes[2].Interface != "utun9" {
 		t.Fatalf("Darwin full routes=%#v", routes)
 	}
 }
