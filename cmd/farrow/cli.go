@@ -20,7 +20,7 @@ type commandRunner func(context.Context, []string, io.Writer, io.Writer) (comman
 
 const (
 	configDiscoverySummary = "farrow.yml, farrow.yaml, pigsty.yml, or pigsty.yaml"
-	repositoryFlagHelp = "image repository URL or directory (default $FARROW_REPO, then the built-in one)"
+	repositoryFlagHelp     = "image repository URL or directory (default $FARROW_REPO, then the built-in one)"
 )
 
 func init() {
