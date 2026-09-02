@@ -345,7 +345,10 @@ func validatePrivateRecreatePersistent(deploymentValue Deployment, current, requ
 	}
 	for _, identityValue := range currentIdentities {
 		candidate, ok := wanted[identityValue.Node+"\x00"+identityValue.Name]
-		if !ok || candidate.Serial != identityValue.Serial || candidate.Size != identityValue.Size || candidate.Mount != identityValue.Mount || candidate.Filesystem != identityValue.Filesystem {
+		// "auto" keeps whatever the retained disk was formatted with, so it is
+		// compatible with any concrete filesystem on the other side.
+		sameFilesystem := candidate.Filesystem == identityValue.Filesystem || candidate.Filesystem == "auto" || identityValue.Filesystem == "auto"
+		if !ok || candidate.Serial != identityValue.Serial || candidate.Size != identityValue.Size || candidate.Mount != identityValue.Mount || !sameFilesystem {
 			return fmt.Errorf("recreate desired configuration is incompatible with persistent disk %s/%s", identityValue.Node, identityValue.Name)
 		}
 	}

@@ -55,7 +55,7 @@ func TestRenderQuickContract(t *testing.T) {
 		}
 	}
 	userData := string(files.UserData)
-	for _, want := range []string{"#cloud-config", `name: "dba"`, "uid: 88", "primary_group: admin", "create_groups: false", "/usr/sbin/groupadd --gid 88 admin", "/usr/sbin/groupmod --gid 88 admin", "lock_passwd: true", "ssh_deletekeys: false", "ntp:\n  enabled: true", "/dev/disk/by-id/virtio-", "UUID=%s", "defaults,nofail", `mountpoint -q "${mountpoint}"`, "xfs_growfs", "resize2fs", "xfs requested but mkfs.xfs is unavailable", "no supported filesystem formatter is available", "/usr/local/libexec/farrow-network-check", "/usr/local/libexec/farrow-identity-contract", "login identity", "for attempt in 1 2 3", "timeout 10s /bin/bash", "/dev/tcp/example.com/80", "/var/lib/farrow/ready.json", "/var/lib/farrow/error.json", "stage=data-disks"} {
+	for _, want := range []string{"#cloud-config", `name: "dba"`, "uid: 88", "primary_group: admin", "create_groups: false", "/usr/sbin/groupadd --gid 88 admin", "/usr/sbin/groupmod --gid 88 admin", "lock_passwd: true", "ssh_deletekeys: false", "ntp:\n  enabled: true", "/dev/disk/by-id/virtio-", "UUID=%s", "defaults,nofail", `mountpoint -q "${mountpoint}"`, "xfs_growfs", "resize2fs", "xfs requested but mkfs.xfs is unavailable", "no supported filesystem formatter is available", "/usr/local/libexec/farrow-network-check", "/usr/local/libexec/farrow-identity-contract", "login identity", "for attempt in 1 2 3", "timeout 10s /bin/bash", "/dev/tcp/example.com/80", "/var/lib/farrow/ready.json", "/var/lib/farrow/error.json", "run_stage data-disks"} {
 		if !strings.Contains(userData, want) {
 			t.Errorf("user-data missing %q", want)
 		}
@@ -244,7 +244,7 @@ func TestRenderShareContract(t *testing.T) {
 		`has_mount_option "${mounted_options}" rw`,
 		`refuse non-empty Farrow share mountpoint`,
 		`mv -f -- "${fstab_tmp}" "${fstab}"`,
-		`printf '{"exit_status":%d,"stage":"%s"}\n'`,
+		`printf '{"exit_status":%d,"stage":"%s","detail":"%s"}\n'`,
 	} {
 		if !strings.Contains(userData, want) {
 			t.Errorf("share contract missing %q", want)

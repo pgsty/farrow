@@ -97,16 +97,6 @@ func startFailures(outcomes []StartOutcome) []NodeFailure {
 	return failures
 }
 
-func readyCount(outcomes []StartOutcome) int {
-	count := 0
-	for _, outcome := range outcomes {
-		if outcome.Ready {
-			count++
-		}
-	}
-	return count
-}
-
 func createFailures(result CreateResult) []NodeFailure {
 	failed := make(map[string]NodeFailure)
 	for _, outcome := range result.Prepare {
@@ -202,9 +192,6 @@ func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult
 	}
 	failures := createFailures(result)
 	if len(failures) > 0 {
-		if len(startNames) != 0 {
-			controller.Progress.Report(activity.Event{Phase: "guest-ready", Message: fmt.Sprintf("%d node(s) ready; %d node(s) failed", readyCount(result.Start), len(failures))})
-		}
 		return result, newPartialError(failures, len(createNames))
 	}
 	if len(startNames) != 0 {

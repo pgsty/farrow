@@ -442,7 +442,7 @@ func (host inventoryHost) lookupDisks() ([]DiskConfig, bool, error) {
 		if sizeErr != nil {
 			return nil, true, sizeErr
 		}
-		filesystem := "xfs"
+		filesystem := "auto"
 		if value, present := entry["fs"]; present {
 			text, ok := value.(string)
 			if !ok || !spec.ValidFilesystem(text) {
@@ -794,7 +794,7 @@ func ParseInventory(data []byte) (File, error) {
 		} else if found {
 			node.Disks = disks
 		} else {
-			node.Disks = []DiskConfig{{Name: "data", Size: Size(defaultDataGiB * spec.GiB), Mount: "/data", Filesystem: "xfs"}}
+			node.Disks = []DiskConfig{{Name: "data", Size: Size(defaultDataGiB * spec.GiB), Mount: "/data", Filesystem: "auto"}}
 		}
 
 		if aliases, found, err := host.lookupStringList("vm_alias"); err != nil {

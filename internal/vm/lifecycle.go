@@ -80,6 +80,7 @@ type ReadyMarker struct {
 type bootstrapErrorMarker struct {
 	ExitStatus int    `json:"exit_status"`
 	Stage      string `json:"stage"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 func (l Lifecycle) validate() error {
@@ -557,6 +558,9 @@ func (l Lifecycle) WaitReady(ctx context.Context, sshPath, key, knownHosts strin
 			}
 			if marker.Stage == "" {
 				return fmt.Errorf("guest bootstrap failed (exit status %d)", marker.ExitStatus)
+			}
+			if detail := strings.TrimSpace(marker.Detail); detail != "" {
+				return fmt.Errorf("guest bootstrap failed during %s: %s", marker.Stage, detail)
 			}
 			return fmt.Errorf("guest bootstrap failed during %s (exit status %d)", marker.Stage, marker.ExitStatus)
 		}

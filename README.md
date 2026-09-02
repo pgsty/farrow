@@ -9,8 +9,7 @@ Authoritative documentation: <https://farrow.pgsty.com/>
 
 ```bash
 farrow init          # write ./farrow.yml
-farrow setup         # prepare the host: QEMU, firmware, fixed-IP network (writes farrow.yml if missing)
-farrow up            # create, boot, and wire SSH for every node
+farrow up            # prepare the host on first use, then create, boot, and wire SSH for every node
 farrow ssh meta      # you are in
 ```
 

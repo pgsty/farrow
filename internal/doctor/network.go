@@ -52,7 +52,7 @@ func (p Probe) networkPreflightChecks(ctx context.Context, profile platform.Prof
 	}
 	checks := make([]Check, 0, len(report.Findings)+1)
 	if len(report.Findings) == 0 {
-		checks = append(checks, Check{Name: "network-preflight", Status: OK, Evidence: fmt.Sprintf("%s ready; installation=%s mode=%s interface=%s", report.CIDR, report.Installation.Status, report.Installation.Mode, report.Installation.Interface)})
+		checks = append(checks, Check{Name: "network-preflight", Status: OK, Evidence: fmt.Sprintf("%s ready (%s mode on %s)", report.CIDR, report.Installation.Mode, report.Installation.Interface)})
 		return checks
 	}
 	for _, finding := range report.Findings {

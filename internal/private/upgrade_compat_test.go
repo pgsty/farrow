@@ -31,8 +31,8 @@ all:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resolved.Nodes) != 1 || len(resolved.Nodes[0].Disks) != 1 || resolved.Nodes[0].Disks[0].Filesystem != "xfs" {
-		t.Fatalf("implicit inventory filesystem = %#v, want released xfs default", resolved.Nodes)
+	if len(resolved.Nodes) != 1 || len(resolved.Nodes[0].Disks) != 1 || resolved.Nodes[0].Disks[0].Filesystem != "" {
+		t.Fatalf("implicit inventory filesystem = %#v, want auto (empty at the spec level)", resolved.Nodes)
 	}
 	persisted := cloneResolved(resolved)
 	persisted.Nodes[0].Disks = []spec.Disk{{

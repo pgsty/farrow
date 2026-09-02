@@ -665,13 +665,17 @@ func renderFinalizeScript(controlSSH, privateNetwork, shares bool) string {
 set -euo pipefail
 install -d -o root -g root -m 0755 /var/lib/farrow
 stage=identity
+stage_err=/var/lib/farrow/stage.err
 finalize_exit() {
   local status=$?
-  local error_tmp=
+  local error_tmp= detail=
   trap - EXIT
   if (( status != 0 )); then
+    if [[ -s "${stage_err}" ]]; then
+      detail=$(tail -n 1 "${stage_err}" | tr -d '\r' | cut -c1-200 | sed 's/\\/\\\\/g; s/"/\\"/g')
+    fi
     if error_tmp=$(mktemp /var/lib/farrow/error.json.XXXXXX); then
-      if printf '{"exit_status":%d,"stage":"%s"}\n' "${status}" "${stage}" > "${error_tmp}" &&
+      if printf '{"exit_status":%d,"stage":"%s","detail":"%s"}\n' "${status}" "${stage}" "${detail}" > "${error_tmp}" &&
         chown root:root "${error_tmp}" && chmod 0644 "${error_tmp}"; then
         mv -f -- "${error_tmp}" /var/lib/farrow/error.json || rm -f -- "${error_tmp}" || true
       else
@@ -679,29 +683,41 @@ finalize_exit() {
       fi
     fi
   fi
+  rm -f -- "${stage_err}" || true
 `)
 	if controlSSH {
 		out.WriteString("  rm -f -- /var/lib/farrow/control-id_ed25519 /var/lib/farrow/control-ssh-config || true\n")
 	}
 	out.WriteString(`  exit "${status}"
 }
+# run_stage records the stage name and keeps its stderr so the error marker
+# can carry the failing command's last line to the host.
+run_stage() {
+  stage=$1
+  shift
+  : >"${stage_err}"
+  local rc=0
+  "$@" 2>"${stage_err}" || rc=$?
+  cat "${stage_err}" >&2
+  return "${rc}"
+}
 trap finalize_exit EXIT
 rm -f -- /var/lib/farrow/ready.json /var/lib/farrow/error.json
+run_stage identity /usr/local/libexec/farrow-identity-contract
+run_stage hosts /usr/local/libexec/farrow-hosts
+run_stage management-network /usr/local/libexec/farrow-network-check
+run_stage data-disks /usr/local/libexec/farrow-init-disks
 `)
-	out.WriteString("/usr/local/libexec/farrow-identity-contract\n")
-	out.WriteString("stage=hosts\n/usr/local/libexec/farrow-hosts\n")
-	out.WriteString("stage=management-network\n/usr/local/libexec/farrow-network-check\n")
-	out.WriteString("stage=data-disks\n/usr/local/libexec/farrow-init-disks\n")
 	if shares {
-		out.WriteString("stage=shares\n/usr/local/libexec/farrow-init-shares\n")
+		out.WriteString("run_stage shares /usr/local/libexec/farrow-init-shares\n")
 	}
 	if controlSSH {
-		out.WriteString("stage=control-ssh\n/usr/local/libexec/farrow-install-control-ssh\n")
+		out.WriteString("run_stage control-ssh /usr/local/libexec/farrow-install-control-ssh\n")
 	}
 	if privateNetwork {
-		out.WriteString("stage=private-network\n/usr/local/libexec/farrow-private-contract\n")
+		out.WriteString("run_stage private-network /usr/local/libexec/farrow-private-contract\n")
 	}
-	out.WriteString("stage=ready\n/usr/local/libexec/farrow-ready\n")
+	out.WriteString("run_stage ready /usr/local/libexec/farrow-ready\n")
 	return out.String()
 }
 

@@ -127,29 +127,29 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 		Findings:     make([]Finding, 0),
 	}
 	if warning := request.Layout.Warning(); warning != "" {
-		add(&report, Finding{Code: "network.non_default", Severity: Warning, Evidence: warning, Fix: "keep the installed network, the deployment inventory, and every node on this same /24"})
+		add(&report, Finding{Code: "network.non_default", Severity: Warning, Evidence: warning, Fix: "keep the installed network and every node on this /24"})
 	}
 	for _, problem := range snapshot.Problems {
-		add(&report, Finding{Code: "probe.incomplete", Severity: Error, Class: Capability, Evidence: problem, Fix: "restore the required route/interface inspection tools and retry"})
+		add(&report, Finding{Code: "probe.incomplete", Severity: Error, Class: Capability, Evidence: problem, Fix: "install the missing route and interface tools, then retry"})
 	}
 	if snapshot.SharingBusy != "" {
-		add(&report, Finding{Code: "vmnet.sharing_service_busy", Severity: Error, Class: Resource, Evidence: snapshot.SharingBusy, Fix: "stop the conflicting VM/sharing service or choose one explicit non-conflicting global /24"})
+		add(&report, Finding{Code: "vmnet.sharing_service_busy", Severity: Error, Class: Resource, Evidence: snapshot.SharingBusy, Fix: "stop the VM or sharing service that holds it, or pick another /24 for the lab"})
 	}
 	installed := snapshot.Installation.Status != "" && snapshot.Installation.Status != "absent"
 	installedExact := installed && snapshot.Installation.CIDR == request.Layout.CIDR()
 	if snapshot.Installation.Status == "partial" || snapshot.Installation.Status == "invalid" {
-		add(&report, Finding{Code: "installation.integrity", Severity: Error, Class: Integrity, Evidence: snapshot.Installation.Problem, Fix: "inspect the exact Farrow ownership manifest; do not adopt or broadly delete unknown paths"})
+		add(&report, Finding{Code: "installation.integrity", Severity: Error, Class: Integrity, Evidence: snapshot.Installation.Problem, Fix: "run farrow network status to inspect the installed network before reinstalling it"})
 	} else if installed {
 		if snapshot.Installation.CIDR != request.Layout.CIDR() {
-			add(&report, Finding{Code: "installation.network_mismatch", Severity: Error, Class: State, Evidence: fmt.Sprintf("installed=%s requested=%s", snapshot.Installation.CIDR, request.Layout.CIDR()), Fix: "stop the deployment, uninstall the owned network, then install the requested global /24"})
+			add(&report, Finding{Code: "installation.network_mismatch", Severity: Error, Class: State, Evidence: fmt.Sprintf("the installed network is %s but the inventory wants %s", snapshot.Installation.CIDR, request.Layout.CIDR()), Fix: "stop the deployment, run farrow network uninstall, then farrow setup"})
 		}
 		if snapshot.Installation.CIDR == request.Layout.CIDR() && !snapshot.Installation.Healthy {
-			add(&report, Finding{Code: "installation.not_ready", Severity: Error, Class: Capability, Evidence: snapshot.Installation.Problem, Fix: "repair or reinstall the owned backend; a listening socket without the host address/route is not ready"})
+			add(&report, Finding{Code: "installation.not_ready", Severity: Error, Class: Capability, Evidence: snapshot.Installation.Problem, Fix: "run farrow setup again to repair the network"})
 		}
 	} else if request.Purpose == Use {
-		add(&report, Finding{Code: "installation.absent", Severity: Error, Class: Capability, Evidence: "fixed-IP network backend is not installed", Fix: "run farrow setup after reviewing its privileged plan"})
+		add(&report, Finding{Code: "installation.absent", Severity: Error, Class: Capability, Evidence: "the fixed-IP network is not installed", Fix: "run farrow setup"})
 	} else if request.Purpose == Inspect {
-		add(&report, Finding{Code: "installation.absent", Severity: Warning, Evidence: "fixed-IP network backend is not installed; the requested subnet can still be checked for eligibility"})
+		add(&report, Finding{Code: "installation.absent", Severity: Warning, Evidence: "the fixed-IP network is not installed"})
 	}
 
 	exactOwnedRoute := false
@@ -171,11 +171,11 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 		}
 		owned := localHostRoute || connected
 		if !owned {
-			add(&report, Finding{Code: "route.overlap", Severity: Error, Class: Resource, Subject: route.Interface, Evidence: route.Evidence, Fix: "remove the conflicting VPN/VM/route or choose one explicit non-conflicting global /24"})
+			add(&report, Finding{Code: "route.overlap", Severity: Error, Class: Resource, Subject: route.Interface, Evidence: route.Evidence, Fix: "remove the conflicting VPN or VM route, or pick another /24 for the lab"})
 		}
 	}
 	if installedExact && !exactOwnedRoute {
-		add(&report, Finding{Code: "installation.route_missing", Severity: Error, Class: Capability, Subject: snapshot.Installation.Interface, Evidence: fmt.Sprintf("installed backend has no exact owned route for %s on %s", request.Layout.CIDR(), snapshot.Installation.Interface), Fix: "repair or reinstall the owned backend before starting private VMs"})
+		add(&report, Finding{Code: "installation.route_missing", Severity: Error, Class: Capability, Subject: snapshot.Installation.Interface, Evidence: fmt.Sprintf("the installed network has no route for %s on %s", request.Layout.CIDR(), snapshot.Installation.Interface), Fix: "run farrow setup again to repair the network"})
 	}
 	for _, address := range snapshot.Interfaces {
 		if !overlap(address.Prefix, request.Layout.Prefix()) {
@@ -184,12 +184,12 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 		host, _ := netip.ParseAddr(request.Layout.HostAddress())
 		owned := installedExact && snapshot.Installation.Interface != "" && address.Interface == snapshot.Installation.Interface && address.Address == host && address.Prefix.Bits() == request.Layout.Prefix().Bits() && address.Prefix.Masked() == request.Layout.Prefix()
 		if !owned {
-			add(&report, Finding{Code: "interface.overlap", Severity: Error, Class: Resource, Subject: address.Interface, Evidence: address.Evidence, Fix: "remove the conflicting virtual/VPN interface or choose one explicit non-conflicting global /24"})
+			add(&report, Finding{Code: "interface.overlap", Severity: Error, Class: Resource, Subject: address.Interface, Evidence: address.Evidence, Fix: "remove the conflicting virtual or VPN interface, or pick another /24 for the lab"})
 		}
 	}
 	for _, address := range request.Addresses {
 		if evidence := snapshot.Addresses[address]; evidence != "" {
-			add(&report, Finding{Code: "address.in_use", Severity: Error, Class: Resource, Subject: address, Evidence: evidence, Fix: "stop the conflicting VM/service or select another static suffix before creating deployment state"})
+			add(&report, Finding{Code: "address.in_use", Severity: Error, Class: Resource, Subject: address, Evidence: evidence, Fix: "stop the VM or service using it, or give the node another address"})
 		}
 	}
 

@@ -87,7 +87,7 @@ func TestParseInventoryFullLab(t *testing.T) {
 	if len(meta.HostAliases) != 2 || meta.HostAliases[0] != "i.pigsty" {
 		t.Fatalf("meta aliases: %v", meta.HostAliases)
 	}
-	if len(meta.Disks) != 1 || meta.Disks[0].Mount != "/data" || int64(meta.Disks[0].Size) != 128*spec.GiB || meta.Disks[0].Filesystem != "xfs" {
+	if len(meta.Disks) != 1 || meta.Disks[0].Mount != "/data" || int64(meta.Disks[0].Size) != 128*spec.GiB || meta.Disks[0].Filesystem != "auto" {
 		t.Fatalf("meta default data disk: %+v", meta.Disks)
 	}
 
@@ -98,7 +98,7 @@ func TestParseInventoryFullLab(t *testing.T) {
 	if nodeOne.CPUs != 2 || int64(nodeOne.Memory) != 4096<<20 {
 		t.Fatalf("node-1 defaults: %+v", nodeOne)
 	}
-	if len(nodeOne.Disks) != 1 || int64(nodeOne.Disks[0].Size) != 64*spec.GiB || nodeOne.Disks[0].Filesystem != "xfs" {
+	if len(nodeOne.Disks) != 1 || int64(nodeOne.Disks[0].Size) != 64*spec.GiB || nodeOne.Disks[0].Filesystem != "auto" {
 		t.Fatalf("group-level vm_disks: %+v", nodeOne.Disks)
 	}
 
@@ -122,7 +122,7 @@ all:
 	if node.Name != "node-13" || node.CPUs != 2 || int64(node.Memory) != 4096<<20 || int64(node.RootDisk) != 64*spec.GiB {
 		t.Fatalf("bare host defaults: %+v", node)
 	}
-	if len(node.Disks) != 1 || node.Disks[0].Mount != "/data" || node.Disks[0].Filesystem != "xfs" {
+	if len(node.Disks) != 1 || node.Disks[0].Mount != "/data" || node.Disks[0].Filesystem != "auto" {
 		t.Fatalf("bare host default disk: %+v", node.Disks)
 	}
 	if node.Image != "d13" || !node.Control {

@@ -6,6 +6,38 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Changed
+
+- Pigsty inventory `vm_disks[].fs` now defaults to `auto`: a blank disk is
+  formatted XFS when the guest has `mkfs.xfs` and ext4 otherwise, the same
+  choice the Pigsty Vagrant flow makes, so the default `/data` disk works on
+  Debian and Ubuntu images that ship without xfsprogs. Explicit `xfs` and
+  `ext4` never fall back. Deployments created with the old `xfs` default are
+  not reported as drift and their persistent disks stay compatible: `auto`
+  matches whatever the guest already formatted.
+- On a terminal, `farrow up` runs `farrow setup` itself when the fixed-IP
+  network has never been installed on the host, then continues. `farrow init`
+  points at `farrow up` as the next step.
+- One output style across commands: lifecycle commands and `status` print a
+  node table (`NAME STATE ADDRESS SSH ARCH PID`) and, after `up`, a
+  `next: farrow ssh <node>` hint; `plan` prints one `no changes` line or only
+  the rows that change; `validate` prints one line; `image list` prints the
+  catalog revision and origin plus an aligned table; `network status`,
+  `doctor`, and preflight errors use plain sentences without machine codes;
+  `spec hash` and other internals moved to `--json`.
+- `farrow ssh <node> -- '<shell line>'` and `farrow exec` pass the remote
+  command exactly as OpenSSH does, so `farrow ssh meta -- 'df -h /data; id'`
+  works.
+
+### Fixed
+
+- Guest bootstrap failures carry the failing command's last message, so
+  readiness reports `guest bootstrap failed during data-disks: xfs requested
+  but mkfs.xfs is unavailable` instead of only an exit status.
+- Errors about an unknown node name list the nodes the deployment has.
+
 ## [0.3.0]
 
 ### Added
@@ -190,7 +222,8 @@ Pigsty-compatible local labs.
   Cosign is available, and explains that pre-1.0 GitHub pre-releases require an
   explicit `FARROW_VERSION`.
 
-[Unreleased]: https://github.com/pgsty/farrow/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/pgsty/farrow/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/pgsty/farrow/releases/tag/v0.4.0
 [0.3.0]: https://github.com/pgsty/farrow/releases/tag/v0.3.0
 [0.2.0]: https://github.com/pgsty/farrow/releases/tag/v0.2.0
 [0.1.0]: https://github.com/pgsty/farrow/releases/tag/v0.1.0

@@ -376,23 +376,14 @@ func setupFindingError(report netpreflight.Report) error {
 		if finding.Severity != netpreflight.Error {
 			continue
 		}
-		line := finding.Code + ": " + finding.Evidence
-		switch finding.Code {
-		case "installation.network_mismatch":
-			line += "; either rebase the configuration to the installed network, or stop/destroy the deployment, run `farrow network uninstall --yes`, then rerun setup"
-		case "installation.integrity":
-			line += "; run `farrow network status --verbose` and repair only manifest-owned state; setup will not adopt or delete unknown paths"
-		case "installation.mode_mismatch":
-			line += "; " + finding.Fix
-		default:
-			if finding.Fix != "" {
-				line += "; " + finding.Fix
-			}
+		line := finding.Evidence
+		if finding.Fix != "" {
+			line += "; fix: " + finding.Fix
 		}
 		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
-		lines = append(lines, "fixed-IP network is not ready")
+		lines = append(lines, "the fixed-IP network is not ready")
 	}
 	return errors.New(strings.Join(lines, "\n"))
 }
@@ -959,9 +950,6 @@ func setupOutcome(result setupResult) commandOutcome {
 			status = "plan"
 		}
 		textField(stdout, 14, "status", statusValue(stdout, status))
-		if result.Resolution != "" {
-			textField(stdout, 14, "resolution", strings.ReplaceAll(result.Resolution, "\n", "; "))
-		}
 		if result.MutationUncertain {
 			textField(stdout, 14, "mutation", "uncertain after a failed host command; inspect before retrying")
 		}
@@ -979,16 +967,22 @@ func failSetup(result *setupResult, code int, failure error) (commandOutcome, er
 	result.Error = failure.Error()
 	if result.Resolution == "" {
 		result.Resolution = failure.Error()
-		result.Next = "resolve the reported error, then rerun farrow setup"
+		result.Next = "fix the error, then rerun farrow setup"
 		result.NextArgv = nil
 	}
 	return commandOutcome{}, newDetailedCommandError(exitCategory(code), code, failure, "", *result)
 }
 
+// failSetupRendered is for blockers the stderr plan has already described: the
+// error line carries the evidence and fix, and stdout only says what to do next.
 func failSetupRendered(result *setupResult, code int, failure error) (commandOutcome, error) {
 	_, err := failSetup(result, code, failure)
 	if boundary, ok := err.(*commandBoundaryError); ok {
-		boundary.text = setupOutcome(*result).text
+		next := result.Next
+		boundary.text = func(stdout, _ io.Writer) error {
+			textField(stdout, 14, "next", next)
+			return nil
+		}
 	}
 	return commandOutcome{}, err
 }
@@ -1124,7 +1118,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 	if networkReport != nil && !networkReport.Ready {
 		result.Blocked = true
 		result.Resolution = setupFindingError(*networkReport).Error()
-		result.Next = "resolve the reported network conflict, then rerun farrow setup"
+		result.Next = "fix the network conflict, then rerun farrow setup"
 		result.NextArgv = nil
 		blockerCode = networkReport.ExitCode
 		if blockerCode == exitOK {
@@ -1212,7 +1206,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 		}
 		result.Blocked = true
 		result.Resolution = failure.Error()
-		result.Next = "resolve the reported network conflict, then rerun farrow setup"
+		result.Next = "fix the network conflict, then rerun farrow setup"
 		result.NextArgv = nil
 		return failSetup(&result, code, failure)
 	}

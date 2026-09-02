@@ -228,15 +228,15 @@ inventory; validate always requires an inventory file.`,
 	ssh := rawOperation(
 		"ssh [node] [--] [command [args...]]",
 		"Open SSH or run a command in a guest",
-		`Open an interactive SSH session to a selected node, or run a remote command.
-The optional -- protects command arguments from Farrow: presentation flags
-before -- belong to Farrow and flags after -- belong to the remote command.
-Everything before -- must be nothing or one known node, so a misspelled node
-is refused instead of being run as a command on the control node.`,
-		`  farrow ssh                  # open the default/control node
-  farrow ssh meta             # open one named node
-  farrow ssh meta -- uptime   # run a remote command
-  farrow --json ssh meta -- uname -a`,
+		`Open an interactive SSH session to a node, or run a remote command exactly
+as plain ssh would: everything after -- is joined and parsed by the remote
+shell, so quotes, pipes, and semicolons work the way they do with ssh.
+Flags before -- belong to Farrow; everything before -- must be nothing or one
+known node, so a misspelled node is refused instead of run as a command.`,
+		`  farrow ssh                          # open the default node
+  farrow ssh meta                     # open one named node
+  farrow ssh meta -- uptime           # run a remote command
+  farrow ssh meta -- 'df -h /data; id'  # a shell line, quoted like plain ssh`,
 		stdout, stderr, func(ctx context.Context, arguments []string, stdout, stderr io.Writer) (commandOutcome, error) {
 			return runSSH(ctx, "ssh", arguments, stdout, stderr)
 		})
@@ -245,12 +245,12 @@ is refused instead of being run as a command on the control node.`,
 	execCommand := rawOperation(
 		"exec [node] [--] <command> [args...]",
 		"Run a command in a guest",
-		`Run a required remote command over the verified deployment SSH connection and
-pass through its exit status. Use -- when the remote command or its arguments
-could be mistaken for Farrow presentation flags; everything before -- must be
-nothing or one known node.`,
+		`Run a remote command over the deployment SSH connection and pass its exit
+status through. Arguments after -- are joined and parsed by the remote shell,
+like plain ssh. Everything before -- must be nothing or one known node.`,
 		`  farrow exec -- hostname
   farrow exec meta -- systemctl is-active postgresql
+  farrow exec meta -- 'uptime; id'
   farrow --json exec meta -- uname -a`,
 		stdout, stderr, func(ctx context.Context, arguments []string, stdout, stderr io.Writer) (commandOutcome, error) {
 			return runSSH(ctx, "exec", arguments, stdout, stderr)

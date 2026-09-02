@@ -94,7 +94,7 @@ func (p Probe) Collect(ctx context.Context, request Request) Snapshot {
 			}
 			_ = connection.Close()
 			addressMu.Lock()
-			snapshot.Addresses[address] = address + ":22 accepts TCP while preflight expects an unused static address"
+			snapshot.Addresses[address] = address + " already answers on port 22"
 			addressMu.Unlock()
 		}()
 	}
@@ -352,7 +352,7 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 	}
 	if present != 0 && present != len(required) && snapshot.Installation.Status != "invalid" {
 		snapshot.Installation.Status = "partial"
-		snapshot.Installation.Problem = fmt.Sprintf("partial Darwin Farrow network installation: %d/%d required public paths", present, len(required))
+		snapshot.Installation.Problem = fmt.Sprintf("only %d of %d installed network files are present", present, len(required))
 	}
 	socketExists, socketMetadataOK := false, false
 	socketProblem := ""
@@ -368,7 +368,7 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 	}
 	if present == 0 && socketExists && snapshot.Installation.Status == "absent" {
 		snapshot.Installation.Status = "partial"
-		snapshot.Installation.Problem = "Darwin vmnet runtime socket exists without a static Farrow network installation"
+		snapshot.Installation.Problem = "a vmnet socket exists but the Farrow network is not installed"
 	}
 	interfacesResult, interfacesErr := p.Runner.Run(ctx, "/sbin/ifconfig")
 	if interfacesErr != nil {
@@ -484,7 +484,7 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 					if socketProblem != "" {
 						snapshot.Installation.Problem = socketProblem
 					} else {
-						snapshot.Installation.Problem = "owned Darwin socket_vmnet paths exist but runtime socket, host .1, or /24 interface is not ready"
+						snapshot.Installation.Problem = "socket_vmnet is installed but its socket, host address, or interface is not up"
 					}
 				}
 			}

@@ -50,7 +50,7 @@ func (p Probe) deploymentChecks() []Check {
 	case stateErr != nil:
 		checks = append(checks, Check{Name: "deployment", Status: Error, Evidence: stateErr.Error(), Fix: "do not hand-edit state; `farrow destroy --force` and `farrow up` recreate it"})
 	default:
-		checks = append(checks, Check{Name: "deployment", Status: OK, Evidence: fmt.Sprintf("%s network=%s spec=%s", deployment.Resolved.Name, deployment.Resolved.Network, deployment.SpecHash)})
+		checks = append(checks, Check{Name: "deployment", Status: OK, Evidence: fmt.Sprintf("%s (%d node(s))", deployment.Resolved.Name, len(deployment.Resolved.Nodes))})
 		for _, definition := range deployment.Resolved.Nodes {
 			node, nodeErr := store.ReadNode(definition.Name)
 			checkName := "node-state/" + definition.Name
@@ -58,7 +58,7 @@ func (p Probe) deploymentChecks() []Check {
 				checks = append(checks, Check{Name: checkName, Status: Error, Evidence: nodeErr.Error(), Fix: "recreate the node with farrow recreate --force " + definition.Name})
 				continue
 			}
-			checks = append(checks, Check{Name: checkName, Status: OK, Evidence: fmt.Sprintf("recorded phase=%s generation=%d ssh=127.0.0.1:%d (runtime is not live-audited; use farrow status)", node.Phase, node.Generation, node.SSHPort)})
+			checks = append(checks, Check{Name: checkName, Status: OK, Evidence: fmt.Sprintf("%s, ssh 127.0.0.1:%d", node.Phase, node.SSHPort)})
 			if nodeDir, pathErr := store.NodeDir(definition.Name); pathErr != nil {
 				checks = append(checks, Check{Name: "transaction/" + definition.Name, Status: Error, Evidence: pathErr.Error()})
 			} else if info, journalErr := os.Lstat(filepath.Join(nodeDir, "private-prepare.json")); journalErr == nil {

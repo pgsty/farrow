@@ -114,15 +114,10 @@ func TestControllerPartialReadinessKeepsDetailsAndDoesNotReportAllReady(t *testi
 	if failure.Node != "node-1" || failure.Stage != "readiness" || !strings.Contains(failure.Error, "injected readiness failure") {
 		t.Fatalf("readiness failure = %#v", failure)
 	}
-	foundCount := false
 	for _, event := range events {
 		if event.Done && strings.Contains(event.Message, "All 2 node(s) are ready") {
 			t.Fatalf("partial readiness reported full success: %#v", events)
 		}
-		foundCount = foundCount || strings.Contains(event.Message, "1 node(s) ready; 1 node(s) failed")
-	}
-	if !foundCount {
-		t.Fatalf("partial readiness count missing: %#v", events)
 	}
 }
 

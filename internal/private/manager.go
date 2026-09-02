@@ -92,16 +92,44 @@ func equalResolvedEnvelope(first, second spec.Resolved) bool {
 	return firstErr == nil && secondErr == nil && firstHash == secondHash
 }
 
+// sameResolvedNode compares two definitions of one node. A disk requested as
+// "auto" keeps whatever filesystem the guest already formatted, so auto never
+// differs from a concrete xfs or ext4 on the other side.
 func sameResolvedNode(first, second spec.Node) bool {
+	first, second = alignAutoFilesystems(first, second)
 	firstData, firstErr := spec.CanonicalJSON(spec.Resolved{Nodes: []spec.Node{first}})
 	secondData, secondErr := spec.CanonicalJSON(spec.Resolved{Nodes: []spec.Node{second}})
 	return firstErr == nil && secondErr == nil && string(firstData) == string(secondData)
 }
 
+func alignAutoFilesystems(first, second spec.Node) (spec.Node, spec.Node) {
+	first.Disks = append([]spec.Disk(nil), first.Disks...)
+	second.Disks = append([]spec.Disk(nil), second.Disks...)
+	index := make(map[string]int, len(first.Disks))
+	for i, disk := range first.Disks {
+		index[disk.Name] = i
+	}
+	for j, disk := range second.Disks {
+		i, ok := index[disk.Name]
+		if !ok {
+			continue
+		}
+		if autoFilesystem(first.Disks[i].Filesystem) || autoFilesystem(disk.Filesystem) {
+			first.Disks[i].Filesystem = ""
+			second.Disks[j].Filesystem = ""
+		}
+	}
+	return first, second
+}
+
+// autoFilesystem accepts both spellings of "let the guest choose": the inventory
+// says auto, the resolved spec leaves the field empty.
+func autoFilesystem(value string) bool { return value == "" || value == "auto" }
+
 func (e *NetworkPreflightError) Error() string {
 	for _, finding := range e.Report.Findings {
 		if finding.Severity == netpreflight.Error {
-			message := finding.Code + ": " + finding.Evidence
+			message := finding.Evidence
 			if finding.Fix != "" {
 				message += "; fix: " + finding.Fix
 			}
@@ -299,7 +327,7 @@ func selectedNodeNames(resolved spec.Resolved, requested []string) ([]string, er
 	result := make([]string, 0, len(requested))
 	for _, name := range requested {
 		if _, ok := known[name]; !ok {
-			return nil, fmt.Errorf("the deployment has no node %q", name)
+			return nil, unknownNodeError(name, resolved.Nodes)
 		}
 		if _, duplicate := seen[name]; duplicate {
 			return nil, fmt.Errorf("node selection repeats %q", name)
@@ -1031,7 +1059,7 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 		knownNode = knownNode || node.Name == requestedNode
 	}
 	if !knownNode {
-		return Connection{}, fmt.Errorf("the deployment has no node %q", requestedNode)
+		return Connection{}, unknownNodeError(requestedNode, deploymentState.Resolved.Nodes)
 	}
 	m.Nodes = []string{requestedNode}
 	status, err := m.statusFor(ctx, deploymentValue, "")
@@ -1095,7 +1123,7 @@ func (m Manager) LogPath(nodeName, source string) (string, error) {
 		known = known || node.Name == nodeName
 	}
 	if !known {
-		return "", fmt.Errorf("the deployment has no node %q", nodeName)
+		return "", unknownNodeError(nodeName, deploymentState.Resolved.Nodes)
 	}
 	logName := "serial.log"
 	if source == "qemu" {
@@ -1563,7 +1591,6 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 		return Status{}, err
 	}
 	if failures := startFailures(outcomes); len(failures) > 0 {
-		m.Progress.Report(activity.Event{Phase: "guest-ready", Message: fmt.Sprintf("%d node(s) ready; %d node(s) failed", readyCount(outcomes), len(failures))})
 		return Status{}, newPartialError(failures, len(outcomes))
 	}
 	readyMessage := fmt.Sprintf("All %d node(s) are ready", len(outcomes))
@@ -1803,4 +1830,13 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 		result.Action = "repair"
 	}
 	return result, nil
+}
+
+// unknownNodeError names the nodes that do exist so the user can pick one.
+func unknownNodeError(name string, nodes []spec.Node) error {
+	names := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		names = append(names, node.Name)
+	}
+	return fmt.Errorf("the deployment has no node %q; nodes: %s", name, strings.Join(names, ", "))
 }

@@ -462,6 +462,45 @@ func statusCell(writer io.Writer, width int, value string) string {
 	return styled(writer, statusStyle(value), fmt.Sprintf("%-*s", width, value))
 }
 
+// printTable renders one aligned table: a dim header row, then rows whose
+// statusColumn cell is colored by its first word. Every table in the CLI uses
+// this so columns line up the same way everywhere; pass statusColumn -1 for
+// no coloring.
+func printTable(writer io.Writer, header []string, rows [][]string, statusColumn int) {
+	widths := make([]int, len(header))
+	for index, cell := range header {
+		widths[index] = len(cell)
+	}
+	for _, row := range rows {
+		for index, cell := range row {
+			if index < len(widths) && len(cell) > widths[index] {
+				widths[index] = len(cell)
+			}
+		}
+	}
+	line := func(cells []string, colored bool) {
+		parts := make([]string, 0, len(cells))
+		for index, cell := range cells {
+			padded := cell
+			if index < len(cells)-1 {
+				padded = fmt.Sprintf("%-*s", widths[index], cell)
+			}
+			switch {
+			case !colored:
+				padded = styled(writer, ansiDim, padded)
+			case index == statusColumn && cell != "":
+				padded = styled(writer, statusStyle(strings.Fields(cell)[0]), padded)
+			}
+			parts = append(parts, padded)
+		}
+		bestEffortln(writer, strings.TrimRight(strings.Join(parts, "  "), " "))
+	}
+	line(header, false)
+	for _, row := range rows {
+		line(row, true)
+	}
+}
+
 type progress struct {
 	stderr       io.Writer
 	summary      string

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -410,9 +411,17 @@ func runNetwork(parent context.Context, options networkOptions, stderr io.Writer
 		Checks    []doctor.Check      `json:"checks,omitempty"`
 	}{OS: doctorReport.OS, Arch: doctorReport.Arch, Preflight: preflightReport, Checks: checks}
 	renderText := func(stdout, _ io.Writer) error {
-		bestEffortf(stdout, "network: %s ready=%t installation=%s\n", preflightReport.CIDR, preflightReport.Ready, preflightReport.Installation.Status)
+		readiness := "ready"
+		if !preflightReport.Ready {
+			readiness = "not ready"
+		}
+		textField(stdout, 9, "network", fmt.Sprintf("%s (%s, %s)", preflightReport.CIDR, installationWords(preflightReport.Installation.Status), readiness))
 		for _, finding := range preflightReport.Findings {
-			bestEffortf(stdout, "[%s] %s: %s\n", finding.Severity, finding.Code, finding.Evidence)
+			line := finding.Evidence
+			if finding.Severity == netpreflight.Error && finding.Fix != "" {
+				line += "; fix: " + finding.Fix
+			}
+			bestEffortf(stdout, "[%s] %s\n", finding.Severity, line)
 		}
 		for _, check := range checks {
 			bestEffortf(stdout, "[%s] %s: %s\n", check.Status, check.Name, check.Evidence)
@@ -427,6 +436,18 @@ func runNetwork(parent context.Context, options networkOptions, stderr io.Writer
 		return commandOutcome{}, newSilentRenderedCommandError(exitCategory(code), code, errors.New("network status is not ready"), result, renderText)
 	}
 	return commandOutcome{payload: result, text: renderText}, nil
+}
+
+// installationWords turns the preflight installation status into words.
+func installationWords(status string) string {
+	switch status {
+	case "exact", "protected":
+		return "installed"
+	case "partial", "invalid":
+		return "partially installed"
+	default:
+		return "not installed"
+	}
 }
 
 const structuredCommandCaptureLimit = 4 << 20
@@ -593,9 +614,14 @@ func runPrivateSSH(parent context.Context, commandName string, args []string, re
 	if err != nil {
 		return commandOutcome{}, newDetailedCommandError("capability", exitCapability, err, "", nil)
 	}
-	sshArgs := vm.SSHArgsForUser(connection.User, connection.PrivateKey, connection.KnownHosts, connection.Port, command...)
+	// OpenSSH joins remote arguments with spaces and lets the remote shell
+	// parse them, so `farrow ssh meta -- 'uptime; id'` behaves like plain ssh.
+	sshArgs := vm.SSHArgsForUser(connection.User, connection.PrivateKey, connection.KnownHosts, connection.Port)
 	if sshArgs == nil {
-		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, errors.New("resolved private SSH user is unsafe"), "", nil)
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, errors.New("resolved SSH user is unsafe"), "", nil)
+	}
+	if len(command) != 0 {
+		sshArgs = append(sshArgs, strings.Join(command, " "))
 	}
 	debugf(stderr, "ssh mode=private node=%s user=%s host=%s port=%d arguments=%d", connection.Node, connection.User, connection.Host, connection.Port, len(command))
 	result, runErr := executeSSHProcess(ctx, commandName, connection.Node, connection.User, connection.Host, connection.Port, sshPath, sshArgs, command, stdout, stderr)
@@ -927,18 +953,58 @@ func currentDeploymentResolved() (spec.Resolved, error) {
 	return deploymentState.Resolved, nil
 }
 
+// catalogOrigin names where the active catalog came from in words a user
+// recognizes: the built-in copy, a repository host, or a local file.
+func catalogOrigin(source string) string {
+	switch {
+	case source == "embedded", source == "":
+		return "built-in"
+	case strings.HasPrefix(source, "local:"):
+		return "local"
+	}
+	if parsed, err := url.Parse(source); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return source
+}
+
 func printPrivateStatus(out io.Writer, status privatevm.Status) {
-	textField(out, 12, "spec hash", status.SpecHash)
-	for _, node := range status.Nodes {
-		bestEffortf(out, "%-16s %s  runtime=%s  arch=%s  accel=%s  address=%s  ssh=%s:%d", node.Name, statusValue(out, string(node.State)), node.Runtime, node.GuestArch, node.Accel, node.Address, node.SSHHost, node.SSHPort)
-		if node.ProcessID > 0 {
-			bestEffortf(out, " pid=%d", node.ProcessID)
+	if len(status.Nodes) != 0 {
+		rows := make([][]string, 0, len(status.Nodes))
+		for _, node := range status.Nodes {
+			phase := string(node.State)
+			if node.Runtime != "" && node.Runtime != phase {
+				phase = fmt.Sprintf("%s (%s)", phase, node.Runtime)
+			}
+			arch := node.GuestArch
+			if node.Accel != "" {
+				arch += "/" + node.Accel
+			}
+			pid := ""
+			if node.ProcessID > 0 {
+				pid = fmt.Sprint(node.ProcessID)
+			}
+			rows = append(rows, []string{node.Name, phase, node.Address, fmt.Sprintf("%s:%d", node.SSHHost, node.SSHPort), arch, pid})
 		}
-		bestEffortln(out)
+		printTable(out, []string{"NAME", "STATE", "ADDRESS", "SSH", "ARCH", "PID"}, rows, 1)
 	}
 	if status.Message != "" {
 		bestEffortln(out, status.Message)
 	}
+}
+
+// allNodesReady reports whether every node is recorded and observed running,
+// which is when a `next: farrow ssh …` hint is honest.
+func allNodesReady(status privatevm.Status) bool {
+	if len(status.Nodes) == 0 {
+		return false
+	}
+	for _, node := range status.Nodes {
+		if node.State != state.Running || (node.Runtime != "" && node.Runtime != "running") {
+			return false
+		}
+	}
+	return true
 }
 
 type persistentDeleteError struct{ err error }
@@ -1080,18 +1146,28 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			return commandOutcome{}, classifyPrivateLifecycleError(err, operationID)
 		}
 		return commandOutcome{payload: plan, text: func(stdout, _ io.Writer) error {
-			textField(stdout, 14, "action", statusValue(stdout, plan.Action))
-			textField(stdout, 14, "destructive", plan.Destructive)
-			textField(stdout, 14, "spec hash", plan.SpecHash)
-			textField(stdout, 14, "nodes", strings.Join(plan.Nodes, ","))
+			switch plan.Action {
+			case "none":
+				bestEffortf(stdout, "no changes: %d node(s) (%s) match the applied inventory\n", len(plan.Nodes), strings.Join(plan.Nodes, ", "))
+				return nil
+			case "start":
+				textField(stdout, 12, "start", strings.Join(plan.Nodes, ", ")+"  (apply: farrow up)")
+			case "repair":
+				textField(stdout, 12, "repair", strings.Join(plan.Nodes, ", ")+"  (state was left mid-transition; run: farrow status)")
+			}
 			if len(plan.Create) != 0 {
-				textField(stdout, 14, "create", strings.Join(plan.Create, ","))
+				textField(stdout, 12, "create", strings.Join(plan.Create, ", ")+"  (apply: farrow up)")
 			}
 			if len(plan.Recreate) != 0 {
-				textField(stdout, 14, "recreate", strings.Join(plan.Recreate, ",")+"  (apply: farrow recreate "+strings.Join(plan.Recreate, " ")+")")
+				textField(stdout, 12, "recreate", strings.Join(plan.Recreate, ", ")+"  (apply: farrow recreate "+strings.Join(plan.Recreate, " ")+")")
+			} else if plan.Action == "recreate" {
+				textField(stdout, 12, "recreate", "deployment-level settings changed  (apply: farrow recreate)")
 			}
 			if len(plan.Missing) != 0 {
-				textField(stdout, 14, "missing", strings.Join(plan.Missing, ",")+"  (not in the inventory; remove with: farrow destroy "+strings.Join(plan.Missing, " ")+")")
+				textField(stdout, 12, "missing", strings.Join(plan.Missing, ", ")+"  (not in the inventory; remove with: farrow destroy "+strings.Join(plan.Missing, " ")+")")
+			}
+			if plan.Destructive {
+				textField(stdout, 12, "destructive", "yes")
 			}
 			return nil
 		}}, nil
@@ -1266,8 +1342,11 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	result := lifecycleResult{Status: status, SSHConfig: reconciledSSHConfig}
 	return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
 		printPrivateStatus(stdout, status)
-		if reconciledSSHConfig != nil {
-			textField(stdout, 12, "ssh config", fmt.Sprintf("%s (action=%s changed=%t)", reconciledSSHConfig.Fragment, reconciledSSHConfig.Action, reconciledSSHConfig.Changed))
+		if reconciledSSHConfig != nil && reconciledSSHConfig.Changed {
+			textField(stdout, 6, "ssh", fmt.Sprintf("%s %s", reconciledSSHConfig.Action, reconciledSSHConfig.Fragment))
+		}
+		if (command == "up" || command == "start") && allNodesReady(status) {
+			textField(stdout, 6, "next", "farrow ssh "+status.Nodes[0].Name)
 		}
 		return nil
 	}}, nil
@@ -1306,6 +1385,7 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 	if err != nil {
 		return commandOutcome{}, newUsageError(err)
 	}
+	configFromFile := hasConfig
 	persisted, persistedErr := currentDeploymentResolved()
 	switch {
 	case persistedErr == nil && persisted.Network == "private":
@@ -1329,7 +1409,37 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 		return commandOutcome{}, newUsageError(err)
 	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
-	return runPrivateCommand(ctx, command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
+	outcome, err := runPrivateCommand(ctx, command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
+	if command == "up" && configFromFile && needsHostSetup(err) && interactiveTextSession(stderr) {
+		// First use on this host: run the one-time setup here instead of asking
+		// for a second command. Setup shows its plan and asks before any
+		// privileged step; up continues once the network exists.
+		bestEffortf(stderr, "%s The fixed-IP network is not installed yet; running farrow setup first\n", styled(stderr, ansiCyan, "→"))
+		if _, setupErr := runSetupCommand(ctx, "", setupCLIOptions{FilePath: options.ConfigPath, Mode: "host", Repo: options.Repository}, outputText, verboseOutput(stderr), stderr); setupErr != nil {
+			return commandOutcome{}, setupErr
+		}
+		outcome, err = runPrivateCommand(ctx, command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
+	}
+	return outcome, err
+}
+
+// needsHostSetup reports the one preflight failure that farrow setup fixes on
+// its own: the fixed-IP network has never been installed on this host.
+func needsHostSetup(err error) bool {
+	var preflight *privatevm.NetworkPreflightError
+	if !errors.As(err, &preflight) {
+		return false
+	}
+	for _, finding := range preflight.Report.Findings {
+		if finding.Code == "installation.absent" && finding.Severity == netpreflight.Error {
+			return true
+		}
+	}
+	return false
+}
+
+func interactiveTextSession(stderr io.Writer) bool {
+	return outputFormatFor(stderr) == outputText && term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 func validateNodeSelectors(resolved spec.Resolved, nodes []string) error {
@@ -1710,9 +1820,11 @@ func runValidate(filePath string) (commandOutcome, error) {
 	result := validateResult{Valid: true, Source: source, SpecHash: hash, Resolved: resolved, Warnings: warnings}
 	return commandOutcome{payload: result, text: func(stdout, stderr io.Writer) error {
 		printWarnings(stderr, warnings)
-		textField(stdout, 12, "status", statusValue(stdout, "valid"))
-		textField(stdout, 12, "source", source)
-		textField(stdout, 12, "spec hash", hash)
+		names := make([]string, 0, len(resolved.Nodes))
+		for _, node := range resolved.Nodes {
+			names = append(names, node.Name)
+		}
+		bestEffortf(stdout, "%s %s (%d node(s): %s)\n", statusValue(stdout, "valid:"), source, len(names), strings.Join(names, ", "))
 		return nil
 	}}, nil
 }
@@ -1783,7 +1895,7 @@ func runInit(options initOptions) (commandOutcome, error) {
 		printWarnings(stderr, warnings)
 		textField(stdout, 10, "template", name)
 		textField(stdout, 10, "wrote", target)
-		textField(stdout, 10, "next", "farrow setup && farrow up")
+		textField(stdout, 10, "next", "farrow up")
 		return nil
 	}}, nil
 }
@@ -1849,16 +1961,12 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 			Images   []image.Entry       `json:"images"`
 		}{manifestState, entries}
 		return commandOutcome{payload: payload, text: func(stdout, _ io.Writer) error {
-			textField(stdout, 12, "catalog", manifestState.Active)
-			textField(stdout, 12, "revision", manifestState.ActiveVersion)
-			textField(stdout, 12, "highest", manifestState.HighestVersion)
+			textField(stdout, 9, "catalog", fmt.Sprintf("revision %d (%s)", manifestState.ActiveVersion, catalogOrigin(manifestState.Source)))
+			rows := make([][]string, 0, len(entries))
 			for _, entry := range entries {
-				channels := ""
-				if len(entry.Channels) != 0 {
-					channels = " channels=" + strings.Join(entry.Channels, ",")
-				}
-				bestEffortf(stdout, "%s %s %s%s status=%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status)
+				rows = append(rows, []string{entry.Alias, entry.Release, entry.Arch, strings.Join(entry.Channels, ","), entry.Status})
 			}
+			printTable(stdout, []string{"ALIAS", "RELEASE", "ARCH", "CHANNELS", "STATUS"}, rows, 4)
 			return nil
 		}}, nil
 	case "info", "pull":
@@ -2102,8 +2210,6 @@ func runDoctor(parent context.Context, stderr io.Writer) (commandOutcome, error)
 		return commandOutcome{}, ErrCancelled
 	}
 	renderText := func(stdout, _ io.Writer) error {
-		textField(stdout, 10, "host", fmt.Sprintf("%s/%s", report.OS, report.Arch))
-		textField(stdout, 10, "tier", report.Tier)
 		for _, check := range report.Checks {
 			bestEffortf(stdout, "%s %-20s %s\n", statusCell(stdout, 10, doctorCheckLabel(check)), check.Name, check.Evidence)
 			if check.Fix != "" {
