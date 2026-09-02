@@ -59,13 +59,13 @@ Farrow is pre-1.0. A successful build from source is not evidence of a tagged
 release, a published package, or a supported guest image.
 
 Download `install.sh`, `farrow.rb`, or the native package from the
-[Farrow 0.3.0 release](https://github.com/pgsty/farrow/releases/tag/v0.3.0).
+[Farrow 0.4.0 release](https://github.com/pgsty/farrow/releases/tag/v0.4.0).
 
 ```bash
 # From a release: user-scoped, no sudo, checksum-verified
-curl -fLO https://github.com/pgsty/farrow/releases/download/v0.3.0/install.sh
+curl -fLO https://github.com/pgsty/farrow/releases/download/v0.4.0/install.sh
 chmod +x install.sh
-FARROW_VERSION=0.3.0 ./install.sh
+FARROW_VERSION=0.4.0 ./install.sh
 
 # Homebrew formula (shipped as a release asset)
 brew install --formula ./farrow.rb
