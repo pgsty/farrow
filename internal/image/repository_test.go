@@ -15,9 +15,6 @@ func TestRepositorySources(t *testing.T) {
 	if err != nil || artifact != "http://m0/repos/farrow/u24/u24-1-arm64.qcow2" {
 		t.Fatalf("artifact source = %q, %v", artifact, err)
 	}
-	if got := RepositoryFromCatalogSource(catalog); got != "http://m0/repos/farrow" {
-		t.Fatalf("repository from catalog = %q", got)
-	}
 	flat, err := RepositoryArtifactSource("https://repo.example/farrow", "images/d13-1-arm64.qcow2")
 	if err != nil || flat != "https://repo.example/farrow/images/d13-1-arm64.qcow2" {
 		t.Fatalf("flat artifact source = %q, %v", flat, err)

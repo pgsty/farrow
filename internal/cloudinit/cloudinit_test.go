@@ -244,7 +244,7 @@ func TestRenderShareContract(t *testing.T) {
 		`has_mount_option "${mounted_options}" rw`,
 		`refuse non-empty Farrow share mountpoint`,
 		`mv -f -- "${fstab_tmp}" "${fstab}"`,
-		`printf '{"exit_status":%d,"line":%d,"stage":"%s"}\n'`,
+		`printf '{"exit_status":%d,"stage":"%s"}\n'`,
 	} {
 		if !strings.Contains(userData, want) {
 			t.Errorf("share contract missing %q", want)

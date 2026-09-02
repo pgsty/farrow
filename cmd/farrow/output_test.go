@@ -412,18 +412,6 @@ func TestProgressPersistsCompletedPhasesAsChecklistOnTTY(t *testing.T) {
 	}
 }
 
-func TestProgressRendersWarningsAsWarnings(t *testing.T) {
-	state := &outputContext{format: outputText, stderrFile: true, stderrTTY: true, color: true}
-	var stderr bytes.Buffer
-	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
-	item := startProgress(context.TODO(), errOut, "Updating the image catalog")
-	item.Report(activity.Event{Phase: "image-catalog", Message: "Catalog refresh failed; using trusted cache", Done: true, Warning: true})
-	item.Stop(nil)
-	if got := stderr.String(); !strings.Contains(got, ansiYellow+"!"+ansiReset+" Catalog refresh failed; using trusted cache\n") {
-		t.Fatalf("warning phase did not persist as a warning row: %q", got)
-	}
-}
-
 func TestTickfFollowsProgressGating(t *testing.T) {
 	enabled := &outputContext{format: outputText, stderrFile: true, stderrTTY: true, color: true}
 	var stderr bytes.Buffer

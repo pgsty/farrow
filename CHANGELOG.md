@@ -6,42 +6,66 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+## [0.3.0]
+
 ### Added
 
-- `farrow update` explicitly refreshes, verifies, and atomically activates the
-  configured image catalog without updating the Farrow executable.
+- `farrow update` fetches the configured image repository's catalog, verifies
+  it, and activates it; `image sync` remains the exact-URL/file recovery path.
+  Neither operation updates the Farrow executable.
 - Pigsty inventory `vm_disks[].fs` accepts explicit `auto`: blank disks prefer
   XFS when its formatter is available and otherwise use ext4. Omitting `fs`
-  retains the released XFS default for deployment-state compatibility.
-- Partial multi-node failures include each node's lifecycle stage and bounded
-  error detail in text and structured output.
+  retains the XFS default.
+- Partial multi-node failures name each failed node with its stage and error
+  (`2 of 3 node(s) failed: ...`), in text and in the JSON `failures` array,
+  and point at `farrow logs <node>` when a guest did not become ready.
 
 ### Changed
 
-- Image-resolving commands reuse one catalog snapshot for the complete command.
-  Catalogs refresh at most once after a seven-day cache lifetime, failed
-  automatic checks back off for one hour and continue from trusted local or
-  embedded metadata, and immutable versioned catalog files are never touched
-  merely to record freshness. Automatic refresh failure for an explicitly
-  configured repository is therefore no longer fatal when trusted local
-  metadata and cached or immutable-upstream image bytes can satisfy the request.
-- Guest network configuration matches deterministic MAC addresses without
-  renaming interfaces; distribution-native names are no longer a Farrow
-  contract. Private-address, route, and DNS readiness checks follow the matched
-  interface instead.
+- Farrow no longer refreshes the image catalog automatically. `up`, `plan`,
+  and ordinary `image` commands use the catalog embedded in the installed
+  release or the one last activated by explicit `farrow update`/`image sync`,
+  so normal resolution never touches the network for catalog metadata.
+- Guest network configuration matches interfaces by MAC address and no longer
+  renames them to `mgmt0`/`private0`; interface names inside the guest are not
+  a Farrow contract.
 - `up` and `start` recheck readiness for already-running guests without
-  restarting QEMU. `--no-wait` retains the process-only escape hatch.
-- Management-egress readiness uses three bounded attempts instead of one
-  unbounded connection.
+  restarting QEMU; `--no-wait` skips the check.
+- The management-network egress check retries three times instead of hanging
+  on one connection.
+- `image reset-manifest` is now `image reset` (the old name remains as an
+  alias). Image output and help say "catalog" and "revision" consistently.
+- The `ss` command is gone; `up` already installs the SSH client
+  configuration, and `ssh-config --install` remains.
+- Short flags: commands that read an Inventory use `-f` only for `--file`;
+  `logs -f` retains the conventional `--follow`. `--force`, `--rollback`, and
+  ssh-config `--remove` have no shorthand, and `--name` no longer takes `-n`.
+  Root aliases `cp`, `h`, `i`, and `p` were removed.
+- Drift and plan hints suggest `farrow recreate <node>` and
+  `farrow destroy <node>` without `--force`; the interactive confirmation
+  covers terminals.
+- Error messages drop the internal `private` prefix; the missing-inventory
+  error points at `farrow init`; `hosts install` without a deployment reports
+  the shared `no deployment state found` message with exit 4; an SSH
+  configuration failure after a successful lifecycle step exits 5.
+- `status` no longer prints a trailing `deployment status` line, and
+  `image list` no longer prints digests (use `image info` or `--json`).
 
 ### Fixed
 
-- Guest bootstrap failures publish an atomic stage marker so readiness returns
-  the failing phase instead of waiting for the full SSH timeout.
-- A partial successful lifecycle operation still reconciles the marker-owned
-  SSH client fragment for every committed node.
+- Guest bootstrap failures publish a stage marker, so readiness returns
+  `guest bootstrap failed during <stage>` instead of waiting for the full SSH
+  timeout, and readiness timeouts report ssh's last error instead of the
+  probe's argument list.
+- A partially successful lifecycle operation still reconciles the SSH client
+  configuration for every committed node.
 - Multi-node create no longer reports every guest ready before inspecting the
   per-node readiness outcomes.
+- Network preflight failures include the suggested fix in text output, not
+  only in JSON.
+- `hosts install` now distinguishes a missing deployment (exit 4) from corrupt
+  or unsafe deployment state (exit 7) instead of masking every read failure as
+  "no deployment state found".
 
 ## [0.2.0]
 
@@ -166,6 +190,7 @@ Pigsty-compatible local labs.
   Cosign is available, and explains that pre-1.0 GitHub pre-releases require an
   explicit `FARROW_VERSION`.
 
-[Unreleased]: https://github.com/pgsty/farrow/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pgsty/farrow/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/pgsty/farrow/releases/tag/v0.3.0
 [0.2.0]: https://github.com/pgsty/farrow/releases/tag/v0.2.0
 [0.1.0]: https://github.com/pgsty/farrow/releases/tag/v0.1.0

@@ -445,7 +445,7 @@ func (host inventoryHost) lookupDisks() ([]DiskConfig, bool, error) {
 		filesystem := "xfs"
 		if value, present := entry["fs"]; present {
 			text, ok := value.(string)
-			if !ok || (text != "auto" && text != "xfs" && text != "ext4") {
+			if !ok || !spec.ValidFilesystem(text) {
 				return nil, true, fmt.Errorf("host %s disk %s fs must be auto, xfs, or ext4", host.address, path)
 			}
 			filesystem = text

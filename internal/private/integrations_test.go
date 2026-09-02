@@ -48,7 +48,7 @@ func TestPrivateSSHConfigInstallContainsEveryNodeAndAddress(t *testing.T) {
 	}
 	for _, expected := range []string{"Host lab-meta meta 10.10.10.10 admin.example", "Host lab-node-1 node-1 10.10.10.11", "Port 2222", "Port 2223"} {
 		if !strings.Contains(string(fragment), expected) {
-			t.Fatalf("private fragment lacks %q:\n%s", expected, fragment)
+			t.Fatalf("fragment lacks %q:\n%s", expected, fragment)
 		}
 	}
 	second, err := manager.InstallSSHConfig(context.Background(), "lab", home)

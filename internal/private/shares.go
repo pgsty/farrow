@@ -50,21 +50,21 @@ func validatePrivateInheritedLayout(node state.NodeState, prefixFiles, shareFile
 	}
 	expected := prefixFiles + shareFiles
 	if len(files) != expected {
-		return fmt.Errorf("private node %s invocation has %d inherited files, expected %d", node.Node, len(files), expected)
+		return fmt.Errorf("node %s invocation has %d inherited files, expected %d", node.Node, len(files), expected)
 	}
 	for index, file := range files {
 		expectedFD := 3 + index
 		if file.FD != expectedFD {
-			return fmt.Errorf("private node %s inherited file %d uses fd%d, expected fd%d", node.Node, index, file.FD, expectedFD)
+			return fmt.Errorf("node %s inherited file %d uses fd%d, expected fd%d", node.Node, index, file.FD, expectedFD)
 		}
 		if index < prefixFiles {
 			if index != 0 || file.Kind != "private-network" || file.ID != "private" {
-				return fmt.Errorf("private node %s inherited file %d is not the private-network fd", node.Node, index)
+				return fmt.Errorf("node %s inherited file %d is not the private-network fd", node.Node, index)
 			}
 			continue
 		}
 		if file.Kind != "share" {
-			return fmt.Errorf("private node %s inherited file %d has unexpected kind %q", node.Node, index, file.Kind)
+			return fmt.Errorf("node %s inherited file %d has unexpected kind %q", node.Node, index, file.Kind)
 		}
 	}
 	return nil
@@ -119,7 +119,7 @@ func selectedShareInvocationBinaries(store state.Store, resolved spec.Resolved, 
 		}
 		binary := node.Invocation.Binary
 		if binary == "" {
-			return nil, fmt.Errorf("private node %s host-share invocation has no QEMU binary", definition.Name)
+			return nil, fmt.Errorf("node %s host-share invocation has no QEMU binary", definition.Name)
 		}
 		if _, duplicate := seen[binary]; duplicate {
 			continue
@@ -135,12 +135,12 @@ func validatePrivateShareDeviceHelp(ctx context.Context, runner execx.Runner, bi
 		return nil
 	}
 	if runner == nil {
-		return &CapabilityError{Reason: "private host-share capability requires a command runner"}
+		return &CapabilityError{Reason: "host-share capability requires a command runner"}
 	}
 	seen := make(map[string]struct{}, len(binaries))
 	for _, binary := range binaries {
 		if binary == "" {
-			return &CapabilityError{Reason: "private host-share capability requires an exact QEMU binary"}
+			return &CapabilityError{Reason: "host-share capability requires an exact QEMU binary"}
 		}
 		if _, duplicate := seen[binary]; duplicate {
 			continue
@@ -148,10 +148,10 @@ func validatePrivateShareDeviceHelp(ctx context.Context, runner execx.Runner, bi
 		seen[binary] = struct{}{}
 		result, err := runner.Run(ctx, binary, "-device", "help")
 		if err != nil {
-			return &CapabilityError{Reason: fmt.Sprintf("private host-share capability probe for QEMU %q failed: %v", binary, err)}
+			return &CapabilityError{Reason: fmt.Sprintf("host-share capability probe for QEMU %q failed: %v", binary, err)}
 		}
 		if err := qemu.ValidateShareDeviceHelp(string(result.Stdout) + "\n" + string(result.Stderr)); err != nil {
-			return &CapabilityError{Reason: fmt.Sprintf("private host-share capability unavailable for QEMU %q: %v", binary, err)}
+			return &CapabilityError{Reason: fmt.Sprintf("host-share capability unavailable for QEMU %q: %v", binary, err)}
 		}
 	}
 	return nil

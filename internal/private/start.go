@@ -16,13 +16,12 @@ import (
 	"github.com/pgsty/farrow/internal/vm"
 )
 
+// NodeLifecycle starts one guest, undoes a start whose state could not be
+// persisted, and waits for the guest's ready marker.
 type NodeLifecycle interface {
 	Start(context.Context, state.NodeState) (process.Identity, error)
-	WaitReady(context.Context, state.NodeState, time.Duration) error
-}
-
-type StartAborter interface {
 	AbortStart(context.Context, state.NodeState, process.Identity) error
+	WaitReady(context.Context, state.NodeState, time.Duration) error
 }
 
 type NativeLifecycle struct {
@@ -48,7 +47,7 @@ func (l NativeLifecycle) PreflightStart(node state.NodeState) error {
 
 func (l NativeLifecycle) privateNetworkFile() (*os.File, error) {
 	if l.DarwinSocket == "" {
-		return nil, errors.New("private FD invocation has no Darwin socket")
+		return nil, errors.New("FD invocation has no Darwin socket")
 	}
 	connection, err := net.DialTimeout("unix", l.DarwinSocket, 5*time.Second)
 	if err != nil {
@@ -135,14 +134,6 @@ type StartOutcome struct {
 	Error   string `json:"error,omitempty"`
 }
 
-type readyConfig struct {
-	Deployment   Deployment
-	Lifecycle    NodeLifecycle
-	Nodes        []string
-	Concurrency  int
-	ReadyTimeout time.Duration
-}
-
 func (config StartConfig) now() time.Time {
 	if config.Now != nil {
 		return config.Now().UTC()
@@ -156,38 +147,47 @@ func setupRuntime(path string) error {
 	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return errors.New("private runtime directory is unsafe")
+		return errors.New("runtime directory is unsafe")
 	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return err
 	}
 	if len(entries) != 0 {
-		return errors.New("private runtime directory is not empty; run farrow status to converge it, then retry")
+		return errors.New("runtime directory is not empty; run farrow status to converge it, then retry")
 	}
 	return nil
 }
 
 func loadNodes(store state.Store, names []string) ([]state.NodeState, error) {
 	if len(names) == 0 {
-		return nil, errors.New("private start requires at least one node")
+		return nil, errors.New("start requires at least one node")
 	}
 	result := make([]state.NodeState, 0, len(names))
 	seen := make(map[string]struct{})
 	for _, name := range names {
 		if _, duplicate := seen[name]; duplicate {
-			return nil, fmt.Errorf("private start repeats node %s", name)
+			return nil, fmt.Errorf("start repeats node %s", name)
 		}
 		seen[name] = struct{}{}
 		node, err := store.ReadNode(name)
 		if err != nil {
 			return nil, err
 		}
+		// A running node is accepted so a later start or up can recheck guest
+		// readiness without restarting QEMU.
+		if node.Phase == state.Running {
+			if node.Process.PID <= 0 {
+				return nil, fmt.Errorf("node %s is marked running without a process", name)
+			}
+			result = append(result, node)
+			continue
+		}
 		if node.Phase != state.Prepared && node.Phase != state.Stopped {
-			return nil, fmt.Errorf("private node %s phase %s is not startable", name, node.Phase)
+			return nil, fmt.Errorf("node %s phase %s is not startable", name, node.Phase)
 		}
 		if node.Process != (state.ProcessIdentity{}) {
-			return nil, fmt.Errorf("private node %s has a recorded process identity", name)
+			return nil, fmt.Errorf("node %s has a recorded process identity", name)
 		}
 		result = append(result, node)
 	}
@@ -205,7 +205,7 @@ func writeNodes(store state.Store, nodes []state.NodeState) error {
 
 func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, error) {
 	if config.Deployment.Root == "" || config.Lifecycle == nil {
-		return nil, errors.New("private start deployment or lifecycle is incomplete")
+		return nil, errors.New("start deployment or lifecycle is incomplete")
 	}
 	if config.Concurrency <= 0 {
 		config.Concurrency = 4
@@ -227,22 +227,23 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, err
 	preflight, hasPreflight := config.Lifecycle.(interface {
 		PreflightStart(state.NodeState) error
 	})
-	for _, node := range nodes {
-		if hasPreflight {
-			if err := preflight.PreflightStart(node); err != nil {
-				return nil, fmt.Errorf("preflight private node %s before start: %w", node.Node, err)
-			}
+	starting := make([]state.NodeState, 0, len(nodes))
+	for index, node := range nodes {
+		if node.Phase == state.Running {
 			continue
 		}
-		if len(node.Invocation.ShareFiles()) != 0 {
-			return nil, fmt.Errorf("private node %s lifecycle cannot preflight host shares", node.Node)
+		if hasPreflight {
+			if err := preflight.PreflightStart(node); err != nil {
+				return nil, fmt.Errorf("preflight node %s before start: %w", node.Node, err)
+			}
+		} else if len(node.Invocation.ShareFiles()) != 0 {
+			return nil, fmt.Errorf("node %s lifecycle cannot preflight host shares", node.Node)
 		}
-	}
-	for index := range nodes {
 		nodes[index].Phase = state.Starting
 		nodes[index].UpdatedAt = config.now()
+		starting = append(starting, nodes[index])
 	}
-	if err := writeNodes(store, nodes); err != nil {
+	if err := writeNodes(store, starting); err != nil {
 		return nil, err
 	}
 	outcomes := make([]StartOutcome, len(nodes))
@@ -255,30 +256,10 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, err
 			for index := range jobs {
 				node := nodes[index]
 				outcomes[index].Node = node.Node
-				if err := config.SetupRuntime(node.Runtime.Directory); err != nil {
+				if node.Phase == state.Running {
+					outcomes[index].Running = true
+				} else if err := startOne(ctx, config, store, &node); err != nil {
 					outcomes[index].Error = err.Error()
-					continue
-				}
-				identityValue, err := config.Lifecycle.Start(ctx, node)
-				if err != nil {
-					outcomes[index].Error = err.Error()
-					continue
-				}
-				node.Process = state.ProcessIdentity{PID: identityValue.PID, Executable: identityValue.Executable, Started: identityValue.Started, ArgvHash: identityValue.ArgvHash}
-				node.Phase = state.Running
-				node.UpdatedAt = config.now()
-				if err := store.WriteNode(node); err != nil {
-					message := fmt.Sprintf("persist running state for %s: %v", node.Node, err)
-					if aborter, ok := config.Lifecycle.(StartAborter); ok {
-						if abortErr := aborter.AbortStart(ctx, node, identityValue); abortErr != nil {
-							message += "; compensation failed: " + abortErr.Error() + "; the QEMU process may still be running; run farrow status"
-						} else {
-							message += "; compensation stopped QEMU and removed its runtime files"
-						}
-					} else {
-						message += "; lifecycle cannot compensate the started process; run farrow status"
-					}
-					outcomes[index].Error = message
 					continue
 				}
 				nodes[index] = node
@@ -303,63 +284,28 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, err
 	return outcomes, nil
 }
 
-// waitRunningReady rechecks the guest contract without restarting an already
-// running QEMU process. This lets a later `up` converge a prior partial run.
-func waitRunningReady(ctx context.Context, config readyConfig) ([]StartOutcome, error) {
-	if config.Deployment.Root == "" || config.Lifecycle == nil {
-		return nil, errors.New("private readiness deployment or lifecycle is incomplete")
+// startOne launches QEMU for a prepared or stopped node and persists its
+// process identity. A persist failure stops the process again so state and
+// reality never disagree.
+func startOne(ctx context.Context, config StartConfig, store state.Store, node *state.NodeState) error {
+	if err := config.SetupRuntime(node.Runtime.Directory); err != nil {
+		return err
 	}
-	if len(config.Nodes) == 0 {
-		return nil, errors.New("private readiness requires at least one node")
+	identityValue, err := config.Lifecycle.Start(ctx, *node)
+	if err != nil {
+		return err
 	}
-	if config.Concurrency <= 0 {
-		config.Concurrency = 4
-	}
-	if config.Concurrency > 16 {
-		config.Concurrency = 16
-	}
-	if config.ReadyTimeout <= 0 {
-		config.ReadyTimeout = 180 * time.Second
-	}
-	store := state.Store{Root: config.Deployment.Root}
-	nodes := make([]state.NodeState, 0, len(config.Nodes))
-	seen := make(map[string]struct{}, len(config.Nodes))
-	for _, name := range config.Nodes {
-		if _, duplicate := seen[name]; duplicate {
-			return nil, fmt.Errorf("private readiness repeats node %s", name)
+	node.Process = state.ProcessIdentity{PID: identityValue.PID, Executable: identityValue.Executable, Started: identityValue.Started, ArgvHash: identityValue.ArgvHash}
+	node.Phase = state.Running
+	node.UpdatedAt = config.now()
+	if err := store.WriteNode(*node); err != nil {
+		message := fmt.Sprintf("persist running state for %s: %v", node.Node, err)
+		if abortErr := config.Lifecycle.AbortStart(ctx, *node, identityValue); abortErr != nil {
+			message += "; compensation failed: " + abortErr.Error() + "; the QEMU process may still be running; run farrow status"
+		} else {
+			message += "; compensation stopped QEMU and removed its runtime files"
 		}
-		seen[name] = struct{}{}
-		node, err := store.ReadNode(name)
-		if err != nil {
-			return nil, err
-		}
-		if node.Phase != state.Running || node.Process.PID <= 0 {
-			return nil, fmt.Errorf("private node %s is not running for readiness", name)
-		}
-		nodes = append(nodes, node)
+		return errors.New(message)
 	}
-	outcomes := make([]StartOutcome, len(nodes))
-	jobs := make(chan int)
-	var wait sync.WaitGroup
-	for worker := 0; worker < config.Concurrency; worker++ {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			for index := range jobs {
-				node := nodes[index]
-				outcomes[index] = StartOutcome{Node: node.Node, Running: true}
-				if err := config.Lifecycle.WaitReady(ctx, node, config.ReadyTimeout); err != nil {
-					outcomes[index].Error = err.Error()
-					continue
-				}
-				outcomes[index].Ready = true
-			}
-		}()
-	}
-	for index := range nodes {
-		jobs <- index
-	}
-	close(jobs)
-	wait.Wait()
-	return outcomes, nil
+	return nil
 }

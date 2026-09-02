@@ -289,7 +289,7 @@ func runNetwork(parent context.Context, options networkOptions, stderr io.Writer
 				return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 			}
 			if report.Recovered {
-				warningf(stderr, "protected network.json was unavailable; uninstall ownership was recovered from byte-identical interface evidence, the exact launchd plist, and installed binary digests")
+				warningf(stderr, "network.json was unavailable; ownership was confirmed from the installed interface, launchd plist, and binary digests")
 			}
 			return commandOutcome{payload: report, text: func(stdout, _ io.Writer) error {
 				for _, path := range report.RemoveFiles {
@@ -950,9 +950,8 @@ type lifecyclePartialFailure struct {
 	Error       string                  `json:"error"`
 	Message     string                  `json:"message"`
 	OperationID string                  `json:"operation_id,omitempty"`
-	Nodes       []string                `json:"nodes"`
-	Failures    []privatevm.NodeFailure `json:"failures,omitempty"`
-	RolledBack  []string                `json:"rolled_back"`
+	Failures    []privatevm.NodeFailure `json:"failures"`
+	RolledBack  []string                `json:"rolled_back,omitempty"`
 }
 
 type sshConfigReconciler interface {
@@ -1023,7 +1022,7 @@ func classifyLifecycleSSHConfigFailure(failure *lifecycleSSHConfigFailure) error
 		Error: "ssh_config", Message: failure.Error(), Command: failure.Command,
 		Partial: true, Status: failure.Status, SSHConfig: failure.Result,
 	}
-	return newRenderedCommandError("ssh_config", exitIntegrity, failure, failure.Status.OperationID, payload, func(stdout, _ io.Writer) error {
+	return newRenderedCommandError("ssh_config", exitPartial, failure, failure.Status.OperationID, payload, func(stdout, _ io.Writer) error {
 		printPrivateStatus(stdout, failure.Status)
 		return nil
 	})
@@ -1046,7 +1045,7 @@ func classifyPrivateLifecycleError(err error, operationID string) error {
 	}
 	var partial *privatevm.PartialError
 	if errors.As(err, &partial) {
-		payload := lifecyclePartialFailure{Error: "partial", Message: err.Error(), OperationID: operationID, Nodes: partial.Nodes, Failures: partial.Failures, RolledBack: partial.RolledBack}
+		payload := lifecyclePartialFailure{Error: "partial", Message: err.Error(), OperationID: operationID, Failures: partial.Failures, RolledBack: partial.RolledBack}
 		return newDetailedCommandError("partial", exitPartial, err, operationID, payload)
 	}
 	var deleteErr *persistentDeleteError
@@ -1072,7 +1071,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	}
 	var progressItem *progress
 	manager := privatevm.Manager{FarrowVersion: version.Version, OperationID: operationID, Repository: repository, NoWait: noWait, RollbackFailed: rollback, Nodes: append([]string(nil), nodes...)}
-	manager.Progress = warningProgressReporter(&progressItem, stderr)
+	manager.Progress = deferredProgressReporter(&progressItem)
 	if command == "plan" {
 		ctx, cancel := context.WithTimeout(parent, time.Minute)
 		defer cancel()
@@ -1089,10 +1088,10 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 				textField(stdout, 14, "create", strings.Join(plan.Create, ","))
 			}
 			if len(plan.Recreate) != 0 {
-				textField(stdout, 14, "recreate", strings.Join(plan.Recreate, ",")+"  (apply: farrow recreate --force "+strings.Join(plan.Recreate, " ")+")")
+				textField(stdout, 14, "recreate", strings.Join(plan.Recreate, ",")+"  (apply: farrow recreate "+strings.Join(plan.Recreate, " ")+")")
 			}
 			if len(plan.Missing) != 0 {
-				textField(stdout, 14, "missing", strings.Join(plan.Missing, ",")+"  (config dropped them; remove with: farrow destroy "+strings.Join(plan.Missing, " ")+" --force)")
+				textField(stdout, 14, "missing", strings.Join(plan.Missing, ",")+"  (not in the inventory; remove with: farrow destroy "+strings.Join(plan.Missing, " ")+")")
 			}
 			return nil
 		}}, nil
@@ -1188,7 +1187,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			deploymentHasNodes = destroyLeavesDeploymentNodes(resolved, nodes)
 		}
 		if action := lifecycleSSHConfigAction(command, deploymentHasNodes); action != "" {
-			progressItem.Report(activity.Event{Phase: "ssh-config", Message: "Reconciling the marker-owned SSH client configuration"})
+			progressItem.Report(activity.Event{Phase: "ssh-config", Message: "Updating the SSH client configuration"})
 			var integrationErr error
 			reconciler := fullDeploymentSSHManager(manager)
 			reconciledSSHConfig, integrationErr = reconcileLifecycleSSHConfig(ctx, command, deploymentHasNodes, reconciler)
@@ -1199,7 +1198,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 					err = &lifecycleSSHConfigFailure{Command: command, Status: status, Result: *reconciledSSHConfig, Err: integrationErr}
 				}
 			} else {
-				progressItem.Report(activity.Event{Phase: "ssh-config", Message: "SSH client configuration is synchronized", Done: true})
+				progressItem.Report(activity.Event{Phase: "ssh-config", Message: "SSH client configuration is up to date", Done: true})
 			}
 		}
 	}
@@ -1212,7 +1211,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		}
 		eventErr := manager.RecordEvent(ctx, command, level, message)
 		if err == nil && eventErr != nil {
-			err = fmt.Errorf("private %s completed but its event could not be appended: %w", command, eventErr)
+			err = fmt.Errorf("%s completed but its event could not be appended: %w", command, eventErr)
 		}
 	}
 	if lifecycleSucceeded && command == "destroy" && purge {
@@ -1247,7 +1246,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		seen := make(map[string]struct{})
 		guestArch := lifecycleImageArch(resolved)
 		if service, serviceErr := imageService(repository, nil); serviceErr == nil {
-			if session, sessionErr := service.OpenCatalog(ctx, image.CatalogLocalOnly); sessionErr == nil {
+			if session, sessionErr := service.OpenCatalog(); sessionErr == nil {
 				for _, node := range resolved.Nodes {
 					alias := node.Image
 					if alias == "" {
@@ -1472,9 +1471,21 @@ func runHosts(parent context.Context, action string, apply bool, stderr io.Write
 	var entries []hostconfig.Entry
 	var err error
 	if action == hostconfig.ActionInstall {
+		resolved, resolveErr := currentDeploymentResolved()
+		switch {
+		case errors.Is(resolveErr, os.ErrNotExist):
+			return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
+		case resolveErr != nil:
+			return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, resolveErr, "", nil)
+		case resolved.Network != "private":
+			return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
+		}
 		entries, err = manager.HostEntries(ctx)
 		if err != nil {
-			return commandOutcome{}, newDetailedCommandError("capability", exitCapability, err, "", nil)
+			if errors.Is(err, os.ErrNotExist) {
+				return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
+			}
+			return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 		}
 	}
 	baseRunner := execx.OSRunner{Timeout: 30 * time.Second, OutputLimit: 1 << 20}
@@ -1482,7 +1493,7 @@ func runHosts(parent context.Context, action string, apply bool, stderr io.Write
 	if apply {
 		privilege := &sudoSession{base: baseRunner, stderr: stderr, scope: "hosts command"}
 		defer privilege.close()
-		if err := privilege.ensure(ctx, "apply the reviewed marker-owned /etc/hosts plan"); err != nil {
+		if err := privilege.ensure(ctx, "apply the reviewed /etc/hosts plan"); err != nil {
 			return commandOutcome{}, newDetailedCommandError("capability", exitCapability, err, "", nil)
 		}
 	}
@@ -1513,7 +1524,7 @@ func runHosts(parent context.Context, action string, apply bool, stderr io.Write
 			bestEffortln(stdout, line)
 		}
 		if report.Plan.Changed && !report.Applied {
-			bestEffortln(stdout, "rerun with --yes after reviewing this exact marker-owned plan; Farrow will request sudo when needed")
+			bestEffortln(stdout, "rerun with --yes to apply this plan; Farrow will request sudo when needed")
 			return nil
 		}
 		return nil
@@ -1799,7 +1810,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		var progressItem *progress
-		service, err := imageService(options.Repository, warningProgressReporter(&progressItem, stderr))
+		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -1819,13 +1830,13 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 				bestEffortf(stdout, "image catalog revision %d is current\n", result.ActiveVersion)
 			}
 			textField(stdout, 12, "repository", result.Repository)
-			textField(stdout, 12, "checked", result.CheckedAt.Format(time.RFC3339))
+			textField(stdout, 12, "source", result.Source)
 			return nil
 		}}, nil
 	case "list":
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
-		service, err := imageService(options.Repository, warningProgressReporter(nil, stderr))
+		service, err := imageService(options.Repository, nil)
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -1838,15 +1849,15 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 			Images   []image.Entry       `json:"images"`
 		}{manifestState, entries}
 		return commandOutcome{payload: payload, text: func(stdout, _ io.Writer) error {
-			textField(stdout, 12, "manifest", manifestState.Active)
-			textField(stdout, 12, "version", manifestState.ActiveVersion)
+			textField(stdout, 12, "catalog", manifestState.Active)
+			textField(stdout, 12, "revision", manifestState.ActiveVersion)
 			textField(stdout, 12, "highest", manifestState.HighestVersion)
 			for _, entry := range entries {
-				channels := "-"
+				channels := ""
 				if len(entry.Channels) != 0 {
-					channels = strings.Join(entry.Channels, ",")
+					channels = " channels=" + strings.Join(entry.Channels, ",")
 				}
-				bestEffortf(stdout, "%s %s %s channels=%s status=%s sha256:%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status, entry.SHA256)
+				bestEffortf(stdout, "%s %s %s%s status=%s\n", entry.Alias, entry.Release, entry.Arch, channels, entry.Status)
 			}
 			return nil
 		}}, nil
@@ -1854,7 +1865,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 		defer cancel()
 		var progressItem *progress
-		service, err := imageService(options.Repository, warningProgressReporter(&progressItem, stderr))
+		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -1977,13 +1988,13 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		}
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
-		debugf(stderr, "image manifest sync source=%s allow_downgrade=%t", progressSource(options.Source), options.AllowDowngrade)
+		debugf(stderr, "image catalog sync source=%s allow_downgrade=%t", progressSource(options.Source), options.AllowDowngrade)
 		var progressItem *progress
-		service, err := imageService(options.Repository, warningProgressReporter(&progressItem, stderr))
+		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
-		progressItem = startProgress(ctx, stderr, "Synchronizing the image manifest")
+		progressItem = startProgress(ctx, stderr, "Activating the image catalog")
 		state, err := service.SyncManifest(ctx, options.Source, options.AllowDowngrade)
 		progressItem.Stop(err)
 		if errors.Is(parent.Err(), context.Canceled) {
@@ -1993,13 +2004,13 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 			return commandOutcome{}, newRuntimeError(err)
 		}
 		return commandOutcome{payload: state, text: func(stdout, _ io.Writer) error {
-			bestEffortf(stdout, "activated manifest version %d digest %s key %s\n", state.ActiveVersion, state.ActiveDigest, state.KeyID)
+			bestEffortf(stdout, "activated image catalog revision %d (digest %s, key %s)\n", state.ActiveVersion, state.ActiveDigest, state.KeyID)
 			return nil
 		}}, nil
-	case "reset-manifest":
+	case "reset":
 		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()
-		service, err := imageService(options.Repository, warningProgressReporter(nil, stderr))
+		service, err := imageService(options.Repository, nil)
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -2008,7 +2019,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 			return commandOutcome{}, newRuntimeError(err)
 		}
 		return commandOutcome{payload: state, text: func(stdout, _ io.Writer) error {
-			bestEffortf(stdout, "active manifest reset to embedded version %d; high-water mark %d preserved\n", state.ActiveVersion, state.HighestVersion)
+			bestEffortf(stdout, "image catalog reset to the built-in revision %d; downgrade protection still at %d\n", state.ActiveVersion, state.HighestVersion)
 			return nil
 		}}, nil
 	case "import":

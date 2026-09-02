@@ -36,7 +36,7 @@ type Plan struct {
 
 func validateResolved(value spec.Resolved) error {
 	if value.Schema != 1 || value.Network != "private" || value.Private == nil || len(value.Nodes) < 1 || len(value.Nodes) > 20 || value.SSHUser == "" {
-		return errors.New("private plan requires schema 1, private network, and 1..20 nodes")
+		return errors.New("plan requires schema 1, private network, and 1..20 nodes")
 	}
 	if value.Arch != "" && value.Arch != "amd64" && value.Arch != "arm64" {
 		return fmt.Errorf("unsupported resolved guest architecture %q", value.Arch)
@@ -46,14 +46,14 @@ func validateResolved(value spec.Resolved) error {
 	}
 	layout, err := subnet.Parse(value.Private.CIDR)
 	if err != nil || value.Private.HostAddress != layout.HostAddress() || value.Private.DHCPEnd != layout.DHCPEnd() {
-		return errors.New("private plan network contract is invalid")
+		return errors.New("plan network contract is invalid")
 	}
 	controls := 0
 	names := make(map[string]struct{})
 	addresses := make(map[string]struct{})
 	for _, node := range value.Nodes {
 		if !naming.ValidNodeName(node.Name) || !layout.IsStatic(node.Address) || node.CPUs < 1 || node.Memory < 512<<20 || node.RootDisk <= 0 {
-			return fmt.Errorf("private node %q identity, address, or resources are invalid", node.Name)
+			return fmt.Errorf("node %q identity, address, or resources are invalid", node.Name)
 		}
 		if _, duplicate := names[node.Name]; duplicate {
 			return fmt.Errorf("duplicate private node %q", node.Name)
@@ -68,7 +68,7 @@ func validateResolved(value spec.Resolved) error {
 		}
 	}
 	if controls != 1 {
-		return fmt.Errorf("private plan requires exactly one control node, got %d", controls)
+		return fmt.Errorf("plan requires exactly one control node, got %d", controls)
 	}
 	return nil
 }
@@ -88,7 +88,7 @@ func Build(resolved spec.Resolved, ownerUID int, knownUUIDs map[string]string, s
 		return Plan{}, err
 	}
 	if ownerUID < 0 {
-		return Plan{}, errors.New("private plan owner UID is invalid")
+		return Plan{}, errors.New("plan owner UID is invalid")
 	}
 	if source == nil {
 		source = identity.NewUUID
@@ -104,7 +104,7 @@ func Build(resolved spec.Resolved, ownerUID int, knownUUIDs map[string]string, s
 			vmUUID = generated
 		}
 		if !identity.ValidUUID(vmUUID) {
-			return Plan{}, fmt.Errorf("private node %s VM UUID is invalid", node.Name)
+			return Plan{}, fmt.Errorf("node %s VM UUID is invalid", node.Name)
 		}
 		managementMAC, err := identity.MAC(node.Address, identity.NICManagement)
 		if err != nil {
@@ -116,7 +116,7 @@ func Build(resolved spec.Resolved, ownerUID int, knownUUIDs map[string]string, s
 		}
 		runtimeValue, err := runtimePaths(node.Name, ownerUID)
 		if err != nil {
-			return Plan{}, fmt.Errorf("private node %s runtime path: %w", node.Name, err)
+			return Plan{}, fmt.Errorf("node %s runtime path: %w", node.Name, err)
 		}
 		nodePlan := NodePlan{
 			Name: node.Name, Control: node.Control, Address: node.Address,

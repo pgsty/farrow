@@ -18,23 +18,31 @@ type NodeFailure struct {
 	Error string `json:"error"`
 }
 
+// PartialError reports a multi-node operation in which some nodes failed.
+// Total counts every node the operation attempted.
 type PartialError struct {
-	Nodes      []string
+	Total      int
 	Failures   []NodeFailure
 	RolledBack []string
 }
 
 func (e *PartialError) Error() string {
-	message := fmt.Sprintf("private multi-node operation partially succeeded; failed nodes: %v", e.Nodes)
-	if len(e.Failures) != 0 {
-		details := make([]string, 0, len(e.Failures))
-		for _, failure := range e.Failures {
-			details = append(details, fmt.Sprintf("%s (%s: %s)", failure.Node, failure.Stage, strings.Join(strings.Fields(failure.Error), " ")))
+	details := make([]string, 0, len(e.Failures))
+	unready := make([]string, 0)
+	for _, failure := range e.Failures {
+		details = append(details, fmt.Sprintf("%s (%s: %s)", failure.Node, failure.Stage, strings.Join(strings.Fields(failure.Error), " ")))
+		if failure.Stage == "readiness" {
+			unready = append(unready, failure.Node)
 		}
-		message += "; failures: " + strings.Join(details, "; ")
+	}
+	message := fmt.Sprintf("%d of %d node(s) failed: %s", len(e.Failures), e.Total, strings.Join(details, "; "))
+	if len(unready) == 1 {
+		message += fmt.Sprintf("; run `farrow logs %s` for the guest console", unready[0])
+	} else if len(unready) > 1 {
+		message += "; run `farrow logs <node>` for the guest console"
 	}
 	if len(e.RolledBack) != 0 {
-		message += fmt.Sprintf("; safely rolled back prepare artifacts: %v", e.RolledBack)
+		message += "; rolled back prepare artifacts for " + strings.Join(e.RolledBack, ", ")
 	}
 	return message
 }
@@ -64,14 +72,10 @@ type FailedRollback struct {
 	Result RollbackResult `json:"result"`
 }
 
-func newPartialError(failures []NodeFailure) *PartialError {
+func newPartialError(failures []NodeFailure, total int) *PartialError {
 	ordered := append([]NodeFailure(nil), failures...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Node < ordered[j].Node })
-	nodes := make([]string, 0, len(ordered))
-	for _, failure := range ordered {
-		nodes = append(nodes, failure.Node)
-	}
-	return &PartialError{Nodes: nodes, Failures: ordered}
+	return &PartialError{Total: total, Failures: ordered}
 }
 
 func startFailures(outcomes []StartOutcome) []NodeFailure {
@@ -112,7 +116,7 @@ func createFailures(result CreateResult) []NodeFailure {
 	}
 	for _, node := range result.Commit.Failed {
 		if _, exists := failed[node]; !exists {
-			failed[node] = NodeFailure{Node: node, Stage: "commit", Error: "prepared node state was not committed"}
+			failed[node] = NodeFailure{Node: node, Stage: "prepare", Error: "prepared node state was not committed"}
 		}
 	}
 	for _, failure := range startFailures(result.Start) {
@@ -128,7 +132,7 @@ func createFailures(result CreateResult) []NodeFailure {
 func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult, returnErr error) {
 	result := CreateResult{}
 	if controller.Deployment.Root == "" || controller.Prepare.DeploymentRoot != controller.Deployment.Root || controller.Lifecycle == nil || controller.Version == "" {
-		return result, fmt.Errorf("private controller deployment, prepare, lifecycle, or version is incomplete")
+		return result, fmt.Errorf("controller deployment, prepare, lifecycle, or version is incomplete")
 	}
 	lockContext, cancelLock := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLock()
@@ -152,7 +156,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult
 		return result, err
 	}
 	if len(result.Commit.Nodes) == 0 {
-		return result, newPartialError(createFailures(result))
+		return result, newPartialError(createFailures(result), len(createNames))
 	}
 	for _, node := range result.Commit.Nodes {
 		if err := FinalizePrepared(controller.Deployment, node.Node); err != nil {
@@ -179,7 +183,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult
 		}
 	}
 	if len(selected) != 0 {
-		return result, fmt.Errorf("private controller start selection contains nodes outside the committed deployment")
+		return result, fmt.Errorf("controller start selection contains nodes outside the committed deployment")
 	}
 	if len(startNames) != 0 {
 		startMessage := fmt.Sprintf("Starting %d node(s) and waiting up to %s for guest readiness", len(startNames), controller.ReadyTimeout)
@@ -201,7 +205,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult
 		if len(startNames) != 0 {
 			controller.Progress.Report(activity.Event{Phase: "guest-ready", Message: fmt.Sprintf("%d node(s) ready; %d node(s) failed", readyCount(result.Start), len(failures))})
 		}
-		return result, newPartialError(failures)
+		return result, newPartialError(failures, len(createNames))
 	}
 	if len(startNames) != 0 {
 		readyMessage := fmt.Sprintf("All %d node(s) are ready", len(startNames))

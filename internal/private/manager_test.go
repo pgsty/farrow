@@ -140,7 +140,6 @@ func TestPrivateSelectedFreshUpResolvesOnlySelectedImageAndAddress(t *testing.T)
 	}
 	resolvedImages := make([]string, 0)
 	preflightAddresses := make([]string, 0)
-	openedImageSessions := 0
 	manager := Manager{
 		Nodes: []string{"node-2"}, FarrowVersion: "test", Runner: failAfterSelectedImageRunner{},
 		NativeProfile: func() (platform.Profile, error) { return profile, nil },
@@ -153,10 +152,6 @@ func TestPrivateSelectedFreshUpResolvesOnlySelectedImageAndAddress(t *testing.T)
 		},
 		DialSSHAddress: func(string, string) (net.Conn, error) { return nil, errors.New("unused") },
 		LookPath:       func(name string) (string, error) { return "/fixture/" + name, nil },
-		openImageSession: func(context.Context, image.Service, image.CatalogRefreshPolicy) (*image.CatalogSession, error) {
-			openedImageSessions++
-			return &image.CatalogSession{}, nil
-		},
 		LookupImage: func(_ context.Context, alias, arch string) (image.Entry, error) {
 			return image.Entry{Alias: alias, Release: "test", Arch: arch, Boot: "uefi", SHA256: strings.Repeat("a", 64)}, nil
 		},
@@ -174,9 +169,6 @@ func TestPrivateSelectedFreshUpResolvesOnlySelectedImageAndAddress(t *testing.T)
 	}
 	if strings.Join(preflightAddresses, ",") != "10.10.10.12" {
 		t.Fatalf("selected up preflight addresses = %v", preflightAddresses)
-	}
-	if openedImageSessions != 1 {
-		t.Fatalf("selected up opened %d catalog sessions, want one command-level session", openedImageSessions)
 	}
 }
 
@@ -209,7 +201,7 @@ func TestPrivatePlanIsReadOnlyAndSupportsOneNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if plan.Action != "create" || len(plan.Nodes) != 1 || plan.Nodes[0] != "meta" {
-		t.Fatalf("private plan = %#v", plan)
+		t.Fatalf("plan = %#v", plan)
 	}
 	if _, err := os.Lstat(root); !os.IsNotExist(err) {
 		t.Fatalf("read-only private plan created the data root: %v", err)

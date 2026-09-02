@@ -30,7 +30,7 @@ before any mutation and requests privilege only at the first privileged step.`,
 	}
 	command.Flags().StringVarP(&options.FilePath, "file", "f", "", "inventory to prepare (cannot be combined with a template)")
 	command.Flags().StringVarP(&options.CIDR, "cidr", "c", "", "generated template network as a canonical RFC1918 IPv4 /24")
-	command.Flags().StringVarP(&options.Repo, "repo", "r", "", "artifact mirror URL or absolute directory for images and socket_vmnet (default: $FARROW_REPO)")
+	command.Flags().StringVarP(&options.Repo, "repo", "r", "", "artifact mirror URL or absolute directory for images and socket_vmnet; defaults to $FARROW_REPO")
 	command.Flags().StringVarP(&options.Mode, "mode", "m", options.Mode, "macOS fixed-IP network backend: host or shared")
 	command.Flags().BoolVarP(&options.DryRun, "dry-run", "d", false, "show the resolved setup plan without changing anything")
 	command.Flags().BoolVarP(&options.Yes, "yes", "y", false, "accept the one-time setup plan (required without a terminal)")
@@ -65,7 +65,7 @@ inventory to stdout for inspection or composition.`,
 		Example: `  farrow init                    # write ./farrow.yml with one meta node
   farrow init full -o lab.yml    # write a four-node inventory elsewhere
   farrow init dual -o -          # print the two-node inventory to stdout
-  farrow init -f                 # replace ./farrow.yml explicitly
+  farrow init --force            # replace ./farrow.yml explicitly
   farrow init full -c 10.20.30.0/24 # generate a lab on another private /24`,
 		Args:              templateArgs,
 		ValidArgsFunction: templateCompletion,
@@ -82,7 +82,7 @@ inventory to stdout for inspection or composition.`,
 	}
 	command.Flags().StringVarP(&options.CIDR, "cidr", "c", "", "rebase the generated template to a canonical RFC1918 IPv4 /24")
 	command.Flags().StringVarP(&options.Output, "output", "o", "", "write to this path instead of ./farrow.yml; '-' writes to stdout")
-	command.Flags().BoolVarP(&options.Force, "force", "f", false, "overwrite an existing configuration file")
+	command.Flags().BoolVar(&options.Force, "force", false, "overwrite an existing inventory file")
 	noFileCompletions(command, "cidr", "force")
 	return command
 }
@@ -93,8 +93,8 @@ func newValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 		Use:   "validate",
 		Short: "Validate and resolve a Farrow configuration",
 		Long: `Parse a Pigsty-compatible inventory, validate every consumed Farrow field,
-and print its source and resolved specification hash. Unlike lifecycle commands,
-validate never falls back to the already-applied deployment state.`,
+and print its source and resolved specification hash. Unlike lifecycle
+commands, validate never falls back to the already-applied deployment state.`,
 		Example: `  farrow validate                 # discover ` + configDiscoverySummary + `
   farrow validate -f pigsty.yml  # validate one explicit inventory
   farrow --json validate         # emit the resolved specification as JSON`,
@@ -107,6 +107,6 @@ validate never falls back to the already-applied deployment state.`,
 			return collectCommandOutcome(command.Context(), outcome)
 		},
 	}
-	command.Flags().StringVarP(&filePath, "file", "f", "", "inventory to validate (default: discover "+configDiscoverySummary+")")
+	command.Flags().StringVarP(&filePath, "file", "f", "", "inventory to validate; defaults to the discovered "+configDiscoverySummary)
 	return command
 }

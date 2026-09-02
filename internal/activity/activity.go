@@ -16,7 +16,6 @@ type Event struct {
 	TotalBytes   int64
 	StartedAt    time.Time
 	Done         bool
-	Warning      bool
 }
 
 // Reporter receives best-effort presentation updates. Reporters must not

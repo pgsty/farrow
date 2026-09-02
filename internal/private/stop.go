@@ -53,7 +53,7 @@ func cleanupRuntime(node state.NodeState) error {
 			continue
 		}
 		if err != nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("private runtime artifact is unsafe: %s", pathname)
+			return fmt.Errorf("runtime artifact is unsafe: %s", pathname)
 		}
 		if err := os.Remove(pathname); err != nil {
 			return err
@@ -67,7 +67,7 @@ func cleanupRuntime(node state.NodeState) error {
 		return err
 	}
 	if len(entries) != 0 {
-		return errors.New("private runtime directory contains unexpected artifacts")
+		return errors.New("runtime directory contains unexpected artifacts")
 	}
 	if err := os.Remove(node.Runtime.Directory); err != nil {
 		return err
@@ -77,13 +77,13 @@ func cleanupRuntime(node state.NodeState) error {
 
 func loadStoppableNodes(store state.Store, names []string) ([]state.NodeState, error) {
 	if len(names) == 0 {
-		return nil, errors.New("private stop requires at least one node")
+		return nil, errors.New("stop requires at least one node")
 	}
 	result := make([]state.NodeState, 0, len(names))
 	seen := make(map[string]struct{})
 	for _, name := range names {
 		if _, duplicate := seen[name]; duplicate {
-			return nil, fmt.Errorf("private stop repeats node %s", name)
+			return nil, fmt.Errorf("stop repeats node %s", name)
 		}
 		seen[name] = struct{}{}
 		node, err := store.ReadNode(name)
@@ -93,21 +93,21 @@ func loadStoppableNodes(store state.Store, names []string) ([]state.NodeState, e
 		switch node.Phase {
 		case state.Running:
 			if node.Process.PID <= 0 {
-				return nil, fmt.Errorf("private node %s is recorded running without a process", name)
+				return nil, fmt.Errorf("node %s is recorded running without a process", name)
 			}
 		case state.Stopping, state.Starting:
 			// An interrupted transition: re-drive the stop when the process
 			// identity is complete; a dead or identity-less transition is
 			// converged by `farrow status` first.
 			if !completeProcess(node.Process) {
-				return nil, fmt.Errorf("private node %s was interrupted mid-%s without a complete process identity; run `farrow status` to converge it", name, node.Phase)
+				return nil, fmt.Errorf("node %s was interrupted mid-%s without a complete process identity; run `farrow status` to converge it", name, node.Phase)
 			}
 		case state.Stopped, state.Prepared:
 			if node.Process.PID != 0 {
 				return nil, fmt.Errorf("inactive private node %s retains a process identity", name)
 			}
 		default:
-			return nil, fmt.Errorf("private node %s phase %s is not stoppable", name, node.Phase)
+			return nil, fmt.Errorf("node %s phase %s is not stoppable", name, node.Phase)
 		}
 		result = append(result, node)
 	}
@@ -116,7 +116,7 @@ func loadStoppableNodes(store state.Store, names []string) ([]state.NodeState, e
 
 func StopRunning(ctx context.Context, config StopConfig) ([]StopOutcome, error) {
 	if config.Deployment.Root == "" || config.Lifecycle == nil {
-		return nil, errors.New("private stop deployment or lifecycle is incomplete")
+		return nil, errors.New("stop deployment or lifecycle is incomplete")
 	}
 	if config.Concurrency <= 0 {
 		config.Concurrency = 4

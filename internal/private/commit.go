@@ -97,7 +97,7 @@ func stateForArtifacts(config PrepareConfig, deploymentValue Deployment, artifac
 	}
 	nodePlan, ok := config.Plan.Node(artifacts.Name)
 	if !ok {
-		return state.NodeState{}, fmt.Errorf("private plan has no node %s", artifacts.Name)
+		return state.NodeState{}, fmt.Errorf("plan has no node %s", artifacts.Name)
 	}
 	baseAlias := definition.Image
 	if baseAlias == "" {
@@ -105,18 +105,18 @@ func stateForArtifacts(config PrepareConfig, deploymentValue Deployment, artifac
 	}
 	base, ok := config.Bases[baseAlias]
 	if !ok || base.Digest == "" || base.Release == "" || base.VirtualSize <= 0 {
-		return state.NodeState{}, fmt.Errorf("private node %s image state metadata is incomplete", artifacts.Name)
+		return state.NodeState{}, fmt.Errorf("node %s image state metadata is incomplete", artifacts.Name)
 	}
 	if base.Alias == "" {
 		base.Alias = baseAlias
 	}
 	if journal.Node != artifacts.Name || journal.VMUUID != nodePlan.VMUUID || journal.SpecHash != config.NodeHashes[artifacts.Name] || !journal.Prepared || !reflect.DeepEqual(journal.Invocation, artifacts.Invocation) {
-		return state.NodeState{}, errors.New("private prepared journal does not match the artifacts/deployment intent")
+		return state.NodeState{}, errors.New("prepared journal does not match the artifacts/deployment intent")
 	}
 	dataState := make([]state.DataDisk, 0, len(artifacts.Data))
 	for index, data := range artifacts.Data {
 		if index >= len(definition.Disks) || definition.Disks[index].Name != data.Name {
-			return state.NodeState{}, errors.New("private data artifact order/name does not match resolved spec")
+			return state.NodeState{}, errors.New("data artifact order/name does not match resolved spec")
 		}
 		dataState = append(dataState, state.DataDisk{Name: data.Name, Path: data.Path, Serial: data.Serial, Size: data.Size, Mount: data.Mount, Persistent: definition.Disks[index].Persistent})
 	}
@@ -141,7 +141,7 @@ func stateForArtifacts(config PrepareConfig, deploymentValue Deployment, artifac
 // per-node outcomes instead of accepting cancellation.
 func CommitPrepared(deploymentValue Deployment, config PrepareConfig, outcomes []PrepareOutcome, version string) (CommitResult, error) {
 	if deploymentValue.Root != config.DeploymentRoot || version == "" {
-		return CommitResult{}, errors.New("private commit config/version identity mismatch")
+		return CommitResult{}, errors.New("commit config/version identity mismatch")
 	}
 	now := config.now()
 	deploymentState := desiredDeploymentState(config.Resolved, config.SpecHash, version, now)
@@ -197,18 +197,18 @@ func FinalizePrepared(deploymentValue Deployment, node string) error {
 		return err
 	}
 	if !journal.StateCommitted || journal.StatePath != filepath.Join(nodeDir, "state.json") {
-		return errors.New("private prepare journal state is not committed")
+		return errors.New("prepare journal state is not committed")
 	}
 	nodeState, err := (state.Store{Root: deploymentValue.Root}).ReadNode(node)
 	if err != nil {
 		return err
 	}
 	if nodeState.VMUUID != journal.VMUUID || nodeState.SpecHash != journal.SpecHash || !reflect.DeepEqual(nodeState.Invocation, journal.Invocation) {
-		return errors.New("private prepare journal and node state differ")
+		return errors.New("prepare journal and node state differ")
 	}
 	info, err := os.Lstat(journalPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("private prepare journal became unsafe")
+		return errors.New("prepare journal became unsafe")
 	}
 	if err := os.Remove(journalPath); err != nil {
 		return err

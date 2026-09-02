@@ -29,18 +29,18 @@ func invocationRuntime(journal PrepareJournal) (string, string, error) {
 		switch journal.Invocation.Args[index] {
 		case "-qmp":
 			if index+1 >= len(journal.Invocation.Args) || !strings.HasPrefix(journal.Invocation.Args[index+1], "unix:") {
-				return "", "", errors.New("private invocation QMP argument is malformed")
+				return "", "", errors.New("invocation QMP argument is malformed")
 			}
 			qmpPath = strings.SplitN(strings.TrimPrefix(journal.Invocation.Args[index+1], "unix:"), ",", 2)[0]
 		case "-pidfile":
 			if index+1 >= len(journal.Invocation.Args) {
-				return "", "", errors.New("private invocation pidfile argument is malformed")
+				return "", "", errors.New("invocation pidfile argument is malformed")
 			}
 			pidfile = journal.Invocation.Args[index+1]
 		}
 	}
 	if journal.Prepared && (!filepath.IsAbs(qmpPath) || !filepath.IsAbs(pidfile) || filepath.Dir(qmpPath) != filepath.Dir(pidfile)) {
-		return "", "", errors.New("private invocation runtime paths are incomplete")
+		return "", "", errors.New("invocation runtime paths are incomplete")
 	}
 	return qmpPath, pidfile, nil
 }
@@ -57,7 +57,7 @@ func RollbackPrepared(deploymentValue Deployment, node string, apply bool) (Roll
 		return result, err
 	}
 	if journal.Node != node {
-		return result, errors.New("private rollback journal identity differs from the node")
+		return result, errors.New("rollback journal identity differs from the node")
 	}
 	if journal.StateCommitted {
 		return result, errors.New("refuse rollback after private node state commit")
@@ -89,7 +89,7 @@ func RollbackPrepared(deploymentValue Deployment, node string, apply bool) (Roll
 			continue
 		}
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return result, fmt.Errorf("private rollback artifact is unsafe: %s", artifact.Path)
+			return result, fmt.Errorf("rollback artifact is unsafe: %s", artifact.Path)
 		}
 	}
 	entries, err := os.ReadDir(nodeDir)
@@ -98,7 +98,7 @@ func RollbackPrepared(deploymentValue Deployment, node string, apply bool) (Roll
 	}
 	for _, entry := range entries {
 		if _, ok := allowed[entry.Name()]; !ok {
-			return result, fmt.Errorf("private rollback node directory contains unexpected entry %q", entry.Name())
+			return result, fmt.Errorf("rollback node directory contains unexpected entry %q", entry.Name())
 		}
 	}
 	for index := len(journal.Completed) - 1; index >= 0; index-- {
@@ -109,7 +109,7 @@ func RollbackPrepared(deploymentValue Deployment, node string, apply bool) (Roll
 		if apply {
 			inside, err := fsutil.IsWithin(nodeDir, artifact.Path)
 			if err != nil || !inside {
-				return result, fmt.Errorf("private rollback artifact escaped node root: %s", artifact.Path)
+				return result, fmt.Errorf("rollback artifact escaped node root: %s", artifact.Path)
 			}
 			if err := os.Remove(artifact.Path); err != nil {
 				return result, err
@@ -126,7 +126,7 @@ func RollbackPrepared(deploymentValue Deployment, node string, apply bool) (Roll
 	if apply {
 		entries, err := os.ReadDir(nodeDir)
 		if err != nil || len(entries) != 0 {
-			return result, errors.New("private rollback node directory changed before removal")
+			return result, errors.New("rollback node directory changed before removal")
 		}
 		if err := os.Remove(nodeDir); err != nil {
 			return result, err

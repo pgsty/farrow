@@ -31,7 +31,7 @@ func TestBuildPrivateIntentDeterministicAndShort(t *testing.T) {
 		t.Fatal(err)
 	}
 	if plan.Control != "meta" || len(plan.Nodes) != 2 {
-		t.Fatalf("private plan = %#v", plan)
+		t.Fatalf("plan = %#v", plan)
 	}
 	for _, node := range plan.Nodes {
 		if len(node.Runtime.QMP) > 103 || node.ManagementMAC == node.PrivateMAC || node.Runtime.Directory == "" {
@@ -82,7 +82,7 @@ func TestBuildPrivateIntentRejectsInvalidControlAndDuplicateAddress(t *testing.T
 	resolved := privateResolved()
 	resolved.Nodes[0].Control = false
 	if _, err := Build(resolved, os.Getuid(), nil, nil); err == nil {
-		t.Fatal("private plan without control was accepted")
+		t.Fatal("plan without control was accepted")
 	}
 	resolved = privateResolved()
 	resolved.Nodes[1].Address = resolved.Nodes[0].Address

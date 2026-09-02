@@ -59,11 +59,15 @@ func TestConfiguredRepositoryPrecedence(t *testing.T) {
 func TestLookupArchUsesEmbeddedCatalogWithoutDownloading(t *testing.T) {
 	t.Parallel()
 	service := Service{DataRoot: t.TempDir()}
-	entry, err := service.LookupArch(context.Background(), "centos79", "amd64")
+	session, err := service.OpenCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := session.LookupArch(context.Background(), "centos79", "amd64")
 	if err != nil || entry.Alias != "el7" || entry.Arch != "amd64" || entry.Boot != "bios" {
 		t.Fatalf("EL7 lookup = %#v, %v", entry, err)
 	}
-	if _, err := service.LookupArch(context.Background(), "el7", "arm64"); err == nil {
+	if _, err := session.LookupArch(context.Background(), "el7", "arm64"); err == nil {
 		t.Fatal("EL7 arm64 lookup unexpectedly succeeded")
 	}
 }
@@ -83,7 +87,11 @@ func TestExplicitUnsignedLocalRepositoryIsSelfContained(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, CatalogFilename), append(data, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	entries, state, err := (Service{DataRoot: t.TempDir(), Repository: repository}).List(context.Background())
+	service := Service{DataRoot: t.TempDir(), Repository: repository}
+	if _, err := service.UpdateCatalog(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	entries, state, err := service.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,8 +152,8 @@ func TestSyncAndResetHonorFARROWREPOStateKey(t *testing.T) {
 	if state, err := service.SyncManifest(context.Background(), source, false); err != nil || state.ActiveVersion != 1 {
 		t.Fatalf("environment repository sync = %#v, %v", state, err)
 	}
-	if session, err := service.OpenCatalog(context.Background(), CatalogRefreshIfDue); err != nil || session.Refresh().Attempted || session.Manifest().ActiveVersion != 1 {
-		t.Fatalf("manual sync freshness = %#v, %v", session, err)
+	if session, err := service.OpenCatalog(); err != nil || session.Manifest().ActiveVersion != 1 {
+		t.Fatalf("manual sync session = %#v, %v", session, err)
 	}
 	manager := ManifestManager{DataRoot: dataRoot, Repository: repository, AllowUnsigned: true}
 	if state, err := manager.readState(); err != nil || state.ActiveVersion != 1 {
@@ -157,7 +165,7 @@ func TestSyncAndResetHonorFARROWREPOStateKey(t *testing.T) {
 	if state, err := manager.readState(); err != nil || state.Active != "embedded" || state.HighestVersion != 1 {
 		t.Fatalf("environment repository reset lost high-water state: %#v, %v", state, err)
 	}
-	if session, err := service.OpenCatalog(context.Background(), CatalogRefreshIfDue); err != nil || session.Refresh().Attempted || session.Manifest().Active != "embedded" {
-		t.Fatalf("manual reset freshness = %#v, %v", session, err)
+	if session, err := service.OpenCatalog(); err != nil || session.Manifest().Active != "embedded" {
+		t.Fatalf("manual reset session = %#v, %v", session, err)
 	}
 }

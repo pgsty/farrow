@@ -13,7 +13,7 @@ import (
 	"github.com/pgsty/farrow/internal/spec"
 )
 
-func TestLifecycleCatalogSessionProbesOnceForSevenImages(t *testing.T) {
+func TestLifecycleCatalogSessionNeverTouchesTheRepository(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -27,7 +27,7 @@ func TestLifecycleCatalogSessionProbesOnceForSevenImages(t *testing.T) {
 	t.Setenv("FARROW_HOME", filepath.Join(t.TempDir(), "farrow-home"))
 
 	manager := Manager{}
-	if err := manager.ensureImageSession(context.Background(), image.CatalogRefreshIfDue); err != nil {
+	if err := manager.ensureImageSession(); err != nil {
 		t.Fatal(err)
 	}
 	resolved := spec.Resolved{Nodes: []spec.Node{
@@ -46,10 +46,10 @@ func TestLifecycleCatalogSessionProbesOnceForSevenImages(t *testing.T) {
 			t.Fatalf("resolve boot attempt %d = %q, %v", attempt+1, boot, err)
 		}
 	}
-	if requests.Load() != 1 {
-		t.Fatalf("seven image aliases made %d catalog requests, want exactly one failed probe", requests.Load())
+	if requests.Load() != 0 {
+		t.Fatalf("lifecycle image resolution made %d implicit catalog requests", requests.Load())
 	}
-	if manager.imageSession == nil || manager.imageSession.Refresh().Warning == "" {
-		t.Fatalf("lifecycle session did not retain the offline fallback: %#v", manager.imageSession)
+	if manager.imageSession == nil || manager.imageSession.Manifest().Source != "embedded" {
+		t.Fatalf("lifecycle session did not use the embedded catalog: %#v", manager.imageSession)
 	}
 }

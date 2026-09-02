@@ -77,7 +77,7 @@ func TestControllerCreateAndStartReturnsTypedPartialAndKeepsSuccess(t *testing.T
 	result, err := controller.CreateAndStart(context.Background())
 	operationErr := err
 	var partial *PartialError
-	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" || len(readyNames(result.Start)) != 1 || readyNames(result.Start)[0] != "meta" {
+	if !errors.As(err, &partial) || len(partial.Failures) != 1 || partial.Failures[0].Node != "node-1" || len(readyNames(result.Start)) != 1 || readyNames(result.Start)[0] != "meta" {
 		t.Fatalf("partial controller result=%#v partial=%#v err=%v", result, partial, err)
 	}
 	persisted, err := (state.Store{Root: controller.Deployment.Root}).ReadNode("meta")
@@ -135,7 +135,7 @@ func TestControllerManagerStartSelectionSkipsPrepareFailure(t *testing.T) {
 
 	result, err := controller.CreateAndStart(context.Background())
 	var partial *PartialError
-	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" {
+	if !errors.As(err, &partial) || len(partial.Failures) != 1 || partial.Failures[0].Node != "node-1" {
 		t.Fatalf("manager-style start selection result=%#v partial=%#v err=%v", result, partial, err)
 	}
 	if ready := readyNames(result.Start); len(ready) != 1 || ready[0] != "meta" {
@@ -157,7 +157,7 @@ func TestControllerFailedSelectedStartDoesNotStartUnselectedPeer(t *testing.T) {
 
 	result, err := controller.CreateAndStart(context.Background())
 	var partial *PartialError
-	if !errors.As(err, &partial) || len(partial.Nodes) != 1 || partial.Nodes[0] != "node-1" || len(result.Start) != 0 {
+	if !errors.As(err, &partial) || len(partial.Failures) != 1 || partial.Failures[0].Node != "node-1" || len(result.Start) != 0 {
 		t.Fatalf("failed selected start result=%#v partial=%#v err=%v", result, partial, err)
 	}
 	meta, metaErr := (state.Store{Root: controller.Deployment.Root}).ReadNode("meta")
@@ -171,7 +171,7 @@ func TestControllerTotalPrepareFailureReturnsTypedPartial(t *testing.T) {
 	controller := controllerFixture(t, &fakePrivateDisks{failSubstring: "root.qcow2"}, &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}})
 	_, err := controller.CreateAndStart(context.Background())
 	var partial *PartialError
-	if !errors.As(err, &partial) || len(partial.Nodes) != 2 {
+	if !errors.As(err, &partial) || len(partial.Failures) != 2 || partial.Total != 2 {
 		t.Fatalf("total prepare failure = %#v, %v", partial, err)
 	}
 	for _, name := range []string{"meta", "node-1"} {

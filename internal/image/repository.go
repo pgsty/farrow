@@ -82,22 +82,3 @@ func RepositoryArtifactSource(repository, filename string) (string, error) {
 	}
 	return filepath.Join(repository, filepath.FromSlash(filename)), nil
 }
-
-func RepositoryFromCatalogSource(source string) string {
-	if strings.HasPrefix(source, "local:") {
-		local := strings.TrimPrefix(source, "local:")
-		if filepath.Base(local) == CatalogFilename {
-			return filepath.Dir(local)
-		}
-		return ""
-	}
-	parsed, err := url.Parse(source)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || path.Base(parsed.Path) != CatalogFilename {
-		return ""
-	}
-	parsed.Path = path.Dir(parsed.Path)
-	if parsed.Path == "." || parsed.Path == "/" {
-		parsed.Path = ""
-	}
-	return strings.TrimSuffix(parsed.String(), "/")
-}

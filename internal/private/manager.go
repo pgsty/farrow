@@ -38,12 +38,12 @@ type NetworkPreflightFunc func(context.Context, platform.Profile, netpreflight.R
 
 type NetworkPreflightError struct{ Report netpreflight.Report }
 
-var ErrRecreateRequired = errors.New("private desired spec requires recreate")
+var ErrRecreateRequired = errors.New("recreate required")
 
 // ErrNodesRemoved reports nodes present in deployment state but absent from the
 // desired configuration. The absence of a node from a configuration never
 // implies destruction; removal is an explicit `farrow destroy <node> --force`.
-var ErrNodesRemoved = errors.New("configuration no longer defines existing node(s)")
+var ErrNodesRemoved = errors.New("inventory no longer lists existing node(s)")
 
 // resolvedDiff is the node-granular classification of a desired configuration
 // against the applied deployment state.
@@ -101,7 +101,11 @@ func sameResolvedNode(first, second spec.Node) bool {
 func (e *NetworkPreflightError) Error() string {
 	for _, finding := range e.Report.Findings {
 		if finding.Severity == netpreflight.Error {
-			return finding.Code + ": " + finding.Evidence
+			message := finding.Code + ": " + finding.Evidence
+			if finding.Fix != "" {
+				message += "; fix: " + finding.Fix
+			}
+			return message
 		}
 	}
 	return "private network preflight failed"
@@ -119,10 +123,8 @@ type Manager struct {
 	ResolveImage        ImageResolver
 	LookupImage         ImageLookup
 	imageSession        *image.CatalogSession
-	openImageSession    func(context.Context, image.Service, image.CatalogRefreshPolicy) (*image.CatalogSession, error)
 	HostPreflight       HostPreflightFunc
 	NetworkPreflight    NetworkPreflightFunc
-	ForceDarwinFD       bool
 	NativeProfile       func() (platform.Profile, error)
 	LookPath            func(string) (string, error)
 	FirmwareLookup      func(platform.Profile, string) (platform.Firmware, error)
@@ -300,7 +302,7 @@ func selectedNodeNames(resolved spec.Resolved, requested []string) ([]string, er
 			return nil, fmt.Errorf("the deployment has no node %q", name)
 		}
 		if _, duplicate := seen[name]; duplicate {
-			return nil, fmt.Errorf("private node selection repeats %q", name)
+			return nil, fmt.Errorf("node selection repeats %q", name)
 		}
 		seen[name] = struct{}{}
 		result = append(result, name)
@@ -339,7 +341,7 @@ func committedNodeNames(store state.Store, resolved spec.Resolved, names []strin
 		} else if missingPath(err) && !explicit {
 			continue
 		} else if missingPath(err) {
-			return nil, fmt.Errorf("private node %s has no committed state; run `farrow up %s` first", name, name)
+			return nil, fmt.Errorf("node %s has no committed state; run `farrow up %s` first", name, name)
 		} else {
 			return nil, err
 		}
@@ -352,7 +354,7 @@ func committedNodeNames(store state.Store, resolved spec.Resolved, names []strin
 
 func (m Manager) preflight(ctx context.Context, profile platform.Profile, resolved spec.Resolved) (Backend, error) {
 	if resolved.Private == nil {
-		return Backend{}, &CapabilityError{Reason: "private host preflight requires a resolved network"}
+		return Backend{}, &CapabilityError{Reason: "host preflight requires a resolved network"}
 	}
 	layout, layoutErr := subnet.Parse(resolved.Private.CIDR)
 	if layoutErr != nil {
@@ -381,13 +383,6 @@ func (m Manager) preflight(ctx context.Context, profile platform.Profile, resolv
 	}
 	if err != nil {
 		return Backend{}, err
-	}
-	if m.ForceDarwinFD {
-		if profile.OS != "darwin" || backend.DarwinSocket == "" {
-			return Backend{}, errors.New("forced Darwin FD fallback requires a Darwin socket backend")
-		}
-		backend.DarwinUseFD = true
-		backend.ReconnectMS = 0
 	}
 	return backend, nil
 }
@@ -611,28 +606,19 @@ func (m Manager) imageDataRoot() (string, error) {
 	return state.ResolveDataRoot()
 }
 
-func (m *Manager) ensureImageSession(ctx context.Context, policy image.CatalogRefreshPolicy) error {
-	if m.imageSession != nil || (m.ResolveImage != nil && m.LookupImage != nil && m.openImageSession == nil) {
+// ensureImageSession opens the local image catalog once per command so every
+// node resolves against the same revision. Tests may inject ResolveImage and
+// LookupImage instead; the catalog is never read from the network here.
+func (m *Manager) ensureImageSession() error {
+	if m.imageSession != nil || (m.ResolveImage != nil && m.LookupImage != nil) {
 		return nil
-	}
-	// Test and embedding hooks own one side of resolution explicitly. Keep the
-	// other side local-only so an injected resolver never gains an implicit
-	// network dependency.
-	if m.ResolveImage != nil || m.LookupImage != nil {
-		policy = image.CatalogLocalOnly
 	}
 	dataRoot, err := m.imageDataRoot()
 	if err != nil {
 		return err
 	}
 	service := image.Service{DataRoot: dataRoot, Repository: m.Repository, Runner: m.Runner, Progress: m.Progress}
-	open := m.openImageSession
-	if open == nil {
-		open = func(openCtx context.Context, openService image.Service, openPolicy image.CatalogRefreshPolicy) (*image.CatalogSession, error) {
-			return openService.OpenCatalog(openCtx, openPolicy)
-		}
-	}
-	session, err := open(ctx, service, policy)
+	session, err := service.OpenCatalog()
 	if err != nil {
 		return err
 	}
@@ -644,35 +630,25 @@ func (m Manager) resolveOneImage(ctx context.Context, alias, arch string) (image
 	if m.ResolveImage != nil {
 		return m.ResolveImage(ctx, alias, arch)
 	}
-	if m.imageSession != nil {
-		return m.imageSession.ResolveArch(ctx, alias, arch)
+	if m.imageSession == nil {
+		return image.Entry{}, "", image.Metadata{}, errors.New("image catalog was not opened before resolving images")
 	}
-	dataRoot, err := m.imageDataRoot()
-	if err != nil {
-		return image.Entry{}, "", image.Metadata{}, err
-	}
-	resolver := image.Service{DataRoot: dataRoot, Repository: m.Repository, Runner: m.Runner, Progress: m.Progress}
-	return resolver.ResolveArch(ctx, alias, arch)
+	return m.imageSession.ResolveArch(ctx, alias, arch)
 }
 
 func (m Manager) lookupOneImage(ctx context.Context, alias, arch string) (image.Entry, error) {
 	if m.LookupImage != nil {
 		return m.LookupImage(ctx, alias, arch)
 	}
-	if m.imageSession != nil {
-		return m.imageSession.LookupArch(ctx, alias, arch)
+	if m.imageSession == nil {
+		return image.Entry{}, errors.New("image catalog was not opened before resolving images")
 	}
-	dataRoot, err := m.imageDataRoot()
-	if err != nil {
-		return image.Entry{}, err
-	}
-	resolver := image.Service{DataRoot: dataRoot, Repository: m.Repository, Runner: m.Runner, Progress: m.Progress}
-	return resolver.LookupArch(ctx, alias, arch)
+	return m.imageSession.LookupArch(ctx, alias, arch)
 }
 
 func mergeBootMode(profile platform.Profile, current, alias, candidate string) (string, error) {
 	if current != "" && current != candidate {
-		return "", errors.New("private v1 does not mix BIOS and UEFI images in one deployment")
+		return "", errors.New("a deployment does not mix BIOS and UEFI images")
 	}
 	if profile.RequiresUEFI && candidate != "uefi" {
 		return "", &CapabilityError{Reason: fmt.Sprintf("image %s boot=%s is incompatible with required UEFI guest architecture", alias, candidate)}
@@ -915,17 +891,17 @@ func (m Manager) statusForLocked(ctx context.Context, deploymentValue Deployment
 			case qmpErr == nil && processMatches:
 				runtimeState = "running"
 			case qmpErr == nil:
-				return Status{}, fmt.Errorf("private node %s has matching QMP but its recorded process identity does not match; recreate --force it", node.Node)
+				return Status{}, fmt.Errorf("node %s has matching QMP but its recorded process identity does not match; recreate --force it", node.Node)
 			case errors.Is(qmpErr, vm.ErrQMPIdentityMismatch):
-				return Status{}, fmt.Errorf("private node %s has mismatched QMP identity; recreate --force it: %w", node.Node, qmpErr)
+				return Status{}, fmt.Errorf("node %s has mismatched QMP identity; recreate --force it: %w", node.Node, qmpErr)
 			case processMatches:
-				return Status{}, fmt.Errorf("private node %s process identity matches but QMP is unavailable; inspect its logs, then run `farrow stop` to converge it (shutdown uses verified process signals, not guest powerdown)", node.Node)
+				return Status{}, fmt.Errorf("node %s process identity matches but QMP is unavailable; inspect its logs, then run `farrow stop` to converge it (shutdown uses verified process signals, not guest powerdown)", node.Node)
 			case node.Runtime.Directory == "" || node.Runtime.QMP == "" || node.Runtime.PIDFile == "":
-				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete runtime identity; recreate is required", node.Node)
+				return Status{}, fmt.Errorf("node %s is recorded running with incomplete runtime identity; recreate is required", node.Node)
 			case !completeProcess(node.Process):
-				return Status{}, fmt.Errorf("private node %s is recorded running with incomplete process identity; recreate is required", node.Node)
+				return Status{}, fmt.Errorf("node %s is recorded running with incomplete process identity; recreate is required", node.Node)
 			case process.Alive(node.Process.PID):
-				return Status{}, fmt.Errorf("private node %s recorded PID %d is alive but full process identity does not match; verify and stop it manually", node.Node, node.Process.PID)
+				return Status{}, fmt.Errorf("node %s recorded PID %d is alive but full process identity does not match; verify and stop it manually", node.Node, node.Process.PID)
 			default:
 				// ValidateIdentity alone cannot distinguish a wholly stale QMP
 				// socket from a live endpoint whose name responded but UUID query
@@ -933,10 +909,10 @@ func (m Manager) statusForLocked(ctx context.Context, deploymentValue Deployment
 				// QMP/process/pidfile identity dead before converging.
 				observation, auditErr := RuntimeIdentityAuditor(m.runner(), time.Second)(ctx, node)
 				if auditErr != nil {
-					return Status{}, fmt.Errorf("private node %s runtime death audit is inconclusive: %w", node.Node, auditErr)
+					return Status{}, fmt.Errorf("node %s runtime death audit is inconclusive: %w", node.Node, auditErr)
 				}
 				if observation.Live || observation.Authority != "dead" {
-					return Status{}, fmt.Errorf("private node %s runtime became live during death audit: %s", node.Node, observation.Evidence)
+					return Status{}, fmt.Errorf("node %s runtime became live during death audit: %s", node.Node, observation.Evidence)
 				}
 				// This is the safe self-halt case. The death audit proved both QMP
 				// and every recorded PID dead, so remove the bounded runtime residue
@@ -956,11 +932,11 @@ func (m Manager) statusForLocked(ctx context.Context, deploymentValue Deployment
 			// and are re-driven only with complete process identity.
 			observation, auditErr := RuntimeIdentityAuditor(m.runner(), time.Second)(ctx, node)
 			if auditErr != nil {
-				return Status{}, fmt.Errorf("private node %s was interrupted mid-%s and its runtime death audit is inconclusive: %w", node.Node, node.Phase, auditErr)
+				return Status{}, fmt.Errorf("node %s was interrupted mid-%s and its runtime death audit is inconclusive: %w", node.Node, node.Phase, auditErr)
 			}
 			if observation.Live && node.Phase == state.Starting && !completeProcess(node.Process) {
 				if observation.Authority != "qmp" {
-					return Status{}, fmt.Errorf("private node %s interrupted start lacks matching QMP authority", node.Node)
+					return Status{}, fmt.Errorf("node %s interrupted start lacks matching QMP authority", node.Node)
 				}
 				identityValue, captureErr := captureRuntimeProcess(ctx, m.runner(), node)
 				if captureErr != nil {
@@ -1018,7 +994,7 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return m.statusFor(ctx, deploymentValue, "deployment status")
+	return m.statusFor(ctx, deploymentValue, "")
 }
 
 func defaultCommittedNode(store state.Store, resolved spec.Resolved) (string, error) {
@@ -1042,7 +1018,7 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 	}
 	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
 	if err != nil || deploymentState.Resolved.Network != "private" {
-		return Connection{}, errors.New("the deployment has no valid private state")
+		return Connection{}, errors.New("the deployment has no valid state")
 	}
 	if requestedNode == "" {
 		requestedNode, err = defaultCommittedNode(state.Store{Root: deploymentValue.Root}, deploymentState.Resolved)
@@ -1066,7 +1042,7 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 	for _, node := range status.Nodes {
 		if node.Name == requestedNode {
 			if node.State != state.Running || node.Runtime != "running" {
-				return Connection{}, fmt.Errorf("private node %s is not running", requestedNode)
+				return Connection{}, fmt.Errorf("node %s is not running", requestedNode)
 			}
 			port = node.SSHPort
 		}
@@ -1078,7 +1054,7 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 	for path, mode := range map[string]os.FileMode{privateKey: 0o600, knownHosts: 0o600} {
 		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != mode {
-			return Connection{}, fmt.Errorf("private SSH artifact is unsafe: %s", path)
+			return Connection{}, fmt.Errorf("SSH artifact is unsafe: %s", path)
 		}
 	}
 	return Connection{Node: requestedNode, User: deploymentState.Resolved.SSHUser, Host: "127.0.0.1", Port: port, PrivateKey: privateKey, KnownHosts: knownHosts}, nil
@@ -1091,13 +1067,13 @@ func (m Manager) LogPath(nodeName, source string) (string, error) {
 	}
 	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
 	if err != nil || deploymentState.Resolved.Network != "private" {
-		return "", errors.New("the deployment has no valid private state")
+		return "", errors.New("the deployment has no valid state")
 	}
 	if source == "events" {
 		path := filepath.Join(deploymentValue.Root, "events.jsonl")
 		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("private event log is missing or unsafe: %s", path)
+			return "", fmt.Errorf("event log is missing or unsafe: %s", path)
 		}
 		return path, nil
 	}
@@ -1128,7 +1104,7 @@ func (m Manager) LogPath(nodeName, source string) (string, error) {
 	path := filepath.Join(nodeDir, logName)
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("private %s log is missing or unsafe: %s", source, path)
+		return "", fmt.Errorf("%s log is missing or unsafe: %s", source, path)
 	}
 	return path, nil
 }
@@ -1165,7 +1141,7 @@ func (m Manager) SSHConfig(ctx context.Context) (string, error) {
 
 func (m Manager) RecordEvent(ctx context.Context, action, level, message string) error {
 	if m.OperationID == "" {
-		return errors.New("private event requires an operation ID")
+		return errors.New("event requires an operation ID")
 	}
 	deploymentValue, err := m.openDeployment(false)
 	if err != nil {
@@ -1198,13 +1174,13 @@ func (m Manager) RecordEvent(ctx context.Context, action, level, message string)
 // explicit recreate/destroy paths instead of acting on them.
 func refuseDrift(diff resolvedDiff) error {
 	if diff.EnvelopeChanged {
-		return fmt.Errorf("%w: deployment-level settings changed; run farrow plan, then farrow recreate -f <config> --force", ErrRecreateRequired)
+		return fmt.Errorf("%w: deployment-level settings changed; run `farrow plan`, then `farrow recreate`", ErrRecreateRequired)
 	}
 	if len(diff.Removed) != 0 {
-		return fmt.Errorf("%w: %s; farrow never destroys from absence — run `farrow destroy %s --force` to remove them, or restore them in the configuration", ErrNodesRemoved, strings.Join(diff.Removed, ", "), strings.Join(diff.Removed, " "))
+		return fmt.Errorf("%w: %s; Farrow never destroys from absence; run `farrow destroy %s` to remove them, or add them back to the inventory", ErrNodesRemoved, strings.Join(diff.Removed, ", "), strings.Join(diff.Removed, " "))
 	}
 	if len(diff.Changed) != 0 {
-		return fmt.Errorf("%w for node(s) %s; run farrow plan, then `farrow recreate --force %s` with this configuration", ErrRecreateRequired, strings.Join(diff.Changed, ", "), strings.Join(diff.Changed, " "))
+		return fmt.Errorf("%w: node(s) %s changed; run `farrow plan` to review, then `farrow recreate %s`", ErrRecreateRequired, strings.Join(diff.Changed, ", "), strings.Join(diff.Changed, " "))
 	}
 	return nil
 }
@@ -1223,7 +1199,7 @@ func (m Manager) Reload(ctx context.Context, requested spec.Resolved) (Status, e
 	store := state.Store{Root: deploymentValue.Root}
 	persisted, err := store.ReadDeployment()
 	if err != nil || persisted.Resolved.Network != "private" {
-		return Status{}, errors.New("the deployment has no valid private state")
+		return Status{}, errors.New("the deployment has no valid state")
 	}
 	selected, err := selectedNodeNames(requested, m.Nodes)
 	if err != nil {
@@ -1318,9 +1294,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 			}
 			if len(createNodes) != 0 {
 				reusableDeployment = &existing
-			} else if allRunning {
-				return m.startExisting(ctx, existing, persisted, hostProfile, backend)
-			} else if allRunnable {
+			} else if allRunning || allRunnable {
 				return m.startExisting(ctx, existing, persisted, hostProfile, backend)
 			} else {
 				return Status{}, errors.New("the deployment has mixed node phases; run `farrow status` to converge interrupted transitions, then retry")
@@ -1355,7 +1329,7 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 	if err != nil {
 		return Status{}, err
 	}
-	if err := m.ensureImageSession(ctx, image.CatalogRefreshIfDue); err != nil {
+	if err := m.ensureImageSession(); err != nil {
 		return Status{}, err
 	}
 	boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)
@@ -1510,7 +1484,7 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 		return Status{}, err
 	}
 	selectedSet := nodeNameSet(selected)
-	if _, err := m.statusFor(ctx, deploymentValue, "pre-start identity audit"); err != nil {
+	if _, err := m.statusFor(ctx, deploymentValue, ""); err != nil {
 		return Status{}, err
 	}
 	startableDefinitions := make([]spec.Node, 0, len(deploymentState.Resolved.Nodes))
@@ -1545,29 +1519,30 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 	keysDir := filepath.Join(deploymentValue.Root, "keys")
 	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}, Deployment: deploymentValue, Shares: shareSourcesByNode(deploymentState.Resolved), SSHPath: sshPath, PrivateKey: filepath.Join(keysDir, "id_ed25519"), KnownHosts: filepath.Join(keysDir, "known_hosts"), DarwinSocket: backend.DarwinSocket}
 	names := make([]string, 0, len(deploymentState.Resolved.Nodes))
-	runningNames := make([]string, 0, len(deploymentState.Resolved.Nodes))
-	store := preStartStore
+	starting := 0
 	for _, definition := range deploymentState.Resolved.Nodes {
 		if _, include := selectedSet[definition.Name]; !include {
 			continue
 		}
-		node, err := store.ReadNode(definition.Name)
+		node, err := preStartStore.ReadNode(definition.Name)
 		if err != nil {
 			return Status{}, err
 		}
 		switch node.Phase {
 		case state.Running:
+			// Recheck readiness without restarting QEMU so a later up converges
+			// a prior partial run; --no-wait skips the check.
 			if !m.NoWait {
-				runningNames = append(runningNames, node.Node)
+				names = append(names, node.Node)
 			}
-			continue
 		case state.Prepared, state.Stopped:
 			names = append(names, node.Node)
+			starting++
 		default:
-			return Status{}, fmt.Errorf("private node %s phase %s requires `farrow status` convergence before start", node.Node, node.Phase)
+			return Status{}, fmt.Errorf("node %s phase %s requires `farrow status` convergence before start", node.Node, node.Phase)
 		}
 	}
-	if len(names) == 0 && len(runningNames) == 0 {
+	if len(names) == 0 {
 		m.Progress.Report(activity.Event{Phase: "deployment-state", Message: "All selected nodes are already running", Done: true})
 		return m.statusForLocked(ctx, deploymentValue, "already running")
 	}
@@ -1575,43 +1550,31 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 	if err != nil {
 		return Status{}, err
 	}
-	outcomes := make([]StartOutcome, 0, len(names)+len(runningNames))
-	if len(names) != 0 {
-		startMessage := fmt.Sprintf("Starting %d node(s) and waiting up to %s for guest readiness", len(names), readyTimeout)
-		if m.NoWait {
-			startMessage = fmt.Sprintf("Starting %d node(s) without waiting for guest readiness", len(names))
-		}
-		m.report("guest-ready", startMessage)
-		started, startErr := StartPrepared(ctx, StartConfig{Deployment: deploymentValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait})
-		if startErr != nil {
-			return Status{}, startErr
-		}
-		outcomes = append(outcomes, started...)
+	switch {
+	case starting == 0:
+		m.report("guest-ready", fmt.Sprintf("Checking guest readiness for %d running node(s)", len(names)))
+	case m.NoWait:
+		m.report("guest-ready", fmt.Sprintf("Starting %d node(s) without waiting for guest readiness", starting))
+	default:
+		m.report("guest-ready", fmt.Sprintf("Starting %d node(s) and waiting up to %s for guest readiness", starting, readyTimeout))
 	}
-	if len(runningNames) != 0 {
-		m.report("guest-ready", fmt.Sprintf("Checking guest readiness for %d running node(s)", len(runningNames)))
-		checked, readyErr := waitRunningReady(ctx, readyConfig{Deployment: deploymentValue, Lifecycle: lifecycle, Nodes: runningNames, Concurrency: boundedConcurrency(len(runningNames)), ReadyTimeout: readyTimeout})
-		if readyErr != nil {
-			return Status{}, readyErr
-		}
-		outcomes = append(outcomes, checked...)
+	outcomes, err := StartPrepared(ctx, StartConfig{Deployment: deploymentValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait})
+	if err != nil {
+		return Status{}, err
 	}
 	if failures := startFailures(outcomes); len(failures) > 0 {
 		m.Progress.Report(activity.Event{Phase: "guest-ready", Message: fmt.Sprintf("%d node(s) ready; %d node(s) failed", readyCount(outcomes), len(failures))})
-		return Status{}, newPartialError(failures)
+		return Status{}, newPartialError(failures, len(outcomes))
 	}
 	readyMessage := fmt.Sprintf("All %d node(s) are ready", len(outcomes))
 	if m.NoWait {
-		readyMessage = fmt.Sprintf("QEMU is running for %d node(s); guest readiness was skipped", len(names))
+		readyMessage = fmt.Sprintf("QEMU is running for %d node(s); guest readiness was skipped", len(outcomes))
 	}
 	m.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
-	statusMessage := "started the deployment"
-	if len(names) == 0 {
-		statusMessage = "guest readiness confirmed"
-	} else if len(runningNames) != 0 {
-		statusMessage = "started selected nodes and confirmed guest readiness"
+	if starting == 0 {
+		return m.statusForLocked(ctx, deploymentValue, "already running")
 	}
-	return m.statusForLocked(ctx, deploymentValue, statusMessage)
+	return m.statusForLocked(ctx, deploymentValue, "started the deployment")
 }
 
 func (m Manager) Start(ctx context.Context) (Status, error) {
@@ -1621,7 +1584,7 @@ func (m Manager) Start(ctx context.Context) (Status, error) {
 	}
 	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
 	if err != nil || deploymentState.Resolved.Network != "private" {
-		return Status{}, errors.New("the deployment has no valid private state")
+		return Status{}, errors.New("the deployment has no valid state")
 	}
 	profile, err := m.nativeProfile()
 	if err != nil {
@@ -1637,7 +1600,7 @@ func (m Manager) Stop(ctx context.Context) (_ Status, returnErr error) {
 	}
 	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
 	if err != nil || deploymentState.Resolved.Network != "private" {
-		return Status{}, errors.New("the deployment has no valid private state")
+		return Status{}, errors.New("the deployment has no valid state")
 	}
 	lockContext, cancelLock := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLock()
@@ -1669,7 +1632,7 @@ func (m Manager) Stop(ctx context.Context) (_ Status, returnErr error) {
 		}
 	}
 	if len(failures) > 0 {
-		return Status{}, newPartialError(failures)
+		return Status{}, newPartialError(failures, len(outcomes))
 	}
 	return m.statusForLocked(ctx, deploymentValue, "stopped selected nodes")
 }
@@ -1681,7 +1644,7 @@ func (m Manager) Restart(ctx context.Context) (Status, error) {
 	}
 	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
 	if err != nil || deploymentState.Resolved.Network != "private" {
-		return Status{}, errors.New("the deployment has no valid private state")
+		return Status{}, errors.New("the deployment has no valid state")
 	}
 	profile, err := m.nativeProfile()
 	if err != nil {
@@ -1736,7 +1699,7 @@ func (m Manager) Plan(ctx context.Context, requested spec.Resolved) (LifecyclePl
 		if _, _, err := m.resolveRuntimeQEMU(ctx, runtime.Profile, backend); err != nil {
 			return LifecyclePlan{}, err
 		}
-		if err := m.ensureImageSession(ctx, image.CatalogLocalOnly); err != nil {
+		if err := m.ensureImageSession(); err != nil {
 			return LifecyclePlan{}, err
 		}
 		boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)

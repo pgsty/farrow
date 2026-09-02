@@ -10,10 +10,11 @@ func newUpdateCommand(stdout, stderr io.Writer) *cobra.Command {
 	options := imageOptions{Action: "update"}
 	command := &cobra.Command{
 		Use:   "update",
-		Short: "Refresh the cached image catalog",
-		Long: `Refresh the configured image repository catalog immediately, verify its
-signature and downgrade boundary, and atomically activate it. This bypasses the
-seven-day automatic cache lifetime; it does not update the Farrow executable.`,
+		Short: "Refresh the image catalog",
+		Long: `Fetch the configured image repository's catalog, verify its signature, and
+activate it. Farrow never refreshes the catalog implicitly: ordinary image and
+lifecycle commands use the active local catalog. Use image sync only to
+activate an exact URL or file. This does not update the Farrow executable.`,
 		Example: `  farrow update
   farrow update --repo https://mirror.example/farrow
   farrow --json update`,
@@ -52,10 +53,9 @@ import local qcow2 files, and manage the active signed catalog.`,
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List available images",
-		Long: `Use the trusted local catalog, refreshing it only when its seven-day cache
-lifetime has expired, then list every catalog entry for every architecture plus
-the registered local images. Each row names its architecture; info and pull
-select the native one.`,
+		Long: `List every catalog entry for every architecture plus the registered local
+images. Each row names its architecture; info and pull select the native one.
+Run 'farrow update' first to see a newer catalog.`,
 		Example: `  farrow image list
   farrow image list --repo https://mirror.example/farrow
   farrow --json image list`,
@@ -108,7 +108,7 @@ activation.`
 		} else {
 			command.Aliases = []string{"p"}
 		}
-		command.Flags().StringVarP(&options.Arch, "arch", "a", "", "artifact architecture (default: native host)")
+		command.Flags().StringVarP(&options.Arch, "arch", "a", "", "artifact architecture, amd64 or arm64; defaults to the host architecture")
 		_ = command.RegisterFlagCompletionFunc("arch", enumFlagCompletion("amd64", "arm64"))
 		command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
 		parent.AddCommand(command)
@@ -142,9 +142,8 @@ staging files. The default and --dry-run are read-only; deletion requires
 		Use:     "sync <url|path>",
 		Aliases: []string{"sy"},
 		Short:   "Activate a signed image catalog",
-		Long: `Fetch or read a catalog and its detached signature, verify it against the
-production key set, enforce the version high-water mark, and activate it
-atomically.`,
+		Long: `Fetch or read a catalog and its detached signature, verify the signature,
+refuse older revisions unless --allow-downgrade, and activate it atomically.`,
 		Example: `  farrow image sync https://mirror.example/farrow/catalog.json
   farrow image sync /srv/farrow/catalog.json
   farrow image sync --allow-downgrade /srv/recovery/catalog.json`,
@@ -154,25 +153,26 @@ atomically.`,
 			return collectImageCommand(command, syncOptions, stdout, stderr)
 		},
 	}
-	syncCommand.Flags().BoolVar(&syncOptions.AllowDowngrade, "allow-downgrade", false, "allow activation below the catalog high-water mark")
-	syncCommand.Flags().StringVarP(&syncOptions.Repository, "repo", "r", "", "repository whose independent high-water state is being synchronized")
+	syncCommand.Flags().BoolVar(&syncOptions.AllowDowngrade, "allow-downgrade", false, "activate a catalog older than the newest revision seen so far")
+	syncCommand.Flags().StringVarP(&syncOptions.Repository, "repo", "r", "", "repository whose active catalog is replaced")
 	noFileCompletions(syncCommand, "allow-downgrade")
 	parent.AddCommand(syncCommand)
 
-	resetOptions := imageOptions{Action: "reset-manifest"}
+	resetOptions := imageOptions{Action: "reset"}
 	reset := &cobra.Command{
-		Use:   "reset-manifest",
-		Short: "Restore the embedded bootstrap catalog",
-		Long: `Reactivate the catalog embedded in this Farrow binary while preserving the
-signed-catalog high-water mark used to prevent silent downgrade.`,
-		Example: `  farrow image reset-manifest
-  farrow --json image reset-manifest`,
+		Use:     "reset",
+		Aliases: []string{"reset-manifest"},
+		Short:   "Restore the built-in catalog",
+		Long: `Reactivate the catalog embedded in this Farrow binary. Downgrade protection
+still remembers the newest revision ever activated.`,
+		Example: `  farrow image reset
+  farrow --json image reset`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			return collectImageCommand(command, resetOptions, stdout, stderr)
 		},
 	}
-	reset.Flags().StringVarP(&resetOptions.Repository, "repo", "r", "", "repository whose active catalog is reset to the embedded baseline")
+	reset.Flags().StringVarP(&resetOptions.Repository, "repo", "r", "", "repository whose active catalog is reset to the built-in one")
 	parent.AddCommand(reset)
 
 	importOptions := imageOptions{Action: "import"}
@@ -199,7 +199,7 @@ prefixed alias and therefore also requires --boot and --source-user.`,
 		},
 	}
 	importCommand.Flags().StringVarP(&importOptions.ExpectedSHA256, "sha256", "s", "", "optional expected SHA-256")
-	importCommand.Flags().StringVarP(&importOptions.Name, "name", "n", "", "optional immutable local- prefixed alias")
+	importCommand.Flags().StringVar(&importOptions.Name, "name", "", "optional immutable local- prefixed alias")
 	importCommand.Flags().StringVarP(&importOptions.Boot, "boot", "b", "", "required with --name: bios or uefi")
 	importCommand.Flags().StringVarP(&importOptions.SourceUser, "source-user", "u", "", "required with --name: source image login user")
 	importCommand.MarkFlagsRequiredTogether("name", "boot", "source-user")

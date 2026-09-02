@@ -125,19 +125,19 @@ func (config PrepareConfig) now() time.Time {
 
 func validatePrepareConfig(config PrepareConfig) error {
 	if config.DeploymentRoot == "" || !filepath.IsAbs(config.DeploymentRoot) || config.QEMUBinary == "" || !filepath.IsAbs(config.QEMUBinary) || config.Disks == nil || len(config.Plan.Nodes) != len(config.Resolved.Nodes) || len(config.Seeds) != len(config.Resolved.Nodes) || len(config.SpecHash) != 64 {
-		return errors.New("private prepare deployment, QEMU, disks, plan, or seeds are incomplete")
+		return errors.New("prepare deployment, QEMU, disks, plan, or seeds are incomplete")
 	}
 	for _, node := range config.Resolved.Nodes {
 		if len(config.NodeHashes[node.Name]) != 64 {
-			return fmt.Errorf("private prepare node hash missing for node %s", node.Name)
+			return fmt.Errorf("prepare node hash missing for node %s", node.Name)
 		}
 	}
 	info, err := os.Lstat(config.DeploymentRoot)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return errors.New("private prepare deployment root must be a real mode-0700 directory")
+		return errors.New("prepare deployment root must be a real mode-0700 directory")
 	}
 	if (config.UseUEFI || config.Profile.RequiresUEFI) && (config.Firmware.Code == "" || config.Firmware.Vars == "") {
-		return errors.New("private prepare platform requires firmware code/vars")
+		return errors.New("prepare platform requires firmware code/vars")
 	}
 	switch config.Profile.OS {
 	case "darwin":
@@ -149,7 +149,7 @@ func validatePrepareConfig(config PrepareConfig) error {
 			return errors.New("linux private prepare requires an absolute bridge helper")
 		}
 	default:
-		return errors.New("private prepare supports Darwin/Linux profiles only")
+		return errors.New("prepare supports Darwin/Linux profiles only")
 	}
 	return nil
 }
@@ -218,7 +218,7 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	}
 	nodePlan, ok := config.Plan.Node(name)
 	if !ok {
-		return NodeArtifacts{}, fmt.Errorf("private plan has no node %s", name)
+		return NodeArtifacts{}, fmt.Errorf("plan has no node %s", name)
 	}
 	definition, ok := nodeSpec(config.Resolved, name)
 	if !ok {
@@ -230,15 +230,15 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	}
 	base, ok := config.Bases[baseAlias]
 	if !ok || !filepath.IsAbs(base.Path) || base.Digest == "" {
-		return NodeArtifacts{}, fmt.Errorf("private node %s has no validated base image", name)
+		return NodeArtifacts{}, fmt.Errorf("node %s has no validated base image", name)
 	}
 	seedFiles, ok := config.Seeds[name]
 	if !ok {
-		return NodeArtifacts{}, fmt.Errorf("private node %s has no rendered seed", name)
+		return NodeArtifacts{}, fmt.Errorf("node %s has no rendered seed", name)
 	}
 	sshPort := config.SSHPorts[name]
 	if sshPort == 0 {
-		return NodeArtifacts{}, fmt.Errorf("private node %s has no management SSH port", name)
+		return NodeArtifacts{}, fmt.Errorf("node %s has no management SSH port", name)
 	}
 	persistentIdentities, err := privatePersistentIdentities(privatePrepareDeployment(config), config.Resolved)
 	if err != nil {
@@ -252,14 +252,14 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 		operationID, err = config.OperationSource()
 	}
 	if err != nil || !identity.ValidUUID(operationID) {
-		return NodeArtifacts{}, errors.New("private prepare operation UUID is invalid")
+		return NodeArtifacts{}, errors.New("prepare operation UUID is invalid")
 	}
 	nodesDir := filepath.Join(config.DeploymentRoot, "nodes")
 	if err := os.Mkdir(nodesDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return NodeArtifacts{}, err
 	}
 	if info, err := os.Lstat(nodesDir); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return NodeArtifacts{}, errors.New("private nodes directory is unsafe")
+		return NodeArtifacts{}, errors.New("nodes directory is unsafe")
 	}
 	nodeDir := filepath.Join(nodesDir, name)
 	if err := os.Mkdir(nodeDir, 0o700); err != nil {

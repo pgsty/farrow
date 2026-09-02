@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -21,7 +20,7 @@ func TestCobraRootAndContextualHelp(t *testing.T) {
 	if code := run([]string{"--help"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("root help code=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{"Configuration-aware commands", "Examples:", "farrow setup", "Setup:", "Lifecycle:", "Guest Access:", "ss", "Use \"farrow [command] --help\""} {
+	for _, want := range []string{"Configuration-aware commands", "Examples:", "farrow setup", "Setup:", "Lifecycle:", "Guest Access:", "Use \"farrow [command] --help\""} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("root help missing %q:\n%s", want, stdout.String())
 		}
@@ -113,7 +112,6 @@ func TestCommandAliasesResolveToCanonicalCommands(t *testing.T) {
 		path      string
 	}{
 		{arguments: []string{"s"}, path: "farrow setup"},
-		{arguments: []string{"i"}, path: "farrow init"},
 		{arguments: []string{"v"}, path: "farrow validate"},
 		{arguments: []string{"pl"}, path: "farrow plan"},
 		{arguments: []string{"rc"}, path: "farrow recreate"},
@@ -121,18 +119,15 @@ func TestCommandAliasesResolveToCanonicalCommands(t *testing.T) {
 		{arguments: []string{"de"}, path: "farrow destroy"},
 		{arguments: []string{"ex"}, path: "farrow exec"},
 		{arguments: []string{"l"}, path: "farrow logs"},
-		{arguments: []string{"p"}, path: "farrow provision"},
 		{arguments: []string{"sc"}, path: "farrow ssh-config"},
-		{arguments: []string{"h"}, path: "farrow hosts"},
 		{arguments: []string{"im"}, path: "farrow image"},
 		{arguments: []string{"images"}, path: "farrow image"},
 		{arguments: []string{"dt"}, path: "farrow doctor"},
 		{arguments: []string{"n"}, path: "farrow network"},
 		{arguments: []string{"net"}, path: "farrow network"},
 		{arguments: []string{"ver"}, path: "farrow version"},
-		{arguments: []string{"cp"}, path: "farrow completion"},
-		{arguments: []string{"h", "i"}, path: "farrow hosts install"},
-		{arguments: []string{"h", "u"}, path: "farrow hosts uninstall"},
+		{arguments: []string{"hosts", "i"}, path: "farrow hosts install"},
+		{arguments: []string{"hosts", "u"}, path: "farrow hosts uninstall"},
 		{arguments: []string{"im", "ls"}, path: "farrow image list"},
 		{arguments: []string{"im", "in"}, path: "farrow image info"},
 		{arguments: []string{"im", "p"}, path: "farrow image pull"},
@@ -180,7 +175,7 @@ func TestMisleadingAliasesAreRejected(t *testing.T) {
 
 func TestShortCanonicalAndLifecycleCommandsHaveNoExtraAliases(t *testing.T) {
 	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
-	for _, name := range []string{"up", "ssh", "ss", "start", "stop", "restart", "reload"} {
+	for _, name := range []string{"up", "ssh", "start", "stop", "restart", "reload", "init", "provision", "hosts", "completion"} {
 		command, _, err := root.Find([]string{name})
 		if err != nil || command == nil {
 			t.Fatalf("find %s: command=%v err=%v", name, command, err)
@@ -204,14 +199,10 @@ func TestOperationalFlagsExposeScopedShorthands(t *testing.T) {
 		{path: []string{"setup"}, flag: "mode", shorthand: "m"},
 		{path: []string{"up"}, flag: "repo", shorthand: "r"},
 		{path: []string{"up"}, flag: "no-wait", shorthand: "n"},
-		{path: []string{"up"}, flag: "rollback", shorthand: "b"},
-		{path: []string{"destroy"}, flag: "force", shorthand: "f"},
 		{path: []string{"provision"}, flag: "script", shorthand: "s"},
 		{path: []string{"provision"}, flag: "parallel", shorthand: "p"},
 		{path: []string{"provision"}, flag: "timeout", shorthand: "t"},
 		{path: []string{"ssh-config"}, flag: "install", shorthand: "i"},
-		{path: []string{"ssh-config"}, flag: "remove", shorthand: "r"},
-		{path: []string{"ssh-config"}, flag: "name", shorthand: "n"},
 		{path: []string{"logs"}, flag: "source", shorthand: "s"},
 		{path: []string{"hosts", "install"}, flag: "yes", shorthand: "y"},
 		{path: []string{"image", "prune"}, flag: "yes", shorthand: "y"},
@@ -254,6 +245,13 @@ func TestSafetySensitiveFlagsRemainLongOnly(t *testing.T) {
 		flag string
 	}{
 		{path: []string{"recreate"}, flag: "force"},
+		{path: []string{"destroy"}, flag: "force"},
+		{path: []string{"init"}, flag: "force"},
+		{path: []string{"up"}, flag: "rollback"},
+		{path: []string{"reload"}, flag: "rollback"},
+		{path: []string{"ssh-config"}, flag: "remove"},
+		{path: []string{"ssh-config"}, flag: "name"},
+		{path: []string{"image", "import"}, flag: "name"},
 		{path: []string{"destroy"}, flag: "delete-persistent"},
 		{path: []string{"destroy"}, flag: "purge"},
 		{path: []string{"provision"}, flag: "sudo"},
@@ -411,7 +409,6 @@ func TestCIDRAndInitForceUseScopedShorthands(t *testing.T) {
 	}{
 		{path: []string{"setup"}, flag: "cidr", shorthand: "c"},
 		{path: []string{"init"}, flag: "cidr", shorthand: "c"},
-		{path: []string{"init"}, flag: "force", shorthand: "f"},
 		{path: []string{"network", "status"}, flag: "cidr", shorthand: "c"},
 		{path: []string{"network", "install"}, flag: "cidr", shorthand: "c"},
 	} {
@@ -575,28 +572,6 @@ func TestExplicitHelpRemainsHumanReadableInStructuredMode(t *testing.T) {
 	}
 }
 
-func TestSSHShortcutDefaultsToFixedFarrowName(t *testing.T) {
-	options, err := sshShortcutOptions("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := sshConfigOptions{Install: true, Name: "farrow"}
-	if !reflect.DeepEqual(options, want) {
-		t.Fatalf("shortcut options=%v want=%v", options, want)
-	}
-}
-
-func TestSSHShortcutAcceptsExplicitName(t *testing.T) {
-	options, err := sshShortcutOptions("dev")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := sshConfigOptions{Install: true, Name: "dev"}
-	if !reflect.DeepEqual(options, want) {
-		t.Fatalf("shortcut options=%v want=%v", options, want)
-	}
-}
-
 func TestOutputEnvironmentDefaults(t *testing.T) {
 	t.Setenv("FARROW_OUTPUT", "json")
 	var stdout bytes.Buffer
@@ -677,7 +652,7 @@ func TestStructuredBusinessFailureGetsFallbackPayload(t *testing.T) {
 	}{
 		{arguments: []string{"--json", "logs"}, code: exitConflict, category: "conflict", message: "no deployment state found"},
 		{arguments: []string{"--json", "status"}, code: exitConflict, category: "conflict", message: "no deployment state found"},
-		{arguments: []string{"--json", "up"}, code: exitConflict, category: "conflict", message: "no configuration found"},
+		{arguments: []string{"--json", "up"}, code: exitConflict, category: "conflict", message: "no inventory found"},
 		{arguments: []string{"--json", "validate", "-f", "missing.yml"}, code: exitUsage, category: "usage", message: "missing.yml"},
 	} {
 		var stdout bytes.Buffer

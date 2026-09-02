@@ -124,7 +124,7 @@ func TestWaitReadyReturnsGuestBootstrapFailure(t *testing.T) {
 	t.Parallel()
 	lifecycle := Lifecycle{Runner: readinessRunner{error: []byte(`{"exit_status":1,"line":27,"stage":"data-disks"}`)}, SSHUser: "dba"}
 	err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "guest bootstrap failed during data-disks (exit status 1, line 27)") {
+	if err == nil || !strings.Contains(err.Error(), "guest bootstrap failed during data-disks (exit status 1)") {
 		t.Fatalf("bootstrap failure = %v", err)
 	}
 }
@@ -133,7 +133,7 @@ func TestWaitReadyAcceptsGuestBootstrapFailureWithUnknownLine(t *testing.T) {
 	t.Parallel()
 	lifecycle := Lifecycle{Runner: readinessRunner{error: []byte(`{"exit_status":2,"line":0,"stage":"identity"}`)}, SSHUser: "dba"}
 	err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "guest bootstrap failed during identity (exit status 2, line unknown)") {
+	if err == nil || !strings.Contains(err.Error(), "guest bootstrap failed during identity (exit status 2)") {
 		t.Fatalf("unknown-line bootstrap failure = %v", err)
 	}
 }

@@ -329,7 +329,7 @@ func (f *File) Validate() error {
 			if !diskName.MatchString(disk.Name) || disk.Size <= 0 || !safeDiskMount(disk.Mount) {
 				return fmt.Errorf("invalid disk %q on node %s", disk.Name, node.Name)
 			}
-			if disk.Filesystem != "auto" && disk.Filesystem != "xfs" && disk.Filesystem != "ext4" {
+			if !spec.ValidFilesystem(disk.Filesystem) {
 				return fmt.Errorf("unsupported filesystem %q", disk.Filesystem)
 			}
 			if _, exists := diskNames[disk.Name]; exists {

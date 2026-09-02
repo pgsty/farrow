@@ -289,11 +289,11 @@ func validateNode(value NodeState, expectedNode string) error {
 	}
 	for _, disk := range value.DataDisks {
 		requested := disk.RequestedFilesystem
-		if requested != "" && requested != "auto" && requested != "xfs" && requested != "ext4" {
+		if requested != "" && !spec.ValidFilesystem(requested) {
 			return fmt.Errorf("data disk %s has invalid requested filesystem %q", disk.Name, requested)
 		}
 		actual := disk.ActualFilesystem
-		if actual != "" && actual != "xfs" && actual != "ext4" {
+		if actual != "" && !spec.ValidFormattedFilesystem(actual) {
 			return fmt.Errorf("data disk %s has invalid actual filesystem %q", disk.Name, actual)
 		}
 	}

@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pgsty/farrow/internal/image"
@@ -24,7 +27,7 @@ func writeUpdateRepository(t *testing.T, root string, revision uint64) {
 	}
 }
 
-func TestUpdateCommandRefreshesConfiguredCatalogAndBypassesFreshness(t *testing.T) {
+func TestUpdateCommandActivatesTheConfiguredCatalog(t *testing.T) {
 	t.Setenv("FARROW_HOME", filepath.Join(t.TempDir(), "farrow-home"))
 	repository := t.TempDir()
 	revision := uint64(image.EmbeddedManifestVersion + 1)
@@ -42,23 +45,23 @@ func TestUpdateCommandRefreshesConfiguredCatalogAndBypassesFreshness(t *testing.
 			t.Fatalf("first update did not report activation: %q", stdout.String())
 		}
 		if attempt == 1 && !strings.Contains(stdout.String(), "is current") {
-			t.Fatalf("second explicit update did not bypass TTL and report current: %q", stdout.String())
+			t.Fatalf("second update did not report current: %q", stdout.String())
 		}
 	}
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--json", "update", "--repo", repository}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("JSON update code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	var result image.CatalogRefreshResult
+	var result image.CatalogUpdate
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatalf("decode JSON update: %v\n%s", err, stdout.String())
 	}
-	if !result.Attempted || result.ActiveVersion != revision || result.Repository != repository || result.CheckedAt.IsZero() {
+	if result.Updated || result.ActiveVersion != revision || result.PreviousVersion != revision || result.Repository != repository {
 		t.Fatalf("JSON update result = %#v", result)
 	}
 }
 
-func TestUpdateCommandFailsWhenExplicitRefreshFails(t *testing.T) {
+func TestUpdateCommandFailsWhenTheRepositoryIsUnreachable(t *testing.T) {
 	t.Setenv("FARROW_HOME", filepath.Join(t.TempDir(), "farrow-home"))
 	repository := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -81,31 +84,19 @@ func TestUpdateCommandContract(t *testing.T) {
 	}
 }
 
-func TestImageListWarnsWhenAutomaticRefreshFallsBack(t *testing.T) {
+func TestImageListUsesTheLocalCatalogWithoutNetwork(t *testing.T) {
 	t.Setenv("FARROW_HOME", filepath.Join(t.TempDir(), "farrow-home"))
-	repository := t.TempDir()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(writer, "offline", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"image", "list", "--repo", repository}, &stdout, &stderr); code != exitOK {
+	if code := run([]string{"image", "list", "--repo", server.URL}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("image list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "d13") || !strings.Contains(stderr.String(), "Image catalog refresh warning") {
-		t.Fatalf("fallback list stdout=%q stderr=%q", stdout.String(), stderr.String())
-	}
-}
-
-func TestUpdateSucceedsAndWarnsWhenFreshnessCannotBeWritten(t *testing.T) {
-	dataRoot := filepath.Join(t.TempDir(), "farrow-home")
-	t.Setenv("FARROW_HOME", dataRoot)
-	repository := t.TempDir()
-	writeUpdateRepository(t, repository, uint64(image.EmbeddedManifestVersion+8))
-	if err := os.MkdirAll(filepath.Join(dataRoot, "images", "manifests", "freshness.json"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"update", "--repo", repository}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("update code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "updated image catalog") || !strings.Contains(stderr.String(), "freshness state was not recorded") {
-		t.Fatalf("freshness-degraded update stdout=%q stderr=%q", stdout.String(), stderr.String())
+	if !strings.Contains(stdout.String(), "d13") || stderr.Len() != 0 || requests.Load() != 0 {
+		t.Fatalf("offline list stdout=%q stderr=%q requests=%d", stdout.String(), stderr.String(), requests.Load())
 	}
 }

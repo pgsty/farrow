@@ -82,10 +82,10 @@ func validatePrivatePersistentState(deploymentValue Deployment, deploymentState 
 	for key, dataDisk := range stateDisks {
 		identityValue, ok := desiredDisks[key]
 		if !ok {
-			return nil, errors.New("private persistent disk state is not present in the resolved configuration")
+			return nil, errors.New("persistent disk state is not present in the resolved configuration")
 		}
 		if dataDisk.Serial != identityValue.Serial || dataDisk.Size != identityValue.Size || dataDisk.Mount != identityValue.Mount {
-			return nil, fmt.Errorf("private persistent disk %s/%s has incompatible size, mount, or serial", identityValue.Node, identityValue.Name)
+			return nil, fmt.Errorf("persistent disk %s/%s has incompatible size, mount, or serial", identityValue.Node, identityValue.Name)
 		}
 	}
 	return desired, nil

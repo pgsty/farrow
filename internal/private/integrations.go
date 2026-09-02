@@ -70,10 +70,10 @@ func (m Manager) integrationSnapshotLocked(deploymentValue Deployment) (Deployme
 		}
 		expectedHash, hashErr := spec.NodeHash(deploymentState.Resolved, definition.Name)
 		if hashErr != nil || node.SpecHash != expectedHash {
-			return Deployment{}, state.DeploymentState{}, nil, fmt.Errorf("private node %s state does not match its resolved node hash", definition.Name)
+			return Deployment{}, state.DeploymentState{}, nil, fmt.Errorf("node %s state does not match its resolved node hash", definition.Name)
 		}
 		if node.SSHPort == 0 || node.Phase == state.Absent {
-			return Deployment{}, state.DeploymentState{}, nil, fmt.Errorf("private node %s has no installable SSH endpoint", definition.Name)
+			return Deployment{}, state.DeploymentState{}, nil, fmt.Errorf("node %s has no installable SSH endpoint", definition.Name)
 		}
 		filtered.Nodes = append(filtered.Nodes, cloneNode(definition))
 		nodes = append(nodes, node)
@@ -114,7 +114,7 @@ func (m Manager) Connections(ctx context.Context) (_ []Connection, returnErr err
 // complete remote operation, preventing lifecycle changes after validation.
 func (m Manager) ConnectionsLocked(ctx context.Context, deploymentValue Deployment, deploymentLock *lock.File) ([]Connection, error) {
 	if err := deploymentLock.ValidateExclusive(deploymentLockPath(deploymentValue.Root)); err != nil {
-		return nil, fmt.Errorf("private connections require the matching exclusive deployment lock: %w", err)
+		return nil, fmt.Errorf("connections require the matching exclusive deployment lock: %w", err)
 	}
 	_, deploymentState, nodes, err := m.integrationSnapshotLocked(deploymentValue)
 	if err != nil {
@@ -129,14 +129,14 @@ func (m Manager) ConnectionsLocked(ctx context.Context, deploymentValue Deployme
 	for index, node := range nodes {
 		definition := deploymentState.Resolved.Nodes[index]
 		if node.Phase != state.Running {
-			return nil, fmt.Errorf("private node %s is not running", node.Node)
+			return nil, fmt.Errorf("node %s is not running", node.Node)
 		}
 		identity := process.Identity{PID: node.Process.PID, Executable: node.Process.Executable, Started: node.Process.Started, ArgvHash: node.Process.ArgvHash}
 		if err := lifecycle.ValidateIdentity(ctx, node.Runtime.QMP, node.Node, node.VMUUID); err != nil {
-			return nil, fmt.Errorf("private node %s QMP identity does not match: %w", node.Node, err)
+			return nil, fmt.Errorf("node %s QMP identity does not match: %w", node.Node, err)
 		}
 		if !process.MatchesLive(ctx, m.runner(), identity, node.Invocation) {
-			return nil, fmt.Errorf("private node %s recorded process identity does not match", node.Node)
+			return nil, fmt.Errorf("node %s recorded process identity does not match", node.Node)
 		}
 		connections = append(connections, Connection{
 			Node: definition.Name, User: deploymentState.Resolved.SSHUser,

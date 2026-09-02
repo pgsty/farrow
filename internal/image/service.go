@@ -3,7 +3,6 @@ package image
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,16 +18,15 @@ import (
 
 // Service is the one command-level façade over the catalog, the store, and
 // the signed manifest chain. Callers resolve the data root; Service owns
-// repository selection, catalog refresh, and store construction.
+// repository selection and store construction. Ordinary operations read the
+// active local catalog; UpdateCatalog and SyncManifest are the explicit paths
+// that can activate new catalog bytes.
 type Service struct {
-	DataRoot       string
-	Repository     string
-	QEMUImg        string
-	Runner         execx.Runner
-	Progress       activity.Reporter
-	Now            func() time.Time
-	CatalogTTL     time.Duration
-	RefreshBackoff time.Duration
+	DataRoot   string
+	Repository string
+	QEMUImg    string
+	Runner     execx.Runner
+	Progress   activity.Reporter
 }
 
 // Info describes one catalog or local image with its cache state.
@@ -40,15 +38,13 @@ type Info struct {
 	Metadata *Metadata     `json:"metadata,omitempty"`
 }
 
-// LookupArch resolves catalog metadata for an explicit architecture without
-// refreshing the catalog or downloading an artifact. It is used by read-only
-// lifecycle planning to validate boot firmware before reporting feasibility.
-func (s Service) LookupArch(ctx context.Context, alias, arch string) (Entry, error) {
-	session, err := s.OpenCatalog(ctx, CatalogLocalOnly)
-	if err != nil {
-		return Entry{}, err
-	}
-	return session.LookupArch(ctx, alias, arch)
+// CatalogUpdate reports one explicit catalog refresh.
+type CatalogUpdate struct {
+	Repository      string `json:"repository"`
+	Source          string `json:"source"`
+	PreviousVersion uint64 `json:"previous_version"`
+	ActiveVersion   uint64 `json:"active_version"`
+	Updated         bool   `json:"updated"`
 }
 
 func (s Service) runner() execx.Runner {
@@ -90,7 +86,7 @@ func (s Service) configuredRepository() (string, bool, error) {
 
 // List returns every catalog entry plus registered local aliases.
 func (s Service) List(ctx context.Context) ([]Entry, ManifestState, error) {
-	session, err := s.OpenCatalog(ctx, CatalogRefreshIfDue)
+	session, err := s.OpenCatalog()
 	if err != nil {
 		return nil, ManifestState{}, err
 	}
@@ -122,10 +118,9 @@ func (s Service) Info(ctx context.Context, alias string) (Info, error) {
 }
 
 // InfoArch reports one alias for an explicit guest architecture without
-// downloading it. Lifecycle warnings use this path so they describe the
-// artifact that was actually selected rather than the host architecture.
+// downloading it.
 func (s Service) InfoArch(ctx context.Context, alias, arch string) (Info, error) {
-	session, err := s.OpenCatalog(ctx, CatalogRefreshIfDue)
+	session, err := s.OpenCatalog()
 	if err != nil {
 		return Info{}, err
 	}
@@ -143,22 +138,11 @@ func (s Service) PullAlias(ctx context.Context, alias string) (Info, error) {
 
 // PullArch downloads and verifies one reference for an explicit architecture.
 func (s Service) PullArch(ctx context.Context, alias, arch string) (Info, error) {
-	session, err := s.OpenCatalog(ctx, CatalogRefreshIfDue)
+	session, err := s.OpenCatalog()
 	if err != nil {
 		return Info{}, err
 	}
 	return session.PullArch(ctx, alias, arch)
-}
-
-// ResolveArch is the lifecycle seam for an explicit deployment guest
-// architecture. It does not infer acceleration or fall back to another
-// artifact architecture.
-func (s Service) ResolveArch(ctx context.Context, alias, arch string) (Entry, string, Metadata, error) {
-	session, err := s.OpenCatalog(ctx, CatalogRefreshIfDue)
-	if err != nil {
-		return Entry{}, "", Metadata{}, err
-	}
-	return session.ResolveArch(ctx, alias, arch)
 }
 
 // ImportFile verifies and installs a local qcow2 without registering an alias.
@@ -205,26 +189,36 @@ func (s Service) SyncManifest(ctx context.Context, source string, allowDowngrade
 	if err != nil {
 		return ManifestState{}, err
 	}
-	state, err := manager.Sync(ctx, source, allowDowngrade)
-	if err != nil {
-		return ManifestState{}, err
-	}
-	if err := manager.markCatalogChecked(ctx, s.clock()); err != nil {
-		s.Progress.Report(activity.Event{
-			Phase: "image-catalog", Message: fmt.Sprintf("Catalog revision %d was activated, but freshness state was not recorded: %v", state.ActiveVersion, err), Done: true, Warning: true,
-		})
-	}
-	return state, nil
+	return manager.Sync(ctx, source, allowDowngrade)
 }
 
-// UpdateCatalog bypasses the cache TTL and refreshes the configured repository
-// exactly once. It is the service boundary used by the top-level update command.
-func (s Service) UpdateCatalog(ctx context.Context) (CatalogRefreshResult, error) {
-	session, err := s.OpenCatalog(ctx, CatalogRefreshNow)
+// UpdateCatalog fetches the configured repository's catalog once, verifies it,
+// and activates it. SyncManifest is the lower-level exact-source recovery path.
+func (s Service) UpdateCatalog(ctx context.Context) (CatalogUpdate, error) {
+	manager, err := s.manifestManager()
 	if err != nil {
-		return CatalogRefreshResult{}, err
+		return CatalogUpdate{}, err
 	}
-	return session.Refresh(), nil
+	if manager.Repository == "" {
+		return CatalogUpdate{}, errors.New("image catalog update requires a configured repository")
+	}
+	source, err := RepositoryCatalogSource(manager.Repository)
+	if err != nil {
+		return CatalogUpdate{}, err
+	}
+	result := CatalogUpdate{Repository: manager.Repository, Source: source}
+	var current ManifestState
+	if catalog, currentState, currentErr := manager.Current(); currentErr == nil {
+		result.PreviousVersion = catalog.Version
+		current = currentState
+	}
+	accepted, err := manager.Sync(ctx, source, false)
+	if err != nil {
+		return result, err
+	}
+	result.ActiveVersion = accepted.ActiveVersion
+	result.Updated = accepted.ActiveVersion != current.ActiveVersion || accepted.ActiveDigest != current.ActiveDigest
+	return result, nil
 }
 
 // ResetManifest restores the embedded bootstrap catalog.
@@ -233,25 +227,7 @@ func (s Service) ResetManifest(ctx context.Context) (ManifestState, error) {
 	if err != nil {
 		return ManifestState{}, err
 	}
-	state, err := manager.Reset(ctx)
-	if err != nil {
-		return ManifestState{}, err
-	}
-	_, persistedErr := manager.readState()
-	var freshnessErr error
-	if errors.Is(persistedErr, os.ErrNotExist) {
-		freshnessErr = manager.clearCatalogFreshness(ctx)
-	} else if persistedErr != nil {
-		freshnessErr = persistedErr
-	} else {
-		freshnessErr = manager.markCatalogChecked(ctx, s.clock())
-	}
-	if freshnessErr != nil {
-		s.Progress.Report(activity.Event{
-			Phase: "image-catalog", Message: "Catalog reset completed, but freshness state could not be updated: " + freshnessErr.Error(), Done: true, Warning: true,
-		})
-	}
-	return state, nil
+	return manager.Reset(ctx)
 }
 
 // PruneAll removes unreferenced images and stale staging files. The caller
@@ -273,7 +249,7 @@ func (s Service) PruneAll(ctx context.Context, apply bool, nodeRefs func(context
 			returnErr = lock.JoinRelease(returnErr, allocator, "image reference allocator lock")
 		}()
 		references := make(map[string]struct{})
-		session, err := s.OpenCatalog(ctx, CatalogLocalOnly)
+		session, err := s.OpenCatalog()
 		if err != nil {
 			return nil, err
 		}

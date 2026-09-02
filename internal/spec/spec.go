@@ -75,6 +75,17 @@ type Disk struct {
 	Persistent bool   `json:"persistent"`
 }
 
+// ValidFilesystem accepts the data-disk filesystem requests: xfs, ext4, or
+// auto (XFS when the guest has mkfs.xfs, otherwise ext4).
+func ValidFilesystem(value string) bool {
+	return value == "auto" || value == "xfs" || value == "ext4"
+}
+
+// ValidFormattedFilesystem accepts what a formatted disk can actually be.
+func ValidFormattedFilesystem(value string) bool {
+	return value == "xfs" || value == "ext4"
+}
+
 const MaxSharesPerNode = 8
 
 type Share struct {

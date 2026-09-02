@@ -11,8 +11,8 @@ func newRepoCommand(stdout, stderr io.Writer) *cobra.Command {
 		"repo",
 		"Build and verify a static Farrow artifact repository",
 		`Use repo.yaml as the human-maintained source and materialize a strict
-catalog.json from the referenced flat images/ qcow2 artifacts. Scan is read-only;
-build never changes repo.yaml or image bytes.`,
+catalog.json from the referenced flat images/ qcow2 artifacts. Scan is
+read-only; build never changes repo.yaml or image bytes.`,
 		`  farrow repo scan /srv/farrow
   farrow repo build /srv/farrow
   farrow repo verify /srv/farrow`,
@@ -29,7 +29,7 @@ build never changes repo.yaml or image bytes.`,
 		command := &cobra.Command{
 			Use:     action + " <root>",
 			Short:   short,
-			Long:    short + ". The repository root contains repo.yaml, catalog.json, and a flat images/ directory.",
+			Long:    short + ".\nThe repository root holds repo.yaml, catalog.json, and a flat images/\ndirectory.",
 			Example: "  farrow repo " + action + " /srv/farrow",
 			Args:    cobra.ExactArgs(1),
 			RunE: func(command *cobra.Command, arguments []string) error {

@@ -158,8 +158,8 @@ directory.
 
 Configuration-aware commands use -f first, then discover farrow.yml,
 farrow.yaml, pigsty.yml, or pigsty.yaml in the working directory. Once a
-deployment exists, lifecycle commands can fall back to its applied resolved
-specification; validate always requires an inventory.`,
+deployment exists, lifecycle commands can fall back to the last applied
+inventory; validate always requires an inventory file.`,
 		Example: `  farrow setup                 # prepare the host and create/reuse an inventory
   farrow up                    # create/start nodes and install SSH configuration
   farrow status                # inspect the deployment from any directory
@@ -204,7 +204,6 @@ specification; validate always requires an inventory.`,
 	setup.Aliases = []string{"s"}
 	setup.GroupID = "setup"
 	initCommand := newInitCommand(stdout, stderr)
-	initCommand.Aliases = []string{"i"}
 	initCommand.GroupID = "setup"
 	validate := newValidateCommand(stdout, stderr)
 	validate.Aliases = []string{"v"}
@@ -263,13 +262,11 @@ nothing or one known node.`,
 	provision.GroupID = "access"
 	sshConfig := newSSHConfigCommand(stdout, stderr)
 	sshConfig.GroupID = "access"
-	ss := newSSHShortcutCommand(stdout, stderr)
-	ss.GroupID = "access"
 	hosts := newHostsCommand(stdout, stderr)
 	hosts.GroupID = "access"
 	logs := newLogsCommand(stdout, stderr)
 	logs.GroupID = "access"
-	root.AddCommand(ssh, execCommand, logs, provision, sshConfig, ss, hosts)
+	root.AddCommand(ssh, execCommand, logs, provision, sshConfig, hosts)
 
 	update := newUpdateCommand(stdout, stderr)
 	update.GroupID = "images"
@@ -283,9 +280,9 @@ nothing or one known node.`,
 		Use:     "doctor",
 		Aliases: []string{"dt"},
 		Short:   "Check host capabilities",
-		Long: `Probe QEMU, native acceleration, firmware, OpenSSH, an accelerated boot
-smoke, and host-network readiness. Missing network setup is informational;
-missing compute capability exits 3.`,
+		Long: `Probe QEMU, native acceleration, firmware, OpenSSH, a short accelerated boot
+test, and host-network readiness. Missing network setup is informational;
+missing compute capability fails the check.`,
 		Example: `  farrow doctor
   farrow --json doctor
   farrow doctor --verbose`,
@@ -318,7 +315,6 @@ architecture.`,
 		},
 	}
 	completion := newCompletionCommand(root, stdout, stderr)
-	completion.Aliases = []string{"cp"}
 	completion.GroupID = "advanced"
 	root.AddCommand(versionCommand, completion)
 	configureAliasDiscovery(root)

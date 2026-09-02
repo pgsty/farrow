@@ -79,8 +79,7 @@ type ReadyMarker struct {
 
 type bootstrapErrorMarker struct {
 	ExitStatus int    `json:"exit_status"`
-	Line       int    `json:"line"`
-	Stage      string `json:"stage,omitempty"`
+	Stage      string `json:"stage"`
 }
 
 func (l Lifecycle) validate() error {
@@ -544,7 +543,7 @@ func (l Lifecycle) WaitReady(ctx context.Context, sshPath, key, knownHosts strin
 			} else if decodeErr != nil {
 				lastErr = decodeErr
 			} else {
-				lastErr = fmt.Errorf("ready marker mismatch: %#v", marker)
+				lastErr = fmt.Errorf("guest reports ready marker generation %d, expected %d", marker.Generation, expected.Generation)
 			}
 		} else {
 			lastErr = err
@@ -553,20 +552,13 @@ func (l Lifecycle) WaitReady(ctx context.Context, sshPath, key, knownHosts strin
 		errorResult, errorErr := l.Runner.Run(ctx, sshPath, errorArgs...)
 		if errorErr == nil {
 			var marker bootstrapErrorMarker
-			if decodeErr := json.Unmarshal(errorResult.Stdout, &marker); decodeErr != nil {
-				return fmt.Errorf("invalid guest bootstrap error marker: %w", decodeErr)
+			if decodeErr := json.Unmarshal(errorResult.Stdout, &marker); decodeErr != nil || marker.ExitStatus <= 0 || len(marker.Stage) > 64 {
+				return errors.New("guest bootstrap failed and left an unreadable error marker")
 			}
-			if marker.ExitStatus <= 0 || marker.Line < 0 || len(marker.Stage) > 64 {
-				return fmt.Errorf("invalid guest bootstrap error marker: %#v", marker)
+			if marker.Stage == "" {
+				return fmt.Errorf("guest bootstrap failed (exit status %d)", marker.ExitStatus)
 			}
-			stage := marker.Stage
-			if stage == "" {
-				stage = "bootstrap"
-			}
-			if marker.Line == 0 {
-				return fmt.Errorf("guest bootstrap failed during %s (exit status %d, line unknown)", stage, marker.ExitStatus)
-			}
-			return fmt.Errorf("guest bootstrap failed during %s (exit status %d, line %d)", stage, marker.ExitStatus, marker.Line)
+			return fmt.Errorf("guest bootstrap failed during %s (exit status %d)", marker.Stage, marker.ExitStatus)
 		}
 		select {
 		case <-ctx.Done():
@@ -574,5 +566,25 @@ func (l Lifecycle) WaitReady(ctx context.Context, sshPath, key, knownHosts strin
 		case <-time.After(time.Second):
 		}
 	}
-	return fmt.Errorf("SSH readiness timeout: %w", lastErr)
+	return fmt.Errorf("guest did not become ready within %s: %s", timeout, readinessDetail(lastErr))
+}
+
+// readinessDetail keeps the part of the last probe error a user can act on:
+// ssh's final stderr line, not the probe's argument list.
+func readinessDetail(err error) string {
+	var command *execx.CommandError
+	if errors.As(err, &command) {
+		if detail := strings.TrimSpace(command.Stderr); detail != "" {
+			lines := strings.Split(detail, "\n")
+			return strings.TrimSpace(lines[len(lines)-1])
+		}
+		if command.Cause != nil {
+			return command.Cause.Error()
+		}
+		return fmt.Sprintf("ssh exited with code %d", command.ExitCode)
+	}
+	if err == nil {
+		return "no response from the guest"
+	}
+	return err.Error()
 }

@@ -25,7 +25,7 @@ func prefixLength(cidr string) (int, error) {
 	}
 	ones, bits := networkValue.Mask.Size()
 	if bits != 32 {
-		return 0, errors.New("private seed requires IPv4 network")
+		return 0, errors.New("seed requires IPv4 network")
 	}
 	return ones, nil
 }
@@ -62,11 +62,11 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 		return nil, err
 	}
 	if len(plan.Nodes) != len(resolved.Nodes) || strings.TrimSpace(input.PublicKey) == "" {
-		return nil, errors.New("private seed plan or public key is incomplete")
+		return nil, errors.New("seed plan or public key is incomplete")
 	}
 	for _, nodeSpec := range resolved.Nodes {
 		if len(input.SpecHashes[nodeSpec.Name]) != 64 {
-			return nil, fmt.Errorf("private seed node hash missing for node %s", nodeSpec.Name)
+			return nil, fmt.Errorf("seed node hash missing for node %s", nodeSpec.Name)
 		}
 	}
 	prefix, err := prefixLength(resolved.Private.CIDR)
@@ -78,11 +78,11 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 	for _, nodeSpec := range resolved.Nodes {
 		nodePlan, ok := plan.Node(nodeSpec.Name)
 		if !ok || nodePlan.Address != nodeSpec.Address {
-			return nil, fmt.Errorf("private seed plan missing node %s", nodeSpec.Name)
+			return nil, fmt.Errorf("seed plan missing node %s", nodeSpec.Name)
 		}
 		generation := input.Generation[nodeSpec.Name]
 		if generation == 0 {
-			return nil, fmt.Errorf("private seed generation missing for node %s", nodeSpec.Name)
+			return nil, fmt.Errorf("seed generation missing for node %s", nodeSpec.Name)
 		}
 		disks, err := cloudDisks(nodeSpec)
 		if err != nil {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/fsutil"
-	"github.com/pgsty/farrow/internal/image"
 	"github.com/pgsty/farrow/internal/lock"
 	"github.com/pgsty/farrow/internal/persistent"
 	"github.com/pgsty/farrow/internal/process"
@@ -20,14 +19,14 @@ import (
 func ownedRegularWithin(root, path string) error {
 	inside, err := fsutil.IsWithin(root, path)
 	if err != nil || !inside {
-		return fmt.Errorf("private destroy target escapes node root: %s", path)
+		return fmt.Errorf("destroy target escapes node root: %s", path)
 	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("private destroy target is unsafe: %s", path)
+		return fmt.Errorf("destroy target is unsafe: %s", path)
 	}
 	return nil
 }
@@ -136,7 +135,7 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 	store := state.Store{Root: deploymentValue.Root}
 	deploymentState, err := store.ReadDeployment()
 	if err != nil || deploymentState.Resolved.Network != "private" {
-		return Status{}, errors.New("the deployment has no valid private state")
+		return Status{}, errors.New("the deployment has no valid state")
 	}
 	selected, err := selectedNodeNames(deploymentState.Resolved, m.Nodes)
 	if err != nil {
@@ -144,7 +143,7 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 	}
 	partial := len(selected) != len(deploymentState.Resolved.Nodes)
 	if partial && !m.allowPartialDestroy {
-		return Status{}, errors.New("private destroy currently requires selecting the complete deployment")
+		return Status{}, errors.New("destroy currently requires selecting the complete deployment")
 	}
 	selectedSet := nodeNameSet(selected)
 	needsStop := false
@@ -199,7 +198,7 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 			continue
 		}
 		if node.Phase != state.Stopped && node.Phase != state.Prepared {
-			return Status{}, fmt.Errorf("private node %s phase %s is not destroyable", node.Node, node.Phase)
+			return Status{}, fmt.Errorf("node %s phase %s is not destroyable", node.Node, node.Phase)
 		}
 		identityValue := process.Identity{PID: node.Process.PID, Executable: node.Process.Executable, Started: node.Process.Started, ArgvHash: node.Process.ArgvHash}
 		if process.MatchesLive(ctx, m.runner(), identityValue, node.Invocation) || process.Alive(node.Process.PID) {
@@ -259,7 +258,7 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 			return Status{}, err
 		}
 		if err := os.Remove(nodeDirs[node.Node]); err != nil {
-			return Status{}, fmt.Errorf("private node directory contains unexpected artifacts: %w", err)
+			return Status{}, fmt.Errorf("node directory contains unexpected artifacts: %w", err)
 		}
 	}
 	if err := m.removeKnownHostEntries(ctx, deploymentValue, nodes, addresses); err != nil {
@@ -323,7 +322,7 @@ func (m Manager) Recreate(ctx context.Context) (Status, error) {
 	}
 	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
 	if err != nil || deploymentState.Resolved.Network != "private" {
-		return Status{}, errors.New("the deployment has no valid private state")
+		return Status{}, errors.New("the deployment has no valid state")
 	}
 	return m.RecreateResolved(ctx, deploymentState.Resolved)
 }
@@ -367,7 +366,7 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	}
 	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
 	if err != nil || deploymentState.Resolved.Network != "private" {
-		return Status{}, errors.New("the deployment has no valid private state")
+		return Status{}, errors.New("the deployment has no valid state")
 	}
 	if err := validatePrivateRecreatePersistent(deploymentValue, deploymentState.Resolved, requested); err != nil {
 		return Status{}, err
@@ -396,7 +395,7 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err != nil {
 		return Status{}, err
 	}
-	if err := m.ensureImageSession(ctx, image.CatalogRefreshIfDue); err != nil {
+	if err := m.ensureImageSession(); err != nil {
 		return Status{}, err
 	}
 	boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)

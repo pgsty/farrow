@@ -68,7 +68,7 @@ func TestInitInvalidCIDRIsUsageError(t *testing.T) {
 	}
 }
 
-func TestInitForceShorthandOverwritesExistingInventory(t *testing.T) {
+func TestInitForceOverwritesExistingInventory(t *testing.T) {
 	previous, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func TestInitForceShorthandOverwritesExistingInventory(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"init", "full", "-f"}, &stdout, &stderr); code != exitOK {
+	if code := run([]string{"init", "full", "--force"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("forced init code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	data, err := os.ReadFile("farrow.yml")
@@ -92,7 +92,7 @@ func TestInitForceShorthandOverwritesExistingInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Contains(data, []byte("nodename: node-3")) {
-		t.Fatalf("-f did not replace the meta inventory with full: %s", data)
+		t.Fatalf("--force did not replace the meta inventory with full: %s", data)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestDestructiveConfirmationTTYAndNonTTY(t *testing.T) {
 	}
 }
 
-func TestRollbackFlagIsUpOnly(t *testing.T) {
+func TestRollbackFlagScope(t *testing.T) {
 	t.Setenv("FARROW_HOME", t.TempDir())
 	previous, err := os.Getwd()
 	if err != nil {
@@ -167,14 +167,17 @@ func TestRollbackFlagIsUpOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"plan", "--rollback"}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "unknown flag") {
-		t.Fatalf("plan code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	for _, command := range []string{"plan", "recreate"} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{command, "--rollback"}, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "unknown flag") {
+			t.Fatalf("%s code=%d stdout=%q stderr=%q", command, code, stdout.String(), stderr.String())
+		}
 	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"up", "--rollback"}, &stdout, &stderr); code != exitConflict || !strings.Contains(stderr.String(), "no configuration found") {
-		t.Fatalf("configless up code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	for _, command := range []string{"up", "reload"} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{command, "--rollback"}, &stdout, &stderr); code != exitConflict || !strings.Contains(stderr.String(), "no inventory found") {
+			t.Fatalf("configless %s code=%d stdout=%q stderr=%q", command, code, stdout.String(), stderr.String())
+		}
 	}
 }
 
@@ -563,7 +566,7 @@ func TestLifecycleSSHConfigFailureEmitsOneStructuredPartialResult(t *testing.T) 
 	if !ok {
 		t.Fatal("lifecycle failure was not typed")
 	}
-	if code := renderTypedCommandError(typed, preparedStdout, preparedStderr); code != exitIntegrity {
+	if code := renderTypedCommandError(typed, preparedStdout, preparedStderr); code != exitPartial {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	var payload struct {
@@ -583,7 +586,7 @@ func TestLifecycleSSHConfigFailureEmitsOneStructuredPartialResult(t *testing.T) 
 
 func TestLifecyclePartialFailurePreservesPerNodeDetails(t *testing.T) {
 	partial := &privatevm.PartialError{
-		Nodes: []string{"d12-1"},
+		Total: 1,
 		Failures: []privatevm.NodeFailure{{
 			Node: "d12-1", Stage: "readiness", Error: "guest bootstrap failed during data-disks",
 		}},
@@ -805,6 +808,33 @@ func TestMissingDeploymentDiagnosticsRemainDistinctFromLegacyState(t *testing.T)
 		if failure.Error != "conflict" || failure.Message != missingMessage || strings.Contains(failure.Message, legacyDeploymentMessage) {
 			t.Fatalf("%s failure=%#v stderr=%q", command, failure, stderr.String())
 		}
+	}
+}
+
+func TestHostsInstallDistinguishesMissingAndCorruptDeploymentState(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"--json", "hosts", "install"}, &stdout, &stderr); code != exitConflict {
+		t.Fatalf("missing deployment code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var missing commandFailure
+	if err := json.Unmarshal(stdout.Bytes(), &missing); err != nil || missing.Error != "conflict" || !strings.Contains(missing.Message, "no deployment state found") {
+		t.Fatalf("missing deployment failure=%#v decode=%v", missing, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "state.json"), []byte("{\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--json", "hosts", "install"}, &stdout, &stderr); code != exitIntegrity {
+		t.Fatalf("corrupt deployment code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var corrupt commandFailure
+	if err := json.Unmarshal(stdout.Bytes(), &corrupt); err != nil || corrupt.Error != "integrity" || strings.Contains(corrupt.Message, "no deployment state found") {
+		t.Fatalf("corrupt deployment failure=%#v decode=%v", corrupt, err)
 	}
 }
 

@@ -9,7 +9,7 @@ Authoritative documentation: <https://farrow.pgsty.com/>
 
 ```bash
 farrow init          # write ./farrow.yml
-farrow setup         # prepare the host: QEMU, firmware, fixed-IP network
+farrow setup         # prepare the host: QEMU, firmware, fixed-IP network (writes farrow.yml if missing)
 farrow up            # create, boot, and wire SSH for every node
 farrow ssh meta      # you are in
 ```
@@ -59,9 +59,14 @@ access only when a host transaction genuinely needs it.
 Farrow is pre-1.0. A successful build from source is not evidence of a tagged
 release, a published package, or a supported guest image.
 
+Download `install.sh`, `farrow.rb`, or the native package from the
+[Farrow 0.3.0 release](https://github.com/pgsty/farrow/releases/tag/v0.3.0).
+
 ```bash
 # From a release: user-scoped, no sudo, checksum-verified
-FARROW_VERSION=<version> ./install.sh
+curl -fLO https://github.com/pgsty/farrow/releases/download/v0.3.0/install.sh
+chmod +x install.sh
+FARROW_VERSION=0.3.0 ./install.sh
 
 # Homebrew formula (shipped as a release asset)
 brew install --formula ./farrow.rb
@@ -90,10 +95,9 @@ farrow init full             # a four-node inventory instead of one
 farrow validate              # parse and resolve without touching anything
 farrow plan                  # what would change, and why
 farrow up                    # converge
-farrow update                # refresh the signed image catalog now
+farrow update                # fetch and activate a newer image catalog
 farrow status                # audit/converge selected runtime state, from anywhere
 farrow ssh meta -- uptime    # run something in a guest
-farrow ss                    # teach plain `ssh` about the nodes
 farrow hosts install --yes   # publish node names into the host hosts file
 farrow destroy               # explicit, confirmed teardown
 ```
@@ -110,7 +114,7 @@ Presentation flags never change an exit status.
 | 2 | usage error |
 | 3 | missing host capability |
 | 4 | state conflict (no deployment, wrong phase) |
-| 5 | partial success across selected nodes |
+| 5 | partial completion across nodes or post-lifecycle integration |
 | 6 | resource conflict (address or port in use) |
 | 7 | integrity failure (digest, signature, or state mismatch) |
 | 130 | cancelled: interrupted by `SIGINT`/`SIGTERM`, or a confirmation was declined |
@@ -129,11 +133,10 @@ and removing that one tree removes Farrow's footprint apart from the host
 network and the hosts-file entries, which have their own `uninstall` and
 `remove` commands.
 
-Catalog metadata is cached per image repository. The first image-resolving
-operation attempts one refresh; after a successful check, Farrow reuses the
-same trusted local catalog for seven days. An automatic refresh failure falls
-back to the cached or embedded catalog, while `farrow update` bypasses the cache
-lifetime and reports a refresh failure directly.
+The image catalog ships inside each Farrow release, and Farrow never refreshes
+it implicitly. `farrow update` fetches the configured repository's catalog;
+`farrow image sync` activates an exact URL or file. Ordinary commands use the
+active local catalog.
 
 ## Development
 

@@ -58,7 +58,7 @@ func rootOwned(path string, mode os.FileMode, kind string) (os.FileInfo, error) 
 
 func expectedPrivateLayout(expected *spec.PrivateNetwork) (subnet.Layout, error) {
 	if expected == nil {
-		return subnet.Layout{}, errors.New("private host preflight requires an expected network")
+		return subnet.Layout{}, errors.New("host preflight requires an expected network")
 	}
 	layout, err := subnet.Parse(expected.CIDR)
 	if err != nil {
@@ -72,7 +72,7 @@ func expectedPrivateLayout(expected *spec.PrivateNetwork) (subnet.Layout, error)
 
 func qemuVersionPreflight(ctx context.Context, profile platform.Profile, runner execx.Runner) (string, platform.Version, error) {
 	if profile.QEMUBinary == "" {
-		return "", platform.Version{}, errors.New("private host profile has no QEMU binary")
+		return "", platform.Version{}, errors.New("host profile has no QEMU binary")
 	}
 	qemuPath, err := platform.FindQEMUBinary(profile, exec.LookPath)
 	if err != nil {
@@ -364,10 +364,10 @@ func linuxHostPreflight(ctx context.Context, expected *spec.PrivateNetwork, runn
 
 func PreflightHost(ctx context.Context, profile platform.Profile, expected *spec.PrivateNetwork, runner execx.Runner) (Backend, error) {
 	if runner == nil {
-		return Backend{}, &CapabilityError{Reason: "private host preflight requires a command runner"}
+		return Backend{}, &CapabilityError{Reason: "host preflight requires a command runner"}
 	}
 	if profile.OS != "darwin" && profile.OS != "linux" {
-		return Backend{}, &CapabilityError{Reason: fmt.Sprintf("private host preflight does not support %s", profile.OS)}
+		return Backend{}, &CapabilityError{Reason: fmt.Sprintf("host preflight does not support %s", profile.OS)}
 	}
 	qemuPath, qemuVersion, err := qemuVersionPreflight(ctx, profile, runner)
 	if err != nil {

@@ -12,12 +12,11 @@ import (
 func newProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
 	options := provisionOptions{Parallelism: 1, Timeout: time.Hour}
 	command := &cobra.Command{
-		Use:     "provision [node...]",
-		Aliases: []string{"p"},
-		Short:   "Run a local Bash script in selected guests",
-		Long: `Stream one bounded local Bash script to selected running guests over the
-verified deployment SSH connection. Execution is serial by default, audited by
-script digest, and never uploads the script as a persistent guest file.`,
+		Use:   "provision [node...]",
+		Short: "Run a local Bash script in selected guests",
+		Long: `Run one local Bash script on the selected running guests over the verified
+deployment SSH connection. Execution is serial by default, audited by script
+digest, and never leaves the script behind as a guest file.`,
 		Example: `  farrow provision --script ./bootstrap.sh
   farrow provision --script ./check.sh meta node-1
   farrow provision --script ./admin.sh --sudo --parallel 2 --timeout 30m`,
@@ -55,13 +54,14 @@ func newSSHConfigCommand(stdout, stderr io.Writer) *cobra.Command {
 		Use:     "ssh-config [node...]",
 		Aliases: []string{"sc"},
 		Short:   "Print, install, or remove OpenSSH configuration",
-		Long: `Print the deployment OpenSSH fragment, install it through one marker-owned
-Include, or remove only that owned fragment. Printing and installation can be
-limited to selected nodes; removal is state-independent and accepts no nodes.`,
+		Long: `Print the deployment OpenSSH fragment, install it as one Include in
+~/.ssh/config, or remove only what Farrow installed. Printing and installation
+can be limited to selected nodes; removal needs no deployment state and
+accepts no nodes.`,
 		Example: `  farrow ssh-config                       # print the fragment
   farrow ssh-config --install meta        # install aliases for one node
   farrow ssh-config --install --name lab  # use lab-* as the prefixed aliases
-  farrow ssh-config --remove --name lab   # remove only the owned lab fragment`,
+  farrow ssh-config --remove --name lab   # remove only the lab fragment Farrow installed`,
 		Args: func(_ *cobra.Command, arguments []string) error {
 			if options.Remove && len(arguments) != 0 {
 				return fmt.Errorf("--remove does not accept node selectors")
@@ -83,50 +83,11 @@ limited to selected nodes; removal is state-independent and accepts no nodes.`,
 			return collectCommandOutcome(command.Context(), outcome)
 		},
 	}
-	command.Flags().BoolVarP(&options.Install, "install", "i", false, "install a marker-owned Include and deployment fragment")
-	command.Flags().BoolVarP(&options.Remove, "remove", "r", false, "remove the marker-owned Include and fragment")
-	command.Flags().StringVarP(&options.Name, "name", "n", options.Name, "SSH Host and fragment prefix")
+	command.Flags().BoolVarP(&options.Install, "install", "i", false, "install the deployment fragment and one Include in ~/.ssh/config")
+	command.Flags().BoolVar(&options.Remove, "remove", false, "remove the Include and fragment Farrow installed")
+	command.Flags().StringVar(&options.Name, "name", options.Name, "SSH Host and fragment prefix")
 	noFileCompletions(command, "install", "remove", "name")
 	command.MarkFlagsMutuallyExclusive("install", "remove")
-	return command
-}
-
-func sshShortcutOptions(name string) (sshConfigOptions, error) {
-	if name == "" {
-		name = "farrow"
-	}
-	if !sshconfig.ValidName(name) {
-		return sshConfigOptions{}, fmt.Errorf("invalid SSH config name %q", name)
-	}
-	return sshConfigOptions{Install: true, Name: name}, nil
-}
-
-func newSSHShortcutCommand(stdout, stderr io.Writer) *cobra.Command {
-	var name string
-	command := &cobra.Command{
-		Use:   "ss [node...]",
-		Short: "Install the deployment SSH config",
-		Long: `Shortcut for 'farrow ssh-config --install'. Aliases answer bare node
-names, and the installed fragment prefix defaults to 'farrow'.`,
-		Example: `  farrow ss              # make every node available to plain ssh
-  farrow ss meta         # install aliases for one node
-  farrow ss --name lab   # use lab-* as the prefixed aliases`,
-		Args:              cobra.ArbitraryArgs,
-		ValidArgsFunction: nodeCompletion(false, false),
-		RunE: func(command *cobra.Command, nodes []string) error {
-			options, err := sshShortcutOptions(name)
-			if err != nil {
-				return err
-			}
-			outcome, err := runSSHConfig(command.Context(), options, nodes)
-			if err != nil {
-				return err
-			}
-			return collectCommandOutcome(command.Context(), outcome)
-		},
-	}
-	command.Flags().StringVarP(&name, "name", "n", "", "SSH fragment prefix (default: farrow)")
-	noFileCompletions(command, "name")
 	return command
 }
 
@@ -172,7 +133,7 @@ func newHostsCommand(stdout, stderr io.Writer) *cobra.Command {
 	parent := subcommandGroup(
 		"hosts",
 		"Manage deployment entries in the host hosts file",
-		`Publish or remove the deployment's marker-owned /etc/hosts block through the
+		`Publish or remove the deployment's block in /etc/hosts through the
 digest-matched Farrow helper. Both operations show their exact privileged plan
 before applying it.`,
 		`  farrow hosts install         # show the proposed /etc/hosts block
@@ -180,7 +141,6 @@ before applying it.`,
   farrow hosts uninstall --yes # remove only the Farrow-owned block`,
 		stdout, stderr,
 	)
-	parent.Aliases = []string{"h"}
 	for _, action := range []string{"install", "uninstall"} {
 		action := action
 		apply := false
@@ -192,7 +152,7 @@ before applying it.`,
 		command := &cobra.Command{
 			Use:     action,
 			Short:   short,
-			Long:    short + " through the digest-matched helper. Without --yes, print the exact privileged plan and change nothing.",
+			Long:    short + " through the digest-matched helper.\nWithout --yes, print the exact privileged plan and change nothing.",
 			Example: example,
 			Args:    cobra.NoArgs,
 			RunE: func(command *cobra.Command, _ []string) error {

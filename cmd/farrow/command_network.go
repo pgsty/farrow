@@ -53,8 +53,8 @@ read-only preflight findings used before lifecycle mutation.`,
 		Aliases: []string{"i"},
 		Short:   "Install the host-global fixed-IP network",
 		Long: `Plan or install the platform-native fixed-IP backend. On macOS this is
-socket_vmnet in host or shared mode; on Linux it is the selected bridge/network
-manager backend. Without --yes the command is a read-only plan.`,
+socket_vmnet in host or shared mode; on Linux it is the selected bridge or
+network-manager backend. Without --yes the command is a read-only plan.`,
 		Example: `  farrow network install                    # print the privileged plan
   farrow network install --yes              # apply the default 10.10.10.0/24 plan
   farrow network install --mode shared --yes # macOS shared vmnet mode`,

@@ -141,7 +141,7 @@ func TestStartPreparedPreservesRunningPeerOnReadinessFailure(t *testing.T) {
 	}
 }
 
-func TestWaitRunningReadyRechecksWithoutRestart(t *testing.T) {
+func TestStartPreparedRechecksRunningNodesWithoutRestart(t *testing.T) {
 	config, _ := preparedStartFixture(t)
 	started := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{}}
 	config.Lifecycle = started
@@ -149,11 +149,11 @@ func TestWaitRunningReadyRechecksWithoutRestart(t *testing.T) {
 	if _, err := StartPrepared(context.Background(), config); err != nil {
 		t.Fatal(err)
 	}
-	recheck := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{"node-1": true}}
-	outcomes, err := waitRunningReady(context.Background(), readyConfig{
-		Deployment: config.Deployment, Lifecycle: recheck, Nodes: config.Nodes,
-		Concurrency: 2, ReadyTimeout: time.Second,
-	})
+	// Every Start call would now fail, so a running node must only be rechecked.
+	recheck := &fakeNodeLifecycle{failStart: map[string]bool{"meta": true, "node-1": true}, failReady: map[string]bool{"node-1": true}}
+	config.Lifecycle = recheck
+	config.NoWait = false
+	outcomes, err := StartPrepared(context.Background(), config)
 	if err != nil || len(runningNames(outcomes)) != 2 || len(readyNames(outcomes)) != 1 || outcomes[1].Error == "" {
 		t.Fatalf("running readiness outcomes=%#v err=%v", outcomes, err)
 	}
@@ -162,6 +162,13 @@ func TestWaitRunningReadyRechecksWithoutRestart(t *testing.T) {
 	recheck.mu.Unlock()
 	if waitCalls != 2 {
 		t.Fatalf("running readiness calls = %d, want 2", waitCalls)
+	}
+	store := state.Store{Root: config.Deployment.Root}
+	for _, name := range config.Nodes {
+		node, err := store.ReadNode(name)
+		if err != nil || node.Phase != state.Running {
+			t.Fatalf("recheck changed node %s state: %#v, %v", name, node, err)
+		}
 	}
 }
 

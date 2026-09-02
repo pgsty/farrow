@@ -9,7 +9,7 @@ import (
 )
 
 // ErrNoConfig marks an inventory directory with no discoverable configuration.
-var ErrNoConfig = errors.New("no configuration found; run `farrow setup` to create one, or pass -f")
+var ErrNoConfig = errors.New("no inventory found; run `farrow init` to write one, or pass -f")
 
 // DiscoveryNames are the configuration filenames probed in the working
 // directory, in order: an explicit farrow.yml wins over the Pigsty inventory

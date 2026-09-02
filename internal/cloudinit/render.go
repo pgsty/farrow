@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pgsty/farrow/internal/spec"
+
 	"github.com/pgsty/farrow/internal/naming"
 	"golang.org/x/crypto/ssh"
 )
@@ -169,7 +171,7 @@ func validateInput(input Input) error {
 		if !safeMount(disk.Mount) {
 			return fmt.Errorf("unsafe data disk mount %q", disk.Mount)
 		}
-		if disk.Filesystem != "auto" && disk.Filesystem != "xfs" && disk.Filesystem != "ext4" {
+		if !spec.ValidFilesystem(disk.Filesystem) {
 			return fmt.Errorf("unsupported filesystem %q", disk.Filesystem)
 		}
 		if _, exists := seenMount[disk.Mount]; exists {
@@ -662,16 +664,14 @@ func renderFinalizeScript(controlSSH, privateNetwork, shares bool) string {
 	out.WriteString(`#!/bin/bash
 set -euo pipefail
 install -d -o root -g root -m 0755 /var/lib/farrow
-stage=bootstrap
-failure_line=0
-trap 'failure_line=${LINENO}' ERR
+stage=identity
 finalize_exit() {
   local status=$?
   local error_tmp=
-  trap - ERR EXIT
+  trap - EXIT
   if (( status != 0 )); then
     if error_tmp=$(mktemp /var/lib/farrow/error.json.XXXXXX); then
-      if printf '{"exit_status":%d,"line":%d,"stage":"%s"}\n' "${status}" "${failure_line}" "${stage}" > "${error_tmp}" &&
+      if printf '{"exit_status":%d,"stage":"%s"}\n' "${status}" "${stage}" > "${error_tmp}" &&
         chown root:root "${error_tmp}" && chmod 0644 "${error_tmp}"; then
         mv -f -- "${error_tmp}" /var/lib/farrow/error.json || rm -f -- "${error_tmp}" || true
       else
@@ -688,7 +688,7 @@ finalize_exit() {
 trap finalize_exit EXIT
 rm -f -- /var/lib/farrow/ready.json /var/lib/farrow/error.json
 `)
-	out.WriteString("stage=identity\n/usr/local/libexec/farrow-identity-contract\n")
+	out.WriteString("/usr/local/libexec/farrow-identity-contract\n")
 	out.WriteString("stage=hosts\n/usr/local/libexec/farrow-hosts\n")
 	out.WriteString("stage=management-network\n/usr/local/libexec/farrow-network-check\n")
 	out.WriteString("stage=data-disks\n/usr/local/libexec/farrow-init-disks\n")
