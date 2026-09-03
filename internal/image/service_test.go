@@ -54,6 +54,35 @@ func TestConfiguredRepositoryPrecedence(t *testing.T) {
 	if err != nil || repository != "https://command.example/farrow" || !explicit {
 		t.Fatalf("command repository = %q explicit=%v err=%v", repository, explicit, err)
 	}
+
+	service.Mirror = true
+	repository, explicit, err = service.configuredRepository()
+	if err != nil || repository != "https://command.example/farrow" || !explicit {
+		t.Fatalf("command repository with mirror = %q explicit=%v err=%v", repository, explicit, err)
+	}
+
+	service.Repository = ""
+	repository, explicit, err = service.configuredRepository()
+	if err != nil || repository != ChinaRepositoryURL || !explicit {
+		t.Fatalf("mirror repository = %q explicit=%v err=%v", repository, explicit, err)
+	}
+}
+
+func TestExplicitOfficialRepositoriesRequireSignatures(t *testing.T) {
+	t.Parallel()
+	for _, repository := range []string{GlobalRepositoryURL, ChinaRepositoryURL} {
+		manager, err := (Service{Repository: repository}).manifestManager()
+		if err != nil {
+			t.Fatalf("official repository %s: %v", repository, err)
+		}
+		if manager.AllowUnsigned {
+			t.Errorf("explicit official repository %s permits an unsigned catalog", repository)
+		}
+	}
+	manager, err := (Service{Mirror: true}).manifestManager()
+	if err != nil || manager.Repository != ChinaRepositoryURL || manager.AllowUnsigned {
+		t.Fatalf("--mirror manifest policy = %#v, %v", manager, err)
+	}
 }
 
 func TestLookupArchUsesEmbeddedCatalogWithoutDownloading(t *testing.T) {

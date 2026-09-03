@@ -210,7 +210,7 @@ func TestHTTPRepositoryPrecedesUpstreamAndKeepsReadableName(t *testing.T) {
 	}
 }
 
-func TestMissingRepositoryArtifactFallsBackToUpstream(t *testing.T) {
+func TestMissingRepositoryArtifactDoesNotRequestUpstream(t *testing.T) {
 	t.Parallel()
 	store := testImageStore(t)
 	source := filepath.Join(t.TempDir(), "source.qcow2")
@@ -222,7 +222,9 @@ func TestMissingRepositoryArtifactFallsBackToUpstream(t *testing.T) {
 	digestBytes := sha256.Sum256(data)
 	repository := httptest.NewServer(http.NotFoundHandler())
 	defer repository.Close()
+	var upstreamHits atomic.Int32
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		upstreamHits.Add(1)
 		writer.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		_, _ = writer.Write(data)
 	}))
@@ -230,12 +232,41 @@ func TestMissingRepositoryArtifactFallsBackToUpstream(t *testing.T) {
 	store.Repository = repository.URL
 	store.HTTPClient = upstream.Client()
 	entry := Entry{Alias: "u24", Release: "1", Arch: "arm64", File: "u24/u24-1-arm64.qcow2", Upstream: upstream.URL + "/image.qcow2", SHA256: hex.EncodeToString(digestBytes[:]), Format: "qcow2", ArtifactSize: int64(len(data)), VirtualSize: 64 << 20}
-	_, metadata, err := store.Pull(context.Background(), entry)
-	if err != nil {
-		t.Fatal(err)
+	_, _, err = store.Pull(context.Background(), entry)
+	if err == nil || !strings.Contains(err.Error(), "not present in the selected repository") {
+		t.Fatalf("missing repository artifact error = %v", err)
 	}
-	if !strings.HasPrefix(metadata.Source, "upstream:") {
-		t.Fatalf("fallback metadata = %#v", metadata)
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("repository failure requested catalog upstream %d time(s)", upstreamHits.Load())
+	}
+}
+
+func TestRepositoryPullEnforcesFinalCatalogDigestWithoutUpstreamFallback(t *testing.T) {
+	t.Parallel()
+	store := testImageStore(t)
+	final := testHTTPArtifact(t)
+	repository := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		// These bytes model the uncustomized provenance artifact. The catalog
+		// identity describes the final repository qcow2 instead.
+		_, _ = writer.Write([]byte("uncustomized upstream bytes"))
+	}))
+	defer repository.Close()
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		writer.Header().Set("Content-Length", strconv.Itoa(len(final.data)))
+		_, _ = writer.Write(final.data)
+	}))
+	defer upstream.Close()
+	store.Repository = repository.URL
+	store.HTTPClient = upstream.Client()
+	entry := final.entry(upstream.URL + "/provenance.qcow2")
+
+	if _, _, err := store.Pull(context.Background(), entry); err == nil || !strings.Contains(err.Error(), "catalog") {
+		t.Fatalf("repository bytes that differ from the final catalog identity were accepted: %v", err)
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("digest failure fell back to catalog upstream %d time(s)", upstreamHits.Load())
 	}
 }
 

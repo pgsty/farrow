@@ -16,6 +16,7 @@ activate it. Farrow never refreshes the catalog implicitly: ordinary image and
 lifecycle commands use the active local catalog. Use image sync only to
 activate an exact URL or file. This does not update the Farrow executable.`,
 		Example: `  farrow update
+  farrow update --mirror
   farrow update --repo https://mirror.example/farrow
   farrow --json update`,
 		Args: cobra.NoArgs,
@@ -24,6 +25,8 @@ activate an exact URL or file. This does not update the Farrow executable.`,
 		},
 	}
 	command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
+	command.Flags().BoolVar(&options.Mirror, "mirror", false, mirrorFlagHelp)
+	noFileCompletions(command, "mirror")
 	return command
 }
 
@@ -78,10 +81,11 @@ Run 'farrow update' first to see a newer catalog.`,
 cache state for one image alias.`
 		example := "  farrow image info d13\n  farrow image info d13:stable\n  farrow --json image info d13"
 		if action == "pull" {
-			long = `Download one native-architecture image from the configured repository or
-immutable upstream source, then verify its digest and qcow2 metadata before
-activation.`
-			example = "  farrow image pull\n  farrow image pull d13@20260810.2566.0\n  farrow image pull d13 --repo /srv/farrow"
+			long = `Download one native-architecture image from the selected repository, then
+verify its catalog digest, byte size, qcow2 structure, and virtual size before
+activation. The catalog upstream URL records build provenance; it is not a
+repository-failure fallback.`
+			example = "  farrow image pull\n  farrow image pull d13 --mirror\n  farrow image pull d13 --repo /srv/farrow"
 		}
 		command := &cobra.Command{
 			Use:               action + " [image[:channel]|image@version-prefix]",
@@ -111,6 +115,10 @@ activation.`
 		command.Flags().StringVarP(&options.Arch, "arch", "a", "", "artifact architecture, amd64 or arm64; defaults to the host architecture")
 		_ = command.RegisterFlagCompletionFunc("arch", enumFlagCompletion("amd64", "arm64"))
 		command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
+		if action == "pull" {
+			command.Flags().BoolVar(&options.Mirror, "mirror", false, mirrorFlagHelp)
+			noFileCompletions(command, "mirror")
+		}
 		parent.AddCommand(command)
 	}
 

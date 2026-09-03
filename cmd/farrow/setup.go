@@ -21,6 +21,7 @@ import (
 	"github.com/pgsty/farrow/internal/fsutil"
 	"github.com/pgsty/farrow/internal/hostconfig"
 	"github.com/pgsty/farrow/internal/identity"
+	"github.com/pgsty/farrow/internal/image"
 	darwinnet "github.com/pgsty/farrow/internal/network/darwin"
 	linuxnet "github.com/pgsty/farrow/internal/network/linux"
 	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
@@ -78,6 +79,7 @@ type setupCLIOptions struct {
 	CIDR         string
 	Mode         string
 	Repo         string
+	Mirror       bool
 	ModeExplicit bool
 	DryRun       bool
 	Yes          bool
@@ -96,6 +98,9 @@ func (options setupCLIOptions) arguments(profileName string) []string {
 	}
 	if options.Repo != "" {
 		arguments = append(arguments, "--repo="+options.Repo)
+	}
+	if options.Mirror {
+		arguments = append(arguments, "--mirror")
 	}
 	if options.ModeExplicit {
 		arguments = append(arguments, "--mode="+options.Mode)
@@ -579,7 +584,7 @@ func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflig
 		}
 		var downloadProgress *progress
 		sources.Progress = deferredProgressReporter(&downloadProgress)
-		downloadProgress = startProgress(ctx, stderr, "Fetching socket_vmnet "+darwinnet.ReleaseVersion+" (digest-pinned; sources: cache, FARROW_VMNET_ARCHIVE, FARROW_REPO, github.com)")
+		downloadProgress = startProgress(ctx, stderr, "Fetching socket_vmnet "+darwinnet.ReleaseVersion+" (digest-pinned; sources: cache, FARROW_VMNET_ARCHIVE, selected repository, github.com)")
 		download, err := setuphost.DownloadPinnedSocketVMNet(ctx, runtime.GOARCH, "", nil, sources)
 		downloadProgress.Stop(err)
 		if err != nil {
@@ -881,10 +886,10 @@ func printSetupPlan(stderr io.Writer, plan setuphost.DependencyPlan, selection s
 			default:
 				if _, ok := (darwinnet.HomebrewProbe{}).Brew(); ok {
 					bestEffortf(stderr, "                backend socket_vmnet %s via Homebrew (brew install %s), copied into root-owned /opt/farrow\n", darwinnet.ReleaseVersion, darwinnet.SocketVMNetFormula)
-					bestEffortln(stderr, "                fallback: digest-pinned download (FARROW_REPO mirror, github.com/lima-vm)")
+					bestEffortln(stderr, "                fallback: digest-pinned download (selected repository, github.com/lima-vm)")
 				} else {
-					bestEffortf(stderr, "                downloads socket_vmnet %s (<4 MiB, SHA-256 pinned) from github.com/lima-vm\n", darwinnet.ReleaseVersion)
-					bestEffortln(stderr, "                mirrors: FARROW_REPO/<repo>/socket_vmnet/ or FARROW_VMNET_ARCHIVE=/path/to.tar.gz")
+					bestEffortf(stderr, "                downloads socket_vmnet %s (<4 MiB, SHA-256 pinned) from the selected repository or github.com/lima-vm\n", darwinnet.ReleaseVersion)
+					bestEffortln(stderr, "                override with --mirror, --repo, FARROW_REPO, or FARROW_VMNET_ARCHIVE=/path/to.tar.gz")
 				}
 			}
 			sudoFor = append(sudoFor, "network service installation (socket_vmnet under /opt/farrow, root-owned)")
@@ -1062,6 +1067,10 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 	if runtime.GOOS != "darwin" && options.Mode != "host" {
 		return failSetup(&result, exitUsage, errors.New("--mode shared is available only on Darwin"))
 	}
+	repository, _, err := image.ResolveRepository(options.Repo, options.Mirror)
+	if err != nil {
+		return failSetup(&result, exitUsage, err)
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return failSetup(&result, exitRuntime, err)
@@ -1210,7 +1219,7 @@ func runSetupCommand(parent context.Context, profileName string, options setupCL
 		result.NextArgv = nil
 		return failSetup(&result, code, failure)
 	}
-	step, uncertain, installErr := applySetupNetwork(ctx, networkMode, options.Repo, report, base, sudoSession, stderr)
+	step, uncertain, installErr := applySetupNetwork(ctx, networkMode, repository, report, base, sudoSession, stderr)
 	if installErr != nil {
 		result.MutationUncertain = result.MutationUncertain || uncertain
 		result.Steps = append(result.Steps, setupStep{Name: "network", Status: "failed"})

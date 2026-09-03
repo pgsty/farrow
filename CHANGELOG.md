@@ -6,6 +6,16 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- The default official image repository is now `https://repo.pigsty.io/farrow`.
+  Downloading commands accept long-only `--mirror` to select
+  `https://repo.pigsty.cc/farrow`; an explicit `--repo` remains highest
+  priority, ahead of `--mirror`, `FARROW_REPO`, and the default.
+- Catalog upstream URLs are provenance metadata rather than fallback download
+  sources when a repository is selected. Catalog SHA-256, artifact size, and
+  virtual size identify the final repository qcow2.
+
 ## [0.4.0]
 
 ### Changed

@@ -65,6 +65,7 @@ type lifecycleOptions struct {
 	Rollback         bool
 	ConfigPath       string
 	Repository       string
+	Mirror           bool
 }
 
 func configurationWarnings(resolved spec.Resolved) []string {
@@ -1321,7 +1322,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	if command == "up" || command == "reload" || command == "start" || command == "restart" || command == "recreate" {
 		seen := make(map[string]struct{})
 		guestArch := lifecycleImageArch(resolved)
-		if service, serviceErr := imageService(repository, nil); serviceErr == nil {
+		if service, serviceErr := imageService(repository, false, nil); serviceErr == nil {
 			if session, sessionErr := service.OpenCatalog(); sessionErr == nil {
 				for _, node := range resolved.Nodes {
 					alias := node.Image
@@ -1381,6 +1382,14 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 		// sense past it.
 		options.DeletePersistent = true
 	}
+	repository := options.Repository
+	if command == "plan" || command == "up" || command == "reload" || command == "recreate" {
+		var repositoryErr error
+		repository, _, repositoryErr = image.ResolveRepository(options.Repository, options.Mirror)
+		if repositoryErr != nil {
+			return commandOutcome{}, newUsageError(repositoryErr)
+		}
+	}
 	resolvedFile, hasConfig, err := loadLifecycleConfig(command, options.ConfigPath)
 	if err != nil {
 		return commandOutcome{}, newUsageError(err)
@@ -1409,18 +1418,22 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 		return commandOutcome{}, newUsageError(err)
 	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
-	outcome, err := runPrivateCommand(ctx, command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
+	outcome, err := runPrivateCommand(ctx, command, resolvedFile, nodes, repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
 	if command == "up" && configFromFile && needsHostSetup(err) && interactiveTextSession(stderr) {
 		// First use on this host: run the one-time setup here instead of asking
 		// for a second command. Setup shows its plan and asks before any
 		// privileged step; up continues once the network exists.
 		bestEffortf(stderr, "%s The fixed-IP network is not installed yet; running farrow setup first\n", styled(stderr, ansiCyan, "→"))
-		if _, setupErr := runSetupCommand(ctx, "", setupCLIOptions{FilePath: options.ConfigPath, Mode: "host", Repo: options.Repository}, outputText, verboseOutput(stderr), stderr); setupErr != nil {
+		if _, setupErr := runSetupCommand(ctx, "", implicitSetupOptions(options, repository), outputText, verboseOutput(stderr), stderr); setupErr != nil {
 			return commandOutcome{}, setupErr
 		}
-		outcome, err = runPrivateCommand(ctx, command, resolvedFile, nodes, options.Repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
+		outcome, err = runPrivateCommand(ctx, command, resolvedFile, nodes, repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
 	}
 	return outcome, err
+}
+
+func implicitSetupOptions(options lifecycleOptions, repository string) setupCLIOptions {
+	return setupCLIOptions{FilePath: options.ConfigPath, Mode: "host", Repo: repository}
 }
 
 // needsHostSetup reports the one preflight failure that farrow setup fixes on
@@ -1903,6 +1916,7 @@ func runInit(options initOptions) (commandOutcome, error) {
 type imageOptions struct {
 	Action         string
 	Repository     string
+	Mirror         bool
 	Alias          string
 	Arch           string
 	Source         string
@@ -1922,7 +1936,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		var progressItem *progress
-		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
+		service, err := imageService(options.Repository, options.Mirror, deferredProgressReporter(&progressItem))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -1948,7 +1962,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 	case "list":
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
-		service, err := imageService(options.Repository, nil)
+		service, err := imageService(options.Repository, options.Mirror, nil)
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -1973,7 +1987,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 		defer cancel()
 		var progressItem *progress
-		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
+		service, err := imageService(options.Repository, options.Mirror, deferredProgressReporter(&progressItem))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -2057,7 +2071,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		}
 		ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 		defer cancel()
-		service, err := imageService(options.Repository, nil)
+		service, err := imageService(options.Repository, options.Mirror, nil)
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -2098,7 +2112,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		defer cancel()
 		debugf(stderr, "image catalog sync source=%s allow_downgrade=%t", progressSource(options.Source), options.AllowDowngrade)
 		var progressItem *progress
-		service, err := imageService(options.Repository, deferredProgressReporter(&progressItem))
+		service, err := imageService(options.Repository, options.Mirror, deferredProgressReporter(&progressItem))
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -2118,7 +2132,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 	case "reset":
 		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()
-		service, err := imageService(options.Repository, nil)
+		service, err := imageService(options.Repository, options.Mirror, nil)
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -2140,7 +2154,7 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		}
 		ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 		defer cancel()
-		service, err := imageService("", nil)
+		service, err := imageService("", false, nil)
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}

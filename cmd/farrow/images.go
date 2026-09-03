@@ -14,12 +14,12 @@ import (
 
 // imageService resolves the deployment data root and returns the image
 // façade over it.
-func imageService(repository string, progress activity.Reporter) (image.Service, error) {
+func imageService(repository string, mirror bool, progress activity.Reporter) (image.Service, error) {
 	dataRoot, err := state.ResolveDataRoot()
 	if err != nil {
 		return image.Service{}, err
 	}
-	return image.Service{DataRoot: dataRoot, Repository: repository, Progress: progress}, nil
+	return image.Service{DataRoot: dataRoot, Repository: repository, Mirror: mirror, Progress: progress}, nil
 }
 
 func validImageDigest(value string) bool {

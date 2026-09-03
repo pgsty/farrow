@@ -25,8 +25,9 @@ farrow ssh meta      # you are in
   between the inventory and the applied state. Removing a host from the file
   never destroys a machine — deletion is always an explicit `farrow destroy`.
 - **Verified images.** Guest images come from a signed catalog with SHA-256,
-  qcow2, and virtual-size verification on every fetch, and immutable upstream
-  URLs as the fallback source.
+  qcow2, and virtual-size verification on every fetch. The selected
+  repository supplies the final image bytes; immutable upstream URLs remain
+  build-provenance markers.
 - **Fail-closed lifecycle.** QMP identity plus full process identity, atomic
   state writes, and transaction journals mean an interrupted operation is
   recoverable rather than ambiguous.
@@ -135,7 +136,9 @@ network and the hosts-file entries, which have their own `uninstall` and
 The image catalog ships inside each Farrow release, and Farrow never refreshes
 it implicitly. `farrow update` fetches the configured repository's catalog;
 `farrow image sync` activates an exact URL or file. Ordinary commands use the
-active local catalog.
+active local catalog. The default repository is `https://repo.pigsty.io/farrow`;
+`--mirror` selects `https://repo.pigsty.cc/farrow`, while an explicit `--repo`
+overrides `--mirror`, `FARROW_REPO`, and the default.
 
 ## Development
 

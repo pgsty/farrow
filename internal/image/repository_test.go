@@ -28,12 +28,44 @@ func TestRepositorySources(t *testing.T) {
 
 func TestPublicDefaultRepository(t *testing.T) {
 	t.Parallel()
-	const expected = "https://repo.pigsty.cc/farrow"
+	const expected = "https://repo.pigsty.io/farrow"
 	if DefaultRepositoryURL != expected {
 		t.Fatalf("default repository = %q, want %q", DefaultRepositoryURL, expected)
 	}
-	if RepositoryAllowsUnsigned(DefaultRepositoryURL) {
-		t.Fatal("the compiled default repository unexpectedly permits an unsigned catalog")
+	if MirrorRepositoryURL != "https://repo.pigsty.cc/farrow" {
+		t.Fatalf("mirror repository = %q", MirrorRepositoryURL)
+	}
+	for _, repository := range []string{GlobalRepositoryURL, ChinaRepositoryURL, GlobalRepositoryURL + "/", ChinaRepositoryURL + "/", "https://REPO.PIGSTY.IO:443/farrow"} {
+		if RepositoryAllowsUnsigned(repository) {
+			t.Errorf("official repository %q unexpectedly permits an unsigned catalog", repository)
+		}
+	}
+}
+
+func TestResolveRepositoryPrecedence(t *testing.T) {
+	t.Setenv("FARROW_REPO", "https://environment.example/farrow")
+
+	for _, test := range []struct {
+		name       string
+		repository string
+		mirror     bool
+		want       string
+		explicit   bool
+	}{
+		{name: "default", want: GlobalRepositoryURL},
+		{name: "environment", want: "https://environment.example/farrow", explicit: true},
+		{name: "mirror beats environment", mirror: true, want: ChinaRepositoryURL, explicit: true},
+		{name: "repo beats mirror", repository: "https://command.example/farrow/", mirror: true, want: "https://command.example/farrow", explicit: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "default" {
+				t.Setenv("FARROW_REPO", "")
+			}
+			got, explicit, err := ResolveRepository(test.repository, test.mirror)
+			if err != nil || got != test.want || explicit != test.explicit {
+				t.Fatalf("ResolveRepository(%q, %t) = %q, %t, %v; want %q, %t", test.repository, test.mirror, got, explicit, err, test.want, test.explicit)
+			}
+		})
 	}
 }
 

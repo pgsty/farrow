@@ -3,6 +3,7 @@ package image
 import (
 	"errors"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -10,28 +11,55 @@ import (
 
 const CatalogFilename = "catalog.json"
 
-// DefaultRepositoryURL is the public signed-catalog and artifact mirror used
-// when neither --repo nor FARROW_REPO selects another repository. If this
-// repository is unavailable, Service falls back to the signed embedded catalog
-// and its immutable HTTPS upstream artifacts.
-var DefaultRepositoryURL = "https://repo.pigsty.cc/farrow"
+const (
+	GlobalRepositoryURL = "https://repo.pigsty.io/farrow"
+	ChinaRepositoryURL  = "https://repo.pigsty.cc/farrow"
+)
+
+// DefaultRepositoryURL and MirrorRepositoryURL are variables so tests can
+// replace network endpoints without changing the production defaults.
+var (
+	DefaultRepositoryURL = GlobalRepositoryURL
+	MirrorRepositoryURL  = ChinaRepositoryURL
+)
+
+// ResolveRepository applies --repo > --mirror > FARROW_REPO > the global
+// default. The boolean result records whether the default was overridden,
+// which lets the catalog verifier retain the existing custom-repository policy.
+func ResolveRepository(repository string, mirror bool) (string, bool, error) {
+	repository = strings.TrimSpace(repository)
+	explicit := repository != ""
+	if repository == "" && mirror {
+		repository = MirrorRepositoryURL
+		explicit = true
+	}
+	if repository == "" {
+		repository = strings.TrimSpace(os.Getenv("FARROW_REPO"))
+		explicit = repository != ""
+	}
+	if repository == "" {
+		repository = DefaultRepositoryURL
+	}
+	normalized, err := NormalizeRepository(repository)
+	return normalized, explicit, err
+}
 
 // RepositoryAllowsUnsigned reports whether an explicitly selected repository
 // may rely on local ownership or HTTPS rather than a detached trusted
-// signature. The compiled default remains in the signed embedded trust domain
-// even when a user spells the same URL explicitly.
+// signature. Both official production repositories remain in the signed trust
+// domain even when a user spells either URL explicitly.
 func RepositoryAllowsUnsigned(value string) bool {
 	normalized, err := NormalizeRepository(value)
 	if err != nil || normalized == "" {
 		return false
 	}
-	if DefaultRepositoryURL != "" {
-		defaultRepository, defaultErr := NormalizeRepository(DefaultRepositoryURL)
-		if defaultErr == nil && normalized == defaultRepository {
+	parsed, _ := url.Parse(normalized)
+	if parsed.Scheme == "https" && (parsed.Port() == "" || parsed.Port() == "443") && parsed.Path == "/farrow" {
+		host := strings.ToLower(parsed.Hostname())
+		if host == "repo.pigsty.io" || host == "repo.pigsty.cc" {
 			return false
 		}
 	}
-	parsed, _ := url.Parse(normalized)
 	return parsed.Scheme == "" || parsed.Scheme == "https"
 }
 

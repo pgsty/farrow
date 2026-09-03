@@ -3,11 +3,9 @@ package image
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/pgsty/farrow/internal/activity"
@@ -24,6 +22,7 @@ import (
 type Service struct {
 	DataRoot   string
 	Repository string
+	Mirror     bool
 	QEMUImg    string
 	Runner     execx.Runner
 	Progress   activity.Reporter
@@ -71,17 +70,7 @@ func (s Service) store(repository string) (Store, error) {
 }
 
 func (s Service) configuredRepository() (string, bool, error) {
-	repository := strings.TrimSpace(s.Repository)
-	explicit := repository != ""
-	if repository == "" {
-		repository = strings.TrimSpace(os.Getenv("FARROW_REPO"))
-		explicit = repository != ""
-	}
-	if repository == "" {
-		repository = DefaultRepositoryURL
-	}
-	normalized, err := NormalizeRepository(repository)
-	return normalized, explicit, err
+	return ResolveRepository(s.Repository, s.Mirror)
 }
 
 // List returns every catalog entry plus registered local aliases.

@@ -272,6 +272,48 @@ func TestSafetySensitiveFlagsRemainLongOnly(t *testing.T) {
 	}
 }
 
+func TestMirrorFlagIsLongOnlyAndDownloadScoped(t *testing.T) {
+	root := newRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	want := map[string]bool{
+		"farrow setup":      true,
+		"farrow up":         true,
+		"farrow reload":     true,
+		"farrow recreate":   true,
+		"farrow update":     true,
+		"farrow image pull": true,
+	}
+	seen := make(map[string]bool)
+	var walk func(*cobra.Command)
+	walk = func(parent *cobra.Command) {
+		for _, command := range parent.Commands() {
+			if flag := command.LocalNonPersistentFlags().Lookup("mirror"); flag != nil {
+				seen[command.CommandPath()] = true
+				if flag.Shorthand != "" {
+					t.Errorf("%s --mirror shorthand=%q, want none", command.CommandPath(), flag.Shorthand)
+				}
+			}
+			walk(command)
+		}
+	}
+	walk(root)
+	if len(seen) != len(want) {
+		t.Fatalf("commands with --mirror = %v, want %v", seen, want)
+	}
+	for path := range want {
+		if !seen[path] {
+			t.Errorf("%s is missing --mirror", path)
+		}
+	}
+	setup, _, err := root.Find([]string{"setup"})
+	if err != nil || setup.LocalNonPersistentFlags().Lookup("mode").Shorthand != "m" {
+		t.Fatalf("setup -m/--mode changed while adding --mirror: command=%v err=%v", setup, err)
+	}
+	recreate, _, err := root.Find([]string{"recreate"})
+	if err != nil || recreate.LocalNonPersistentFlags().Lookup("repo") == nil {
+		t.Fatalf("recreate does not expose explicit --repo override: command=%v err=%v", recreate, err)
+	}
+}
+
 func TestAliasesAreDiscoverableInHelpAndCompletion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--help"}, &stdout, &stderr); code != exitOK {

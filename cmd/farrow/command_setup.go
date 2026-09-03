@@ -20,6 +20,7 @@ Use -f to prepare one explicit inventory instead. Setup prints one transaction
 before any mutation and requests privilege only at the first privileged step.`,
 		Example: `  farrow setup --dry-run       # inspect dependencies, downloads, and privilege steps
   farrow setup                 # reuse a local inventory, or create the meta template
+  farrow setup --mirror        # use the China official repository
   farrow setup full --yes      # prepare a generated four-node lab non-interactively
   farrow setup -f pigsty.yml   # prepare an existing Pigsty inventory`,
 		Args:              templateArgs,
@@ -30,13 +31,14 @@ before any mutation and requests privilege only at the first privileged step.`,
 	}
 	command.Flags().StringVarP(&options.FilePath, "file", "f", "", "inventory to prepare (cannot be combined with a template)")
 	command.Flags().StringVarP(&options.CIDR, "cidr", "c", "", "generated template network as a canonical RFC1918 IPv4 /24")
-	command.Flags().StringVarP(&options.Repo, "repo", "r", "", "artifact mirror URL or absolute directory for images and socket_vmnet; defaults to $FARROW_REPO")
+	command.Flags().StringVarP(&options.Repo, "repo", "r", "", "artifact repository URL or absolute directory for images and socket_vmnet; overrides --mirror and $FARROW_REPO")
+	command.Flags().BoolVar(&options.Mirror, "mirror", false, mirrorFlagHelp)
 	command.Flags().StringVarP(&options.Mode, "mode", "m", options.Mode, "macOS fixed-IP network backend: host or shared")
 	command.Flags().BoolVarP(&options.DryRun, "dry-run", "d", false, "show the resolved setup plan without changing anything")
 	command.Flags().BoolVarP(&options.Yes, "yes", "y", false, "accept the one-time setup plan (required without a terminal)")
 	command.MarkFlagsMutuallyExclusive("dry-run", "yes")
 	_ = command.RegisterFlagCompletionFunc("mode", enumFlagCompletion("host", "shared"))
-	noFileCompletions(command, "cidr", "dry-run", "yes")
+	noFileCompletions(command, "cidr", "mirror", "dry-run", "yes")
 	command.RunE = func(command *cobra.Command, arguments []string) error {
 		profileName := ""
 		if len(arguments) == 1 {

@@ -35,7 +35,7 @@ func TestUpdateCommandActivatesTheConfiguredCatalog(t *testing.T) {
 
 	for attempt := 0; attempt < 2; attempt++ {
 		var stdout, stderr bytes.Buffer
-		if code := run([]string{"update", "--repo", repository}, &stdout, &stderr); code != exitOK {
+		if code := run([]string{"update", "--mirror", "--repo", repository}, &stdout, &stderr); code != exitOK {
 			t.Fatalf("update attempt %d code=%d stdout=%q stderr=%q", attempt+1, code, stdout.String(), stderr.String())
 		}
 		if stderr.Len() != 0 || !strings.Contains(stdout.String(), repository) || !strings.Contains(stdout.String(), "revision") {
@@ -81,6 +81,10 @@ func TestUpdateCommandContract(t *testing.T) {
 	flag := command.LocalNonPersistentFlags().Lookup("repo")
 	if flag == nil || flag.Shorthand != "r" || !strings.Contains(command.Long, "does not update the Farrow executable") {
 		t.Fatalf("update command help/flags = flag %#v long %q", flag, command.Long)
+	}
+	mirror := command.LocalNonPersistentFlags().Lookup("mirror")
+	if mirror == nil || mirror.Shorthand != "" {
+		t.Fatalf("update --mirror flag = %#v", mirror)
 	}
 }
 

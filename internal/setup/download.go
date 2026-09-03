@@ -74,8 +74,8 @@ type Sources struct {
 	// Archive is an explicit local tarball (FARROW_VMNET_ARCHIVE). When set it
 	// must verify; a mismatch is an error, never a silent fallback.
 	Archive string
-	// Repo is an image-repository URL or absolute local directory
-	// (FARROW_REPO / --repo). The archive is expected under
+	// Repo is the resolved image-repository URL or absolute local directory
+	// (--repo / --mirror / FARROW_REPO / default). The archive is expected under
 	// <repo>/socket_vmnet/<archive-name>. A missing mirror copy falls through
 	// to upstream; a corrupt one is an error.
 	Repo string
@@ -83,8 +83,9 @@ type Sources struct {
 	Progress activity.Reporter
 }
 
-// SourcesFromEnvironment resolves the standard overrides. An explicit repo
-// argument (from --repo) wins over FARROW_REPO.
+// SourcesFromEnvironment resolves the local archive override and accepts the
+// repository already selected by the command. The environment fallback is
+// retained for direct internal callers.
 func SourcesFromEnvironment(repo string) Sources {
 	if repo == "" {
 		repo = os.Getenv("FARROW_REPO")

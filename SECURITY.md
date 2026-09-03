@@ -80,11 +80,16 @@ shasum -a 256 -c checksums.txt --ignore-missing
 
 ## Guest images
 
-Guest images are distribution-owned artifacts pinned by SHA-256 in a catalog
-signed with the keys embedded in the binary. Every fetch verifies the digest,
-the byte count, the qcow2 structure, and the virtual size before the image is
-published into the cache. Farrow refuses catalog upstream URLs that point at a
-moving path such as `latest` or `current`.
+Official guest images are built from distribution-owned artifacts and pinned
+by SHA-256 in a catalog signed with the keys embedded in the binary. Every
+fetch verifies the digest, the byte count, the qcow2 structure, and the virtual
+size before the image is published into the cache. Farrow refuses catalog
+upstream URLs that point at a moving path such as `latest` or `current`. Those
+URLs record the artifact used to build an official image; runtime downloads
+use the selected repository and do not fall back to provenance bytes. Both
+`repo.pigsty.io/farrow` and `repo.pigsty.cc/farrow` always require a trusted
+catalog signature, including when passed explicitly with `--repo`.
 
-Farrow does not patch or harden guest images. They are upstream cloud images,
-and their contents are the upstream vendor's responsibility.
+Official Farrow repository images may be normalized or customized from the
+named upstream cloud image. The catalog digest, artifact size, and virtual size
+identify the final repository qcow2 that Farrow verifies and runs.

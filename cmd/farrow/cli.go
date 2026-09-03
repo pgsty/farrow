@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
@@ -20,7 +19,8 @@ type commandRunner func(context.Context, []string, io.Writer, io.Writer) (comman
 
 const (
 	configDiscoverySummary = "farrow.yml, farrow.yaml, pigsty.yml, or pigsty.yaml"
-	repositoryFlagHelp     = "image repository URL or directory (default $FARROW_REPO, then the built-in one)"
+	repositoryFlagHelp     = "image repository URL or directory; overrides --mirror and $FARROW_REPO"
+	mirrorFlagHelp         = "use the China official repository at repo.pigsty.cc; overridden by --repo"
 )
 
 func init() {
@@ -172,15 +172,12 @@ func imageAliasCompletion(command *cobra.Command, _ []string, prefix string) ([]
 	aliases := make([]string, 0, len(catalog.Images)*2)
 	if dataRoot, err := state.ResolveDataRoot(); err == nil {
 		repository, _ := command.Flags().GetString("repo")
-		explicit := repository != ""
-		if repository == "" {
-			repository = strings.TrimSpace(os.Getenv("FARROW_REPO"))
-			explicit = repository != ""
+		mirror := false
+		if command.Flags().Lookup("mirror") != nil {
+			mirror, _ = command.Flags().GetBool("mirror")
 		}
-		if repository == "" {
-			repository = image.DefaultRepositoryURL
-		}
-		if active, _, currentErr := (image.ManifestManager{DataRoot: dataRoot, Repository: repository, AllowUnsigned: explicit && image.RepositoryAllowsUnsigned(repository)}).Current(); currentErr == nil {
+		repository, explicit, repositoryErr := image.ResolveRepository(repository, mirror)
+		if active, _, currentErr := (image.ManifestManager{DataRoot: dataRoot, Repository: repository, AllowUnsigned: repositoryErr == nil && explicit && image.RepositoryAllowsUnsigned(repository)}).Current(); repositoryErr == nil && currentErr == nil {
 			catalog = active
 		}
 		if localAliases, localErr := image.LocalAliasNames(dataRoot); localErr == nil {

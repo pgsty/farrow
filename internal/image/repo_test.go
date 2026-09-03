@@ -2,7 +2,9 @@ package image
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -64,7 +66,8 @@ func TestRepositoryBuildSeparatesAuthoringCatalogAndCachePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.File != "images/"+artifactName || entry.CacheFile != "d13/d13-1-arm64.qcow2" || entry.Status != "unknown" || entry.Boot != "uefi" {
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("fixture-qcow")))
+	if entry.File != "images/"+artifactName || entry.CacheFile != "d13/d13-1-arm64.qcow2" || entry.Status != "unknown" || entry.Boot != "uefi" || entry.SHA256 != wantDigest || entry.ArtifactSize != int64(len("fixture-qcow")) || entry.VirtualSize != 1<<30 {
 		t.Fatalf("materialized entry = %#v", entry)
 	}
 	after, err := os.ReadFile(filepath.Join(root, RepoFilename))

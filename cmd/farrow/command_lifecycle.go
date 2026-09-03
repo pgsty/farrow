@@ -28,6 +28,7 @@ Changed node definitions and nodes removed from the inventory are reported,
 never applied: use recreate or destroy for those.`,
 		example: `  farrow up                      # converge the discovered or last applied inventory
   farrow up meta                 # converge only the meta node
+  farrow up --mirror             # use the China official repository for downloads
   farrow up -f pigsty.yml --rollback  # remove safe artifacts from failed prepares`,
 	},
 	"start": {
@@ -54,6 +55,7 @@ created; changed definitions still need recreate and removed nodes still need
 destroy, and either is refused before anything stops.`,
 		example: `  farrow reload                  # re-read the discovered inventory
   farrow reload -f pigsty.yml    # reload from an explicit desired inventory
+  farrow reload --mirror         # use the China official repository for downloads
   farrow reload meta             # reload one selected node`,
 	},
 	"recreate": {
@@ -65,6 +67,7 @@ their declared lifecycle policy. A successful recreate also refreshes the SSH
 client configuration.`,
 		example: `  farrow recreate meta           # review and confirm one changed node
   farrow recreate --force meta   # non-interactive recreation
+  farrow recreate --mirror meta  # use the China official repository for downloads
   farrow recreate -f pigsty.yml meta`,
 	},
 	"status": {
@@ -118,17 +121,20 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 	case "up", "reload":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "desired inventory; defaults to the discovered inventory, then the applied state")
 		command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
+		command.Flags().BoolVar(&options.Mirror, "mirror", false, mirrorFlagHelp)
 		command.Flags().BoolVarP(&options.NoWait, "no-wait", "n", false, "return once QEMU is running, without waiting for the guest to boot")
 		command.Flags().BoolVar(&options.Rollback, "rollback", false, "remove safe artifacts from nodes that fail to prepare")
-		noFileCompletions(command, "no-wait", "rollback")
+		noFileCompletions(command, "mirror", "no-wait", "rollback")
 	case "start", "restart":
 		command.Flags().BoolVarP(&options.NoWait, "no-wait", "n", false, "return once QEMU is running, without waiting for the guest to boot")
 		noFileCompletions(command, "no-wait")
 	case "recreate":
 		command.Flags().StringVarP(&options.ConfigPath, "file", "f", "", "desired inventory; defaults to the discovered inventory, then the applied state")
+		command.Flags().StringVarP(&options.Repository, "repo", "r", "", repositoryFlagHelp)
+		command.Flags().BoolVar(&options.Mirror, "mirror", false, mirrorFlagHelp)
 		command.Flags().BoolVar(&options.Force, "force", false, "recreate without the interactive confirmation (required without a terminal)")
 		command.Flags().BoolVarP(&options.NoWait, "no-wait", "n", false, "return once QEMU is running, without waiting for the guest to boot")
-		noFileCompletions(command, "force", "no-wait")
+		noFileCompletions(command, "mirror", "force", "no-wait")
 	case "destroy":
 		command.Flags().BoolVar(&options.Force, "force", false, "destroy without the interactive confirmation (required without a terminal)")
 		command.Flags().BoolVar(&options.DeletePersistent, "delete-persistent", false, "also delete owned persistent data disks")

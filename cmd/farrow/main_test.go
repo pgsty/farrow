@@ -137,6 +137,19 @@ func TestLifecycleImageArchUsesResolvedGuest(t *testing.T) {
 	}
 }
 
+func TestImplicitSetupKeepsUpRepositorySelection(t *testing.T) {
+	t.Setenv("FARROW_REPO", "https://environment.example/farrow")
+	repository, _, err := image.ResolveRepository("", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := lifecycleOptions{ConfigPath: "/tmp/farrow.yml", Mirror: true}
+	setupOptions := implicitSetupOptions(options, repository)
+	if repository != image.ChinaRepositoryURL || setupOptions.Repo != repository || setupOptions.FilePath != options.ConfigPath || setupOptions.Mode != "host" {
+		t.Fatalf("implicit setup options = %#v from repository %q", setupOptions, repository)
+	}
+}
+
 func TestDestructiveConfirmationTTYAndNonTTY(t *testing.T) {
 	t.Parallel()
 	var prompt bytes.Buffer

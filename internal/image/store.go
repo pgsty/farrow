@@ -104,8 +104,8 @@ func copyWithProgress(destination io.Writer, source io.Reader, limit int64, repo
 }
 
 // errSourceGone marks a source that answered "this artifact is not here". It is
-// distinguished from a transport failure because the remedy is different: a
-// rotated-away upstream needs a newer catalog or a mirror, not a retry.
+// distinguished from a transport failure because the remedy is a newer catalog
+// or another repository, not a retry against the same source.
 var errSourceGone = errors.New("image source no longer publishes this artifact")
 
 // errImageStalled marks a transfer that stopped delivering bytes. It is a
@@ -677,15 +677,17 @@ func (s Store) Pull(ctx context.Context, entry Entry) (_ string, _ Metadata, ret
 		kind   string
 		source string
 	}
-	candidates := make([]candidate, 0, 2)
+	candidates := make([]candidate, 0, 1)
 	if s.Repository != "" {
 		source, sourceErr := RepositoryArtifactSource(s.Repository, entry.File)
 		if sourceErr != nil {
 			return "", Metadata{}, sourceErr
 		}
 		candidates = append(candidates, candidate{kind: "repository", source: source})
-	}
-	if entry.Upstream != "" {
+	} else if entry.Upstream != "" {
+		// Upstream remains a provenance field and a compatibility source for a
+		// Store deliberately constructed without a repository. Normal command
+		// paths always resolve a repository and use it as the sole artifact source.
 		candidates = append(candidates, candidate{kind: "upstream", source: entry.Upstream})
 	}
 	failures := make([]string, 0, len(candidates))
@@ -726,9 +728,11 @@ func (s Store) Pull(ctx context.Context, entry Entry) (_ string, _ Metadata, ret
 	}
 	message := fmt.Errorf("all image sources failed: %s", strings.Join(failures, "; "))
 	if gone {
-		// Distribution mirrors prune dated artifacts. When every source agrees the
-		// bytes are simply gone, retrying is pointless; say what actually helps.
-		return "", Metadata{}, fmt.Errorf("%w\n\nThe pinned artifact is no longer published upstream. Run `farrow update` (or `farrow image sync <catalog-url>` for an exact source), point --repo/$FARROW_REPO at a mirror that still carries it, or `farrow image import` a local copy", message)
+		if len(candidates) == 1 && candidates[0].kind == "repository" {
+			return "", Metadata{}, fmt.Errorf("%w\n\nThe catalog artifact is not present in the selected repository. Run `farrow update`, select another official repository with --mirror/--repo, or `farrow image import` a local copy", message)
+		}
+		// A Store without a repository is a compatibility-only upstream path.
+		return "", Metadata{}, fmt.Errorf("%w\n\nThe pinned artifact is no longer published upstream. Run `farrow update` (or `farrow image sync <catalog-url>` for an exact source), point --repo/$FARROW_REPO at a repository that carries it, or `farrow image import` a local copy", message)
 	}
 	return "", Metadata{}, message
 }
