@@ -77,14 +77,18 @@ for secret in AWS_SECRET_ACCESS_KEY GITHUB_TOKEN COSIGN_PASSWORD; do
 done
 image=
 no_network=false
+run_command=
 previous=
 for argument in "$@"; do
   if [[ ${previous} == -a ]]; then image=${argument}; fi
+  if [[ ${previous} == --run-command ]]; then run_command=${argument}; fi
   [[ ${argument} == --no-network ]] && no_network=true
   previous=${argument}
 done
 [[ ${no_network} == true && -n ${image} && -f ${image} ]] || exit 43
-printf '\nOFFLINE-NORMALIZED\n' >>"${image}"
+profile=$(printf '%s\n' "${run_command}" | awk '{ print $4 }')
+[[ ${profile} =~ ^(base|el8|el9|d12|d13)$ ]] || exit 45
+printf '\nOFFLINE-NORMALIZED\nPROFILE=%s\n' "${profile}" >>"${image}"
 FAKE_CUSTOMIZE
 chmod 0755 "${temporary}/bin/virt-customize"
 
@@ -96,9 +100,26 @@ if [[ ${1:-} == --version ]]; then
   exit 0
 fi
 guest_path=${!#}
+image=
+previous=
+for argument in "$@"; do
+  if [[ ${previous} == -a ]]; then image=${argument}; fi
+  previous=${argument}
+done
+profile=$(sed -n 's/^PROFILE=//p' "${image}" | tail -1)
+[[ -n ${profile} ]] || profile=base
+python3_status=not-requested
+xfsprogs_status=not-requested
+legacy_network_status=not-requested
+sshd_include_status=upstream
+[[ ${profile} == el8 ]] && python3_status=verified
+[[ ${profile} == d12 || ${profile} == d13 ]] && xfsprogs_status=verified
+[[ ${profile} == el8 || ${profile} == el9 ]] && legacy_network_status=removed
+[[ ${profile} == el8 ]] && sshd_include_status=verified
 case ${guest_path} in
   /var/lib/farrow-image/normalization.json)
-    printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","source_user":"ubuntu","source_date_epoch":1787486400,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied"}\n'
+    printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","profile":"%s","source_user":"ubuntu","source_date_epoch":1787486400,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied","python3":"%s","xfsprogs":"%s","legacy_network":"%s","sshd_include":"%s"}\n' \
+      "${profile}" "${python3_status}" "${xfsprogs_status}" "${legacy_network_status}" "${sshd_include_status}"
     ;;
   /etc/passwd) printf 'root:x:0:0:root:/root:/bin/bash\ndba:x:88:88::/home/dba:/bin/bash\n' ;;
   /etc/group) printf 'root:x:0:\nadmin:x:88:dba\n' ;;
@@ -123,6 +144,7 @@ make_source() {
 
 run_candidate() {
   local source=$1 output=$2 mode=${3:-validate}
+  shift 3 || true
   local source_sha
   source_sha=$(digest "${source}")
   "${pipeline}" \
@@ -137,7 +159,8 @@ run_candidate() {
     --source-date-epoch 1787486400 --manifest-version 2026082403 \
     --qemu-img "${temporary}/bin/qemu-img" \
     --virt-customize "${temporary}/bin/virt-customize" \
-    --virt-cat "${temporary}/bin/virt-cat"
+    --virt-cat "${temporary}/bin/virt-cat" \
+    "$@"
 }
 
 verify_bundle() {
@@ -150,7 +173,7 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 files = sorted(p.name for p in root.iterdir())
-assert len(files) == 8, files
+assert len(files) == (9 if (root / "package-lock.json").exists() else 8), files
 assert {
     "build-recipe.json", "checksums.txt", "manifest-candidate.json", "normalize-guest.sh",
     "provenance.intoto.json", "sbom.spdx.json", "validation.json",
@@ -164,7 +187,7 @@ for line in (root / "checksums.txt").read_text().splitlines():
     checksum, name = line.split("  ", 1)
     assert "/" not in name and name not in records
     records[name] = checksum
-assert len(records) == 7
+assert len(records) == len(files) - 1
 for name, expected in records.items():
     assert hashlib.sha256((root / name).read_bytes()).hexdigest() == expected
 manifest = json.loads((root / "manifest-candidate.json").read_text())
@@ -228,6 +251,77 @@ entry = manifest["images"]["u24"]["releases"]["20260801.0.0"]["amd64"]
 assert entry["source_user"] == "dba"
 assert not entry["provenance"].startswith("UNPUBLISHABLE")
 PY
+
+package_cache=${temporary}/package-cache
+mkdir "${package_cache}"
+printf 'locked python36 rpm fixture\n' >"${package_cache}/python36-1.x86_64.rpm"
+printf 'locked python3-pip rpm fixture\n' >"${package_cache}/python3-pip-1.noarch.rpm"
+python36_sha=$(digest "${package_cache}/python36-1.x86_64.rpm")
+pip_sha=$(digest "${package_cache}/python3-pip-1.noarch.rpm")
+package_lock=${temporary}/el8-amd64.lock.json
+python3 - "${package_lock}" "${python36_sha}" "${pip_sha}" <<'PY'
+import json
+import pathlib
+import sys
+
+target, python36_sha, pip_sha = sys.argv[1:]
+lock = {
+    "arch": "amd64",
+    "install": ["python36", "python3-pip"],
+    "packages": [
+        {
+            "arch": "amd64",
+            "filename": "python36-1.x86_64.rpm",
+            "name": "python36",
+            "sha256": python36_sha,
+            "url": "https://packages.example.invalid/rocky/8.10/python36-1.x86_64.rpm",
+            "version": "1",
+        },
+        {
+            "arch": "noarch",
+            "filename": "python3-pip-1.noarch.rpm",
+            "name": "python3-pip",
+            "sha256": pip_sha,
+            "url": "https://packages.example.invalid/rocky/8.10/python3-pip-1.noarch.rpm",
+            "version": "1",
+        },
+    ],
+    "profile": "el8",
+    "schema": 1,
+}
+pathlib.Path(target).write_text(json.dumps(lock, indent=2, sort_keys=True, separators=(",", ": ")) + "\n")
+PY
+run_candidate "${good}" "${temporary}/offline-packages" offline \
+  --profile el8 --package-lock "${package_lock}" --package-cache "${package_cache}" \
+  >"${temporary}/offline-packages.stdout"
+verify_bundle "${temporary}/offline-packages"
+python3 - "${temporary}/offline-packages" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+validation = json.loads((root / "validation.json").read_text())
+assert validation["native_mutation"]["marker"]["profile"] == "el8"
+assert validation["native_mutation"]["marker"]["python3"] == "verified"
+assert validation["package_inputs"]["count"] == 2
+assert validation["package_inputs"]["network_during_mutation"] is False
+provenance = json.loads((root / "provenance.intoto.json").read_text())
+dependencies = provenance["predicate"]["buildDefinition"]["resolvedDependencies"]
+assert len(dependencies) == 6
+sbom = json.loads((root / "sbom.spdx.json").read_text())
+assert len(sbom["packages"]) == 4
+PY
+
+printf 'tampered\n' >>"${package_cache}/python36-1.x86_64.rpm"
+if run_candidate "${good}" "${temporary}/tampered-package" offline \
+  --profile el8 --package-lock "${package_lock}" --package-cache "${package_cache}" \
+  >"${temporary}/tampered-package.stdout" 2>"${temporary}/tampered-package.stderr"; then
+  printf 'tampered locked package was accepted\n' >&2
+  exit 1
+fi
+[[ ! -e ${temporary}/tampered-package ]]
+grep -q 'source SHA-256 mismatch' "${temporary}/tampered-package.stderr"
 
 expect_policy_rejection() {
   local scenario=$1
@@ -298,6 +392,45 @@ if grep -Eq '\b(curl|wget|ssh-keygen)\b' "${repo}/packaging/image-pipeline/norma
   printf 'offline normalization script unexpectedly uses network/key-generation tools\n' >&2
   exit 1
 fi
+
+"${repo}/packaging/image-pipeline/build-official.py" --list >"${temporary}/official-matrix.txt"
+[[ $(wc -l <"${temporary}/official-matrix.txt" | tr -d ' ') == 8 ]]
+grep -Fxq $'el8/amd64\t8.10.20240528.1\tel8\tpackages=2' "${temporary}/official-matrix.txt"
+grep -Fxq $'el9/arm64\t9.8.20260525.1\tel9\tpackages=0' "${temporary}/official-matrix.txt"
+grep -Fxq $'d12/arm64\t20260806.2562.1\td12\tpackages=3' "${temporary}/official-matrix.txt"
+grep -Fxq $'d13/amd64\t20260810.2566.1\td13\tpackages=3' "${temporary}/official-matrix.txt"
+python3 - "${repo}/packaging/image-pipeline/official-v1.json" <<'PY'
+import json
+import pathlib
+import sys
+
+matrix = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert len(matrix["targets"]) == 8
+assert {f'{item["name"]}/{item["arch"]}' for item in matrix["targets"]} == {
+    "d12/amd64", "d12/arm64", "d13/amd64", "d13/arm64",
+    "el8/amd64", "el8/arm64", "el9/amd64", "el9/arm64",
+}
+allowed = {"python36", "python3-pip", "xfsprogs", "libinih1", "liburcu8", "libicu76"}
+seen = {
+    package["name"]
+    for item in matrix["targets"]
+    if item["package_lock"] is not None
+    for package in item["package_lock"]["packages"]
+}
+assert seen == allowed
+for forbidden in ("locale", "chrony", "unattended-upgrades", "kernel", "gzip", "zstd"):
+    assert all(forbidden not in name for name in seen)
+PY
+mkdir "${temporary}/empty-bundles"
+if "${repo}/packaging/image-pipeline/build-official.py" \
+  --assemble-from "${temporary}/empty-bundles" \
+  --output "${temporary}/unexpected-repository" \
+  >"${temporary}/assemble.stdout" 2>"${temporary}/assemble.stderr"; then
+  printf 'official repository assembly accepted an incomplete target set\n' >&2
+  exit 1
+fi
+[[ ! -e ${temporary}/unexpected-repository ]]
+grep -q 'has 0 candidate bundles' "${temporary}/assemble.stderr"
 
 printf 'image pipeline validate/reproducibility/rejection and simulated offline boundaries passed\n'
 printf 'SKIP native offline guest mutation: fake tools tested the boundary; run tests/image-pipeline-native-test.sh with an explicit source\n'

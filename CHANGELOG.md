@@ -14,6 +14,11 @@ Notable user-visible changes. This project follows
   the verified image cache and host-global network. The command is idempotent
   when no deployment exists and still refuses unidentifiable residual node
   artifacts instead of deleting them by path alone.
+- The official-image pipeline has an eight-target, digest-pinned candidate
+  matrix for Debian 12/13 and Rocky Linux 8/9 on amd64/arm64. Package inputs
+  are installed offline from an exact minimal closure, recorded in the SBOM
+  and provenance, and can be assembled into a separate unsigned `testing`
+  repository without an upstream artifact fallback.
 
 ### Changed
 
@@ -24,6 +29,13 @@ Notable user-visible changes. This project follows
 - Catalog upstream URLs are provenance metadata rather than fallback download
   sources when a repository is selected. Catalog SHA-256, artifact size, and
   virtual size identify the final repository qcow2.
+
+### Fixed
+
+- Rocky Linux 8 candidates provide a working `/usr/bin/python3`, remove legacy
+  interface naming state, and make the SSH drop-in Include effective. Rocky
+  Linux 9 candidates remove the same legacy networking state. Debian 12/13
+  candidates include the XFS userspace needed by Farrow data disks.
 
 ## [0.4.0]
 

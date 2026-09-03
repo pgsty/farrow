@@ -27,6 +27,8 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 RELEASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+._-]{0,127}$")
+PACKAGE_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+._~-]{0,255}\.(?:deb|rpm)$")
 MOVING_SEGMENTS = {"latest", "current", "release"}
 
 
@@ -127,7 +129,7 @@ def load_config() -> Tuple[Dict[str, Any], bytes, Path, bytes]:
         raise PipelineError(f"load pipeline recipe: {error}") from error
     if config.get("schema") != PIPELINE_SCHEMA or not isinstance(config.get("recipe_id"), str):
         raise PipelineError("pipeline recipe has an unsupported schema or missing ID")
-    for key in ("max_source_bytes", "copy_chunk_bytes"):
+    for key in ("max_source_bytes", "max_package_bytes", "max_package_bundle_bytes", "copy_chunk_bytes"):
         if not isinstance(config.get(key), int) or config[key] <= 0:
             raise PipelineError(f"pipeline recipe has invalid {key}")
     timeouts = config.get("timeouts_seconds")
@@ -139,6 +141,22 @@ def load_config() -> Tuple[Dict[str, Any], bytes, Path, bytes]:
     normalization = config.get("normalization")
     if not isinstance(normalization, dict) or normalization.get("network") is not False:
         raise PipelineError("pipeline recipe must disable guest customization networking")
+    profiles = normalization.get("profiles")
+    if not isinstance(profiles, dict) or set(profiles) != {"base", "el8", "el9", "d12", "d13"}:
+        raise PipelineError("pipeline recipe has invalid customization profiles")
+    for profile, policy in profiles.items():
+        if not isinstance(policy, dict) or policy.get("package_format") not in (None, "deb", "rpm"):
+            raise PipelineError(f"pipeline recipe profile {profile} has an invalid package format")
+        required = policy.get("required_packages")
+        locked = policy.get("locked_packages")
+        if not isinstance(required, list) or not isinstance(locked, list) or any(
+            not isinstance(name, str) or not PACKAGE_NAME_RE.fullmatch(name) for name in required + locked
+        ):
+            raise PipelineError(f"pipeline recipe profile {profile} has invalid required packages")
+        if len(set(locked)) != len(locked) or any(name not in locked for name in required):
+            raise PipelineError(f"pipeline recipe profile {profile} has an invalid locked package closure")
+        if (policy.get("package_format") is None) != (len(required) == 0):
+            raise PipelineError(f"pipeline recipe profile {profile} package policy is inconsistent")
     guest_name = normalization.get("guest_script")
     if not isinstance(guest_name, str) or Path(guest_name).name != guest_name:
         raise PipelineError("pipeline recipe guest script must be a local basename")
@@ -151,22 +169,126 @@ def load_config() -> Tuple[Dict[str, Any], bytes, Path, bytes]:
     return config, config_bytes, guest_script, guest_bytes
 
 
-def safe_source(path_text: str, maximum: int) -> Path:
+def safe_input_file(path_text: str, maximum: int, label: str) -> Path:
     path = Path(path_text)
     if not path.is_absolute():
-        raise PipelineError("source must be an absolute path")
+        raise PipelineError(f"{label} must be an absolute path")
     try:
         raw = os.lstat(path)
     except OSError as error:
-        raise PipelineError(f"inspect source: {error}") from error
+        raise PipelineError(f"inspect {label}: {error}") from error
     if stat.S_ISLNK(raw.st_mode) or not stat.S_ISREG(raw.st_mode):
-        raise PipelineError("source must be a regular non-symlink file")
+        raise PipelineError(f"{label} must be a regular non-symlink file")
     if raw.st_nlink < 1 or raw.st_size <= 0 or raw.st_size > maximum:
-        raise PipelineError(f"source size {raw.st_size} is outside the recipe bound 1..{maximum}")
+        raise PipelineError(f"{label} size {raw.st_size} is outside the recipe bound 1..{maximum}")
     resolved = path.resolve(strict=True)
     if resolved != path:
-        raise PipelineError("source path must already be canonical")
+        raise PipelineError(f"{label} path must already be canonical")
     return resolved
+
+
+def safe_source(path_text: str, maximum: int) -> Path:
+    return safe_input_file(path_text, maximum, "source")
+
+
+def safe_input_directory(path_text: str, label: str) -> Path:
+    path = Path(path_text)
+    if not path.is_absolute():
+        raise PipelineError(f"{label} must be an absolute path")
+    try:
+        raw = os.lstat(path)
+    except OSError as error:
+        raise PipelineError(f"inspect {label}: {error}") from error
+    if stat.S_ISLNK(raw.st_mode) or not stat.S_ISDIR(raw.st_mode):
+        raise PipelineError(f"{label} must be a directory, not a symlink")
+    resolved = path.resolve(strict=True)
+    if resolved != path:
+        raise PipelineError(f"{label} path must already be canonical")
+    return resolved
+
+
+def load_package_inputs(
+    args: argparse.Namespace,
+    config: Mapping[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], bytes, List[Tuple[Dict[str, str], Path]]]:
+    profiles = config["normalization"]["profiles"]
+    if args.profile not in profiles:
+        raise PipelineError(f"unknown customization profile: {args.profile}")
+    policy = profiles[args.profile]
+    package_format = policy["package_format"]
+    if package_format is None:
+        if args.package_lock is not None or args.package_cache is not None:
+            raise PipelineError(f"profile {args.profile} does not accept package inputs")
+        return None, b"", []
+    if args.package_lock is None or args.package_cache is None:
+        raise PipelineError(f"profile {args.profile} requires --package-lock and --package-cache")
+
+    lock_path = safe_input_file(args.package_lock, 1 << 20, "package lock")
+    cache = safe_input_directory(args.package_cache, "package cache")
+    try:
+        lock_bytes = lock_path.read_bytes()
+        lock = json.loads(lock_bytes)
+    except (OSError, json.JSONDecodeError) as error:
+        raise PipelineError(f"load package lock: {error}") from error
+    if not isinstance(lock, dict) or set(lock) != {"arch", "install", "packages", "profile", "schema"}:
+        raise PipelineError("package lock has an invalid envelope")
+    if canonical_json(lock) != lock_bytes:
+        raise PipelineError("package lock must use canonical pipeline JSON formatting")
+    if lock.get("schema") != 1 or lock.get("profile") != args.profile or lock.get("arch") != args.arch:
+        raise PipelineError("package lock schema/profile/architecture does not match the invocation")
+    required = policy["required_packages"]
+    if lock.get("install") != required:
+        raise PipelineError(f"package lock install roots must be exactly {required!r}")
+    records = lock.get("packages")
+    if not isinstance(records, list) or not records or len(records) > 64:
+        raise PipelineError("package lock must contain 1..64 package records")
+
+    seen_names = set()
+    seen_filenames = set()
+    inputs: List[Tuple[Dict[str, str], Path]] = []
+    total_bytes = 0
+    for index, raw_record in enumerate(records):
+        if not isinstance(raw_record, dict) or set(raw_record) != {"arch", "filename", "name", "sha256", "url", "version"}:
+            raise PipelineError(f"package lock record {index} has invalid fields")
+        record: Dict[str, str] = {}
+        for key in ("arch", "filename", "name", "sha256", "url", "version"):
+            value = raw_record.get(key)
+            if not isinstance(value, str):
+                raise PipelineError(f"package lock record {index} field {key} must be a string")
+            record[key] = value
+        if not PACKAGE_NAME_RE.fullmatch(record["name"]):
+            raise PipelineError(f"package lock record {index} has an invalid package name")
+        validate_single_line(f"package lock record {index} version", record["version"], 256)
+        if record["arch"] not in (args.arch, "all", "noarch"):
+            raise PipelineError(f"package lock record {index} architecture does not match {args.arch}")
+        if not PACKAGE_FILENAME_RE.fullmatch(record["filename"]) or not record["filename"].endswith(f".{package_format}"):
+            raise PipelineError(f"package lock record {index} has an invalid {package_format} filename")
+        if not SHA256_RE.fullmatch(record["sha256"]):
+            raise PipelineError(f"package lock record {index} has an invalid SHA-256")
+        validate_immutable_https(f"package lock record {index} URL", record["url"])
+        if record["filename"] in seen_filenames:
+            raise PipelineError(f"package lock repeats filename {record['filename']}")
+        if record["name"] in seen_names:
+            raise PipelineError(f"package lock repeats package name {record['name']}")
+        seen_names.add(record["name"])
+        seen_filenames.add(record["filename"])
+        package_path = safe_input_file(
+            str(cache / record["filename"]),
+            int(config["max_package_bytes"]),
+            f"package {record['filename']}",
+        )
+        total_bytes += package_path.stat().st_size
+        if total_bytes > int(config["max_package_bundle_bytes"]):
+            raise PipelineError("package bundle exceeds the recipe size bound")
+        inputs.append((record, package_path))
+    missing = [name for name in required if name not in seen_names]
+    if missing:
+        raise PipelineError(f"package lock is missing install roots: {missing!r}")
+    if seen_names != set(policy["locked_packages"]):
+        raise PipelineError(
+            f"package lock names must be exactly the minimal closure {policy['locked_packages']!r}"
+        )
+    return lock, lock_bytes, inputs
 
 
 def safe_output(path_text: str) -> Tuple[Path, Path]:
@@ -247,7 +369,7 @@ def tool_environment(work: Path, epoch: int) -> Dict[str, str]:
     temporary = work / ".tool-tmp"
     for directory in (home, cache, temporary):
         directory.mkdir(mode=0o700, exist_ok=True)
-    return {
+    environment = {
         "HOME": str(home),
         "LANG": "C",
         "LC_ALL": "C",
@@ -258,6 +380,12 @@ def tool_environment(work: Path, epoch: int) -> Dict[str, str]:
         "TMPDIR": str(temporary),
         "TZ": "UTC",
     }
+    backend_settings = os.environ.get("LIBGUESTFS_BACKEND_SETTINGS", "")
+    if backend_settings:
+        if backend_settings != "force_tcg":
+            raise PipelineError("LIBGUESTFS_BACKEND_SETTINGS may only be force_tcg")
+        environment["LIBGUESTFS_BACKEND_SETTINGS"] = backend_settings
+    return environment
 
 
 def run_tool(arguments: Sequence[str], timeout: int, environment: Mapping[str, str]) -> bytes:
@@ -392,31 +520,32 @@ def normalize_offline(
     image: Path,
     guest_script: Path,
     source_user: str,
+    profile: str,
+    packages: Sequence[Path],
     epoch: int,
     timeouts: Mapping[str, int],
     environment: Mapping[str, str],
 ) -> Dict[str, Any]:
     remote_script = "/usr/local/sbin/farrow-image-normalize"
-    command = f"{remote_script} {source_user} {epoch}"
-    run_tool(
-        (
-            str(virt_customize),
-            "--format=qcow2",
-            "-a",
-            str(image),
-            "--no-network",
-            "--upload",
-            f"{guest_script}:{remote_script}",
-            "--chmod",
-            f"0700:{remote_script}",
-            "--run-command",
-            command,
-            "--delete",
-            remote_script,
-        ),
-        timeouts["virt_customize"],
-        environment,
-    )
+    remote_packages = "/var/tmp/farrow-image-packages" if packages else "-"
+    command = f"{remote_script} {source_user} {epoch} {profile} {remote_packages}"
+    arguments = [
+        str(virt_customize),
+        "--format=qcow2",
+        "-a",
+        str(image),
+        "--no-network",
+        "--upload",
+        f"{guest_script}:{remote_script}",
+        "--chmod",
+        f"0700:{remote_script}",
+    ]
+    if packages:
+        arguments.extend(("--mkdir", remote_packages))
+        for package in packages:
+            arguments.extend(("--upload", f"{package}:{remote_packages}/{package.name}"))
+    arguments.extend(("--run-command", command, "--delete", remote_script))
+    run_tool(arguments, timeouts["virt_customize"], environment)
     marker_output = run_tool(
         (
             str(virt_cat),
@@ -433,10 +562,15 @@ def normalize_offline(
         "admin_gid": 88,
         "credential_hygiene": "applied",
         "dba_uid": 88,
+        "legacy_network": "removed" if profile in ("el8", "el9") else "not-requested",
+        "profile": profile,
+        "python3": "verified" if profile == "el8" else "not-requested",
         "recipe": "farrow-official-image-normalization-v1",
         "schema": 1,
+        "sshd_include": "verified" if profile == "el8" else "upstream",
         "source_date_epoch": epoch,
         "source_user": source_user,
+        "xfsprogs": "verified" if profile in ("d12", "d13") else "not-requested",
     }
     if marker != expected:
         raise PipelineError(f"guest normalization marker mismatch: {marker!r}")
@@ -497,7 +631,8 @@ def build_manifest(
     if mode == "offline":
         source_user = "dba"
         provenance = (
-            f"Farrow offline normalization recipe v1 from {args.source_uri} sha256:{args.expected_sha256}; "
+            f"Farrow offline normalization recipe v1 profile {args.profile} from {args.source_uri} "
+            f"sha256:{args.expected_sha256}; digest-locked offline package inputs applied where required; "
             "credential hygiene and dba UID/GID 88 applied; candidate requires owner hosting, signing, and native smoke"
         )
     else:
@@ -538,14 +673,82 @@ def build_sbom(
     output_digest: str,
     output_size: int,
     mode: str,
+    package_records: Sequence[Mapping[str, str]],
 ) -> Dict[str, Any]:
     created = fixed_time(args.source_date_epoch)
     normalized_comment = (
-        "Offline credential/identity normalization completed. Guest package inventory is not asserted by this "
-        "artifact-boundary SBOM; collect and attach a native guest package SBOM before promotion."
+        "Offline credential/identity normalization completed and every build package input is digest-locked here. "
+        "This artifact-boundary SBOM does not claim a complete guest package inventory; collect one before promotion."
         if mode == "offline"
         else "Validation-only byte copy; no guest mutation was run. Guest package inventory is not asserted."
     )
+    packages = [
+        {
+            "SPDXID": "SPDXRef-Package-SourceImage",
+            "checksums": [{"algorithm": "SHA256", "checksumValue": args.expected_sha256}],
+            "copyrightText": "NOASSERTION",
+            "downloadLocation": args.source_uri,
+            "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": args.license,
+            "name": f"upstream-{args.name}-{args.release}-{args.arch}",
+            "versionInfo": args.release,
+        },
+        {
+            "SPDXID": "SPDXRef-Package-NormalizedImage",
+            "checksums": [{"algorithm": "SHA256", "checksumValue": output_digest}],
+            "comment": normalized_comment,
+            "copyrightText": "NOASSERTION",
+            "downloadLocation": "NOASSERTION",
+            "filesAnalyzed": False,
+            "hasFiles": ["SPDXRef-File-QCOW2"],
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": args.license,
+            "name": f"farrow-{args.name}-{args.release}-{args.arch}",
+            "packageFileName": artifact_name,
+            "versionInfo": args.release,
+        },
+    ]
+    relationships = [
+        {
+            "relatedSpdxElement": "SPDXRef-Package-NormalizedImage",
+            "relationshipType": "DESCRIBES",
+            "spdxElementId": "SPDXRef-DOCUMENT",
+        },
+        {
+            "relatedSpdxElement": "SPDXRef-Package-SourceImage",
+            "relationshipType": "GENERATED_FROM",
+            "spdxElementId": "SPDXRef-Package-NormalizedImage",
+        },
+        {
+            "relatedSpdxElement": "SPDXRef-File-QCOW2",
+            "relationshipType": "CONTAINS",
+            "spdxElementId": "SPDXRef-Package-NormalizedImage",
+        },
+    ]
+    for index, record in enumerate(package_records, start=1):
+        identifier = f"SPDXRef-Package-BuildInput-{index}"
+        packages.append(
+            {
+                "SPDXID": identifier,
+                "checksums": [{"algorithm": "SHA256", "checksumValue": record["sha256"]}],
+                "copyrightText": "NOASSERTION",
+                "downloadLocation": record["url"],
+                "filesAnalyzed": False,
+                "licenseConcluded": "NOASSERTION",
+                "licenseDeclared": "NOASSERTION",
+                "name": record["name"],
+                "packageFileName": record["filename"],
+                "versionInfo": record["version"],
+            }
+        )
+        relationships.append(
+            {
+                "relatedSpdxElement": identifier,
+                "relationshipType": "GENERATED_FROM",
+                "spdxElementId": "SPDXRef-Package-NormalizedImage",
+            }
+        )
     return {
         "SPDXID": "SPDXRef-DOCUMENT",
         "creationInfo": {"created": created, "creators": [f"Tool: farrow-image-pipeline-{PIPELINE_VERSION}"]},
@@ -563,50 +766,8 @@ def build_sbom(
             }
         ],
         "name": f"farrow-image-{args.name}-{args.release}-{args.arch}",
-        "packages": [
-            {
-                "SPDXID": "SPDXRef-Package-SourceImage",
-                "checksums": [{"algorithm": "SHA256", "checksumValue": args.expected_sha256}],
-                "copyrightText": "NOASSERTION",
-                "downloadLocation": args.source_uri,
-                "filesAnalyzed": False,
-                "licenseConcluded": "NOASSERTION",
-                "licenseDeclared": args.license,
-                "name": f"upstream-{args.name}-{args.release}-{args.arch}",
-                "versionInfo": args.release,
-            },
-            {
-                "SPDXID": "SPDXRef-Package-NormalizedImage",
-                "checksums": [{"algorithm": "SHA256", "checksumValue": output_digest}],
-                "comment": normalized_comment,
-                "copyrightText": "NOASSERTION",
-                "downloadLocation": "NOASSERTION",
-                "filesAnalyzed": False,
-                "hasFiles": ["SPDXRef-File-QCOW2"],
-                "licenseConcluded": "NOASSERTION",
-                "licenseDeclared": args.license,
-                "name": f"farrow-{args.name}-{args.release}-{args.arch}",
-                "packageFileName": artifact_name,
-                "versionInfo": args.release,
-            },
-        ],
-        "relationships": [
-            {
-                "relatedSpdxElement": "SPDXRef-Package-NormalizedImage",
-                "relationshipType": "DESCRIBES",
-                "spdxElementId": "SPDXRef-DOCUMENT",
-            },
-            {
-                "relatedSpdxElement": "SPDXRef-Package-SourceImage",
-                "relationshipType": "GENERATED_FROM",
-                "spdxElementId": "SPDXRef-Package-NormalizedImage",
-            },
-            {
-                "relatedSpdxElement": "SPDXRef-File-QCOW2",
-                "relationshipType": "CONTAINS",
-                "spdxElementId": "SPDXRef-Package-NormalizedImage",
-            },
-        ],
+        "packages": packages,
+        "relationships": relationships,
         "spdxVersion": "SPDX-2.3",
     }
 
@@ -619,16 +780,20 @@ def build_provenance(
     recipe_digest: str,
     config_digest: str,
     guest_script_digest: str,
+    package_lock_digest: Optional[str],
+    package_records: Sequence[Mapping[str, str]],
     tools: Mapping[str, str],
     mode: str,
 ) -> Dict[str, Any]:
     parameters = {
         "arch": args.arch,
         "boot": args.boot,
+        "customizationProfile": args.profile,
         "expectedSourceSha256": args.expected_sha256,
         "license": args.license,
         "mode": mode,
         "name": args.name,
+        "packageLockSha256": package_lock_digest,
         "recipeSha256": recipe_digest,
         "release": args.release,
         "sourceDateEpoch": args.source_date_epoch,
@@ -636,6 +801,23 @@ def build_provenance(
     }
     invocation_id = sha256_bytes(canonical_json({"parameters": parameters, "subject": output_digest, "tools": tools}))
     timestamp = fixed_time(args.source_date_epoch)
+    resolved_dependencies = [
+        {"digest": {"sha256": args.expected_sha256}, "uri": args.source_uri},
+        {
+            "digest": {"sha256": config_digest},
+            "uri": "git+https://github.com/pgsty/farrow@packaging/image-pipeline/recipe-v1.json",
+        },
+        {
+            "digest": {"sha256": guest_script_digest},
+            "uri": "git+https://github.com/pgsty/farrow@packaging/image-pipeline/normalize-guest.sh",
+        },
+    ]
+    if package_lock_digest is not None:
+        resolved_dependencies.append(
+            {"digest": {"sha256": package_lock_digest}, "uri": f"urn:sha256:{package_lock_digest}"}
+        )
+    for record in package_records:
+        resolved_dependencies.append({"digest": {"sha256": record["sha256"]}, "uri": record["url"]})
     return {
         "_type": "https://in-toto.io/Statement/v1",
         "predicate": {
@@ -645,19 +827,10 @@ def build_provenance(
                 "internalParameters": {
                     "networkDuringMutation": False,
                     "outputBytes": output_size,
+                    "packageArtifactCount": len(package_records),
                     "toolVersions": dict(tools),
                 },
-                "resolvedDependencies": [
-                    {"digest": {"sha256": args.expected_sha256}, "uri": args.source_uri},
-                    {
-                        "digest": {"sha256": config_digest},
-                        "uri": "git+https://github.com/pgsty/farrow@packaging/image-pipeline/recipe-v1.json",
-                    },
-                    {
-                        "digest": {"sha256": guest_script_digest},
-                        "uri": "git+https://github.com/pgsty/farrow@packaging/image-pipeline/normalize-guest.sh",
-                    },
-                ],
+                "resolvedDependencies": resolved_dependencies,
             },
             "runDetails": {
                 "builder": {"id": "https://github.com/pgsty/farrow/packaging/image-pipeline/pipeline.py"},
@@ -709,6 +882,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--license", required=True, help="source SPDX license expression or NOASSERTION")
     result.add_argument("--source-date-epoch", required=True, type=int)
     result.add_argument("--manifest-version", required=True, type=int)
+    result.add_argument(
+        "--profile",
+        choices=("base", "el8", "el9", "d12", "d13"),
+        default="base",
+        help="bounded guest customization profile (default: base normalization only)",
+    )
+    result.add_argument("--package-lock", help="canonical JSON lock for the profile's offline package closure")
+    result.add_argument("--package-cache", help="absolute directory containing the digest-locked package files")
     result.add_argument("--qemu-img", default=os.environ.get("QEMU_IMG", "qemu-img"))
     result.add_argument("--virt-customize", default=os.environ.get("VIRT_CUSTOMIZE", "virt-customize"))
     result.add_argument("--virt-cat", default=os.environ.get("VIRT_CAT", "virt-cat"))
@@ -729,6 +910,8 @@ def validate_arguments(args: argparse.Namespace, config: Mapping[str, Any]) -> T
         raise PipelineError("source date epoch must be between 1970 and 2100 UTC")
     if args.manifest_version <= 0 or args.manifest_version > 18_446_744_073_709_551_615:
         raise PipelineError("manifest version must be a positive uint64")
+    if args.mode == "validate" and args.profile != "base":
+        raise PipelineError("validation-only mode accepts only the base profile")
     args.source_uri = validate_source_uri(args.source_uri, args.expected_sha256)
     validate_immutable_https("artifact URL", args.artifact_url, allow_digest_template=True)
     source = safe_source(args.source, int(config["max_source_bytes"]))
@@ -739,6 +922,8 @@ def validate_arguments(args: argparse.Namespace, config: Mapping[str, Any]) -> T
 def pipeline(args: argparse.Namespace) -> Path:
     config, config_bytes, guest_script, guest_bytes = load_config()
     source, output, output_parent = validate_arguments(args, config)
+    package_lock, package_lock_bytes, package_inputs = load_package_inputs(args, config)
+    package_records = [record for record, _ in package_inputs]
     qemu_img = resolve_tool("qemu-img", args.qemu_img)
     virt_customize: Optional[Path] = None
     virt_cat: Optional[Path] = None
@@ -770,6 +955,7 @@ def pipeline(args: argparse.Namespace) -> Path:
         }
         if args.mode == "offline":
             assert virt_customize is not None and virt_cat is not None
+            tools["libguestfs_backend_settings"] = environment.get("LIBGUESTFS_BACKEND_SETTINGS", "default")
             tools["virt_customize"] = tool_version(
                 virt_customize, timeouts["virt_customize"], environment
             )
@@ -783,6 +969,19 @@ def pipeline(args: argparse.Namespace) -> Path:
             int(config["copy_chunk_bytes"]),
         )
         before = inspect_image(qemu_img, staged, timeouts["qemu_img"], environment)
+        staged_packages: List[Path] = []
+        if package_inputs:
+            package_staging = temporary / ".package-bundle"
+            package_staging.mkdir(mode=0o700)
+            for record, package_source in package_inputs:
+                staged_package = package_staging / record["filename"]
+                safe_copy(
+                    package_source,
+                    staged_package,
+                    record["sha256"],
+                    int(config["copy_chunk_bytes"]),
+                )
+                staged_packages.append(staged_package)
         marker: Optional[Dict[str, Any]] = None
         if args.mode == "offline":
             assert virt_customize is not None and virt_cat is not None
@@ -792,6 +991,8 @@ def pipeline(args: argparse.Namespace) -> Path:
                 staged,
                 guest_script,
                 args.source_user,
+                args.profile,
+                staged_packages,
                 args.source_date_epoch,
                 timeouts,
                 environment,
@@ -811,7 +1012,8 @@ def pipeline(args: argparse.Namespace) -> Path:
         virtual_size = int(after["info"]["virtual_size"])
         config_digest = sha256_bytes(config_bytes)
         guest_script_digest = sha256_bytes(guest_bytes)
-        recipe_digest = sha256_bytes(config_bytes + b"\0" + guest_bytes)
+        package_lock_digest = sha256_bytes(package_lock_bytes) if package_lock is not None else None
+        recipe_digest = sha256_bytes(config_bytes + b"\0" + guest_bytes + b"\0" + package_lock_bytes)
         manifest = build_manifest(
             args,
             artifact_url,
@@ -820,7 +1022,7 @@ def pipeline(args: argparse.Namespace) -> Path:
             virtual_size,
             args.mode,
         )
-        sbom = build_sbom(args, artifact_name, output_digest, output_size, args.mode)
+        sbom = build_sbom(args, artifact_name, output_digest, output_size, args.mode, package_records)
         provenance = build_provenance(
             args,
             artifact_name,
@@ -829,6 +1031,8 @@ def pipeline(args: argparse.Namespace) -> Path:
             recipe_digest,
             config_digest,
             guest_script_digest,
+            package_lock_digest,
+            package_records,
             tools,
             args.mode,
         )
@@ -842,6 +1046,12 @@ def pipeline(args: argparse.Namespace) -> Path:
                 "marker": marker,
                 "mode": args.mode,
                 "status": native_status,
+            },
+            "package_inputs": {
+                "count": len(package_records),
+                "lock_sha256": package_lock_digest,
+                "network_during_mutation": False,
+                "records": package_records,
             },
             "promotion": {
                 "eligible": False,
@@ -873,6 +1083,8 @@ def pipeline(args: argparse.Namespace) -> Path:
                 "manifest_version": args.manifest_version,
                 "mode": args.mode,
                 "name": args.name,
+                "package_lock_sha256": package_lock_digest,
+                "profile": args.profile,
                 "release": args.release,
                 "source_date_epoch": args.source_date_epoch,
                 "source_uri": args.source_uri,
@@ -884,13 +1096,21 @@ def pipeline(args: argparse.Namespace) -> Path:
                 "native_mutation_status": native_status,
             },
             "schema": 1,
+            "package_inputs": package_records,
             "tools": tools,
         }
 
         # Remove tool state before creating the auditable output inventory.
-        for tool_directory in (temporary / ".tool-home", temporary / ".libguestfs-cache", temporary / ".tool-tmp"):
+        for tool_directory in (
+            temporary / ".tool-home",
+            temporary / ".libguestfs-cache",
+            temporary / ".tool-tmp",
+            temporary / ".package-bundle",
+        ):
             shutil.rmtree(tool_directory, ignore_errors=True)
         write_bytes(temporary / "normalize-guest.sh", guest_bytes, args.source_date_epoch, 0o555)
+        if package_lock is not None:
+            write_bytes(temporary / "package-lock.json", package_lock_bytes, args.source_date_epoch)
         write_json(temporary / "build-recipe.json", build_recipe, args.source_date_epoch)
         write_json(temporary / "manifest-candidate.json", manifest, args.source_date_epoch)
         write_json(temporary / "provenance.intoto.json", provenance, args.source_date_epoch)

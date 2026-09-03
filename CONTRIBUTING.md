@@ -75,6 +75,14 @@ builds and verifies the older unsigned development-archive path. The packaging
 workflow runs it alongside the GoReleaser snapshot; neither path publishes
 anything.
 
+`packaging/image-pipeline/build-official.py --list` shows the fixed eight-image
+candidate matrix. A build requires explicit source, package-cache, and output
+directories; it refuses to replace an existing bundle. After all architecture
+builds are copied to one host, repeat `--assemble-from` for each bundle root to
+create a new unsigned candidate repository and run `farrow repo build/verify`.
+The command never edits `packaging/image-repository/repo.yaml`, signs a catalog,
+or publishes files; those remain separate owner-controlled promotion gates.
+
 The maintenance inventory below names files whose owner is otherwise indirect.
 `make maintenance-check` fails when a new file under `tools/` or `packaging/`
 has no Make, workflow, or inventory reference.
@@ -86,7 +94,9 @@ has no Make, workflow, or inventory reference.
   `packaging/homebrew/farrow.rb.tmpl`, `packaging/install.sh`, and
   `packaging/nfpm.yaml`.
 - Image construction: `packaging/image-pipeline/build.sh`,
+  `packaging/image-pipeline/build-official.py`,
   `packaging/image-pipeline/normalize-guest.sh`,
+  `packaging/image-pipeline/official-v1.json`,
   `packaging/image-pipeline/pipeline.py`,
   `packaging/image-pipeline/recipe-v1.json`, and
   `packaging/image-pipeline/.gitignore`.
