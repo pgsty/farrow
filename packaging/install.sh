@@ -212,7 +212,7 @@ if [[ -z ${version} ]]; then
 fi
 if ! is_semver "${version}"; then
   if [[ ${resolved_latest} == true ]]; then
-    printf 'no stable Farrow release is published at https://github.com/%s/releases/latest (pre-1.0 versions are GitHub pre-releases); set FARROW_VERSION explicitly, for example FARROW_VERSION=0.1.0\n' "${repository}" >&2
+    printf 'no stable Farrow release is published at https://github.com/%s/releases/latest (pre-1.0 versions are GitHub pre-releases); set FARROW_VERSION explicitly to the pre-release version you want\n' "${repository}" >&2
   else
     printf 'cannot resolve a valid Farrow release version: %s\n' "${version}" >&2
   fi

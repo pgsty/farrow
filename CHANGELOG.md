@@ -6,6 +6,8 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+## [0.5.0]
+
 ### Added
 
 - `farrow purge` (alias `farrow rm`) discards the complete applied deployment
@@ -22,6 +24,9 @@ Notable user-visible changes. This project follows
 
 ### Changed
 
+- The pinned build and CI toolchain now uses Go 1.27.1, GoReleaser 2.18.0,
+  golangci-lint 2.13.2, `golang.org/x/crypto` 0.56.0, and the latest selected
+  transitive archive/image modules.
 - The default official image repository is now `https://repo.pigsty.io/farrow`.
   Downloading commands accept long-only `--mirror` to select
   `https://repo.pigsty.cc/farrow`; an explicit `--repo` remains highest
@@ -253,7 +258,8 @@ Pigsty-compatible local labs.
   Cosign is available, and explains that pre-1.0 GitHub pre-releases require an
   explicit `FARROW_VERSION`.
 
-[Unreleased]: https://github.com/pgsty/farrow/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/pgsty/farrow/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/pgsty/farrow/releases/tag/v0.5.0
 [0.4.0]: https://github.com/pgsty/farrow/releases/tag/v0.4.0
 [0.3.0]: https://github.com/pgsty/farrow/releases/tag/v0.3.0
 [0.2.0]: https://github.com/pgsty/farrow/releases/tag/v0.2.0
