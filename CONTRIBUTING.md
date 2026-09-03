@@ -39,7 +39,7 @@ versions, so install those versions locally:
 ```bash
 go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
 go install golang.org/x/tools/cmd/deadcode@v0.49.0
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 ```
 

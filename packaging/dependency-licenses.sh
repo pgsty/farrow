@@ -13,7 +13,7 @@ license_source_mappings() {
     'go.yaml.in-yaml-v3-LICENSE|module|go.yaml.in/yaml/v3@v3.0.5/LICENSE' \
     'go.yaml.in-yaml-v3-NOTICE|module|go.yaml.in/yaml/v3@v3.0.5/NOTICE' \
     'golang.org-go-stdlib-LICENSE|go|LICENSE' \
-    'golang.org-x-crypto-LICENSE|module|golang.org/x/crypto@v0.55.0/LICENSE' \
+    'golang.org-x-crypto-LICENSE|module|golang.org/x/crypto@v0.56.0/LICENSE' \
     'golang.org-x-sys-LICENSE|module|golang.org/x/sys@v0.47.0/LICENSE' \
     'golang.org-x-term-LICENSE|module|golang.org/x/term@v0.45.0/LICENSE'
 }

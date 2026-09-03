@@ -15,7 +15,7 @@ expected=$(printf '%s\n' \
   $'github.com/spf13/cobra\tv1.10.2' \
   $'github.com/spf13/pflag\tv1.0.10' \
   $'go.yaml.in/yaml/v3\tv3.0.5' \
-  $'golang.org/x/crypto\tv0.55.0' \
+  $'golang.org/x/crypto\tv0.56.0' \
   $'golang.org/x/sys\tv0.47.0' \
   $'golang.org/x/term\tv0.45.0' | LC_ALL=C sort)
 actual=$(
