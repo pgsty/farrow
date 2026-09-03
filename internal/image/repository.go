@@ -54,8 +54,8 @@ func RepositoryAllowsUnsigned(value string) bool {
 		return false
 	}
 	parsed, _ := url.Parse(normalized)
-	if parsed.Scheme == "https" && (parsed.Port() == "" || parsed.Port() == "443") && parsed.Path == "/farrow" {
-		host := strings.ToLower(parsed.Hostname())
+	if parsed.Scheme == "https" && (parsed.Port() == "" || parsed.Port() == "443") && path.Clean(parsed.Path) == "/farrow" {
+		host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 		if host == "repo.pigsty.io" || host == "repo.pigsty.cc" {
 			return false
 		}

@@ -19,6 +19,10 @@ func TestRepositorySources(t *testing.T) {
 	if err != nil || flat != "https://repo.example/farrow/images/d13-1-arm64.qcow2" {
 		t.Fatalf("flat artifact source = %q, %v", flat, err)
 	}
+	canonical, err := RepositoryCatalogSource("https://repo.pigsty.io/farrow/nested/../.")
+	if err != nil || canonical != "https://repo.pigsty.io/farrow/catalog.json" {
+		t.Fatalf("canonical official catalog source = %q, %v", canonical, err)
+	}
 	local := filepath.Join(t.TempDir(), "repo")
 	localCatalog, err := RepositoryCatalogSource(local)
 	if err != nil || localCatalog != filepath.Join(local, CatalogFilename) {
@@ -35,7 +39,15 @@ func TestPublicDefaultRepository(t *testing.T) {
 	if MirrorRepositoryURL != "https://repo.pigsty.cc/farrow" {
 		t.Fatalf("mirror repository = %q", MirrorRepositoryURL)
 	}
-	for _, repository := range []string{GlobalRepositoryURL, ChinaRepositoryURL, GlobalRepositoryURL + "/", ChinaRepositoryURL + "/", "https://REPO.PIGSTY.IO:443/farrow"} {
+	for _, repository := range []string{
+		GlobalRepositoryURL,
+		ChinaRepositoryURL,
+		GlobalRepositoryURL + "/",
+		ChinaRepositoryURL + "/.",
+		GlobalRepositoryURL + "/nested/..",
+		GlobalRepositoryURL + "/%2e",
+		"https://REPO.PIGSTY.IO.:443/farrow",
+	} {
 		if RepositoryAllowsUnsigned(repository) {
 			t.Errorf("official repository %q unexpectedly permits an unsigned catalog", repository)
 		}
