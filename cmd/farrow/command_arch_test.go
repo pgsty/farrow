@@ -13,7 +13,7 @@ import (
 func TestCommandRunnersReturnOutcomesWithoutRenderingFailures(t *testing.T) {
 	runners := map[string]bool{
 		"runVersionCommand": true, "runNetwork": true, "runPrivateSSH": true, "runSSH": true,
-		"runProvision": true, "runPrivateCommand": true, "runLifecycleCommand": true,
+		"runProvision": true, "runPrivateCommand": true, "runLifecycleCommand": true, "runPurgeCommand": true,
 		"runSSHConfig": true, "runHosts": true, "runLogs": true, "runValidate": true,
 		"runInit": true, "runImage": true, "runDoctor": true, "runSetupCommand": true,
 	}

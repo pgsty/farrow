@@ -783,6 +783,8 @@ func lifecycleMessage(command string) string {
 		return "Recreating the deployment"
 	case "destroy":
 		return "Destroying owned deployment resources"
+	case "purge":
+		return "Purging the complete deployment"
 	default:
 		return "Running " + command
 	}

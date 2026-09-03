@@ -1030,7 +1030,7 @@ func lifecycleSSHConfigAction(command string, deploymentHasNodes bool) string {
 	switch command {
 	case "up", "reload", "recreate":
 		return "install"
-	case "destroy":
+	case "destroy", "purge":
 		if deploymentHasNodes {
 			return "install"
 		}
@@ -1199,19 +1199,26 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		operation = func(ctx context.Context) (privatevm.Status, error) { return manager.RecreateResolved(ctx, resolved) }
 	case "status":
 		operation = manager.Status
-	case "destroy":
-		if len(nodes) != 0 && (deletePersistent || purge) {
-			return commandOutcome{}, newUsageError(errors.New("--delete-persistent and --purge apply to whole-deployment destroy only"))
-		}
-		if !force {
-			// State the exact scope before the typed confirmation.
-			bestEffortln(stderr, destroyScope(resolved, nodes, deletePersistent, purge))
-		}
-		if err := confirmCLIAction(force, "destroy", stderr); err != nil {
-			if errors.Is(err, ErrCancelled) {
-				return commandOutcome{}, ErrCancelled
+	case "destroy", "purge":
+		if command == "purge" {
+			if len(nodes) != 0 {
+				return commandOutcome{}, newUsageError(errors.New("purge does not accept node selectors"))
 			}
-			return commandOutcome{}, newUsageError(err)
+			deletePersistent, purge = true, true
+		} else {
+			if len(nodes) != 0 && (deletePersistent || purge) {
+				return commandOutcome{}, newUsageError(errors.New("--delete-persistent and --purge apply to whole-deployment destroy only"))
+			}
+			if !force {
+				// State the exact scope before the typed confirmation.
+				bestEffortln(stderr, destroyScope(resolved, nodes, deletePersistent, purge))
+			}
+			if err := confirmCLIAction(force, "destroy", stderr); err != nil {
+				if errors.Is(err, ErrCancelled) {
+					return commandOutcome{}, ErrCancelled
+				}
+				return commandOutcome{}, newUsageError(err)
+			}
 		}
 		timeout = 10 * time.Minute
 		operation = func(ctx context.Context) (privatevm.Status, error) {
@@ -1256,12 +1263,12 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	}
 	if reconcileSSHConfig {
 		deploymentHasNodes := true
-		if command == "destroy" {
+		if command == "destroy" || command == "purge" {
 			// A successful destroy has already validated selectors as known and
 			// unique. Covering the complete pre-operation resolved set removes
 			// state.json, so decide removal from that known set instead of trying
 			// to read state that is intentionally gone.
-			deploymentHasNodes = destroyLeavesDeploymentNodes(resolved, nodes)
+			deploymentHasNodes = command == "destroy" && destroyLeavesDeploymentNodes(resolved, nodes)
 		}
 		if action := lifecycleSSHConfigAction(command, deploymentHasNodes); action != "" {
 			progressItem.Report(activity.Event{Phase: "ssh-config", Message: "Updating the SSH client configuration"})
@@ -1291,7 +1298,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			err = fmt.Errorf("%s completed but its event could not be appended: %w", command, eventErr)
 		}
 	}
-	if lifecycleSucceeded && command == "destroy" && purge {
+	if lifecycleSucceeded && (command == "purge" || command == "destroy" && purge) {
 		if purgeErr := purgeDeployment(ctx); purgeErr != nil {
 			var integrationFailure *lifecycleSSHConfigFailure
 			if errors.As(err, &integrationFailure) {
@@ -1369,6 +1376,74 @@ func recordCancelledLifecycle(parent context.Context, manager privatevm.Manager,
 	if eventErr := manager.RecordEvent(audit, command, "error", message); eventErr != nil {
 		warningf(stderr, "cancelled %s could not be recorded in events.jsonl: %v", command, eventErr)
 	}
+}
+
+// runPurgeCommand is the no-confirmation, whole-deployment disposal path. A
+// valid deployment goes through the normal identity-checked destroy engine.
+// When an earlier whole destroy already removed state.json, the residual path
+// can still delete strictly inventoried persistent disks and allowlisted keys.
+// A missing state document never authorizes deletion of retained node
+// artifacts, whose process and path identity can no longer be proven.
+func runPurgeCommand(parent context.Context, stderr io.Writer) (commandOutcome, error) {
+	resolved, err := currentDeploymentResolved()
+	if err == nil {
+		if resolved.Network != "private" {
+			return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
+		}
+		return runPrivateCommand(parent, "purge", resolved, nil, "", true, true, true, false, false, stderr)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, fmt.Errorf("read deployment state for purge: %w", err), "", nil)
+	}
+
+	root, rootErr := state.ResolveDataRoot()
+	if rootErr != nil {
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, rootErr, "", nil)
+	}
+	rootInfo, statErr := os.Lstat(root)
+	rootExists := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, fmt.Errorf("inspect deployment root for purge: %w", statErr), "", nil)
+	}
+	if rootExists {
+		stat, ok := rootInfo.Sys().(*syscall.Stat_t)
+		if !ok || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 || rootInfo.Mode().Perm()&0o022 != 0 || int(stat.Uid) != os.Geteuid() {
+			return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, fmt.Errorf("deployment root is not a current-user directory protected from group/world writes: %s", root), "", nil)
+		}
+	} else {
+		status := privatevm.Status{Message: "no deployment to purge; image cache and host network remain installed"}
+		result := lifecycleResult{Status: status}
+		return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
+			printPrivateStatus(stdout, status)
+			return nil
+		}}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
+	defer cancel()
+	manager := privatevm.Manager{FarrowVersion: version.Version}
+	deleted, deleteErr := manager.DeletePersistent(ctx)
+	if deleteErr != nil {
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, fmt.Errorf("deployment state is missing; refuse unsafe residual purge: %w", deleteErr), "", nil)
+	}
+	if purgeErr := purgeDeployment(ctx); purgeErr != nil {
+		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, fmt.Errorf("purge residual deployment data: %w", purgeErr), "", nil)
+	}
+
+	sshResult, sshErr := (privatevm.Manager{FarrowVersion: version.Version}).RemoveSSHConfig("farrow", "")
+	status := privatevm.Status{Message: fmt.Sprintf("purged residual deployment data and %d persistent data disk(s); image cache and host network remain installed", len(deleted))}
+	if sshErr != nil {
+		failure := &lifecycleSSHConfigFailure{Command: "purge", Status: status, Result: sshResult, Err: sshErr}
+		return commandOutcome{}, classifyLifecycleSSHConfigFailure(failure)
+	}
+	result := lifecycleResult{Status: status, SSHConfig: &sshResult}
+	return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
+		printPrivateStatus(stdout, status)
+		if sshResult.Changed {
+			textField(stdout, 6, "ssh", fmt.Sprintf("%s %s", sshResult.Action, sshResult.Fragment))
+		}
+		return nil
+	}}, nil
 }
 
 func runLifecycleCommand(ctx context.Context, command string, options lifecycleOptions, nodes []string, stderr io.Writer) (commandOutcome, error) {

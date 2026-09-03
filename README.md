@@ -100,6 +100,7 @@ farrow status                # audit/converge selected runtime state, from anywh
 farrow ssh meta -- uptime    # run something in a guest
 farrow hosts install --yes   # publish node names into the host hosts file
 farrow destroy               # explicit, confirmed teardown
+farrow purge                 # no-confirmation disposal; images/network remain
 ```
 
 Every command accepts `--json` or `--yaml` for stable machine-readable output.

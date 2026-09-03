@@ -6,6 +6,15 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- `farrow purge` (alias `farrow rm`) discards the complete applied deployment
+  without a confirmation prompt. It deletes every VM, persistent data disks,
+  deployment keys and state, and the default SSH client fragment while keeping
+  the verified image cache and host-global network. The command is idempotent
+  when no deployment exists and still refuses unidentifiable residual node
+  artifacts instead of deleting them by path alone.
+
 ### Changed
 
 - The default official image repository is now `https://repo.pigsty.io/farrow`.

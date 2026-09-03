@@ -150,3 +150,31 @@ func newLifecycleCommand(name, short string, stdout, stderr io.Writer) *cobra.Co
 	}
 	return command
 }
+
+func newPurgeCommand(stdout, stderr io.Writer) *cobra.Command {
+	command := &cobra.Command{
+		Use:     "purge",
+		Aliases: []string{"rm"},
+		Short:   "Discard the entire deployment without confirmation",
+		Long: `Destroy every virtual machine in the applied deployment and delete its
+root disks, persistent data disks, SSH keys, state, and default SSH client
+configuration without asking for confirmation. The verified image cache and
+host-global network remain installed.
+
+Purge accepts no node selectors and never reads an inventory. It is idempotent
+when no deployment exists, but still refuses ambiguous or unsafe retained
+artifacts rather than deleting them by path alone.`,
+		Example: `  farrow purge                    # discard the complete local lab
+  farrow rm                       # short alias, with identical semantics
+  farrow --json purge             # stable output for automation`,
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			outcome, err := runPurgeCommand(command.Context(), stderr)
+			if err != nil {
+				return err
+			}
+			return collectCommandOutcome(command.Context(), outcome)
+		},
+	}
+	return command
+}

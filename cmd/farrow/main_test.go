@@ -416,6 +416,7 @@ func TestLifecycleSSHConfigReconciliationPolicy(t *testing.T) {
 		{command: "recreate", deploymentHasNodes: true, action: "install"},
 		{command: "destroy", deploymentHasNodes: true, action: "install"},
 		{command: "destroy", deploymentHasNodes: false, action: "remove"},
+		{command: "purge", deploymentHasNodes: false, action: "remove"},
 	} {
 		t.Run(test.command+"_"+test.action, func(t *testing.T) {
 			reconciler := &recordingSSHConfigReconciler{}
@@ -741,6 +742,172 @@ func TestDeploymentDestroyUsesPersistedStateWithoutConfiguration(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "destroy requires --force") {
 		t.Fatalf("deployment destroy dispatch was ambiguous: %s", stderr.String())
+	}
+}
+
+func TestPurgeIsIdempotentWithoutDeploymentAndNeedsNoConfirmation(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "missing-farrow-home")
+	home := filepath.Join(parent, "home")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FARROW_HOME", root)
+	t.Setenv("HOME", home)
+	for _, invocation := range [][]string{{"purge", "--json"}, {"rm", "--json"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(invocation, &stdout, &stderr); code != exitOK {
+			t.Fatalf("run(%v) code=%d stdout=%q stderr=%q", invocation, code, stdout.String(), stderr.String())
+		}
+		var result lifecycleResult
+		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+			t.Fatalf("run(%v) result JSON: %v\n%s", invocation, err, stdout.String())
+		}
+		if !strings.Contains(result.Message, "no deployment to purge") || strings.Contains(strings.ToLower(stderr.String()), "confirm") {
+			t.Fatalf("run(%v) result=%#v stderr=%q", invocation, result, stderr.String())
+		}
+		if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("run(%v) created missing data root: %v", invocation, err)
+		}
+		if _, err := os.Lstat(filepath.Join(home, ".ssh")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("run(%v) created an SSH directory for a no-op purge: %v", invocation, err)
+		}
+	}
+}
+
+func TestPurgeRejectsNodeSelectors(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"purge", "meta", "--json"}, &stdout, &stderr); code != exitUsage {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var failure commandFailure
+	if err := json.Unmarshal(stdout.Bytes(), &failure); err != nil {
+		t.Fatalf("failure JSON: %v\n%s", err, stdout.String())
+	}
+	if failure.Error != "usage" || !strings.Contains(failure.Message, "unknown command") && !strings.Contains(failure.Message, "accepts 0 arg") {
+		t.Fatalf("failure=%#v stderr=%q", failure, stderr.String())
+	}
+}
+
+func TestPurgeDisposesAppliedDeploymentWithoutConfirmation(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	t.Setenv("HOME", home)
+	resolved := spec.Resolved{
+		Schema: 1, Name: "farrow", Image: "d13", Network: "private", SSHUser: "dba",
+		Private: &spec.PrivateNetwork{CIDR: "10.10.10.0/24", HostAddress: "10.10.10.1", DHCPEnd: "10.10.10.8"},
+		Nodes:   []spec.Node{{Name: "meta", Control: true, Address: "10.10.10.10", CPUs: 2, Memory: 4 * spec.GiB, RootDisk: 64 * spec.GiB}},
+	}
+	hash, err := spec.Hash(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (state.Store{Root: root}).WriteDeployment(state.DeploymentState{
+		Schema: state.DeploymentSchema, FarrowVersion: "test", SpecHash: hash,
+		Resolved: resolved, UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	keys := filepath.Join(root, "keys")
+	if err := os.Mkdir(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, mode := range map[string]os.FileMode{
+		"id_ed25519": 0o600, "id_ed25519.pub": 0o644, "known_hosts": 0o600,
+	} {
+		if err := os.WriteFile(filepath.Join(keys, name), []byte("fixture"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	image := filepath.Join(root, "images", "fixture.qcow2")
+	if err := os.MkdirAll(filepath.Dir(image), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(image, []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"purge", "--json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(strings.ToLower(stderr.String()), "confirm") {
+		t.Fatalf("purge asked for confirmation: %q", stderr.String())
+	}
+	for _, removed := range []string{filepath.Join(root, "state.json"), keys} {
+		if _, err := os.Lstat(removed); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("purge left %s: %v", removed, err)
+		}
+	}
+	if content, err := os.ReadFile(image); err != nil || string(content) != "image" {
+		t.Fatalf("purge changed cached image: content=%q err=%v", content, err)
+	}
+}
+
+func TestPurgeCleansResidualKeysButPreservesImages(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	t.Setenv("HOME", home)
+	keys := filepath.Join(root, "keys")
+	if err := os.Mkdir(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, mode := range map[string]os.FileMode{
+		"id_ed25519": 0o600, "id_ed25519.pub": 0o644, "known_hosts": 0o600,
+	} {
+		if err := os.WriteFile(filepath.Join(keys, name), []byte("fixture"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	image := filepath.Join(root, "images", "fixture.qcow2")
+	if err := os.MkdirAll(filepath.Dir(image), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(image, []byte("image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"purge", "--json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Lstat(keys); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("purge left residual keys: %v", err)
+	}
+	if content, err := os.ReadFile(image); err != nil || string(content) != "image" {
+		t.Fatalf("purge changed cached image: content=%q err=%v", content, err)
+	}
+}
+
+func TestPurgeRefusesNodeArtifactsWithoutDeploymentState(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("FARROW_HOME", root)
+	t.Setenv("HOME", home)
+	nodeDir := filepath.Join(root, "nodes", "meta")
+	if err := os.MkdirAll(nodeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(nodeDir, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"purge", "--json"}, &stdout, &stderr); code != exitIntegrity {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var failure commandFailure
+	if err := json.Unmarshal(stdout.Bytes(), &failure); err != nil {
+		t.Fatalf("failure JSON: %v\n%s", err, stdout.String())
+	}
+	if failure.Error != "integrity" || !strings.Contains(failure.Message, "state is missing") {
+		t.Fatalf("failure=%#v stderr=%q", failure, stderr.String())
+	}
+	if content, err := os.ReadFile(sentinel); err != nil || string(content) != "keep" {
+		t.Fatalf("unsafe residual artifact was changed: content=%q err=%v", content, err)
 	}
 }
 

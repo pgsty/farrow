@@ -225,6 +225,9 @@ inventory; validate always requires an inventory file.`,
 		command.GroupID = "lifecycle"
 		root.AddCommand(command)
 	}
+	purge := newPurgeCommand(stdout, stderr)
+	purge.GroupID = "lifecycle"
+	root.AddCommand(purge)
 	ssh := rawOperation(
 		"ssh [node] [--] [command [args...]]",
 		"Open SSH or run a command in a guest",

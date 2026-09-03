@@ -64,6 +64,7 @@ func TestRootHelpUsesWorkflowOrder(t *testing.T) {
 		{"\n  plan ", "\n  up "},
 		{"\n  up ", "\n  status "},
 		{"\n  status ", "\n  destroy "},
+		{"\n  destroy ", "\n  purge "},
 		{"\n  ssh ", "\n  hosts "},
 		{"\n  doctor ", "\n  network "},
 		{"\n  version ", "\n  completion "},
@@ -117,6 +118,7 @@ func TestCommandAliasesResolveToCanonicalCommands(t *testing.T) {
 		{arguments: []string{"rc"}, path: "farrow recreate"},
 		{arguments: []string{"st"}, path: "farrow status"},
 		{arguments: []string{"de"}, path: "farrow destroy"},
+		{arguments: []string{"rm"}, path: "farrow purge"},
 		{arguments: []string{"ex"}, path: "farrow exec"},
 		{arguments: []string{"l"}, path: "farrow logs"},
 		{arguments: []string{"sc"}, path: "farrow ssh-config"},
@@ -319,7 +321,7 @@ func TestAliasesAreDiscoverableInHelpAndCompletion(t *testing.T) {
 	if code := run([]string{"--help"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("root help code=%d stderr=%q", code, stderr.String())
 	}
-	for _, want := range []string{"Command aliases:", "s=setup", "sc=ssh-config", "dt=doctor", "im=image"} {
+	for _, want := range []string{"Command aliases:", "s=setup", "rm=purge", "sc=ssh-config", "dt=doctor", "im=image"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("root help missing %q:\n%s", want, stdout.String())
 		}
@@ -330,6 +332,7 @@ func TestAliasesAreDiscoverableInHelpAndCompletion(t *testing.T) {
 	}{
 		{arguments: []string{"__complete", "sc"}, want: "sc\tAlias for ssh-config"},
 		{arguments: []string{"__complete", "dt"}, want: "dt\tAlias for doctor"},
+		{arguments: []string{"__complete", "rm"}, want: "rm\tAlias for purge"},
 		{arguments: []string{"__complete", "im", "pr"}, want: "pr\tAlias for prune"},
 	} {
 		stdout.Reset()
