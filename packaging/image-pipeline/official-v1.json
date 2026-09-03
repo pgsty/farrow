@@ -1,0 +1,296 @@
+{
+  "artifact_base_url": "https://repo.pigsty.cc/farrow",
+  "manifest_version": 2026090301,
+  "schema": 1,
+  "source_date_epoch": 1788393600,
+  "targets": [
+    {
+      "arch": "amd64",
+      "boot": "uefi",
+      "license": "NOASSERTION",
+      "name": "d12",
+      "package_lock": {
+        "arch": "amd64",
+        "install": [
+          "xfsprogs"
+        ],
+        "packages": [
+          {
+            "arch": "amd64",
+            "filename": "libinih1_55-1_amd64.deb",
+            "name": "libinih1",
+            "sha256": "1286ddab2ef1050389e585ad3bfd0a0d9bdd26475003a33b4eec884bccd50477",
+            "url": "https://deb.debian.org/debian/pool/main/libi/libinih/libinih1_55-1_amd64.deb",
+            "version": "55-1"
+          },
+          {
+            "arch": "amd64",
+            "filename": "liburcu8_0.13.2-1_amd64.deb",
+            "name": "liburcu8",
+            "sha256": "8647049698200fb5e20a130a09059b51878bb98643a120c7b0c6cbfd3f9b42dd",
+            "url": "https://deb.debian.org/debian/pool/main/libu/liburcu/liburcu8_0.13.2-1_amd64.deb",
+            "version": "0.13.2-1"
+          },
+          {
+            "arch": "amd64",
+            "filename": "xfsprogs_6.1.0-1_amd64.deb",
+            "name": "xfsprogs",
+            "sha256": "e2d2a60dd29d568b5724b66d9ff864305cec61a15e6ba842079398524e1c5718",
+            "url": "https://deb.debian.org/debian/pool/main/x/xfsprogs/xfsprogs_6.1.0-1_amd64.deb",
+            "version": "6.1.0-1"
+          }
+        ],
+        "profile": "d12",
+        "schema": 1
+      },
+      "profile": "d12",
+      "release": "20260806.2562.1",
+      "source_filename": "d12-20260806.2562.0-amd64.qcow2",
+      "source_sha256": "dd3dbd23a3965318cc9aae32592dcfde4abcb8f90a50ca760a9ca9e8f3ba6255",
+      "source_sha512": "0b04eda1c80b255d6234ae6fe63c43a6cb0de4afc5c37873acbc82d5b1feba7a619d2402d2341af1cf9e0898fa7d5225be343fef47349b18fe28b838001bd8eb",
+      "source_uri": "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-amd64-20260806-2562.qcow2"
+    },
+    {
+      "arch": "arm64",
+      "boot": "uefi",
+      "license": "NOASSERTION",
+      "name": "d12",
+      "package_lock": {
+        "arch": "arm64",
+        "install": [
+          "xfsprogs"
+        ],
+        "packages": [
+          {
+            "arch": "arm64",
+            "filename": "libinih1_55-1_arm64.deb",
+            "name": "libinih1",
+            "sha256": "0de2aab9586ae388d169971d4ed0f3878bb15172582c65a6ef4a393c4b8c3072",
+            "url": "https://deb.debian.org/debian/pool/main/libi/libinih/libinih1_55-1_arm64.deb",
+            "version": "55-1"
+          },
+          {
+            "arch": "arm64",
+            "filename": "liburcu8_0.13.2-1_arm64.deb",
+            "name": "liburcu8",
+            "sha256": "b9b168187de755b0e71bac8171ef08b30b3e24bd15ee40a7a445560242c794d7",
+            "url": "https://deb.debian.org/debian/pool/main/libu/liburcu/liburcu8_0.13.2-1_arm64.deb",
+            "version": "0.13.2-1"
+          },
+          {
+            "arch": "arm64",
+            "filename": "xfsprogs_6.1.0-1_arm64.deb",
+            "name": "xfsprogs",
+            "sha256": "e3a1089cec0b4143b490582ee316cea4424ec65f86a65c9d38ca74f7c9d46934",
+            "url": "https://deb.debian.org/debian/pool/main/x/xfsprogs/xfsprogs_6.1.0-1_arm64.deb",
+            "version": "6.1.0-1"
+          }
+        ],
+        "profile": "d12",
+        "schema": 1
+      },
+      "profile": "d12",
+      "release": "20260806.2562.1",
+      "source_filename": "d12-20260806.2562.0-arm64.qcow2",
+      "source_sha256": "8c6b8f81e571d530f6561c707538a4e807de8188c9a3f41af7b52b4e5ed010be",
+      "source_sha512": "8f872616a25ac6ca7c0d1b169b062931db51cd03fda4c8cbc74f228d045b186edd1c7d105933a7149c3377372cd0196d7659f07574d7bf6425b82b01df323026",
+      "source_uri": "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-arm64-20260806-2562.qcow2"
+    },
+    {
+      "arch": "amd64",
+      "boot": "uefi",
+      "license": "NOASSERTION",
+      "name": "d13",
+      "package_lock": {
+        "arch": "amd64",
+        "install": [
+          "xfsprogs"
+        ],
+        "packages": [
+          {
+            "arch": "amd64",
+            "filename": "libicu76_76.1-4_amd64.deb",
+            "name": "libicu76",
+            "sha256": "c1bf762996de9ecba9b9d871e4928a8090f023a3e9e7fa3240b3d90f892a01dc",
+            "url": "https://deb.debian.org/debian/pool/main/i/icu/libicu76_76.1-4_amd64.deb",
+            "version": "76.1-4"
+          },
+          {
+            "arch": "amd64",
+            "filename": "libinih1_59-1_amd64.deb",
+            "name": "libinih1",
+            "sha256": "22e51939acb45906a57851508290782a2a704fce5208e213e951268b3c799c4a",
+            "url": "https://deb.debian.org/debian/pool/main/libi/libinih/libinih1_59-1_amd64.deb",
+            "version": "59-1"
+          },
+          {
+            "arch": "amd64",
+            "filename": "xfsprogs_6.13.0-2+b1_amd64.deb",
+            "name": "xfsprogs",
+            "sha256": "570e900e2e0fa1e3d56ca654d4739e43e16ee5f2d6050fb5955c141cf2cbacf1",
+            "url": "https://deb.debian.org/debian/pool/main/x/xfsprogs/xfsprogs_6.13.0-2+b1_amd64.deb",
+            "version": "6.13.0-2+b1"
+          }
+        ],
+        "profile": "d13",
+        "schema": 1
+      },
+      "profile": "d13",
+      "release": "20260810.2566.1",
+      "source_filename": "d13-20260810.2566.0-amd64.qcow2",
+      "source_sha256": "d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc",
+      "source_sha512": "f6978100d8031c266d55d7815ceea7fcdeacf28e1e5834fdb9c94ac96880a054a6e6f8681c2d3b0584e0057eaf3ef7353856b85212d04134744faa9b3bb1f24f",
+      "source_uri": "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-amd64-20260810-2566.qcow2"
+    },
+    {
+      "arch": "arm64",
+      "boot": "uefi",
+      "license": "NOASSERTION",
+      "name": "d13",
+      "package_lock": {
+        "arch": "arm64",
+        "install": [
+          "xfsprogs"
+        ],
+        "packages": [
+          {
+            "arch": "arm64",
+            "filename": "libicu76_76.1-4_arm64.deb",
+            "name": "libicu76",
+            "sha256": "62eb15577c881b7d02aa861e3eb860902335630cc8174daf525b48c2fa39298f",
+            "url": "https://deb.debian.org/debian/pool/main/i/icu/libicu76_76.1-4_arm64.deb",
+            "version": "76.1-4"
+          },
+          {
+            "arch": "arm64",
+            "filename": "libinih1_59-1_arm64.deb",
+            "name": "libinih1",
+            "sha256": "fcbc936af8fdd3db56b2a8fc4891b27955ce48c7639cbd6905fd292ae20061fa",
+            "url": "https://deb.debian.org/debian/pool/main/libi/libinih/libinih1_59-1_arm64.deb",
+            "version": "59-1"
+          },
+          {
+            "arch": "arm64",
+            "filename": "xfsprogs_6.13.0-2+b1_arm64.deb",
+            "name": "xfsprogs",
+            "sha256": "a559c8cf77d815157093be352df0c00ef4f88fe92911228fccba4f59aa84f8b1",
+            "url": "https://deb.debian.org/debian/pool/main/x/xfsprogs/xfsprogs_6.13.0-2+b1_arm64.deb",
+            "version": "6.13.0-2+b1"
+          }
+        ],
+        "profile": "d13",
+        "schema": 1
+      },
+      "profile": "d13",
+      "release": "20260810.2566.1",
+      "source_filename": "d13-20260810.2566.0-arm64.qcow2",
+      "source_sha256": "2c546c79ec199983a88e384f6e5d013ab7876353943f7aa614403e3028bbea99",
+      "source_sha512": "60a2cc628f0dd114c25d70ce8388631c3f165f25c8932bc9f147987467680bcc39bda38c471c31d35056ae3eb089d22ab295583a7cbff323f21caabb467b0656",
+      "source_uri": "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-arm64-20260810-2566.qcow2"
+    },
+    {
+      "arch": "amd64",
+      "boot": "uefi",
+      "license": "NOASSERTION",
+      "name": "el8",
+      "package_lock": {
+        "arch": "amd64",
+        "install": [
+          "python36",
+          "python3-pip"
+        ],
+        "packages": [
+          {
+            "arch": "noarch",
+            "filename": "python3-pip-9.0.3-24.el8.rocky.0.noarch.rpm",
+            "name": "python3-pip",
+            "sha256": "ed6a1c9dcf6e3b4e8f6c166514c14deed5a52108776a687d4c92bcc2ce90667a",
+            "url": "https://download.rockylinux.org/pub/rocky/8.10/AppStream/x86_64/kickstart/Packages/p/python3-pip-9.0.3-24.el8.rocky.0.noarch.rpm",
+            "version": "9.0.3-24.el8.rocky.0"
+          },
+          {
+            "arch": "amd64",
+            "filename": "python36-3.6.8-39.module+el8.10.0+1592+61442852.x86_64.rpm",
+            "name": "python36",
+            "sha256": "3b2ca4d2ce4d209dcd4ee3649993f8c05cad3455b273adc6e349d5e55d48e0ef",
+            "url": "https://download.rockylinux.org/pub/rocky/8.10/AppStream/x86_64/kickstart/Packages/p/python36-3.6.8-39.module+el8.10.0+1592+61442852.x86_64.rpm",
+            "version": "3.6.8-39.module+el8.10.0+1592+61442852"
+          }
+        ],
+        "profile": "el8",
+        "schema": 1
+      },
+      "profile": "el8",
+      "release": "8.10.20240528.1",
+      "source_filename": "el8-8.10.20240528.0-amd64.qcow2",
+      "source_sha256": "e56066c58606191e96184de9a9183a3af33c59bcbd8740d8b10ca054a7a89c14",
+      "source_sha512": null,
+      "source_uri": "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base-8.10-20240528.0.x86_64.qcow2"
+    },
+    {
+      "arch": "arm64",
+      "boot": "uefi",
+      "license": "NOASSERTION",
+      "name": "el8",
+      "package_lock": {
+        "arch": "arm64",
+        "install": [
+          "python36",
+          "python3-pip"
+        ],
+        "packages": [
+          {
+            "arch": "noarch",
+            "filename": "python3-pip-9.0.3-24.el8.rocky.0.noarch.rpm",
+            "name": "python3-pip",
+            "sha256": "ed6a1c9dcf6e3b4e8f6c166514c14deed5a52108776a687d4c92bcc2ce90667a",
+            "url": "https://download.rockylinux.org/pub/rocky/8.10/AppStream/aarch64/kickstart/Packages/p/python3-pip-9.0.3-24.el8.rocky.0.noarch.rpm",
+            "version": "9.0.3-24.el8.rocky.0"
+          },
+          {
+            "arch": "arm64",
+            "filename": "python36-3.6.8-39.module+el8.10.0+1592+61442852.aarch64.rpm",
+            "name": "python36",
+            "sha256": "51eeb07979e4e321c72844a3b360ed1c271000175484e0330fcb551960822d6e",
+            "url": "https://download.rockylinux.org/pub/rocky/8.10/AppStream/aarch64/kickstart/Packages/p/python36-3.6.8-39.module+el8.10.0+1592+61442852.aarch64.rpm",
+            "version": "3.6.8-39.module+el8.10.0+1592+61442852"
+          }
+        ],
+        "profile": "el8",
+        "schema": 1
+      },
+      "profile": "el8",
+      "release": "8.10.20240528.1",
+      "source_filename": "el8-8.10.20240528.0-arm64.qcow2",
+      "source_sha256": "946b5b9845aa5e3ed98f1bc6ee9873201712a2aef01b87731aed16857e0ca13f",
+      "source_sha512": null,
+      "source_uri": "https://dl.rockylinux.org/pub/rocky/8/images/aarch64/Rocky-8-GenericCloud-Base-8.10-20240528.0.aarch64.qcow2"
+    },
+    {
+      "arch": "amd64",
+      "boot": "uefi",
+      "license": "NOASSERTION",
+      "name": "el9",
+      "package_lock": null,
+      "profile": "el9",
+      "release": "9.8.20260525.1",
+      "source_filename": "el9-9.8.20260525.0-amd64.qcow2",
+      "source_sha256": "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8",
+      "source_sha512": null,
+      "source_uri": "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2"
+    },
+    {
+      "arch": "arm64",
+      "boot": "uefi",
+      "license": "NOASSERTION",
+      "name": "el9",
+      "package_lock": null,
+      "profile": "el9",
+      "release": "9.8.20260525.1",
+      "source_filename": "el9-9.8.20260525.0-arm64.qcow2",
+      "source_sha256": "24692a444f1f0b8bb95375c38c8b43f8099a115347623691be2c330b40c8a1fe",
+      "source_sha512": null,
+      "source_uri": "https://dl.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base-9.8-20260525.0.aarch64.qcow2"
+    }
+  ]
+}

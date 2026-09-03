@@ -4,21 +4,203 @@ set -euo pipefail
 # This script runs only inside virt-customize's offline appliance. It accepts
 # deliberately narrow, pre-validated values; it never downloads packages or
 # reads credentials from the host.
-if [[ $# -ne 2 ]]; then
-  printf 'usage: %s <source-user> <source-date-epoch>\n' "$0" >&2
+if [[ $# -ne 4 ]]; then
+  printf 'usage: %s <source-user> <source-date-epoch> <profile> <package-dir|->\n' "$0" >&2
   exit 2
 fi
 source_user=$1
 source_date_epoch=$2
+profile=$3
+package_dir=$4
 [[ ${source_user} =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { printf 'invalid source user\n' >&2; exit 2; }
 [[ ${source_date_epoch} =~ ^[0-9]{1,10}$ ]] || { printf 'invalid source epoch\n' >&2; exit 2; }
+case ${profile} in
+  base|el8|el9|d12|d13) ;;
+  *) printf 'invalid customization profile: %s\n' "${profile}" >&2; exit 2 ;;
+esac
 export LC_ALL=C
 export TZ=UTC
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
-for command in awk cat chmod chown find getent groupadd groupmod install ln rm stat touch useradd usermod; do
+for command in awk cat chmod chown find getent grep groupadd groupmod install ln rm sed stat touch useradd usermod; do
   command -v "${command}" >/dev/null || { printf 'required guest command missing: %s\n' "${command}" >&2; exit 3; }
 done
+
+# Refuse a profile/image mismatch before making any changes. The input image is
+# separately digest-pinned by the host pipeline, but this makes accidental
+# cross-profile invocations fail closed as well.
+# shellcheck disable=SC1091
+source /etc/os-release
+case ${profile} in
+  base) ;;
+  el8) [[ ${ID:-} == rocky && ${VERSION_ID:-} == 8.* ]] || { printf 'el8 profile requires Rocky Linux 8\n' >&2; exit 3; } ;;
+  el9) [[ ${ID:-} == rocky && ${VERSION_ID:-} == 9.* ]] || { printf 'el9 profile requires Rocky Linux 9\n' >&2; exit 3; } ;;
+  d12) [[ ${ID:-} == debian && ${VERSION_ID:-} == 12 ]] || { printf 'd12 profile requires Debian 12\n' >&2; exit 3; } ;;
+  d13) [[ ${ID:-} == debian && ${VERSION_ID:-} == 13 ]] || { printf 'd13 profile requires Debian 13\n' >&2; exit 3; } ;;
+esac
+
+install_locked_packages() {
+  local packages=()
+  case ${profile} in
+    el8)
+      [[ ${package_dir} == /var/tmp/farrow-image-packages && -d ${package_dir} ]] || {
+        printf 'el8 profile requires the locked RPM bundle\n' >&2
+        exit 3
+      }
+      command -v rpm >/dev/null || { printf 'required guest command missing: rpm\n' >&2; exit 3; }
+      shopt -s nullglob
+      packages=("${package_dir}"/*.rpm)
+      shopt -u nullglob
+      [[ ${#packages[@]} -gt 0 ]] || { printf 'locked RPM bundle is empty\n' >&2; exit 3; }
+      rocky_key=/etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-8
+      [[ -f ${rocky_key} ]] || { printf 'Rocky package signing key is missing\n' >&2; exit 3; }
+      key_database=/var/tmp/farrow-rpm-signature-db
+      [[ ! -e ${key_database} ]] || { printf 'temporary RPM signature database already exists\n' >&2; exit 3; }
+      install -d -o root -g root -m 0700 "${key_database}"
+      rpm --dbpath "${key_database}" --initdb
+      rpm --dbpath "${key_database}" --import "${rocky_key}"
+      rpm --dbpath "${key_database}" --checksig "${packages[@]}"
+      rm -rf -- "${key_database}"
+      # Signatures were checked against the temporary trusted database above;
+      # keep the upstream image's system RPM key database unchanged.
+      rpm -Uvh --replacepkgs --nosignature "${packages[@]}"
+      ;;
+    d12|d13)
+      [[ ${package_dir} == /var/tmp/farrow-image-packages && -d ${package_dir} ]] || {
+        printf '%s profile requires the locked DEB bundle\n' "${profile}" >&2
+        exit 3
+      }
+      command -v dpkg >/dev/null || { printf 'required guest command missing: dpkg\n' >&2; exit 3; }
+      shopt -s nullglob
+      packages=("${package_dir}"/*.deb)
+      shopt -u nullglob
+      [[ ${#packages[@]} -gt 0 ]] || { printf 'locked DEB bundle is empty\n' >&2; exit 3; }
+      dpkg -i "${packages[@]}"
+      ;;
+    base|el9)
+      [[ ${package_dir} == - ]] || { printf '%s profile does not accept a package bundle\n' "${profile}" >&2; exit 3; }
+      ;;
+  esac
+  if [[ ${package_dir} != - ]]; then
+    rm -rf -- "${package_dir}"
+  fi
+}
+
+strip_boot_argument() {
+  local file=$1 argument=$2
+  [[ -f ${file} ]] || return 0
+  # Run twice so adjacent arguments are both removed without depending on GNU
+  # sed's handling of an already-consumed separator.
+  sed -i -E \
+    -e "s/(^|[[:space:]])${argument}([[:space:]]|$)/\\1\\2/g" \
+    -e "s/(^|[[:space:]])${argument}\"/\\1\"/g" "${file}"
+  sed -i -E \
+    -e "s/(^|[[:space:]])${argument}([[:space:]]|$)/\\1\\2/g" \
+    -e "s/(^|[[:space:]])${argument}\"/\\1\"/g" "${file}"
+}
+
+remove_legacy_el_networking() {
+  local entry token kernelopts clean=() file
+  command -v grubby >/dev/null && grubby --update-kernel=ALL --remove-args='net.ifnames=0 biosdevname=0'
+  for file in /etc/default/grub /etc/sysconfig/grub /etc/sysconfig/bootloader; do
+    strip_boot_argument "${file}" 'net\.ifnames=0'
+    strip_boot_argument "${file}" 'biosdevname=0'
+  done
+  if [[ -d /boot/loader/entries ]]; then
+    while IFS= read -r file; do
+      strip_boot_argument "${file}" 'net\.ifnames=0'
+      strip_boot_argument "${file}" 'biosdevname=0'
+    done < <(find /boot/loader/entries -maxdepth 1 -type f -name '*.conf' -print)
+  fi
+  for entry in /boot/grub2/grubenv /boot/efi/EFI/rocky/grubenv; do
+    [[ -e ${entry} ]] || continue
+    command -v grub2-editenv >/dev/null || { printf 'grub2-editenv is required for %s\n' "${entry}" >&2; exit 3; }
+    kernelopts=$(grub2-editenv "${entry}" list | sed -n 's/^kernelopts=//p')
+    [[ -n ${kernelopts} ]] || continue
+    clean=()
+    # The official inputs contain only ordinary kernel tokens here.
+    read -r -a tokens <<<"${kernelopts}"
+    for token in "${tokens[@]}"; do
+      [[ ${token} == net.ifnames=0 || ${token} == biosdevname=0 ]] || clean+=("${token}")
+    done
+    grub2-editenv "${entry}" set "kernelopts=${clean[*]}"
+  done
+
+  # These fixed upstream images carry interface-name-bound profiles that become
+  # stale once predictable names are restored. Cloud-init will author the
+  # deployment-specific profiles on first boot.
+  if [[ -d /etc/sysconfig/network-scripts ]]; then
+    find /etc/sysconfig/network-scripts -maxdepth 1 -type f -name 'ifcfg-*' ! -name 'ifcfg-lo' -delete
+  fi
+  if [[ -d /etc/NetworkManager/system-connections ]]; then
+    while IFS= read -r file; do
+      if grep -Eq '^[[:space:]]*interface-name=(eth[0-9]+|enp[0-9].*)[[:space:]]*$' "${file}"; then
+        rm -f -- "${file}"
+      fi
+    done < <(find /etc/NetworkManager/system-connections -maxdepth 1 -type f -print)
+  fi
+
+  for file in /etc/default/grub /etc/sysconfig/grub /etc/sysconfig/bootloader; do
+    [[ -f ${file} ]] || continue
+    ! grep -aEq '(^|[[:space:]"])(net\.ifnames=0|biosdevname=0)([[:space:]"]|$)' "${file}" || {
+      printf 'legacy kernel network argument remains in %s\n' "${file}" >&2
+      exit 5
+    }
+  done
+  if [[ -d /boot/loader/entries ]]; then
+    ! grep -R -aEq '(^|[[:space:]])(net\.ifnames=0|biosdevname=0)([[:space:]]|$)' /boot/loader/entries || {
+      printf 'legacy kernel network argument remains in a BLS entry\n' >&2
+      exit 5
+    }
+  fi
+  for entry in /boot/grub2/grubenv /boot/efi/EFI/rocky/grubenv; do
+    [[ -e ${entry} ]] || continue
+    ! grub2-editenv "${entry}" list | grep -Eq '(^|[[:space:]])(net\.ifnames=0|biosdevname=0)([[:space:]]|$)' || {
+      printf 'legacy kernel network argument remains in %s\n' "${entry}" >&2
+      exit 5
+    }
+  done
+  if [[ -d /etc/sysconfig/network-scripts ]]; then
+    residual=$(find /etc/sysconfig/network-scripts -maxdepth 1 -type f -name 'ifcfg-*' ! -name 'ifcfg-lo' -print -quit)
+    [[ -z ${residual} ]] || { printf 'legacy interface profile remains: %s\n' "${residual}" >&2; exit 5; }
+  fi
+}
+
+ensure_sshd_dropin_include() {
+  local config=/etc/ssh/sshd_config
+  [[ -f ${config} ]] || { printf 'missing sshd configuration\n' >&2; exit 3; }
+  if ! awk '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*Match[[:space:]]/ { if (!seen) bad=1; exit }
+    /^[[:space:]]*Include[[:space:]]+\/etc\/ssh\/sshd_config\.d\/\*\.conf([[:space:]]|$)/ { seen=1 }
+    END { exit (!seen || bad) }
+  ' "${config}"; then
+    sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' "${config}"
+  fi
+  awk '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*Match[[:space:]]/ { if (!seen) bad=1; exit }
+    /^[[:space:]]*Include[[:space:]]+\/etc\/ssh\/sshd_config\.d\/\*\.conf([[:space:]]|$)/ { seen=1 }
+    END { exit (!seen || bad) }
+  ' "${config}" || { printf 'sshd drop-in Include is missing or scoped under Match\n' >&2; exit 5; }
+}
+
+install_locked_packages
+case ${profile} in
+  el8)
+    remove_legacy_el_networking
+    ensure_sshd_dropin_include
+    command -v python3 >/dev/null || { printf 'python3 executable is missing\n' >&2; exit 5; }
+    python3 -c 'import json, ssl, sys; assert sys.version_info >= (3, 6)'
+    ;;
+  el9)
+    remove_legacy_el_networking
+    ;;
+  d12|d13)
+    command -v mkfs.xfs >/dev/null || { printf 'mkfs.xfs executable is missing\n' >&2; exit 5; }
+    mkfs.xfs -V >/dev/null 2>&1
+    ;;
+esac
 
 # Fail closed rather than silently reassigning an unrelated numeric identity.
 if getent group admin >/dev/null; then
@@ -85,6 +267,9 @@ PermitRootLogin no
 PubkeyAuthentication yes
 EOF
 chmod 0644 /etc/ssh/sshd_config.d/99-farrow-image.conf
+if [[ ${profile} == el8 ]]; then
+  ensure_sshd_dropin_include
+fi
 rm -f -- /etc/ssh/ssh_host_*
 
 : >/etc/machine-id
@@ -125,8 +310,17 @@ if [[ -d /var/lib/cloud ]]; then
 fi
 
 install -d -o root -g root -m 0755 /var/lib/farrow-image
-printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","source_user":"%s","source_date_epoch":%s,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied"}\n' \
-  "${source_user}" "${source_date_epoch}" >/var/lib/farrow-image/normalization.json
+python3_status=not-requested
+xfsprogs_status=not-requested
+legacy_network_status=not-requested
+sshd_include_status=upstream
+[[ ${profile} == el8 ]] && python3_status=verified
+[[ ${profile} == d12 || ${profile} == d13 ]] && xfsprogs_status=verified
+[[ ${profile} == el8 || ${profile} == el9 ]] && legacy_network_status=removed
+[[ ${profile} == el8 ]] && sshd_include_status=verified
+printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","profile":"%s","source_user":"%s","source_date_epoch":%s,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied","python3":"%s","xfsprogs":"%s","legacy_network":"%s","sshd_include":"%s"}\n' \
+  "${profile}" "${source_user}" "${source_date_epoch}" "${python3_status}" "${xfsprogs_status}" \
+  "${legacy_network_status}" "${sshd_include_status}" >/var/lib/farrow-image/normalization.json
 chmod 0644 /var/lib/farrow-image/normalization.json
 
 # Normalize the metadata of files created by this recipe. Filesystem journals

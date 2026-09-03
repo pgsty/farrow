@@ -6,6 +6,21 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- The official-image pipeline has an eight-target, digest-pinned candidate
+  matrix for Debian 12/13 and Rocky Linux 8/9 on amd64/arm64. Package inputs
+  are installed offline from an exact minimal closure, recorded in the SBOM
+  and provenance, and can be assembled into a separate unsigned `testing`
+  repository without an upstream artifact fallback.
+
+### Fixed
+
+- Rocky Linux 8 candidates provide a working `/usr/bin/python3`, remove legacy
+  interface naming state, and make the SSH drop-in Include effective. Rocky
+  Linux 9 candidates remove the same legacy networking state. Debian 12/13
+  candidates include the XFS userspace needed by Farrow data disks.
+
 ## [0.4.0]
 
 ### Changed
