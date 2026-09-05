@@ -158,8 +158,9 @@ Changelog section, update README installation links, and add bilingual notes at
 `.github/releases/<version>.md`. Publish the matching documentation after the
 application assets are public.
 
-Before tagging, require the source CI and packaging snapshot to pass the release
-commit. Push `v<version>` to run the tag workflow. It verifies the final assets
+Before tagging, require source CI to pass the release commit and a packaging
+snapshot to pass the latest packaging changes. Push `v<version>` to run the tag
+workflow. It verifies the final assets
 and creates a draft; inspect those assets, publish the draft, then verify
 anonymous downloads and the installer. Pre-1.0 versions remain GitHub
 pre-releases and need an explicit `FARROW_VERSION` for installation.

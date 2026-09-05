@@ -64,6 +64,12 @@ func TestPresentationFlagsRespectOptionValues(t *testing.T) {
 
 func TestImageImportDigestMismatchIsIntegrityFailure(t *testing.T) {
 	t.Setenv("FARROW_HOME", t.TempDir())
+	// Digest rejection must happen before QEMU runs, even on hosts without it.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "qemu-img"), []byte("#!/bin/sh\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
 	path := filepath.Join(t.TempDir(), "bad.qcow2")
 	if err := os.WriteFile(path, []byte("not the expected image"), 0600); err != nil {
 		t.Fatal(err)
