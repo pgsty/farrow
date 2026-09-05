@@ -61,37 +61,9 @@ jobs:
           set -euo pipefail
           test -z "$(find cmd internal tools -type f -name '*.go' -print0 | xargs -0 gofmt -l)"
           git diff --check
-          make module-check shell-check
 
-      - name: Unit tests
-        run: make test
-
-      - name: Race tests
-        run: make race
-
-      - name: Vet
-        run: make vet
-
-      - name: Staticcheck
-        run: make staticcheck
-
-      - name: Dead code across supported targets
-        run: make deadcode
-
-      - name: Unchecked errors
-        run: make errcheck
-
-      - name: Reachable vulnerability scan
-        run: make vuln
-
-      - name: License inventory
-        run: make license-check
-
-      - name: Image pipeline simulated and offline boundaries
-        run: make image-pipeline-test
-
-      - name: Cross-build supported targets
-        run: make cross-check
+      - name: Source, installer, and image checks
+        run: make check
 
       - name: Validate GoReleaser configuration
         run: goreleaser check

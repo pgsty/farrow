@@ -589,7 +589,7 @@ func TestCommandGroupWithoutSubcommandShowsExamples(t *testing.T) {
 	if code := run([]string{"image"}, &stdout, &stderr); code != exitUsage {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, want := range []string{"Available Commands:", "Examples:", "farrow image pull d13"} {
+	for _, want := range []string{"Available Commands:", "Examples:", "farrow image pull u24"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("image help missing %q:\n%s", want, stdout.String())
 		}

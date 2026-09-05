@@ -45,8 +45,8 @@ func newImageCommand(stdout, stderr io.Writer) *cobra.Command {
 		`Inspect signed image metadata, populate or prune the verified local cache,
 import local qcow2 files, and manage the active signed catalog.`,
 		`  farrow image list
-  farrow image info d13
-  farrow image pull d13
+  farrow image info u24
+  farrow image pull u24
   farrow image prune --dry-run`,
 		stdout, stderr,
 	)
@@ -79,13 +79,13 @@ Run 'farrow update' first to see a newer catalog.`,
 		}
 		long := `Show signed metadata, native-architecture selection, and verified local
 cache state for one image alias.`
-		example := "  farrow image info d13\n  farrow image info d13:stable\n  farrow --json image info d13"
+		example := "  farrow image info u24\n  farrow image info u24:stable\n  farrow --json image info u24"
 		if action == "pull" {
 			long = `Download one native-architecture image from the selected repository, then
 verify its catalog digest, byte size, qcow2 structure, and virtual size before
 activation. The catalog upstream URL records build provenance; it is not a
 repository-failure fallback.`
-			example = "  farrow image pull\n  farrow image pull d13 --mirror\n  farrow image pull d13 --repo /srv/farrow"
+			example = "  farrow image pull\n  farrow image pull u24 --mirror\n  farrow image pull u24 --repo /srv/farrow"
 		}
 		command := &cobra.Command{
 			Use:               action + " [image[:channel]|image@version-prefix]",

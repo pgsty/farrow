@@ -634,9 +634,6 @@ func runPrivateSSH(parent context.Context, commandName string, args []string, re
 		var exitError *exec.ExitError
 		if errors.As(runErr, &exitError) {
 			code := exitError.ExitCode()
-			if exitError.ExitCode() == 255 {
-				code = exitRuntime
-			}
 			return commandOutcome{}, newRemoteExitError(code, result)
 		}
 		return commandOutcome{}, newRuntimeError(runErr)
@@ -647,7 +644,7 @@ func runPrivateSSH(parent context.Context, commandName string, args []string, re
 func runSSH(ctx context.Context, commandName string, args []string, stdout, stderr io.Writer) (commandOutcome, error) {
 	resolved, err := currentDeploymentResolved()
 	if err != nil {
-		return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
+		return commandOutcome{}, deploymentReadError(err)
 	}
 	if resolved.Network != "private" {
 		return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
@@ -924,22 +921,22 @@ func lifecycleReadsConfig(command string) bool {
 	return command == "up" || command == "plan" || command == "recreate" || command == "reload"
 }
 
-func loadLifecycleConfig(command, configPath string) (spec.Resolved, bool, error) {
+func loadLifecycleConfig(command, configPath string) (spec.Resolved, string, error) {
 	if !lifecycleReadsConfig(command) {
-		return spec.Resolved{}, false, nil
+		return spec.Resolved{}, "", nil
 	}
-	file, _, err := config.Discover("", configPath)
+	file, path, err := config.Discover("", configPath)
 	if errors.Is(err, config.ErrNoConfig) {
-		return spec.Resolved{}, false, nil
+		return spec.Resolved{}, "", nil
 	}
 	if err != nil {
-		return spec.Resolved{}, false, err
+		return spec.Resolved{}, "", err
 	}
 	resolved, err := file.Resolve()
 	if err != nil {
-		return spec.Resolved{}, false, err
+		return spec.Resolved{}, "", err
 	}
-	return resolved, true, nil
+	return resolved, path, nil
 }
 
 func currentDeploymentResolved() (spec.Resolved, error) {
@@ -949,9 +946,16 @@ func currentDeploymentResolved() (spec.Resolved, error) {
 	}
 	deploymentState, err := (state.Store{Root: root}).ReadDeployment()
 	if err != nil {
-		return spec.Resolved{}, err
+		return spec.Resolved{}, fmt.Errorf("read deployment state %s: %w", filepath.Join(root, "state.json"), err)
 	}
 	return deploymentState.Resolved, nil
+}
+
+func deploymentReadError(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return newConflictError(errors.New("no deployment state found; run `farrow up` first"))
+	}
+	return newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
 }
 
 // catalogOrigin names where the active catalog came from in words a user
@@ -974,20 +978,25 @@ func printPrivateStatus(out io.Writer, status privatevm.Status) {
 		rows := make([][]string, 0, len(status.Nodes))
 		for _, node := range status.Nodes {
 			phase := string(node.State)
-			if node.Runtime != "" && node.Runtime != phase {
-				phase = fmt.Sprintf("%s (%s)", phase, node.Runtime)
+			if node.Error != "" {
+				phase += " (error)"
+			} else if node.Runtime != "" && node.Runtime != phase && node.Runtime != "inactive" {
+				phase += " (" + node.Runtime + ")"
 			}
-			arch := node.GuestArch
-			if node.Accel != "" {
-				arch += "/" + node.Accel
+			if node.Accel == "tcg" {
+				phase += " (tcg/" + node.GuestArch + ")"
 			}
-			pid := ""
-			if node.ProcessID > 0 {
-				pid = fmt.Sprint(node.ProcessID)
-			}
-			rows = append(rows, []string{node.Name, phase, node.Address, fmt.Sprintf("%s:%d", node.SSHHost, node.SSHPort), arch, pid})
+			rows = append(rows, []string{node.Name, phase, node.Address, node.Image, fmt.Sprint(node.CPUs), fmt.Sprintf("%.1f GiB", float64(node.Memory)/float64(spec.GiB))})
 		}
-		printTable(out, []string{"NAME", "STATE", "ADDRESS", "SSH", "ARCH", "PID"}, rows, 1)
+		printTable(out, []string{"NAME", "STATE", "ADDRESS", "IMAGE", "CPU", "MEMORY"}, rows, 1)
+		for _, node := range status.Nodes {
+			if node.Error != "" {
+				bestEffortf(out, "%s: %s\n", node.Name, node.Error)
+			}
+			if verboseOutput(out) {
+				bestEffortf(out, "%s: SSH %s:%d, %s/%s, PID %d\n", node.Name, node.SSHHost, node.SSHPort, node.GuestArch, node.Accel, node.ProcessID)
+			}
+		}
 	}
 	if status.Message != "" {
 		bestEffortln(out, status.Message)
@@ -1123,11 +1132,13 @@ func classifyPrivateLifecycleError(err error, operationID string) error {
 }
 
 type lifecycleResult struct {
+	Source string `json:"source,omitempty"`
 	privatevm.Status
-	SSHConfig *sshconfig.Result `json:"ssh_config,omitempty"`
+	SSHConfig *sshconfig.Result       `json:"ssh_config,omitempty"`
+	Failures  []privatevm.NodeFailure `json:"failures,omitempty"`
 }
 
-func runPrivateCommand(parent context.Context, command string, resolved spec.Resolved, nodes []string, repository string, force, deletePersistent, purge, noWait, rollback bool, stderr io.Writer) (commandOutcome, error) {
+func runPrivateCommand(parent context.Context, command string, resolved spec.Resolved, nodes []string, repository, source string, force, deletePersistent, purge, noWait, rollback bool, stderr io.Writer) (commandOutcome, error) {
 	operationID := ""
 	if command != "status" && command != "plan" {
 		var err error
@@ -1146,29 +1157,50 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		if err != nil {
 			return commandOutcome{}, classifyPrivateLifecycleError(err, operationID)
 		}
+		plan.Source = source
+		applyCommand := func(command string) string {
+			if source != "" && source != "applied deployment state" {
+				command += " -f " + shellQuote(source)
+			}
+			return command
+		}
 		return commandOutcome{payload: plan, text: func(stdout, _ io.Writer) error {
+			textField(stdout, 12, "images", strings.Join(plan.Images, ", "))
+			textField(stdout, 12, "resources", fmt.Sprintf("%d vCPU, %.1f GiB RAM, %.1f GiB virtual disk capacity", plan.CPUs, float64(plan.Memory)/float64(spec.GiB), float64(plan.Storage)/float64(spec.GiB)))
+			for _, change := range plan.Changes {
+				textField(stdout, 12, "change", change)
+			}
+			if plan.Blocked != "" {
+				textField(stdout, 12, "blocked", plan.Blocked)
+			}
+			textField(stdout, 12, "checks", "host capabilities and free addresses are checked by farrow up")
 			switch plan.Action {
 			case "none":
 				bestEffortf(stdout, "no changes: %d node(s) (%s) match the applied inventory\n", len(plan.Nodes), strings.Join(plan.Nodes, ", "))
 				return nil
-			case "start":
-				textField(stdout, 12, "start", strings.Join(plan.Nodes, ", ")+"  (apply: farrow up)")
 			case "repair":
 				textField(stdout, 12, "repair", strings.Join(plan.Nodes, ", ")+"  (state was left mid-transition; run: farrow status)")
 			}
+			if len(plan.Start) != 0 {
+				textField(stdout, 12, "start", strings.Join(plan.Start, ", ")+"  (apply: "+applyCommand("farrow up")+")")
+			}
 			if len(plan.Create) != 0 {
-				textField(stdout, 12, "create", strings.Join(plan.Create, ", ")+"  (apply: farrow up)")
+				textField(stdout, 12, "create", strings.Join(plan.Create, ", ")+"  (apply: "+applyCommand("farrow up")+")")
 			}
 			if len(plan.Recreate) != 0 {
-				textField(stdout, 12, "recreate", strings.Join(plan.Recreate, ", ")+"  (apply: farrow recreate "+strings.Join(plan.Recreate, " ")+")")
-			} else if plan.Action == "recreate" {
-				textField(stdout, 12, "recreate", "deployment-level settings changed  (apply: farrow recreate)")
+				detail := strings.Join(plan.Recreate, ", ")
+				if plan.Blocked == "" {
+					detail += "  (apply: " + applyCommand("farrow recreate "+strings.Join(plan.Recreate, " ")) + ")"
+				}
+				textField(stdout, 12, "recreate", detail)
+			} else if plan.Action == "recreate" && plan.Blocked == "" {
+				textField(stdout, 12, "recreate", "deployment-level settings changed  (apply: "+applyCommand("farrow recreate")+")")
 			}
 			if len(plan.Missing) != 0 {
 				textField(stdout, 12, "missing", strings.Join(plan.Missing, ", ")+"  (not in the inventory; remove with: farrow destroy "+strings.Join(plan.Missing, " ")+")")
 			}
 			if plan.Destructive {
-				textField(stdout, 12, "destructive", "yes")
+				textField(stdout, 12, "disks", "root and non-persistent data disks will be replaced; persistent data disks are retained")
 			}
 			return nil
 		}}, nil
@@ -1189,6 +1221,15 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		timeout = withReadinessTimeout(20*time.Minute, resolved)
 		operation = func(ctx context.Context) (privatevm.Status, error) { return manager.Reload(ctx, resolved) }
 	case "recreate":
+		if !force {
+			names := nodes
+			if len(names) == 0 {
+				for _, node := range resolved.Nodes {
+					names = append(names, node.Name)
+				}
+			}
+			bestEffortf(stderr, "recreate: %s; root and non-persistent data disks will be replaced; persistent data disks stay\n", strings.Join(names, ", "))
+		}
 		if err := confirmCLIAction(force, "recreate", stderr); err != nil {
 			if errors.Is(err, ErrCancelled) {
 				return commandOutcome{}, ErrCancelled
@@ -1286,6 +1327,19 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			}
 		}
 	}
+	if err == nil && !noWait {
+		refreshGuests := command == "up" || command == "start" || command == "restart" || command == "reload" || command == "recreate" || command == "destroy" && destroyLeavesDeploymentNodes(resolved, nodes)
+		if refreshGuests {
+			progressItem.Report(activity.Event{Phase: "guest-metadata", Message: "Updating guest hostnames and control-node SSH configuration"})
+			err = manager.RefreshGuestMetadata(ctx)
+			if err == nil {
+				progressItem.Report(activity.Event{Phase: "guest-metadata", Message: "Guest hostname and SSH configuration is up to date", Done: true})
+			}
+		}
+	}
+	if noWait && err == nil {
+		status.Message = strings.TrimSpace(status.Message + "; guest readiness and metadata refresh skipped (--no-wait)")
+	}
 	if command != "status" {
 		level := "info"
 		message := status.Message
@@ -1317,6 +1371,18 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		return commandOutcome{}, ErrCancelled
 	}
 	if err != nil {
+		var partial *privatevm.PartialError
+		isPartial := errors.As(err, &partial)
+		if len(status.Nodes) != 0 && (command == "status" || isPartial) {
+			result := lifecycleResult{Source: source, Status: status, SSHConfig: reconciledSSHConfig}
+			if isPartial {
+				result.Failures = partial.Failures
+			}
+			return commandOutcome{}, newRenderedCommandError("partial", exitPartial, err, operationID, result, func(stdout, _ io.Writer) error {
+				printPrivateStatus(stdout, status)
+				return nil
+			})
+		}
 		var integrationFailure *lifecycleSSHConfigFailure
 		if errors.As(err, &integrationFailure) {
 			return commandOutcome{}, classifyLifecycleSSHConfigFailure(integrationFailure)
@@ -1347,13 +1413,13 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			}
 		}
 	}
-	result := lifecycleResult{Status: status, SSHConfig: reconciledSSHConfig}
+	result := lifecycleResult{Source: source, Status: status, SSHConfig: reconciledSSHConfig}
 	return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
 		printPrivateStatus(stdout, status)
 		if reconciledSSHConfig != nil && reconciledSSHConfig.Changed {
 			textField(stdout, 6, "ssh", fmt.Sprintf("%s %s", reconciledSSHConfig.Action, reconciledSSHConfig.Fragment))
 		}
-		if (command == "up" || command == "start") && allNodesReady(status) {
+		if (command == "up" || command == "start") && !noWait && allNodesReady(status) {
 			textField(stdout, 6, "next", "farrow ssh "+status.Nodes[0].Name)
 		}
 		return nil
@@ -1390,7 +1456,7 @@ func runPurgeCommand(parent context.Context, stderr io.Writer) (commandOutcome, 
 		if resolved.Network != "private" {
 			return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
 		}
-		return runPrivateCommand(parent, "purge", resolved, nil, "", true, true, true, false, false, stderr)
+		return runPrivateCommand(parent, "purge", resolved, nil, "", "applied deployment state", true, true, true, false, false, stderr)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, fmt.Errorf("read deployment state for purge: %w", err), "", nil)
@@ -1465,12 +1531,16 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 			return commandOutcome{}, newUsageError(repositoryErr)
 		}
 	}
-	resolvedFile, hasConfig, err := loadLifecycleConfig(command, options.ConfigPath)
+	resolvedFile, source, err := loadLifecycleConfig(command, options.ConfigPath)
 	if err != nil {
 		return commandOutcome{}, newUsageError(err)
 	}
+	hasConfig := source != ""
 	configFromFile := hasConfig
 	persisted, persistedErr := currentDeploymentResolved()
+	if persistedErr != nil && !errors.Is(persistedErr, os.ErrNotExist) {
+		return commandOutcome{}, deploymentReadError(persistedErr)
+	}
 	switch {
 	case persistedErr == nil && persisted.Network == "private":
 		if !hasConfig {
@@ -1479,6 +1549,16 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 		}
 	case persistedErr == nil && persisted.Network == "user":
 		return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
+	}
+	if !hasConfig && command == "up" && interactiveTextSession(stderr) {
+		if _, setupErr := runSetupCommand(ctx, "", implicitSetupOptions(options, repository), outputText, verboseOutput(stderr), stderr); setupErr != nil {
+			return commandOutcome{}, setupErr
+		}
+		resolvedFile, source, err = loadLifecycleConfig(command, options.ConfigPath)
+		if err != nil {
+			return commandOutcome{}, newUsageError(err)
+		}
+		hasConfig, configFromFile = source != "", source != ""
 	}
 	if !hasConfig {
 		message := config.ErrNoConfig.Error()
@@ -1492,8 +1572,14 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 	if err := validateNodeSelectors(resolvedFile, nodes); err != nil {
 		return commandOutcome{}, newUsageError(err)
 	}
+	if source == "" {
+		source = "applied deployment state"
+	}
+	if lifecycleReadsConfig(command) && !structuredOutput(stderr) {
+		textField(stderr, 10, "inventory", source)
+	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
-	outcome, err := runPrivateCommand(ctx, command, resolvedFile, nodes, repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
+	outcome, err := runPrivateCommand(ctx, command, resolvedFile, nodes, repository, source, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
 	if command == "up" && configFromFile && needsHostSetup(err) && interactiveTextSession(stderr) {
 		// First use on this host: run the one-time setup here instead of asking
 		// for a second command. Setup shows its plan and asks before any
@@ -1502,7 +1588,7 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 		if _, setupErr := runSetupCommand(ctx, "", implicitSetupOptions(options, repository), outputText, verboseOutput(stderr), stderr); setupErr != nil {
 			return commandOutcome{}, setupErr
 		}
-		outcome, err = runPrivateCommand(ctx, command, resolvedFile, nodes, repository, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
+		outcome, err = runPrivateCommand(ctx, command, resolvedFile, nodes, repository, source, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
 	}
 	return outcome, err
 }
@@ -1983,7 +2069,11 @@ func runInit(options initOptions) (commandOutcome, error) {
 		printWarnings(stderr, warnings)
 		textField(stdout, 10, "template", name)
 		textField(stdout, 10, "wrote", target)
-		textField(stdout, 10, "next", "farrow up")
+		next := "farrow up"
+		if options.Output != "" {
+			next += " -f " + shellQuote(options.Output)
+		}
+		textField(stdout, 10, "next", next)
 		return nil
 	}}, nil
 }
@@ -2251,26 +2341,23 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 		if errors.Is(parent.Err(), context.Canceled) {
 			return commandOutcome{}, ErrCancelled
 		}
+		if err != nil {
+			if errors.Is(err, image.ErrIntegrity) {
+				return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
+			}
+			return commandOutcome{}, newRuntimeError(err)
+		}
 		result := struct {
 			Path     string         `json:"path"`
 			Metadata image.Metadata `json:"metadata"`
 			Entry    *image.Entry   `json:"entry,omitempty"`
-			Error    string         `json:"error,omitempty"`
-			Message  string         `json:"message,omitempty"`
 		}{Path: path, Metadata: metadata, Entry: localEntry}
-		if err != nil {
-			result.Error = "runtime"
-			result.Message = err.Error()
-		}
 		renderText := func(stdout, _ io.Writer) error {
 			if path != "" {
 				bestEffortf(stdout, "imported %s\nsha256 %s\n", path, metadata.Digest)
 				return nil
 			}
 			return nil
-		}
-		if err != nil {
-			return commandOutcome{}, newRenderedCommandError("runtime", exitRuntime, err, "", result, renderText)
 		}
 		return commandOutcome{payload: result, text: renderText}, nil
 	default:

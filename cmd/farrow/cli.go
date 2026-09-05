@@ -257,6 +257,48 @@ func subcommandGroup(use, short, long, example string, stdout, stderr io.Writer)
 	return command
 }
 
+// commandFlagValues uses Cobra's flag definitions so presentation flags never
+// consume a filename or other option value. Remote arguments stop at --.
+func commandFlagValues(args []string) map[int]bool {
+	command := newRootCommand(io.Discard, io.Discard)
+	values := make(map[int]bool)
+	for i, argument := range args {
+		if values[i] {
+			continue
+		}
+		if argument == "--" {
+			break
+		}
+		if strings.HasPrefix(argument, "--") {
+			name, _, inline := strings.Cut(strings.TrimPrefix(argument, "--"), "=")
+			if flag := command.Flags().Lookup(name); flag != nil && flag.NoOptDefVal == "" && !inline {
+				values[i+1] = true
+			}
+		} else if strings.HasPrefix(argument, "-") {
+			for j := 1; j < len(argument); j++ {
+				flag := command.Flags().ShorthandLookup(argument[j : j+1])
+				if flag == nil {
+					break
+				}
+				if flag.NoOptDefVal == "" {
+					if j == len(argument)-1 {
+						values[i+1] = true
+					}
+					break
+				}
+			}
+		} else {
+			for _, child := range command.Commands() {
+				if child.Name() == argument || child.HasAlias(argument) {
+					command = child
+					break
+				}
+			}
+		}
+	}
+	return values
+}
+
 func configureAliasDiscovery(command *cobra.Command) {
 	mappings := make([]string, 0)
 	for _, child := range command.Commands() {
@@ -288,6 +330,6 @@ func configureAliasDiscovery(command *cobra.Command) {
 			lineWidth += len(separator) + len(mapping)
 		}
 		summary.WriteByte('.')
-		command.Long = strings.TrimSpace(command.Long) + summary.String()
+		command.Example = strings.TrimRight(command.Example, "\n ") + summary.String()
 	}
 }

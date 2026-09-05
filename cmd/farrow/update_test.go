@@ -100,7 +100,7 @@ func TestImageListUsesTheLocalCatalogWithoutNetwork(t *testing.T) {
 	if code := run([]string{"image", "list", "--repo", server.URL}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("image list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "d13") || stderr.Len() != 0 || requests.Load() != 0 {
+	if !strings.Contains(stdout.String(), "u24") || stderr.Len() != 0 || requests.Load() != 0 {
 		t.Fatalf("offline list stdout=%q stderr=%q requests=%d", stdout.String(), stderr.String(), requests.Load())
 	}
 }

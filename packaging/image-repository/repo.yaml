@@ -1,7 +1,7 @@
 schema: 1
-revision: 2026082903
+revision: 2026090501
 defaults:
-  image: "d13"
+  image: "u24"
   channel: "stable"
   arch: "native"
   boot: "uefi"

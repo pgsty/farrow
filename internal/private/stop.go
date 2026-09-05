@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,7 +49,29 @@ func (config StopConfig) now() time.Time {
 	return time.Now().UTC()
 }
 
+// A prepared node may share a runtime path with a different FARROW_HOME.
+// Never unlink a listening socket or a pidfile that still has a live owner.
+func checkRuntimeUnused(node state.NodeState) error {
+	if node.Runtime.QMP != "" {
+		connection, err := net.DialTimeout("unix", node.Runtime.QMP, 250*time.Millisecond)
+		if err == nil {
+			_ = connection.Close()
+			return fmt.Errorf("node %s runtime socket is still in use: %s", node.Node, node.Runtime.QMP)
+		}
+	}
+	if data, err := os.ReadFile(node.Runtime.PIDFile); err == nil {
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+		if pid > 0 && process.Alive(pid) {
+			return fmt.Errorf("node %s runtime pidfile still refers to live process %d", node.Node, pid)
+		}
+	}
+	return nil
+}
+
 func cleanupRuntime(node state.NodeState) error {
+	if err := checkRuntimeUnused(node); err != nil {
+		return err
+	}
 	for _, pathname := range []string{node.Runtime.QMP, node.Runtime.PIDFile} {
 		info, err := os.Lstat(pathname)
 		if errors.Is(err, os.ErrNotExist) {

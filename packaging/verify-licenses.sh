@@ -16,8 +16,10 @@ expected=$(printf '%s\n' \
   $'github.com/spf13/pflag\tv1.0.10' \
   $'go.yaml.in/yaml/v3\tv3.0.5' \
   $'golang.org/x/crypto\tv0.56.0' \
+  $'golang.org/x/net\tv0.58.0' \
   $'golang.org/x/sys\tv0.47.0' \
-  $'golang.org/x/term\tv0.45.0' | LC_ALL=C sort)
+  $'golang.org/x/term\tv0.45.0' \
+  $'golang.org/x/text\tv0.41.0' | LC_ALL=C sort)
 actual=$(
   cd "${repo}"
   go list -deps -json ./cmd/farrow ./cmd/farrow-hosts-helper |
@@ -49,4 +51,4 @@ actual_license_list=$(find "${license_corpus}" -mindepth 1 -maxdepth 1 -type f -
   printf 'generated dependency license corpus contains a non-regular entry\n' >&2
   exit 1
 }
-printf 'verified nine reachable module versions, Go %s stdlib license, and exact upstream license/notice bytes\n' "${FARROW_GO_VERSION}"
+printf 'verified eleven reachable module versions, Go %s stdlib license, and exact upstream license/notice bytes\n' "${FARROW_GO_VERSION}"

@@ -121,7 +121,8 @@ func TestRenderPrivateControlKeyBoundary(t *testing.T) {
 		t.Fatal("private ready contract does not refresh/verify the host neighbor path")
 	}
 	if !bytes.Contains(files.UserData, []byte("-----BEGIN PRIVATE KEY-----")) ||
-		!bytes.Contains(files.UserData, []byte("StrictHostKeyChecking accept-new")) {
+		!bytes.Contains(files.UserData, []byte("StrictHostKeyChecking no")) ||
+		!bytes.Contains(files.UserData, []byte("UserKnownHostsFile /dev/null")) {
 		t.Fatal("control lateral SSH contract missing")
 	}
 	for _, want := range []string{
@@ -162,7 +163,7 @@ func TestRenderPrivateControlKeyBoundary(t *testing.T) {
 
 func TestRenderHostsMarkerMigration(t *testing.T) {
 	t.Parallel()
-	script := renderHostsScript([]Host{{Name: "node-1", Address: "10.10.10.11"}, {Name: "meta", Address: "10.10.10.10"}})
+	script := RenderHostsScript([]Host{{Name: "node-1", Address: "10.10.10.11"}, {Name: "meta", Address: "10.10.10.10"}})
 	for _, marker := range []string{"/# farrow-project-host$/d", "/# farrow-deployment-host$/d"} {
 		if !strings.Contains(script, marker) {
 			t.Fatalf("hosts script does not remove marker %q:\n%s", marker, script)

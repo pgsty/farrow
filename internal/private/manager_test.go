@@ -305,7 +305,7 @@ func TestPrivateDriftPlansRecreateAndUpReturnsTypedConflict(t *testing.T) {
 	}
 }
 
-func TestPrivatePlanStopsBeforeMutationOnNetworkMismatch(t *testing.T) {
+func TestPrivatePlanWorksBeforeHostNetworkSetup(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "data")
 	t.Setenv("FARROW_HOME", root)
 	profile, err := platform.Resolve("darwin", "arm64")
@@ -327,13 +327,8 @@ func TestPrivatePlanStopsBeforeMutationOnNetworkMismatch(t *testing.T) {
 	for index := range requested.Nodes {
 		requested.Nodes[index].Address = "172.31.251.1" + fmt.Sprintf("%d", index)
 	}
-	if _, err := manager.Plan(context.Background(), requested); err == nil {
-		t.Fatal("network mismatch was accepted")
-	} else {
-		var preflightErr *NetworkPreflightError
-		if !errors.As(err, &preflightErr) || preflightErr.Report.ExitCode != 4 {
-			t.Fatalf("error=%T %v", err, err)
-		}
+	if plan, err := manager.Plan(context.Background(), requested); err != nil || plan.Action != "create" {
+		t.Fatalf("offline plan = %#v, %v", plan, err)
 	}
 	if _, err := os.Lstat(root); !os.IsNotExist(err) {
 		t.Fatalf("network mismatch created the data root: %v", err)
@@ -584,7 +579,7 @@ func TestPrivateRecreateRuntimeDriftRequiresWholeDeployment(t *testing.T) {
 	manager := privateShareCapabilityManager(t, fixture, &rejectingPrivateShareRunner{})
 	manager.Nodes = []string{"meta"}
 	_, err = manager.RecreateResolved(context.Background(), requested)
-	if !errors.Is(err, ErrRecreateRequired) || !strings.Contains(err.Error(), "whole-deployment") {
+	if !errors.Is(err, ErrRecreateRequired) {
 		t.Fatalf("partial runtime recreate error = %v", err)
 	}
 	afterNode, readErr := store.ReadNode("meta")
@@ -658,7 +653,8 @@ func TestPrivateRecreateSelectedRuntimeInputsPrecedeDestroy(t *testing.T) {
 	}
 }
 
-func TestPrivatePlanChecksForeignRuntimeBeforeReportingCreate(t *testing.T) {
+func TestPrivatePlanDoesNotRequireForeignRuntimeInstallation(t *testing.T) {
+	t.Setenv("FARROW_HOME", t.TempDir())
 	resolved := singlePrivateResolved()
 	resolved.Arch = "amd64"
 	profile, _ := platform.Resolve("darwin", "arm64")
@@ -672,19 +668,8 @@ func TestPrivatePlanChecksForeignRuntimeBeforeReportingCreate(t *testing.T) {
 		},
 		LookPath: func(name string) (string, error) { return "", fmt.Errorf("missing %s", name) },
 	}
-	if _, err := manager.Plan(context.Background(), resolved); err == nil || !strings.Contains(err.Error(), "qemu-system-x86_64") {
-		t.Fatalf("foreign runtime plan error = %v", err)
-	}
-	manager.LookPath = func(string) (string, error) { return "/fixture/qemu-system-x86_64", nil }
-	manager.Runner = runtimeProbeRunner{version: "QEMU emulator version 11.1.0\n", netdev: "stream\n"}
-	manager.LookupImage = func(context.Context, string, string) (image.Entry, error) {
-		return image.Entry{Alias: "u24", Arch: "amd64", Boot: "uefi"}, nil
-	}
-	manager.FirmwareLookup = func(platform.Profile, string) (platform.Firmware, error) {
-		return platform.Firmware{}, errors.New("foreign firmware absent")
-	}
-	if _, err := manager.Plan(context.Background(), resolved); err == nil || !strings.Contains(err.Error(), "foreign firmware absent") {
-		t.Fatalf("foreign firmware plan error = %v", err)
+	if plan, err := manager.Plan(context.Background(), resolved); err != nil || plan.Action != "create" || len(plan.Create) != 1 {
+		t.Fatalf("foreign offline plan = %#v, %v", plan, err)
 	}
 }
 

@@ -20,7 +20,7 @@ func TestEmbeddedCatalogRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.SHA256 != "aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476" || entry.ArtifactSize != 618417664 || entry.VirtualSize != 3758096384 || catalog.Version != EmbeddedManifestVersion || catalog.Defaults.Image != "d13" || entry.Channel != "stable" {
+	if entry.SHA256 != "aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476" || entry.ArtifactSize != 618417664 || entry.VirtualSize != 3758096384 || catalog.Version != EmbeddedManifestVersion || catalog.Defaults.Image != "u24" || entry.Channel != "stable" {
 		t.Fatalf("entry/catalog = %#v %#v", entry, catalog)
 	}
 	if len(catalog.Images) != 9 || len(catalog.Entries()) != 27 {
@@ -158,6 +158,7 @@ func TestCatalogRejectsReservedLocalAliasNamespace(t *testing.T) {
 		},
 	} {
 		catalog := EmbeddedCatalog()
+		catalog.Defaults.Image = "d13"
 		mutate(&catalog)
 		if err := catalog.Validate(); err == nil || !strings.Contains(err.Error(), "reserved") {
 			t.Fatalf("catalog reserved namespace error = %v", err)

@@ -81,7 +81,7 @@ func newPartialError(failures []NodeFailure, total int) *PartialError {
 func startFailures(outcomes []StartOutcome) []NodeFailure {
 	failures := make([]NodeFailure, 0)
 	for _, outcome := range outcomes {
-		if outcome.Error == "" && outcome.Ready {
+		if outcome.Error == "" && (outcome.Ready || outcome.ReadinessSkipped) {
 			continue
 		}
 		stage := "start"

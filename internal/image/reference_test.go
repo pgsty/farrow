@@ -30,11 +30,11 @@ func TestCatalogResolvesDefaultChannelExactVersionAndAlias(t *testing.T) {
 	t.Parallel()
 	catalog := EmbeddedCatalog()
 	defaultEntry, err := catalog.Entry("", "arm64")
-	if err != nil || defaultEntry.Alias != "d13" || defaultEntry.Channel != "stable" || defaultEntry.Release != "20260810.2566.0" {
+	if err != nil || defaultEntry.Alias != "u24" || defaultEntry.Channel != "stable" || defaultEntry.Release != "20260801.0.0" {
 		t.Fatalf("default entry = %#v, %v", defaultEntry, err)
 	}
-	exact, err := catalog.Entry("debian13@20260810.2566.0", "arm64")
-	if err != nil || exact.Alias != "d13" || exact.Channel != "" || exact.SHA256 != defaultEntry.SHA256 {
+	exact, err := catalog.Entry("ubuntu2404@20260801.0.0", "arm64")
+	if err != nil || exact.Alias != "u24" || exact.Channel != "" || exact.SHA256 != defaultEntry.SHA256 {
 		t.Fatalf("exact entry = %#v, %v", exact, err)
 	}
 	if got, err := CanonicalReference("Ubuntu:stable"); err != nil || got != "u24:stable" {

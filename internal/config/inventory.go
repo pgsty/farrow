@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"reflect"
 	"regexp"
@@ -285,7 +286,8 @@ func (host inventoryHost) lookup(key string) (*yaml.Node, string, bool, error) {
 	if containsTemplate(value) {
 		return nil, "", false, fmt.Errorf("host %s variable %q contains a template expression; farrow reads literal values only", host.address, key)
 	}
-	return winner, origin, true, nil
+	winner, err = resolveAlias(winner)
+	return winner, origin, true, err
 }
 
 func (host inventoryHost) lookupString(key string) (string, bool, error) {
@@ -324,7 +326,7 @@ func (host inventoryHost) lookupInt(key string) (int64, bool, error) {
 		return 0, found, err
 	}
 	var value int64
-	if decodeErr := node.Decode(&value); decodeErr != nil {
+	if decodeErr := node.Decode(&value); node.Tag != "!!int" || decodeErr != nil {
 		return 0, true, fmt.Errorf("host %s variable %q from %s must be an integer", host.address, key, origin)
 	}
 	return value, true, nil
@@ -349,15 +351,19 @@ func (host inventoryHost) lookupSize(key string, unitMultiplier int64) (int64, b
 	if err != nil || !found {
 		return 0, found, err
 	}
-	var integer int64
-	if decodeErr := node.Decode(&integer); decodeErr == nil {
-		if integer <= 0 {
-			return 0, true, fmt.Errorf("host %s variable %q must be positive", host.address, key)
+	if node.Tag == "!!int" {
+		var integer int64
+		if err := node.Decode(&integer); err != nil {
+			return 0, true, fmt.Errorf("host %s variable %q is too large", host.address, key)
 		}
-		return integer * unitMultiplier, true, nil
+		value, err := scaleSize(integer, unitMultiplier)
+		if err != nil {
+			return 0, true, fmt.Errorf("host %s variable %q: %w", host.address, key, err)
+		}
+		return value, true, nil
 	}
 	var text string
-	if decodeErr := node.Decode(&text); decodeErr != nil {
+	if decodeErr := node.Decode(&text); node.Tag != "!!str" || decodeErr != nil {
 		return 0, true, fmt.Errorf("host %s variable %q from %s must be an integer or a size string", host.address, key, origin)
 	}
 	value, parseErr := ParseSize(text)
@@ -395,12 +401,12 @@ func diskSizeBytes(host, path string, size any) (int64, error) {
 		if typed <= 0 {
 			return 0, fmt.Errorf("host %s disk %s size must be positive", host, path)
 		}
-		return int64(typed) * spec.GiB, nil
+		return scaleSize(int64(typed), spec.GiB)
 	case int64:
 		if typed <= 0 {
 			return 0, fmt.Errorf("host %s disk %s size must be positive", host, path)
 		}
-		return typed * spec.GiB, nil
+		return scaleSize(typed, spec.GiB)
 	case string:
 		value, err := ParseSize(typed)
 		if err != nil {
@@ -639,14 +645,29 @@ func inventoryCIDR(hosts []inventoryHost) (subnet.Layout, error) {
 	return subnet.Layout{}, errors.New("inventory has no managed hosts")
 }
 
+func inventoryDocument(data []byte) (yaml.Node, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var document, extra yaml.Node
+	if err := decoder.Decode(&document); err != nil {
+		return document, err
+	}
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return document, err
+		}
+		return document, errors.New("inventory must be exactly one YAML document")
+	}
+	return document, nil
+}
+
 // ParseInventory reads a Pigsty-compatible inventory document and returns the
 // equivalent internal configuration.
 func ParseInventory(data []byte) (File, error) {
 	if len(data) > maxInventoryBytes {
 		return File{}, errors.New("inventory exceeds the 4 MiB limit")
 	}
-	var document yaml.Node
-	if err := yaml.Unmarshal(data, &document); err != nil {
+	document, err := inventoryDocument(data)
+	if err != nil {
 		return File{}, fmt.Errorf("decode inventory YAML: %w", err)
 	}
 	if len(document.Content) != 1 {
@@ -851,8 +872,8 @@ func ParseInventory(data []byte) (File, error) {
 
 // DetectFormat classifies raw configuration bytes without fully parsing them.
 func DetectFormat(data []byte) (string, error) {
-	var document yaml.Node
-	if err := yaml.Unmarshal(bytes.TrimSpace(data), &document); err != nil {
+	document, err := inventoryDocument(data)
+	if err != nil {
 		return "", fmt.Errorf("decode configuration YAML: %w", err)
 	}
 	if len(document.Content) == 0 {

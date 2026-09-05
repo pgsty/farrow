@@ -29,6 +29,9 @@ const (
 	MaxArtifactSize int64 = 8 << 30
 )
 
+// ErrIntegrity identifies image bytes that fail verification.
+var ErrIntegrity = errors.New("image integrity check failed")
+
 var (
 	digestPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	localImageFilename = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,191}\.(?:qcow2|img)$`)
@@ -343,7 +346,7 @@ func (s Store) Import(ctx context.Context, source, expectedDigest string) (_ str
 		return "", Metadata{}, err
 	}
 	if expectedDigest != "" && digest != expectedDigest {
-		return "", Metadata{}, fmt.Errorf("local image digest %s does not match expected %s", digest, expectedDigest)
+		return "", Metadata{}, fmt.Errorf("%w: local image digest %s does not match expected %s", ErrIntegrity, digest, expectedDigest)
 	}
 	basename := filepath.Base(absSource)
 	if !localImageFilename.MatchString(basename) {

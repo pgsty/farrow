@@ -75,7 +75,7 @@ func TestStartPreparedNoWaitStopsAtVerifiedProcessStart(t *testing.T) {
 	fake := &fakeNodeLifecycle{failStart: map[string]bool{}, failReady: map[string]bool{"meta": true, "node-1": true}}
 	config.Lifecycle = fake
 	outcomes, err := StartPrepared(context.Background(), config)
-	if err != nil || len(readyNames(outcomes)) != 2 || len(runningNames(outcomes)) != 2 {
+	if err != nil || len(readyNames(outcomes)) != 0 || len(runningNames(outcomes)) != 2 || !outcomes[0].ReadinessSkipped || len(startFailures(outcomes)) != 0 {
 		t.Fatalf("no-wait outcomes=%#v err=%v", outcomes, err)
 	}
 	fake.mu.Lock()

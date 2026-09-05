@@ -53,8 +53,8 @@ func TestSelectedStatusConnectionAndStopIgnoreDegradedPeer(t *testing.T) {
 	if err != nil || len(status.Nodes) != 1 || status.Nodes[0].Name != "node-1" {
 		t.Fatalf("selected status = %#v, %v", status, err)
 	}
-	if _, err := (Manager{FarrowVersion: "test"}).Status(context.Background()); err == nil || !strings.Contains(err.Error(), "meta") {
-		t.Fatalf("whole status error = %v, want degraded meta", err)
+	if status, err := (Manager{FarrowVersion: "test"}).Status(context.Background()); err == nil || !strings.Contains(err.Error(), "meta") || len(status.Nodes) != 2 || status.Nodes[0].Error == "" || status.Nodes[1].Error != "" {
+		t.Fatalf("whole status = %#v, %v, want both nodes with degraded meta", status, err)
 	}
 	if _, err := (Manager{FarrowVersion: "test"}).Connection(context.Background(), "node-1"); err == nil || !strings.Contains(err.Error(), "node-1 is not running") || strings.Contains(err.Error(), "meta") {
 		t.Fatalf("selected connection error = %v", err)

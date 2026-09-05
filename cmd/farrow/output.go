@@ -210,7 +210,12 @@ func prepareOutput(args []string, stdout, stderr io.Writer) ([]string, io.Writer
 	}
 	formatFromCLI := false
 	passthrough := false
-	for _, argument := range args {
+	values := commandFlagValues(args)
+	for index, argument := range args {
+		if values[index] {
+			clean = append(clean, argument)
+			continue
+		}
 		if argument == "--" {
 			passthrough = true
 			clean = append(clean, argument)

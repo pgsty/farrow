@@ -125,7 +125,7 @@ all:
 	if len(node.Disks) != 1 || node.Disks[0].Mount != "/data" || node.Disks[0].Filesystem != "auto" {
 		t.Fatalf("bare host default disk: %+v", node.Disks)
 	}
-	if node.Image != "d13" || !node.Control {
+	if node.Image != "u24" || !node.Control {
 		t.Fatalf("bare host image/control: %+v", node)
 	}
 }

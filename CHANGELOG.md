@@ -6,6 +6,34 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- New inventories and the built-in image catalog default to Ubuntu 24.04
+  (`u24:stable`). Explicit image choices and applied deployments are preserved.
+- `plan` works before host setup and shows exact image versions, total resources,
+  configuration changes, pending starts, and disk replacement effects.
+- Default status tables show image and resource information. One degraded node
+  no longer hides the rest of the deployment; per-node errors remain visible.
+- Starting commands refresh Farrow-managed guest hostnames and control-node SSH
+  configuration, including existing peers after expansion or removal. Managed
+  guest SSH entries accept recreated lab nodes without manual known_hosts cleanup.
+
+### Fixed
+
+- Selected recreate checks remaining configuration conflicts before deleting
+  disks; reload checks startup dependencies before stopping existing guests.
+- Destroy and stop read their state under the deployment lock. Runtime cleanup
+  preserves listening sockets/live pidfiles, and lifecycle tests use isolated
+  runtime directories.
+- Invalid integer sizes, fractional CPU counts, and extra YAML documents are
+  rejected without truncation or overflow.
+- Corrupt deployment state retains its error/path, failed image digest checks
+  return integrity errors, and SSH status 255 is passed through consistently.
+- ALL_PROXY/all_proxy now supplies a fallback while honoring scheme-specific
+  proxies and NO_PROXY. Custom init output paths have usable next commands.
+- SSH shorthand help matches its convenience behavior, presentation flags
+  respect option values, and --no-wait no longer claims guest readiness.
+
 ## [0.5.0]
 
 ### Added

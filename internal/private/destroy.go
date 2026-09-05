@@ -132,6 +132,15 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 	if err != nil {
 		return Status{}, err
 	}
+	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	deploymentLock, err := acquireDeploymentLock(lockContext, deploymentValue.Root, false)
+	if err != nil {
+		return Status{}, err
+	}
+	defer func() {
+		returnErr = lock.JoinRelease(returnErr, deploymentLock, "deployment destroy lock")
+	}()
 	store := state.Store{Root: deploymentValue.Root}
 	deploymentState, err := store.ReadDeployment()
 	if err != nil || deploymentState.Resolved.Network != "private" {
@@ -167,19 +176,10 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 	if needsStop {
 		stopper := m
 		stopper.Nodes = stopNodes
-		if _, err := stopper.Stop(ctx); err != nil {
+		if _, err := stopper.stopLocked(ctx, deploymentValue); err != nil {
 			return Status{}, err
 		}
 	}
-	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	deploymentLock, err := acquireDeploymentLock(lockContext, deploymentValue.Root, false)
-	if err != nil {
-		return Status{}, err
-	}
-	defer func() {
-		returnErr = lock.JoinRelease(returnErr, deploymentLock, "deployment destroy lock")
-	}()
 	nodes := make([]state.NodeState, 0, len(deploymentState.Resolved.Nodes))
 	allNodes := make([]state.NodeState, 0, len(deploymentState.Resolved.Nodes))
 	targets := make(map[string][]string)
@@ -203,6 +203,9 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 		identityValue := process.Identity{PID: node.Process.PID, Executable: node.Process.Executable, Started: node.Process.Started, ArgvHash: node.Process.ArgvHash}
 		if process.MatchesLive(ctx, m.runner(), identityValue, node.Invocation) || process.Alive(node.Process.PID) {
 			return Status{}, fmt.Errorf("refuse private destroy while node %s process is live", node.Node)
+		}
+		if err := checkRuntimeUnused(node); err != nil {
+			return Status{}, err
 		}
 		nodeDir, nodeTargets, err := privateNodeTargets(deploymentValue, node)
 		if err != nil {
@@ -382,33 +385,20 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err != nil {
 		return Status{}, err
 	}
-	profile, err := m.nativeProfile()
+	if len(selected) != len(deploymentState.Resolved.Nodes) {
+		// Remaining peer drift would prevent Up after the selected disks are gone.
+		store := state.Store{Root: deploymentValue.Root}
+		hasState := func(name string) bool {
+			_, readErr := store.ReadNode(name)
+			return readErr == nil
+		}
+		diff := diffResolved(deploymentState.Resolved, materializeExistingForwardPorts(requested, deploymentState.Resolved), hasState)
+		if err := refuseUnselectedDrift(diff, selected); err != nil {
+			return Status{}, err
+		}
+	}
+	runtime, qemuPath, err := m.preflightBoot(ctx, requested, requestedSelection)
 	if err != nil {
-		return Status{}, err
-	}
-	backend, err := m.preflight(ctx, profile, resolvedNodeSelection(requested, requestedSelection))
-	if err != nil {
-		return Status{}, err
-	}
-	runtime, err := selectRuntime(profile, requested)
-	if err != nil {
-		return Status{}, err
-	}
-	qemuPath, _, err := m.resolveRuntimeQEMU(ctx, runtime.Profile, backend)
-	if err != nil {
-		return Status{}, err
-	}
-	if err := m.ensureImageSession(); err != nil {
-		return Status{}, err
-	}
-	boot, err := m.resolveBootMode(ctx, runtime.Profile, requested)
-	if err != nil {
-		return Status{}, err
-	}
-	if _, _, err := m.resolveBases(ctx, runtime.Profile, resolvedNodeSelection(requested, requestedSelection)); err != nil {
-		return Status{}, err
-	}
-	if _, err := m.firmwareForBoot(runtime.Profile, boot); err != nil {
 		return Status{}, err
 	}
 	destroyManager := m

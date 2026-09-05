@@ -128,10 +128,11 @@ type StartConfig struct {
 }
 
 type StartOutcome struct {
-	Node    string `json:"node"`
-	Running bool   `json:"running"`
-	Ready   bool   `json:"ready"`
-	Error   string `json:"error,omitempty"`
+	ReadinessSkipped bool   `json:"readiness_skipped,omitempty"`
+	Node             string `json:"node"`
+	Running          bool   `json:"running"`
+	Ready            bool   `json:"ready"`
+	Error            string `json:"error,omitempty"`
 }
 
 func (config StartConfig) now() time.Time {
@@ -265,7 +266,7 @@ func StartPrepared(ctx context.Context, config StartConfig) ([]StartOutcome, err
 				nodes[index] = node
 				outcomes[index].Running = true
 				if config.NoWait {
-					outcomes[index].Ready = true
+					outcomes[index].ReadinessSkipped = true
 					continue
 				}
 				if err := config.Lifecycle.WaitReady(ctx, node, config.ReadyTimeout); err != nil {

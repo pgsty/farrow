@@ -1,0 +1,82 @@
+package private
+
+import (
+	"context"
+	"encoding/base64"
+	"time"
+
+	"github.com/pgsty/farrow/internal/cloudinit"
+	"github.com/pgsty/farrow/internal/lock"
+	"github.com/pgsty/farrow/internal/spec"
+	"github.com/pgsty/farrow/internal/state"
+	"github.com/pgsty/farrow/internal/vm"
+)
+
+func guestMetadataCommand(resolved spec.Resolved, control bool) string {
+	hosts := deploymentHosts(resolved)
+	write := func(path, contents string) string {
+		return "printf %s " + base64.StdEncoding.EncodeToString([]byte(contents)) + " | base64 -d | sudo -n tee " + path + " >/dev/null"
+	}
+	command := "set -eu; " + write("/usr/local/libexec/farrow-hosts", cloudinit.RenderHostsScript(hosts)) + " && sudo -n /usr/local/libexec/farrow-hosts"
+	if control {
+		payload := base64.StdEncoding.EncodeToString([]byte(cloudinit.RenderControlSSHConfig(resolved.SSHUser, hosts)))
+		command += ` && temporary=$(mktemp "$HOME/.ssh/.farrow-XXXXXX") && { printf %s ` + payload + ` | base64 -d; if test -f "$HOME/.ssh/config"; then sed '/^# BEGIN FARROW$/,/^# END FARROW$/d' "$HOME/.ssh/config"; fi; } >"$temporary" && install -m 600 "$temporary" "$HOME/.ssh/config" && rm -f "$temporary"`
+	}
+	return command
+}
+
+// RefreshGuestMetadata updates the small Farrow-owned hosts/SSH fragments in
+// running guests after topology changes. Stopped guests catch up on their next up.
+func (m Manager) RefreshGuestMetadata(ctx context.Context) (returnErr error) {
+	deployment, err := m.openDeployment(false)
+	if err != nil {
+		return err
+	}
+	lockContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	held, err := acquireDeploymentLock(lockContext, deployment.Root, false)
+	if err != nil {
+		return err
+	}
+	defer func() { returnErr = lock.JoinRelease(returnErr, held, "guest metadata lock") }()
+	store := state.Store{Root: deployment.Root}
+	current, err := store.ReadDeployment()
+	if err != nil {
+		return err
+	}
+	sshPath, err := m.lookPath("ssh")
+	if err != nil {
+		return err
+	}
+	failures := make([]NodeFailure, 0)
+	attempted := 0
+	for _, definition := range current.Resolved.Nodes {
+		node, err := store.ReadNode(definition.Name)
+		if missingPath(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if node.Phase != state.Running {
+			continue
+		}
+		attempted++
+		selected := m
+		selected.Nodes = []string{node.Node}
+		connections, err := selected.ConnectionsLocked(ctx, deployment, held)
+		if err == nil {
+			connection := connections[0]
+			args := vm.SSHArgsForUser(connection.User, connection.PrivateKey, connection.KnownHosts, connection.Port)
+			args = append(args, guestMetadataCommand(current.Resolved, definition.Control))
+			_, err = m.runner().Run(ctx, sshPath, args...)
+		}
+		if err != nil {
+			failures = append(failures, NodeFailure{Node: node.Node, Stage: "guest-metadata", Error: err.Error()})
+		}
+	}
+	if len(failures) != 0 {
+		return newPartialError(failures, attempted)
+	}
+	return nil
+}

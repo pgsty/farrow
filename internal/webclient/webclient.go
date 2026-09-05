@@ -6,16 +6,33 @@ package webclient
 
 import (
 	"net/http"
+	"net/url"
+	"os"
 	"time"
+
+	"golang.org/x/net/http/httpproxy"
 )
 
 func transport() *http.Transport {
+	config := httpproxy.FromEnvironment()
+	fallback := os.Getenv("ALL_PROXY")
+	if fallback == "" {
+		fallback = os.Getenv("all_proxy")
+	}
+	if config.HTTPProxy == "" {
+		config.HTTPProxy = fallback
+	}
+	if config.HTTPSProxy == "" {
+		config.HTTPSProxy = fallback
+	}
+	selectProxy := config.ProxyFunc()
+	proxy := func(request *http.Request) (*url.URL, error) { return selectProxy(request.URL) }
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
-		return &http.Transport{Proxy: http.ProxyFromEnvironment}
+		return &http.Transport{Proxy: proxy}
 	}
 	cloned := base.Clone()
-	cloned.Proxy = http.ProxyFromEnvironment
+	cloned.Proxy = proxy
 	return cloned
 }
 

@@ -24,6 +24,8 @@ farrow ssh meta      # you are in
 - **Declarative, but never surprising.** `farrow plan` shows the difference
   between the inventory and the applied state. Removing a host from the file
   never destroys a machine — deletion is always an explicit `farrow destroy`.
+- **Ubuntu 24.04 by default.** New inventories use `u24:stable`; set
+  `vm_image` explicitly to choose another supported distribution.
 - **Verified images.** Guest images come from a signed catalog with SHA-256,
   qcow2, and virtual-size verification on every fetch. The selected
   repository supplies the final image bytes; immutable upstream URLs remain
@@ -34,6 +36,12 @@ farrow ssh meta      # you are in
 
 Farrow is a local development-lab runtime. It is not a cluster manager, not a
 cloud provisioner, and not a container runtime.
+
+`plan` reads local configuration and catalog data without requiring host setup.
+It shows exact images, resources, and disk effects; `up` checks host capabilities
+before applying changes. Starting commands also refresh the Farrow-managed
+hosts and SSH entries inside running guests. `--no-wait` skips readiness and
+that guest refresh; a later `up` completes them.
 
 ## Requirements
 
@@ -156,9 +164,9 @@ installer trust boundaries, and the dependency-license inventory. See
 
 ## Security
 
-Farrow asks for root only for two narrowly scoped host transactions: installing
-the private network, and publishing node names into the system hosts file
-through a separate, digest-pinned helper binary. See
+Farrow asks for root when installing Linux host packages, setting up the
+private network, or publishing node names into the system hosts file through
+a separate helper binary. See
 [SECURITY.md](SECURITY.md) for the privilege boundary and how to report a
 vulnerability.
 

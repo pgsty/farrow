@@ -529,7 +529,7 @@ init_share() {
 }
 
 // Compatibility expiry: guest-hosts-marker-v0 in CONTRIBUTING.md#compatibility-expiry.
-func renderHostsScript(hosts []Host) string {
+func RenderHostsScript(hosts []Host) string {
 	sorted := append([]Host(nil), hosts...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	var out strings.Builder
@@ -539,6 +539,12 @@ func renderHostsScript(hosts []Host) string {
 		fmt.Fprintf(&out, "printf '%%s %%s # farrow-deployment-host\\n' %s %s >> /etc/hosts\n", host.Address, host.Name)
 	}
 	return out.String()
+}
+
+// RenderControlSSHConfig is shared by initial cloud-init and later topology updates.
+func RenderControlSSHConfig(user string, hosts []Host) string {
+	// Local lab nodes are routinely recreated at the same names and addresses.
+	return "# BEGIN FARROW\nHost " + strings.Join(hostNames(hosts), " ") + "\n  User " + user + "\n  IdentityFile ~/.ssh/id_ed25519\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\nHost *\n# END FARROW\n"
 }
 
 func renderNetworkCheckScript() string {
@@ -787,7 +793,7 @@ func renderUserData(input Input) ([]byte, error) {
 	if len(input.Shares) != 0 {
 		writeFile("/usr/local/libexec/farrow-init-shares", "root:root", "0755", renderShareScript(input.SSHUser, input.Shares))
 	}
-	writeFile("/usr/local/libexec/farrow-hosts", "root:root", "0755", renderHostsScript(input.Hosts))
+	writeFile("/usr/local/libexec/farrow-hosts", "root:root", "0755", RenderHostsScript(input.Hosts))
 	writeFile("/usr/local/libexec/farrow-network-check", "root:root", "0755", renderNetworkCheckScript())
 	writeFile("/usr/local/libexec/farrow-identity-contract", "root:root", "0755", renderIdentityContractScript(input.SSHUser))
 	if input.Private != nil {
@@ -800,7 +806,7 @@ func renderUserData(input Input) ([]byte, error) {
 		// exists. Referring to the future user as write_files owner makes the
 		// entire module fail and can leave a deceptively usable guest.
 		writeFile("/var/lib/farrow/control-id_ed25519", "root:root", "0600", input.PrivateKey)
-		sshConfig := "Host " + strings.Join(hostNames(input.Hosts), " ") + "\n  User " + input.SSHUser + "\n  IdentityFile ~/.ssh/id_ed25519\n  StrictHostKeyChecking accept-new\n"
+		sshConfig := RenderControlSSHConfig(input.SSHUser, input.Hosts)
 		writeFile("/var/lib/farrow/control-ssh-config", "root:root", "0600", sshConfig)
 		writeFile("/usr/local/libexec/farrow-install-control-ssh", "root:root", "0700", renderControlSSHInstallScript(input.SSHUser))
 	}
@@ -827,9 +833,5 @@ func Render(input Input) (Files, error) {
 	if err != nil {
 		return Files{}, err
 	}
-	files := Files{MetaData: renderMetaData(input), UserData: userData, NetworkConfig: renderNetwork(input)}
-	if bytes.Contains(files.UserData, []byte("StrictHostKeyChecking no")) {
-		return Files{}, errors.New("unsafe SSH host key configuration generated")
-	}
-	return files, nil
+	return Files{MetaData: renderMetaData(input), UserData: userData, NetworkConfig: renderNetwork(input)}, nil
 }

@@ -160,12 +160,13 @@ Configuration-aware commands use -f first, then discover farrow.yml,
 farrow.yaml, pigsty.yml, or pigsty.yaml in the working directory. Once a
 deployment exists, lifecycle commands can fall back to the last applied
 inventory; validate always requires an inventory file.`,
-		Example: `  farrow setup                 # prepare the host and create/reuse an inventory
-  farrow up                    # create/start nodes and install SSH configuration
+		Example: `  farrow init                  # write a U24 inventory
+  farrow plan                  # review images, resources, and changes
+  farrow up                    # prepare the host if needed, then start the lab
   farrow status                # inspect the deployment from any directory
-  farrow ssh meta              # open the control node
-  farrow plan -f pigsty.yml    # compare another desired inventory
-  farrow --json status         # stable output for automation`,
+  farrow ssh                   # open the default/control node
+  farrow --json status         # structured output for automation
+  farrow setup                 # prepare the host explicitly`,
 		SilenceErrors:         true,
 		SilenceUsage:          true,
 		DisableAutoGenTag:     true,
@@ -229,13 +230,16 @@ inventory; validate always requires an inventory file.`,
 	purge.GroupID = "lifecycle"
 	root.AddCommand(purge)
 	ssh := rawOperation(
-		"ssh [node] [--] [command [args...]]",
+		"ssh [node] [-- command [args...]]",
 		"Open SSH or run a command in a guest",
 		`Open an interactive SSH session to a node, or run a remote command exactly
 as plain ssh would: everything after -- is joined and parsed by the remote
 shell, so quotes, pipes, and semicolons work the way they do with ssh.
 Flags before -- belong to Farrow; everything before -- must be nothing or one
-known node, so a misspelled node is refused instead of run as a command.`,
+known node; an unknown node before -- is refused.
+Without --, a known first argument selects the node; otherwise all arguments
+run as a command on the default node, with a warning. Use -- in scripts to
+make the node/command boundary explicit.`,
 		`  farrow ssh                          # open the default node
   farrow ssh meta                     # open one named node
   farrow ssh meta -- uptime           # run a remote command
@@ -246,11 +250,13 @@ known node, so a misspelled node is refused instead of run as a command.`,
 	ssh.ValidArgsFunction = nodeCompletion(false, true)
 	ssh.GroupID = "access"
 	execCommand := rawOperation(
-		"exec [node] [--] <command> [args...]",
+		"exec [node] -- <command> [args...]",
 		"Run a command in a guest",
 		`Run a remote command over the deployment SSH connection and pass its exit
 status through. Arguments after -- are joined and parsed by the remote shell,
-like plain ssh. Everything before -- must be nothing or one known node.`,
+like plain ssh. Everything before -- must be nothing or one known node.
+For convenience, -- may be omitted: a known first argument selects the node;
+otherwise the command runs on the default node, with a warning.`,
 		`  farrow exec -- hostname
   farrow exec meta -- systemctl is-active postgresql
   farrow exec meta -- 'uptime; id'

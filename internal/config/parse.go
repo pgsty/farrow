@@ -35,3 +35,10 @@ func ParseSize(value string) (int64, error) {
 	}
 	return 0, fmt.Errorf("size %q requires B, KiB, MiB, GiB, TiB, KB, MB, GB, or TB", value)
 }
+
+func scaleSize(value, multiplier int64) (int64, error) {
+	if value <= 0 || value > (1<<63-1)/multiplier {
+		return 0, fmt.Errorf("invalid or overflowing size %d", value)
+	}
+	return value * multiplier, nil
+}
