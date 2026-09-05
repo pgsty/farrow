@@ -30,7 +30,8 @@ make check     # everything CI runs, before you push
 `make check` runs module verification, shell syntax checks, unit and race tests,
 `go vet`, Staticcheck, four-target dead-code intersection, errcheck,
 `govulncheck`, cross-compilation for all four supported targets, the
-image-pipeline boundary tests, and the dependency-license inventory. It must
+image-pipeline boundary tests, installer tests, maintenance ownership, and the
+dependency-license inventory. It must
 pass before a pull request is ready.
 
 The toolchain is pinned in `packaging/toolchain.env` and CI asserts the exact
@@ -151,6 +152,17 @@ enough unless the migration or refusal condition is also satisfied.
 - Never republish an image Catalog revision with different bytes. The embedded
   default and public `catalog.json` must be byte-identical at the same revision;
   same-revision differences are rejected as signed equivocation.
+
+For a new version, move the current changes from `Unreleased` into a dated
+Changelog section, update README installation links, and add bilingual notes at
+`.github/releases/<version>.md`. Publish the matching documentation after the
+application assets are public.
+
+Before tagging, require the source CI and packaging snapshot to pass the release
+commit. Push `v<version>` to run the tag workflow. It verifies the final assets
+and creates a draft; inspect those assets, publish the draft, then verify
+anonymous downloads and the installer. Pre-1.0 versions remain GitHub
+pre-releases and need an explicit `FARROW_VERSION` for installation.
 
 ## Commits and pull requests
 

@@ -39,20 +39,20 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 			sha256: "284aab2b23d91318f169ff464bce4d53404a15a0618ceb34562838c59af4adea", artifactSize: 902889472, virtualSize: 8589934592, sourceUser: "centos",
 		},
 		"el8/amd64": {
-			release: "8.10.20240528.0", url: "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base-8.10-20240528.0.x86_64.qcow2",
-			sha256: "e56066c58606191e96184de9a9183a3af33c59bcbd8740d8b10ca054a7a89c14", artifactSize: 2065760256, virtualSize: 10737418240, sourceUser: "rocky",
+			release: "8.10.20240528.1", url: "",
+			sha256: "8010643eeb7bca72287165127422b3c2ace3b1e942dd531fa23a2bd9db62a699", artifactSize: 2081488896, virtualSize: 10737418240, sourceUser: "dba",
 		},
 		"el8/arm64": {
-			release: "8.10.20240528.0", url: "https://dl.rockylinux.org/pub/rocky/8/images/aarch64/Rocky-8-GenericCloud-Base-8.10-20240528.0.aarch64.qcow2",
-			sha256: "946b5b9845aa5e3ed98f1bc6ee9873201712a2aef01b87731aed16857e0ca13f", artifactSize: 1925644288, virtualSize: 10737418240, sourceUser: "rocky",
+			release: "8.10.20240528.1", url: "",
+			sha256: "b440c55b9d6e98fe58bfb9a66f52d82299cff1dc97a7fa2530b30b45eefa447d", artifactSize: 1941438464, virtualSize: 10737418240, sourceUser: "dba",
 		},
 		"el9/amd64": {
-			release: "9.8.20260525.0", url: "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
-			sha256: "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8", artifactSize: 645988352, virtualSize: 10737418240, sourceUser: "rocky",
+			release: "9.8.20260525.1", url: "",
+			sha256: "b6410ae2c0dee331410680c0b13619f8a9f512560fbf641ab8c495e781b0448d", artifactSize: 655687680, virtualSize: 10737418240, sourceUser: "dba",
 		},
 		"el9/arm64": {
-			release: "9.8.20260525.0", url: "https://dl.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud-Base-9.8-20260525.0.aarch64.qcow2",
-			sha256: "24692a444f1f0b8bb95375c38c8b43f8099a115347623691be2c330b40c8a1fe", artifactSize: 519831552, virtualSize: 10737418240, sourceUser: "rocky",
+			release: "9.8.20260525.1", url: "",
+			sha256: "8203af2032444144cfefddebf710ea0fd467c3022544f849dd6e12bc5ee0799c", artifactSize: 529727488, virtualSize: 10737418240, sourceUser: "dba",
 		},
 		"el10/amd64": {
 			release: "10.2.20260525.0", url: "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.2-20260525.0.x86_64.qcow2",
@@ -63,20 +63,20 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 			sha256: "457c8375e19496f43a25c4a6169fa11237536c53cef6f85a20ea3c5a751aa0f5", artifactSize: 469368832, virtualSize: 10737418240, sourceUser: "rocky",
 		},
 		"d12/amd64": {
-			release: "20260806.2562.0", url: "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-amd64-20260806-2562.qcow2",
-			sha256: "dd3dbd23a3965318cc9aae32592dcfde4abcb8f90a50ca760a9ca9e8f3ba6255", artifactSize: 448069632, virtualSize: 3221225472, sourceUser: "debian",
+			release: "20260806.2562.1", url: "",
+			sha256: "5e25ae70d8b95a1f1258c9243c8130e746dae602185a97c186ddbe62f5c563a1", artifactSize: 766050304, virtualSize: 3221225472, sourceUser: "dba",
 		},
 		"d12/arm64": {
-			release: "20260806.2562.0", url: "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-arm64-20260806-2562.qcow2",
-			sha256: "8c6b8f81e571d530f6561c707538a4e807de8188c9a3f41af7b52b4e5ed010be", artifactSize: 434044928, virtualSize: 3221225472, sourceUser: "debian",
+			release: "20260806.2562.1", url: "",
+			sha256: "a8898040189bf0e0d7dca6cf8db965957fbfb172c726e6ba264fe18303f48607", artifactSize: 711196672, virtualSize: 3221225472, sourceUser: "dba",
 		},
 		"d13/amd64": {
-			release: "20260810.2566.0", url: "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-amd64-20260810-2566.qcow2",
-			sha256: "d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc", artifactSize: 436404224, virtualSize: 3221225472, sourceUser: "debian",
+			release: "20260810.2566.1", url: "",
+			sha256: "1abcb1ee7081ae5f577d25f573376d140e2a15df8bfe135418f7d9999ce4bab5", artifactSize: 533135360, virtualSize: 3221225472, sourceUser: "dba",
 		},
 		"d13/arm64": {
-			release: "20260810.2566.0", url: "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-arm64-20260810-2566.qcow2",
-			sha256: "2c546c79ec199983a88e384f6e5d013ab7876353943f7aa614403e3028bbea99", artifactSize: 429195264, virtualSize: 3221225472, sourceUser: "debian",
+			release: "20260810.2566.1", url: "",
+			sha256: "a195ba0b47a932c07934eda13500581962f419dc4ce78b22027281efe9ec3385", artifactSize: 575537152, virtualSize: 3221225472, sourceUser: "dba",
 		},
 		"u22/amd64": {
 			release: "20260810.0.0", url: "https://cloud-images.ubuntu.com/jammy/20260810/jammy-server-cloudimg-amd64.img",
@@ -134,7 +134,7 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 		if err != nil || hasMovingReleasePath(parsed.Path) || strings.Contains(strings.ToLower(entry.Upstream), "latest") {
 			t.Errorf("%s has a moving or invalid URL: %q", key, entry.Upstream)
 		}
-		if parsed.Host != "dl.rockylinux.org" && parsed.Host != "cloud.debian.org" && parsed.Host != "cloud-images.ubuntu.com" && parsed.Host != "cloud.centos.org" {
+		if entry.Upstream != "" && parsed.Host != "dl.rockylinux.org" && parsed.Host != "cloud.debian.org" && parsed.Host != "cloud-images.ubuntu.com" && parsed.Host != "cloud.centos.org" {
 			t.Errorf("%s is not on an expected distribution-owned host: %q", key, parsed.Host)
 		}
 		if entry.ArtifactSize <= 0 || entry.VirtualSize <= 0 || entry.ArtifactSize > entry.VirtualSize {

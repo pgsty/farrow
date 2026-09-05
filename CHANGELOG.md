@@ -6,10 +6,16 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-05
+
 ### Changed
 
 - New inventories and the built-in image catalog default to Ubuntu 24.04
-  (`u24:stable`). Explicit image choices and applied deployments are preserved.
+  (`u24:stable`). Existing disks are not replaced automatically. Set
+  `vm_image: d13` in old inventories that relied on the implicit Debian default.
+- Embedded Catalog `2026090501` includes the already-published Debian 12/13 and
+  Rocky Linux 8/9 image updates, keeping its stable channels aligned with the
+  official repositories.
 - `plan` works before host setup and shows exact image versions, total resources,
   configuration changes, pending starts, and disk replacement effects.
 - Default status tables show image and resource information. One degraded node
@@ -286,7 +292,8 @@ Pigsty-compatible local labs.
   Cosign is available, and explains that pre-1.0 GitHub pre-releases require an
   explicit `FARROW_VERSION`.
 
-[Unreleased]: https://github.com/pgsty/farrow/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/pgsty/farrow/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/pgsty/farrow/releases/tag/v0.6.0
 [0.5.0]: https://github.com/pgsty/farrow/releases/tag/v0.5.0
 [0.4.0]: https://github.com/pgsty/farrow/releases/tag/v0.4.0
 [0.3.0]: https://github.com/pgsty/farrow/releases/tag/v0.3.0

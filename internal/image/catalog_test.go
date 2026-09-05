@@ -203,9 +203,10 @@ func TestCatalogRejectsIdenticallyRankedVersions(t *testing.T) {
 	for release, version := range record.Versions {
 		versions[release] = version
 	}
-	// 9.8.20260525.0 and 9.8.20260525 rank identically; the catalog boundary must
-	// reject the pair instead of letting resolution report a runtime ambiguity.
-	versions["9.8.20260525"] = versions["9.8.20260525.0"]
+	// A trailing zero ranks identically; reject the pair before resolution can
+	// report a runtime ambiguity.
+	stable := record.Channels["stable"]
+	versions[stable+".0"] = versions[stable]
 	record.Versions = versions
 	catalog.Images["el9"] = record
 	err := catalog.Validate()

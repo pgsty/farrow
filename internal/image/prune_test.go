@@ -127,14 +127,14 @@ func TestPruneProtectsActiveExplicitRepositoryCatalog(t *testing.T) {
 	catalog := EmbeddedCatalog()
 	catalog.Version = 1
 	imageRecord := catalog.Images["d13"]
-	version := imageRecord.Versions["20260810.2566.0"]
+	version := imageRecord.Versions[imageRecord.Channels["stable"]]
 	artifact := version.Variants["arm64"]
 	artifact.File = "images/d13-1-arm64.qcow2"
 	artifact.SHA256 = keep.SHA256
 	artifact.ArtifactSize = int64(len("keep-custom-repo"))
 	artifact.VirtualSize = 1 << 30
 	version.Variants["arm64"] = artifact
-	imageRecord.Versions["20260810.2566.0"] = version
+	imageRecord.Versions[imageRecord.Channels["stable"]] = version
 	catalog.Images["d13"] = imageRecord
 	data, err := json.Marshal(catalog)
 	if err != nil {
