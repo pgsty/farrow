@@ -72,3 +72,22 @@ func TestBundleLayoutValidation(t *testing.T) {
 		t.Fatal("wrong descriptor layout was accepted")
 	}
 }
+
+func TestUserSelectedProjectModesArePreserved(t *testing.T) {
+	work, root := testDirs(t)
+	for _, mode := range []os.FileMode{0o755, 0o775, 0o777, 0o555} {
+		if err := os.Chmod(work, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := Validate(root, []spec.Share{{Host: work, Guest: "/project"}}); err != nil {
+			t.Fatalf("mode %o: %v", mode, err)
+		}
+		info, err := os.Stat(work)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("changed project mode: %v %v", info, err)
+		}
+	}
+	if err := os.Chmod(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}

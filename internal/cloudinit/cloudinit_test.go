@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"os"
 	"os/exec"
@@ -55,7 +56,7 @@ func TestRenderQuickContract(t *testing.T) {
 		}
 	}
 	userData := string(files.UserData)
-	for _, want := range []string{"#cloud-config", `name: "dba"`, "uid: 88", "primary_group: admin", "create_groups: false", "/usr/sbin/groupadd --gid 88 admin", "/usr/sbin/groupmod --gid 88 admin", "lock_passwd: true", "ssh_deletekeys: false", "ntp:\n  enabled: true", "/dev/disk/by-id/virtio-", "UUID=%s", "defaults,nofail", `mountpoint -q "${mountpoint}"`, "xfs_growfs", "resize2fs", "xfs requested but mkfs.xfs is unavailable", "no supported filesystem formatter is available", "/usr/local/libexec/farrow-network-check", "/usr/local/libexec/farrow-identity-contract", "login identity", "for attempt in 1 2 3", "timeout 10s /bin/bash", "/dev/tcp/example.com/80", "/var/lib/farrow/ready.json", "/var/lib/farrow/error.json", "run_stage data-disks"} {
+	for _, want := range []string{"#cloud-config", `name: "dba"`, "uid: 88", "primary_group: admin", "create_groups: false", "/usr/sbin/groupadd --gid 88 admin", "/usr/sbin/groupmod --gid 88 admin", "lock_passwd: true", "ssh_deletekeys: false", "ntp:\n  enabled: true", "/dev/disk/by-id/", "UUID=%s", "defaults,nofail", `mountpoint -q "${mountpoint}"`, "filesystem probe failed", "previous data discarded", "e2fsck -fn", "xfs_repair -n", "/usr/local/libexec/farrow-network-check", "/usr/local/libexec/farrow-identity-contract", "login identity", "for attempt in 1 2 3", "timeout 10s /bin/bash", "/dev/tcp/example.com/80", "/var/lib/farrow/ready.json", "/var/lib/farrow/error.json", "run_optional data-disks"} {
 		if !strings.Contains(userData, want) {
 			t.Errorf("user-data missing %q", want)
 		}
@@ -145,14 +146,13 @@ func TestRenderPrivateControlKeyBoundary(t *testing.T) {
 	}
 	finalizer := renderFinalizeScript(true, true, true)
 	identityIndex := strings.Index(finalizer, "/usr/local/libexec/farrow-identity-contract")
-	networkIndex := strings.Index(finalizer, "/usr/local/libexec/farrow-network-check")
 	diskIndex := strings.Index(finalizer, "/usr/local/libexec/farrow-init-disks")
 	shareIndex := strings.Index(finalizer, "/usr/local/libexec/farrow-init-shares")
 	installIndex := strings.Index(finalizer, "/usr/local/libexec/farrow-install-control-ssh")
 	privateIndex := strings.Index(finalizer, "/usr/local/libexec/farrow-private-contract")
 	readyIndex := strings.Index(finalizer, "/usr/local/libexec/farrow-ready")
-	if identityIndex < 0 || networkIndex <= identityIndex || diskIndex <= networkIndex || shareIndex <= diskIndex || installIndex <= shareIndex || privateIndex <= installIndex || readyIndex <= privateIndex {
-		t.Fatalf("private finalizer is not fail-closed:\n%s", finalizer)
+	if identityIndex < 0 || diskIndex <= identityIndex || shareIndex <= diskIndex || installIndex <= shareIndex || privateIndex <= installIndex || readyIndex <= privateIndex {
+		t.Fatalf("private finalizer stages are out of order:\n%s", finalizer)
 	}
 
 	input.Control = false
@@ -238,8 +238,8 @@ func TestRenderShareContract(t *testing.T) {
 		`path: "/usr/local/libexec/farrow-init-shares"`,
 		`# BEGIN FARROW SHARES`,
 		`# END FARROW SHARES`,
-		`farrow-0123456789abcdef0123 /src 9p version=9p2000.L,trans=virtio,cache=none,msize=262144,access=any,nofail,nodev,nosuid,rw 0 0`,
-		`farrow-fedcba9876543210fedc /reference 9p version=9p2000.L,trans=virtio,cache=none,msize=262144,access=any,nofail,nodev,nosuid,ro 0 0`,
+		`farrow-0123456789abcdef0123 /src 9p version=9p2000.L,trans=virtio,cache=none,msize=262144,access=client,nofail,nodev,nosuid,rw 0 0`,
+		`farrow-fedcba9876543210fedc /reference 9p version=9p2000.L,trans=virtio,cache=none,msize=262144,access=client,nofail,nodev,nosuid,ro 0 0`,
 		`runuser -u "${share_user}" -- mktemp`,
 		`has_mount_option "${mounted_options}" ro`,
 		`has_mount_option "${mounted_options}" rw`,
@@ -260,7 +260,7 @@ func TestRenderShareContract(t *testing.T) {
 	if publishIndex < 0 || mountIndex <= publishIndex {
 		t.Fatalf("share script mounts before atomically publishing fstab:\n%s", script)
 	}
-	if !strings.Contains(script, "if mountpoint -q \"${mountpoint}\"; then\n    verify_mount") {
+	if !strings.Contains(script, "# A previous boot may have downgraded this mount.") {
 		t.Fatalf("share script does not idempotently verify an existing mount:\n%s", script)
 	}
 	for _, want := range []string{
@@ -322,13 +322,13 @@ func TestRenderRejectsMismatchedControlKey(t *testing.T) {
 	}
 }
 
-func TestDiskScriptPublishesFstabBeforeMount(t *testing.T) {
+func TestDiskScriptPublishesFstabAfterSuccessfulDirectMount(t *testing.T) {
 	t.Parallel()
 	script := renderDiskScript([]Disk{{Serial: "abcde234567abcde2345", Mount: "/data", Filesystem: "auto"}})
-	fstabIndex := strings.Index(script, `install -o root -g root -m 0644 "${fstab_tmp}" /etc/fstab`)
-	mountIndex := strings.Index(script, `mount "${mountpoint}"`)
-	if fstabIndex < 0 || mountIndex <= fstabIndex {
-		t.Fatalf("disk script mounts before publishing fstab:\n%s", script)
+	fstabIndex := strings.Index(script, `mv -f -- "${fstab_tmp}" /etc/fstab`)
+	mountIndex := strings.LastIndex(script, `mount -t "${fstype}" -o defaults "${dev}" "${mountpoint}"`)
+	if mountIndex < 0 || fstabIndex <= mountIndex {
+		t.Fatalf("disk script publishes fstab before validating a direct mount:\n%s", script)
 	}
 }
 
@@ -375,5 +375,121 @@ func TestBuildISORejectsExistingTarget(t *testing.T) {
 	}
 	if err := BuildISO(target, files); err == nil {
 		t.Fatal("existing target unexpectedly overwritten")
+	}
+}
+
+// Exercise the generated finalizer with local stand-ins for guest operations:
+// optional failures must not skip independent stages or guest readiness.
+func TestFinalizeDegradesOptionalStagesAndKeepsCoreFailures(t *testing.T) {
+	for _, failure := range []string{"", "identity-contract", "init-disks", "hosts", "init-shares", "install-control-ssh", "private-contract"} {
+		t.Run("failure-"+failure, func(t *testing.T) {
+			dir := t.TempDir()
+			trace := filepath.Join(dir, "trace")
+			replace := strings.NewReplacer("/var/lib/farrow", dir, "/usr/local/libexec", dir,
+				"install -d -o root -g root -m 0755", "mkdir -p", "chown root:root", "true",
+				"timeout --kill-after=5s \"${budget}\" ", "", "flock -n 9", "true")
+			for _, name := range []string{"identity-contract", "hosts", "init-disks", "init-shares", "install-control-ssh", "private-contract", "network-check"} {
+				script := "#!/bin/bash\nprintf '%s\\n' " + name + " >> '" + trace + "'\n"
+				if name == failure || name == "network-check" {
+					script += "echo 'fixture \"unavailable\"' >&2\nexit 23\n"
+				}
+				if err := os.WriteFile(filepath.Join(dir, "farrow-"+name), []byte(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ready, err := renderReadyScript(testInput())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, script := range map[string]string{"warning": renderWarningScript(), "ready": ready} {
+				if err := os.WriteFile(filepath.Join(dir, "farrow-"+name), []byte(replace.Replace(script)), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := exec.Command("bash")
+			command.Stdin = strings.NewReader(replace.Replace(renderFinalizeScript(true, true, true)))
+			output, err := command.CombinedOutput()
+			coreFailure := failure == "identity-contract"
+			if (err != nil) != coreFailure {
+				t.Fatalf("finalizer err=%v output=%s", err, output)
+			}
+			data, err := os.ReadFile(trace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "network-check") {
+				t.Fatal("Internet blocks bootstrap")
+			}
+			marker, readyErr := os.ReadFile(filepath.Join(dir, "ready.json"))
+			if coreFailure {
+				if !os.IsNotExist(readyErr) {
+					t.Fatalf("unsafe ready marker: %s, %v", marker, readyErr)
+				}
+				marker, err = os.ReadFile(filepath.Join(dir, "error.json"))
+				if err != nil || !json.Valid(marker) {
+					t.Fatalf("lost failure: %s %v", marker, err)
+				}
+				return
+			}
+			var report struct {
+				Warnings []struct{ Stage, Detail string }
+			}
+			if readyErr != nil || json.Unmarshal(marker, &report) != nil {
+				t.Fatalf("invalid ready report %s %v", marker, readyErr)
+			}
+			if (len(report.Warnings) > 0) != (failure != "") {
+				t.Fatalf("warnings=%+v", report)
+			}
+			if failure != "" && report.Warnings[0].Detail != "fixture \"unavailable\"" {
+				t.Fatalf("lost warning detail: %+v", report)
+			}
+			want := "identity-contract\nhosts\ninit-disks\ninit-shares\ninstall-control-ssh\nprivate-contract\n"
+			if string(data) != want {
+				t.Fatalf("skipped usable features: %s", data)
+			}
+		})
+	}
+}
+
+func TestFinalizeRetryKeepsUnselectedStagesAndWarnings(t *testing.T) {
+	dir := t.TempDir()
+	replace := strings.NewReplacer("/var/lib/farrow", dir, "/usr/local/libexec", dir,
+		"install -d -o root -g root -m 0755", "mkdir -p", "chown root:root", "true",
+		"timeout --kill-after=5s \"${budget}\" ", "", "flock -n 9", "true")
+	for _, stage := range []string{"identity-contract", "hosts", "init-disks", "init-shares", "install-control-ssh", "private-contract"} {
+		script := "#!/bin/bash\nprintf '%s\\n' " + stage + " >> '" + filepath.Join(dir, "trace") + "'\n"
+		if err := os.WriteFile(filepath.Join(dir, "farrow-"+stage), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready, err := renderReadyScript(testInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "farrow-ready"), []byte(replace.Replace(ready)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	warnings := `{"stage":"shares","detail":"retry me"}
+{"stage":"data-disks","detail":"keep me"}
+{"stage":"disk-reset","detail":"old notice"}
+`
+	if err := os.WriteFile(filepath.Join(dir, "warnings.jsonl"), []byte(warnings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-s", "--", "shares", "ready")
+	cmd.Stdin = strings.NewReader(replace.Replace(renderFinalizeScript(true, true, true)))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("retry failed: %v %s", err, output)
+	}
+	trace, err := os.ReadFile(filepath.Join(dir, "trace"))
+	if err != nil || string(trace) != "identity-contract\ninit-shares\n" {
+		t.Fatalf("reran unrelated stages: %s %v", trace, err)
+	}
+	marker, err := os.ReadFile(filepath.Join(dir, "ready.json"))
+	var report struct {
+		Warnings []struct{ Stage, Detail string }
+	}
+	if err != nil || json.Unmarshal(marker, &report) != nil || len(report.Warnings) != 1 || report.Warnings[0].Detail != "keep me" {
+		t.Fatalf("lost unrelated limitation or retained resolved warning: %s %v", marker, err)
 	}
 }

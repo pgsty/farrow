@@ -193,3 +193,66 @@ func TestPrepareJournalStrictness(t *testing.T) {
 		t.Fatal("trailing private journal JSON accepted")
 	}
 }
+
+func TestPrepareRetryRecoversOfflineFailureAndPreservesPeers(t *testing.T) {
+	root := t.TempDir()
+	fake := &fakePrivateDisks{failSubstring: "node-1/root.qcow2"}
+	config := privatePrepareConfig(t, root, fake)
+	outcomes := prepareAll(context.Background(), config, 2)
+	if len(PreparedNames(outcomes)) != 1 {
+		t.Fatalf("expected partial prepare: %+v", outcomes)
+	}
+	peer := filepath.Join(root, "nodes", "meta", "root.qcow2")
+	before, err := os.Stat(peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.failSubstring = ""
+	if _, err := PrepareNode(context.Background(), config, "node-1"); err != nil {
+		t.Fatalf("repeated up cannot recover: %v", err)
+	}
+	after, err := os.Stat(peer)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatal("retry replaced an unrelated node disk")
+	}
+}
+
+func TestPrepareRetryPreservesUnrecognizedArtifacts(t *testing.T) {
+	root := t.TempDir()
+	fake := &fakePrivateDisks{failSubstring: "meta/data.qcow2"}
+	config := privatePrepareConfig(t, root, fake)
+	if _, err := PrepareNode(context.Background(), config, "meta"); err == nil {
+		t.Fatal("expected data disk failure")
+	}
+	manual := filepath.Join(root, "nodes", "meta", "manual.img")
+	if err := os.WriteFile(manual, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fake.failSubstring = ""
+	if _, err := PrepareNode(context.Background(), config, "meta"); err == nil {
+		t.Fatal("unrecognized artifacts were discarded")
+	}
+	for _, file := range []string{manual, filepath.Join(root, "nodes", "meta", "root.qcow2")} {
+		if _, err := os.Stat(file); err != nil {
+			t.Fatalf("failed recovery discarded %s: %v", file, err)
+		}
+	}
+}
+
+func TestPrepareRetryDoesNotReplaceCommittedDisk(t *testing.T) {
+	deployment, config, outcomes := commitFixture(t, &fakePrivateDisks{})
+	if _, err := CommitPrepared(deployment, config, outcomes, "test-version"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(outcomes[0].Artifacts.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareNode(context.Background(), config, outcomes[0].Node); err == nil {
+		t.Fatal("committed node was prepared again")
+	}
+	after, err := os.Stat(outcomes[0].Artifacts.Root)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatal("committed disk changed")
+	}
+}

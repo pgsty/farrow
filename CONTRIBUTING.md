@@ -18,6 +18,19 @@ matter how well it is implemented:
 
 Open an issue before a large change so we can agree on the shape first.
 
+## Test-lab recovery
+
+Optimize ordinary failures for a usable lab. Keep management SSH and instance
+identity as the readiness boundary; retry unfinished guest setup through `up`,
+without a separate repair command. Healthy stages and running VMs stay intact.
+Farrow data disks contain disposable test data: reuse working filesystems and
+reset unusable ones to the configured filesystem, reporting discarded data.
+This also applies to persistent disks; persistence controls destroy/recreate,
+not retention of corrupt contents. Missing devices, failed probes, busy mounts,
+and host I/O failures are not proof of filesystem damage. Do not reset those
+or change root disks, host shares, or unrelated devices as a recovery action.
+Continue independent work and state exactly which features remain unavailable.
+
 ## Development loop
 
 ```bash

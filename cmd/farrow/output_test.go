@@ -303,7 +303,7 @@ func TestProgressSourceRedactsCredentialsAndQuery(t *testing.T) {
 	}
 }
 
-func TestProgressUsesNoANSIWhenTerminalStylingIsDisabled(t *testing.T) {
+func TestFastProgressUsesNoANSIWhenTerminalStylingIsDisabled(t *testing.T) {
 	state := &outputContext{format: outputText, verbose: true, stderrTTY: true, color: false}
 	var stderr bytes.Buffer
 	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
@@ -386,43 +386,31 @@ func TestProgressReportsDetailedStagesOnlyOnStderr(t *testing.T) {
 	}
 }
 
-func TestProgressPersistsCompletedPhasesAsChecklistOnTTY(t *testing.T) {
+func TestProgressKeepsFastChecksSilent(t *testing.T) {
 	state := &outputContext{format: outputText, stderrFile: true, stderrTTY: true, color: true}
 	var stderr bytes.Buffer
-	errOut := &outputWriter{Writer: &stderr, context: state, stderr: true}
-	item := startProgress(context.TODO(), errOut, "Preparing and starting the deployment")
-	item.Report(activity.Event{Phase: "preflight", Message: "Running preflight"})
-	item.Report(activity.Event{Phase: "preflight", Message: "Preflight passed", Done: true})
-	item.Report(activity.Event{Phase: "guest-ready", Message: "Guest meta is ready", Done: true})
+	item := startProgress(context.TODO(), &outputWriter{Writer: &stderr, context: state, stderr: true}, "Preparing the deployment")
+	for range 100 {
+		item.Report(activity.Event{Phase: "preflight", Message: "Preflight passed", Done: true})
+	}
 	item.Stop(nil)
-	got := stderr.String()
-	for _, want := range []string{
-		ansiGreen + "✓" + ansiReset + " Preflight passed\n",
-		ansiGreen + "✓" + ansiReset + " Guest meta is ready\n",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("completed phase did not persist as a checklist row (%q missing): %q", want, got)
-		}
-	}
-	if !strings.Contains(got, "✓"+ansiReset+" Preparing and starting the deployment (") {
-		t.Fatalf("overall summary row missing: %q", got)
-	}
-	if strings.Contains(got, "Running preflight\n") {
-		t.Fatalf("live in-progress line was persisted with a newline: %q", got)
+	if stderr.Len() != 0 {
+		t.Fatalf("fast checks produced noise: %q", stderr.String())
 	}
 }
 
-func TestTickfFollowsProgressGating(t *testing.T) {
-	enabled := &outputContext{format: outputText, stderrFile: true, stderrTTY: true, color: true}
+func TestTickfOnlyPrintsInVerboseMode(t *testing.T) {
+	state := &outputContext{format: outputText, stderrFile: true, stderrTTY: true}
 	var stderr bytes.Buffer
-	tickf(&outputWriter{Writer: &stderr, context: enabled, stderr: true}, "Network %s is already installed", "10.10.10.0/24")
-	if got := stderr.String(); got != ansiGreen+"✓"+ansiReset+" Network 10.10.10.0/24 is already installed\n" {
-		t.Fatalf("tick row = %q", got)
+	writer := &outputWriter{Writer: &stderr, context: state, stderr: true}
+	tickf(writer, "Network already installed")
+	if stderr.Len() != 0 {
+		t.Fatalf("fast check printed: %q", stderr.String())
 	}
-	var quiet bytes.Buffer
-	tickf(&outputWriter{Writer: &quiet, context: &outputContext{format: outputText}, stderr: true}, "hidden")
-	if quiet.Len() != 0 {
-		t.Fatalf("tick printed without an interactive or verbose stderr: %q", quiet.String())
+	state.verbose = true
+	tickf(writer, "Network already installed")
+	if !strings.Contains(stderr.String(), "debug: Network already installed") {
+		t.Fatalf("verbose evidence missing: %q", stderr.String())
 	}
 }
 

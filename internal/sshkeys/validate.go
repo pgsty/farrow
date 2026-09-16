@@ -88,7 +88,13 @@ func ValidateSSHArtifacts(root string) (privateKey, knownHosts string, err error
 	privateKey = filepath.Join(keysDir, "id_ed25519")
 	knownHosts = filepath.Join(keysDir, "known_hosts")
 	for _, pathname := range []string{privateKey, knownHosts} {
-		if err := validateSSHArtifact(directory, pathname); err != nil {
+		minimumSize := int64(1)
+		// accept-new records the first host key. An owned empty trust file is
+		// normal after up --no-wait; an empty private key is still invalid.
+		if pathname == knownHosts {
+			minimumSize = 0
+		}
+		if err := validateSSHArtifact(directory, pathname, minimumSize); err != nil {
 			return "", "", err
 		}
 	}
@@ -106,9 +112,9 @@ func validateSSHOwner(info os.FileInfo, requireSingleLink bool) error {
 	return nil
 }
 
-func validateSSHArtifact(directory *os.File, pathname string) error {
+func validateSSHArtifact(directory *os.File, pathname string, minimumSize int64) error {
 	before, err := os.Lstat(pathname)
-	if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 || before.Mode().Perm() != 0o600 || before.Size() <= 0 {
+	if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 || before.Mode().Perm() != 0o600 || before.Size() < minimumSize {
 		return fmt.Errorf("SSH artifact is missing or unsafe: %s", pathname)
 	}
 	if err := validateSSHOwner(before, true); err != nil {
@@ -126,7 +132,7 @@ func validateSSHArtifact(directory *os.File, pathname string) error {
 	opened, statErr := handle.Stat()
 	after, lstatErr := os.Lstat(pathname)
 	closeErr := handle.Close()
-	if statErr != nil || lstatErr != nil || closeErr != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != 0o600 || !after.Mode().IsRegular() || after.Mode().Perm() != 0o600 || opened.Size() <= 0 || opened.Size() != before.Size() || after.Size() != opened.Size() || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
+	if statErr != nil || lstatErr != nil || closeErr != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != 0o600 || !after.Mode().IsRegular() || after.Mode().Perm() != 0o600 || opened.Size() < minimumSize || opened.Size() != before.Size() || after.Size() != opened.Size() || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
 		return fmt.Errorf("SSH artifact identity changed while opening: %s", pathname)
 	}
 	if err := validateSSHOwner(opened, true); err != nil {

@@ -163,6 +163,38 @@ count_release_directories() {
 run_installer checksum 0 1
 [[ -x ${work}/install-checksum/farrow && -x ${work}/install-checksum/farrow-hosts-helper ]]
 
+# An older entry can shadow a successful install even when the new directory
+# is already in PATH. The diagnostic must never execute that older binary.
+shadow_directory=${work}/shadow
+path_install=${work}/path-install
+install -d -m 0700 "${shadow_directory}" "${path_install}"
+printf '#!/usr/bin/env bash\nprintf ran > %q\nexit 99\n' "${work}/shadow-executed" >"${shadow_directory}/farrow"
+chmod 0755 "${shadow_directory}/farrow"
+env -u FARROW_INSTALL_KEEP \
+  "PATH=${shadow_directory}:${path_install}:${shim}" \
+  "TMPDIR=${tmp}" "FARROW_INSTALL_DIR=${path_install}" \
+  "FARROW_RELEASE_REPOSITORY=pgsty/farrow" "FARROW_VERSION=${version}" \
+  "FAKE_RELEASE_ROOT=${release}" \
+  bash "${repo}/packaging/install.sh" >"${work}/path-shadow.stdout"
+grep -Fq "Your PATH currently selects: ${shadow_directory}/farrow" "${work}/path-shadow.stdout"
+grep -Fq 'export PATH=' "${work}/path-shadow.stdout"
+grep -Fq "Start your lab: ${path_install}/farrow up" "${work}/path-shadow.stdout"
+[[ ! -e ${work}/shadow-executed ]]
+
+# An equivalent symlink to the installed file is already usable.
+rm "${shadow_directory}/farrow"
+ln -s "${path_install}/farrow" "${shadow_directory}/farrow"
+env -u FARROW_INSTALL_KEEP \
+  "PATH=${shadow_directory}:${path_install}:${shim}" \
+  "TMPDIR=${tmp}" "FARROW_INSTALL_DIR=${path_install}" \
+  "FARROW_RELEASE_REPOSITORY=pgsty/farrow" "FARROW_VERSION=${version}" \
+  "FAKE_RELEASE_ROOT=${release}" \
+  bash "${repo}/packaging/install.sh" >"${work}/path-equivalent.stdout"
+if grep -Eq 'export PATH=|Your PATH currently selects' "${work}/path-equivalent.stdout"; then
+  printf 'equivalent installation path produced a false warning\n' >&2
+  exit 1
+fi
+
 printf 'tamper\n' >>"${release}/${asset}"
 run_installer checksum-mismatch 7 1
 grep -q 'release archive checksum mismatch' "${work}/checksum-mismatch.stderr"

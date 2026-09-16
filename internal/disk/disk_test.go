@@ -30,7 +30,7 @@ func (f *fakeRunner) Run(_ context.Context, binary string, args ...string) (exec
 		if f.standalone {
 			target = args[len(args)-2]
 		}
-		if err := os.WriteFile(target, []byte("fake-qcow2"), 0o600); err != nil {
+		if err := os.WriteFile(target, []byte("fake-qcow2"), 0o644); err != nil {
 			return execx.Result{}, err
 		}
 		return execx.Result{}, nil
@@ -66,8 +66,8 @@ func TestCreateBlankPublishesVerifiedStandaloneDisk(t *testing.T) {
 	if info.VirtualSize != 64<<30 || info.BackingFilename != "" {
 		t.Fatalf("blank info = %#v", info)
 	}
-	if _, err := os.Stat(target); err != nil {
-		t.Fatal(err)
+	if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("published disk must use 0600: %v %v", info, err)
 	}
 }
 
@@ -97,8 +97,8 @@ func TestCreateOverlayUsesExplicitBackingFormatAndVerifies(t *testing.T) {
 	if info.VirtualSize != 8<<30 {
 		t.Fatalf("verified size = %d", info.VirtualSize)
 	}
-	if _, err := os.Stat(target); err != nil {
-		t.Fatalf("published target: %v", err)
+	if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("published overlay must use 0600: %v %v", info, err)
 	}
 	wantCreatePrefix := []string{"/usr/bin/qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", base}
 	if len(runner.calls) < 4 || !reflect.DeepEqual(runner.calls[1][:len(wantCreatePrefix)], wantCreatePrefix) {

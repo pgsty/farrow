@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pgsty/farrow/internal/execx"
+	netpreflight "github.com/pgsty/farrow/internal/network/preflight"
 	"github.com/pgsty/farrow/internal/platform"
 )
 
@@ -72,6 +73,7 @@ func markClass(checks []Check, class string) []Check {
 }
 
 type Probe struct {
+	HostOnly         bool
 	Runner           execx.Runner
 	LookPath         func(string) (string, error)
 	AcceleratorSmoke func(context.Context, string, platform.Profile) (string, error)
@@ -208,12 +210,15 @@ func (p Probe) Run(ctx context.Context) Report {
 	} else {
 		report.Checks = append(report.Checks, Check{Name: "ssh", Status: OK, Evidence: filepath.Clean(sshPath)})
 	}
+	if p.HostOnly {
+		return report
+	}
 	report.Checks = append(report.Checks, p.deploymentChecks()...)
 	if profile.OS == "darwin" {
-		report.Checks = append(report.Checks, markClass(p.networkPreflightChecks(ctx, profile), ClassNetwork)...)
+		report.Checks = append(report.Checks, markClass(networkPreflightChecks(ctx, profile, netpreflight.Probe{Runner: p.runner()}), ClassNetwork)...)
 	} else if profile.OS == "linux" {
 		report.Checks = append(report.Checks, markClass(p.linuxPrivateChecks(ctx), ClassNetwork)...)
-		report.Checks = append(report.Checks, markClass(p.networkPreflightChecks(ctx, profile), ClassNetwork)...)
+		report.Checks = append(report.Checks, markClass(networkPreflightChecks(ctx, profile, netpreflight.Probe{Runner: p.runner()}), ClassNetwork)...)
 	}
 	return report
 }

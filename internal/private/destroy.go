@@ -14,6 +14,7 @@ import (
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/spec"
 	"github.com/pgsty/farrow/internal/state"
+	"github.com/pgsty/farrow/internal/vm"
 )
 
 func ownedRegularWithin(root, path string) error {
@@ -104,7 +105,7 @@ func (m Manager) removeKnownHostEntries(ctx context.Context, deploymentValue Dep
 	keysDir := filepath.Join(deploymentValue.Root, "keys")
 	knownHosts := filepath.Join(keysDir, "known_hosts")
 	for _, node := range nodes {
-		for _, host := range []string{fmt.Sprintf("[127.0.0.1]:%d", node.SSHPort), resolvedAddresses[node.Node]} {
+		for _, host := range []string{fmt.Sprintf("[127.0.0.1]:%d", node.SSHPort), resolvedAddresses[node.Node], vm.HostKeyAlias(node.VMUUID)} {
 			if host == "" {
 				continue
 			}
@@ -263,6 +264,9 @@ func (m Manager) Destroy(ctx context.Context) (_ Status, returnErr error) {
 		if err := os.Remove(nodeDirs[node.Node]); err != nil {
 			return Status{}, fmt.Errorf("node directory contains unexpected artifacts: %w", err)
 		}
+		// A stale diagnostic cache must not turn successful destruction into a
+		// failure. Its instance identity also prevents reuse by a later VM.
+		_ = store.WriteGuestWarnings(node, nil)
 	}
 	if err := m.removeKnownHostEntries(ctx, deploymentValue, nodes, addresses); err != nil {
 		return Status{}, err

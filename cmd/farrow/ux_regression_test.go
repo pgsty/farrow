@@ -80,3 +80,15 @@ func TestImageImportDigestMismatchIsIntegrityFailure(t *testing.T) {
 		t.Fatalf("import: %d %s %s", code, out.String(), errOut.String())
 	}
 }
+
+func TestUnattendedFirstUpOffersCompleteSetupRecipe(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("FARROW_HOME", t.TempDir())
+	var out, errOut bytes.Buffer
+	if code := run([]string{"up"}, &out, &errOut); code != exitConflict || !strings.Contains(errOut.String(), "farrow setup --yes") {
+		t.Fatalf("incomplete first-use guidance: code=%d, %s", code, errOut.String())
+	}
+	if _, err := os.Stat("farrow.yml"); !os.IsNotExist(err) {
+		t.Fatalf("unattended up silently created inventory: %v", err)
+	}
+}

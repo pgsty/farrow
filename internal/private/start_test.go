@@ -12,6 +12,7 @@ import (
 
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/state"
+	"github.com/pgsty/farrow/internal/vm"
 )
 
 type fakeNodeLifecycle struct {
@@ -20,6 +21,7 @@ type fakeNodeLifecycle struct {
 	maxActive    int
 	failStart    map[string]bool
 	failReady    map[string]bool
+	warnings     []state.GuestWarning
 	waitCalls    int
 	abortCalls   []string
 	abortError   error
@@ -59,14 +61,14 @@ func (fake *fakeNodeLifecycle) AbortStart(_ context.Context, node state.NodeStat
 	return fake.abortError
 }
 
-func (fake *fakeNodeLifecycle) WaitReady(_ context.Context, node state.NodeState, _ time.Duration) error {
+func (fake *fakeNodeLifecycle) WaitReady(_ context.Context, node state.NodeState, _ time.Duration) ([]state.GuestWarning, error) {
 	fake.mu.Lock()
 	fake.waitCalls++
 	fake.mu.Unlock()
 	if fake.failReady[node.Node] {
-		return errors.New("injected readiness failure")
+		return nil, errors.New("injected readiness failure")
 	}
-	return nil
+	return fake.warnings, nil
 }
 
 func TestStartPreparedNoWaitStopsAtVerifiedProcessStart(t *testing.T) {
@@ -218,5 +220,29 @@ func TestStartPreparedCompensatesRunningStateWriteFailure(t *testing.T) {
 	fake.mu.Unlock()
 	if len(abortCalls) != 1 || abortCalls[0] != "node-1" {
 		t.Fatalf("abort calls = %v", abortCalls)
+	}
+}
+
+type bootstrapFailureLifecycle struct{ fakeNodeLifecycle }
+
+func (*bootstrapFailureLifecycle) WaitReady(context.Context, state.NodeState, time.Duration) ([]state.GuestWarning, error) {
+	return nil, &vm.BootstrapError{Stage: "data-disks", ExitStatus: 1, Detail: "fixture disk failure"}
+}
+func TestBootstrapFailureKeepsRunningGuestAndRecoveryClassification(t *testing.T) {
+	config, _ := preparedStartFixture(t)
+	config.Lifecycle = &bootstrapFailureLifecycle{}
+	outcomes, err := StartPrepared(context.Background(), config)
+	if err != nil || len(outcomes) != 2 {
+		t.Fatalf("outcomes=%+v, err=%v", outcomes, err)
+	}
+	for _, outcome := range outcomes {
+		if !outcome.Running || outcome.Ready || !outcome.BootstrapFailed {
+			t.Fatalf("lost usable guest or failure classification: %+v", outcome)
+		}
+	}
+	for _, failure := range startFailures(outcomes) {
+		if failure.Stage != "bootstrap" {
+			t.Fatalf("wrong recovery stage: %+v", failure)
+		}
 	}
 }

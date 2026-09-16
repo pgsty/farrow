@@ -41,17 +41,15 @@ class Farrow < Formula
 
   def caveats
     <<~EOS
-      Prepare the host once, then start the lab:
-        farrow setup
+      Start your first VM from a terminal:
         farrow up
+        farrow ssh
 
-      For a fixed-IP private lab, run these two commands in an empty directory:
-        farrow setup meta    # one node; or: farrow setup full
-        farrow up
-
-      Setup is idempotent. It installs or reuses the private host network,
-      downloads and verifies Farrow's pinned socket_vmnet asset on macOS, and
-      asks for administrator access only when the host transaction needs it.
+      Up reuses your inventory or current lab, and creates a one-node
+      farrow.yml when neither exists. It prepares the host when needed and
+      asks for administrator access at the privileged step.
+      Use farrow init full to customize a four-node lab before starting it.
+      For unattended preparation, run farrow setup --yes before farrow up.
     EOS
   end
 

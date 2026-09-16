@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +36,8 @@ type outputContext struct {
 	mu          sync.Mutex
 	stdoutBytes int64
 	writeErr    error
+	active      *progress
+	columns     int
 }
 
 type commandFailure struct {
@@ -52,6 +53,14 @@ type outputWriter struct {
 }
 
 func (writer *outputWriter) Write(data []byte) (int, error) {
+	if writer.stderr && writer.context != nil {
+		writer.context.mu.Lock()
+		active := writer.context.active
+		writer.context.mu.Unlock()
+		if active != nil {
+			return active.writeExternal(data)
+		}
+	}
 	written, err := writer.Writer.Write(data)
 	if writer.context != nil && !writer.stderr {
 		writer.context.mu.Lock()
@@ -441,7 +450,7 @@ func errorf(stderr io.Writer, format string, arguments ...any) {
 
 func textField(writer io.Writer, width int, label string, value any) {
 	label = strings.TrimSuffix(label, ":") + ":"
-	padded := fmt.Sprintf("%-*s", width, label)
+	padded := padDisplay(label, width)
 	bestEffortf(writer, "%s %v\n", styled(writer, ansiDim, padded), value)
 }
 
@@ -464,7 +473,7 @@ func statusValue(writer io.Writer, value string) string {
 }
 
 func statusCell(writer io.Writer, width int, value string) string {
-	return styled(writer, statusStyle(value), fmt.Sprintf("%-*s", width, value))
+	return styled(writer, statusStyle(value), padDisplay(value, width))
 }
 
 // printTable renders one aligned table: a dim header row, then rows whose
@@ -474,21 +483,52 @@ func statusCell(writer io.Writer, width int, value string) string {
 func printTable(writer io.Writer, header []string, rows [][]string, statusColumn int) {
 	widths := make([]int, len(header))
 	for index, cell := range header {
-		widths[index] = len(cell)
+		widths[index] = displayWidth(cell)
 	}
 	for _, row := range rows {
 		for index, cell := range row {
-			if index < len(widths) && len(cell) > widths[index] {
-				widths[index] = len(cell)
+			if index < len(widths) && displayWidth(cell) > widths[index] {
+				widths[index] = displayWidth(cell)
 			}
 		}
+	}
+	total := max(0, 2*(len(widths)-1))
+	for _, width := range widths {
+		total += width
+	}
+	// Redirected tables retain their stable layout; narrow terminals use cards
+	// so paths and recovery messages remain complete and can wrap naturally.
+	context := outputContextFrom(writer)
+	terminal := writerTTY(writer)
+	if context != nil {
+		terminal = context.stdoutTTY && context.format == outputText
+	}
+	if terminal && total > outputColumns(context, writer) {
+		for rowIndex, row := range rows {
+			if rowIndex > 0 {
+				bestEffortln(writer)
+			}
+			for index, cell := range row {
+				if index >= len(header) {
+					break
+				}
+				if index == statusColumn {
+					cell = statusValue(writer, cell)
+				}
+				textField(writer, 12, strings.ToLower(header[index]), cell)
+			}
+		}
+		return
 	}
 	line := func(cells []string, colored bool) {
 		parts := make([]string, 0, len(cells))
 		for index, cell := range cells {
 			padded := cell
 			if index < len(cells)-1 {
-				padded = fmt.Sprintf("%-*s", widths[index], cell)
+				padded = padDisplay(cell, widths[index])
+			}
+			if index < len(header) && numericTableColumn(header[index]) {
+				padded = strings.Repeat(" ", max(0, widths[index]-displayWidth(cell))) + cell
 			}
 			switch {
 			case !colored:
@@ -506,23 +546,13 @@ func printTable(writer io.Writer, header []string, rows [][]string, statusColumn
 	}
 }
 
-type progress struct {
-	stderr       io.Writer
-	summary      string
-	message      string
-	started      time.Time
-	cancel       context.CancelFunc
-	done         chan struct{}
-	once         sync.Once
-	enabled      bool
-	verbose      bool
-	tty          bool
-	mu           sync.Mutex
-	phase        string
-	last         time.Time
-	currentBytes int64
-	totalBytes   int64
-	byteProgress bool
+func numericTableColumn(header string) bool {
+	switch header {
+	case "CPU", "CPUS", "MEMORY", "SIZE", "PORT", "PID", "BYTES", "COUNT":
+		return true
+	default:
+		return false
+	}
 }
 
 const terminalProgressBarWidth = 20
@@ -559,17 +589,6 @@ func progressBar(current, total int64, width int, elapsed time.Duration) string 
 		}
 	}
 	return "[" + strings.Repeat(".", position) + strings.Repeat("=", segment) + strings.Repeat(".", width-position-segment) + "]"
-}
-
-// liveTTYMessage must be called while item.mu is held once the progress
-// goroutine has started.
-func (item *progress) liveTTYMessage(now time.Time) string {
-	current, total := int64(0), int64(0)
-	if item.byteProgress {
-		current, total = item.currentBytes, item.totalBytes
-	}
-	elapsed := now.Sub(item.started)
-	return fmt.Sprintf("%s %s %s", progressBar(current, total, terminalProgressBarWidth, elapsed), item.message, styled(item.stderr, ansiDim, elapsed.Round(time.Second).String()))
 }
 
 func progressBytes(value int64) string {
@@ -615,8 +634,8 @@ func formatActivity(event activity.Event, now time.Time) string {
 		}
 		if !event.StartedAt.IsZero() {
 			elapsed := now.Sub(event.StartedAt)
-			if elapsed >= 500*time.Millisecond && event.CurrentBytes > 0 {
-				rate := float64(event.CurrentBytes) / elapsed.Seconds()
+			if elapsed >= 500*time.Millisecond && event.CurrentBytes > event.StartBytes {
+				rate := float64(event.CurrentBytes-event.StartBytes) / elapsed.Seconds()
 				parts = append(parts, progressBytes(int64(rate))+"/s")
 				if !event.Done && event.TotalBytes > event.CurrentBytes && rate > 0 {
 					eta := time.Duration(float64(event.TotalBytes-event.CurrentBytes) / rate * float64(time.Second))
@@ -627,149 +646,6 @@ func formatActivity(event activity.Event, now time.Time) string {
 		message += " — " + strings.Join(parts, " · ")
 	}
 	return strings.TrimSpace(message)
-}
-
-// Report updates the visible lifecycle stage. Fast byte updates are throttled
-// while retaining the newest value for the regular elapsed-time repaint.
-func (item *progress) Report(event activity.Event) {
-	if item == nil || !item.enabled {
-		return
-	}
-	now := time.Now()
-	message := formatActivity(event, now)
-	if message == "" {
-		return
-	}
-	item.mu.Lock()
-	defer item.mu.Unlock()
-	byteUpdate := event.TotalBytes > 0 || event.CurrentBytes > 0
-	if byteUpdate {
-		item.currentBytes = event.CurrentBytes
-		item.totalBytes = event.TotalBytes
-		item.byteProgress = true
-	} else if event.Phase != item.phase {
-		item.currentBytes = 0
-		item.totalBytes = 0
-		item.byteProgress = false
-	}
-	interval := 5 * time.Second
-	if item.tty {
-		interval = 250 * time.Millisecond
-	}
-	if byteUpdate && !event.Done && item.phase == event.Phase && !item.last.IsZero() && now.Sub(item.last) < interval {
-		item.message = message
-		return
-	}
-	item.message = message
-	item.phase = event.Phase
-	item.last = now
-	marker := styled(item.stderr, ansiCyan, "→")
-	if event.Done {
-		marker = styled(item.stderr, ansiGreen, "✓")
-	}
-	if !item.tty {
-		bestEffortf(item.stderr, "%s %s\n", marker, message)
-		return
-	}
-	if event.Done {
-		// A completed phase persists as a checklist row; the live line
-		// falls back to the overall command summary until the next phase.
-		bestEffortf(item.stderr, "\r\x1b[2K%s %s\n", marker, message)
-		item.message = item.summary
-		item.currentBytes = 0
-		item.totalBytes = 0
-		item.byteProgress = false
-		return
-	}
-	bestEffortf(item.stderr, "\r\x1b[2K%s %s", marker, item.liveTTYMessage(now))
-}
-
-// tickf persists an already-satisfied step as a completed checklist row, so a
-// healthy repeat run still renders the full checklist.
-func tickf(stderr io.Writer, format string, arguments ...any) {
-	state := outputContextFrom(stderr)
-	if state == nil || (!state.stderrFile && !state.verbose) {
-		return
-	}
-	bestEffortf(stderr, "%s %s\n", styled(stderr, ansiGreen, "✓"), fmt.Sprintf(format, arguments...))
-}
-
-func deferredProgressReporter(item **progress) activity.Reporter {
-	return func(event activity.Event) {
-		if item != nil && *item != nil {
-			(*item).Report(event)
-		}
-	}
-}
-
-func startProgress(parent context.Context, stderr io.Writer, message string) *progress {
-	state := outputContextFrom(stderr)
-	enabled := state != nil && (state.stderrFile || state.verbose)
-	item := &progress{
-		stderr: stderr, summary: message, message: message, started: time.Now(), done: make(chan struct{}),
-		enabled: enabled, verbose: state != nil && state.verbose, tty: state != nil && state.stderrTTY && state.color,
-	}
-	if !enabled {
-		close(item.done)
-		return item
-	}
-	ctx, cancel := context.WithCancel(parent)
-	item.cancel = cancel
-	if item.tty {
-		bestEffortf(stderr, "%s %s", styled(stderr, ansiCyan, "→"), item.liveTTYMessage(item.started))
-	} else {
-		bestEffortf(stderr, "%s %s\n", styled(stderr, ansiCyan, "→"), message)
-	}
-	interval := time.Minute
-	if item.tty {
-		interval = 250 * time.Millisecond
-	} else if item.verbose {
-		interval = 15 * time.Second
-	}
-	go func() {
-		defer close(item.done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				now := time.Now()
-				elapsed := now.Sub(item.started).Round(time.Second)
-				item.mu.Lock()
-				if item.tty {
-					bestEffortf(stderr, "\r\x1b[2K%s %s", styled(stderr, ansiCyan, "→"), item.liveTTYMessage(now))
-				} else {
-					bestEffortf(stderr, "%s %s (%s elapsed)\n", styled(stderr, ansiDim, "·"), item.message, elapsed)
-				}
-				item.mu.Unlock()
-			}
-		}
-	}()
-	return item
-}
-
-func (item *progress) Stop(err error) {
-	if item == nil || !item.enabled {
-		return
-	}
-	item.once.Do(func() {
-		item.cancel()
-		<-item.done
-		item.mu.Lock()
-		defer item.mu.Unlock()
-		status := styled(item.stderr, ansiGreen, "✓")
-		if err != nil {
-			status = styled(item.stderr, ansiRed, "!")
-		}
-		if item.tty {
-			// Clearing a TTY progress line is best-effort presentation; it must
-			// not replace the operation's result or exit status.
-			bestEffortf(item.stderr, "\r\x1b[2K")
-		}
-		bestEffortf(item.stderr, "%s %s (%s)\n", status, item.summary, time.Since(item.started).Round(time.Millisecond))
-	})
 }
 
 func lifecycleMessage(command string) string {

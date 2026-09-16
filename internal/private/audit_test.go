@@ -33,7 +33,7 @@ func serveQMPIdentity(t *testing.T, socket, name, uuid string) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	go func() {
-		for connectionIndex := 0; connectionIndex < 2; connectionIndex++ {
+		for {
 			connection, err := listener.Accept()
 			if err != nil {
 				return

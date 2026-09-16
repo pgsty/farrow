@@ -108,11 +108,12 @@ func LoadScript(path string) (Script, error) {
 }
 
 type Target struct {
-	Node       string
-	User       string
-	Port       uint16
-	PrivateKey string
-	KnownHosts string
+	Node         string
+	User         string
+	Port         uint16
+	PrivateKey   string
+	KnownHosts   string
+	HostKeyAlias string
 }
 
 func (t Target) validate() error {
@@ -122,7 +123,7 @@ func (t Target) validate() error {
 	if !filepath.IsAbs(t.PrivateKey) || !filepath.IsAbs(t.KnownHosts) {
 		return fmt.Errorf("provision target %s has non-absolute SSH artifacts", t.Node)
 	}
-	if vm.SSHArgsForUser(t.User, t.PrivateKey, t.KnownHosts, t.Port, "true") == nil {
+	if vm.SSHArgsForInstance(t.User, t.PrivateKey, t.KnownHosts, t.HostKeyAlias, t.Port, "true") == nil {
 		return fmt.Errorf("provision target %s has an unsafe SSH user or artifact", t.Node)
 	}
 	return nil
@@ -256,7 +257,7 @@ func (r SSHRunner) Run(ctx context.Context, target Target, script Script, sudo b
 	if sudo {
 		remote = []string{"sudo", "-n", "--", "/bin/bash", "-se"}
 	}
-	args := vm.SSHArgsForUser(target.User, target.PrivateKey, target.KnownHosts, target.Port, remote...)
+	args := vm.SSHArgsForInstance(target.User, target.PrivateKey, target.KnownHosts, target.HostKeyAlias, target.Port, remote...)
 	if args == nil {
 		result.Error = "could not construct safe SSH argv"
 		return result

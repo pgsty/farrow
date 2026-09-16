@@ -6,6 +6,93 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- Test labs remain usable when individual data disks, shares, guest hostnames,
+  node-to-node SSH, or private-network checks fail. Guest limitations are grouped
+  in the result, persisted for `status`, and included in JSON; usable limited
+  guests return success. Guest identity and management SSH remain required.
+- Guest limitations are cached separately from the schema-2 node documents,
+  keeping those documents readable and destroyable by 0.6.0. A missing or
+  damaged warning cache cannot block VM management.
+- `farrow up [node...]` automatically retries unfinished guest setup and updates
+  old helpers without restarting running VMs. Healthy stages are skipped; there
+  is no separate repair command.
+- Writable shares fall back to read-only when guest access is insufficient,
+  preserve that fallback on reboot, and retry writable access on the next `up`.
+  Explicitly selected group-writable project directories are accepted without
+  changing host permissions.
+- Fast setup checks stay quiet; longer operations use one terminal progress
+  area with elapsed time, download metrics, and per-node readiness. No-color
+  terminals still redraw; pipes use throttled plain progress on stderr.
+- Successful starts print a compact result and connection command. Partial
+  results retain ready nodes and offer a scoped retry, including the inventory
+  path. Narrow terminals use readable cards, with Unicode-aware alignment.
+- SSH aliases, guest metadata refresh, and event-log failures are warnings after
+  successful VM operations. Explicit integration commands still fail normally.
+  Their lifecycle waits have separate time budgets, so an unavailable optional
+  integration cannot consume the whole startup timeout. Verbose output records
+  the elapsed time attributed to each foreground stage.
+- First-use help and Homebrew caveats lead with `up` and `ssh`; `init` remains
+  available for customization and `setup --yes` for unattended preparation.
+- Setup checks host capabilities separately from deployment diagnostics, repairs
+  an intact inactive Farrow network, and installs the hosts helper on demand.
+  Fresh untouched default inventories can select an available subnet with a
+  backup of the original. Default templates are shorter; size errors include the
+  file, line, input value, and a valid example.
+
+### Fixed
+
+- Unusable test data filesystems can be reset automatically by `up`, with an
+  explicit notice that previous data was discarded (including persistent data
+  disks). Healthy disks are reused; probe/tool failures, missing devices, busy
+  mounts and backend I/O failures do not trigger formatting. Healthy repeated
+  starts no longer run filesystem growth tools.
+- Stopped VMs recover automatically from occupied management SSH ports; saved
+  invocations, connection details and SSH aliases use the replacement port.
+  Application forwards and running VM identities are preserved.
+- Guest shares use per-user access checks, fixing newly created files that
+  belonged to the wrong guest identity and could not subsequently be written.
+- One failed disk/share does not skip the remaining independent mounts. Failed
+  control-key installation retains the root-only staged key for retry; successful
+  installation consumes it, and later retries validate the installed key.
+- New qcow2 disks always use mode 0600 regardless of the host umask. Recreate
+  and destroy can retain older owned disks created as 0644/0640, narrowing their
+  permissions instead of refusing disks Farrow itself created.
+- Repeating `up` after an offline node-prepare failure safely clears recognized
+  uncommitted artifacts before trying again, instead of failing with "file
+  exists". Committed nodes, runtime artifacts and unrecognized files are kept.
+- Guest initialization no longer depends on `example.com` being reachable.
+  Offline guests finish their disks, shares and private-network setup. Bootstrap
+  failures show `setup failed` with inspection/rebuild guidance instead of an
+  ineffective SSH retry; rebuilding remains explicitly confirmed.
+- `exec` preserves multiple remote arguments, including `sh -c` scripts, spaces
+  and empty values. Single-string shell commands and `ssh` retain their syntax.
+- `doctor` no longer scans unrelated guests across the entire shared subnet or
+  reports other users' running VMs as conflicts. Lifecycle commands still probe
+  the addresses they will actually use. Linux setup names its bridge correctly.
+- Subsecond operations omit transient progress. Unattended first use points to
+  `setup --yes` followed by `up`. Legacy-layout guidance preserves existing VM
+  disks instead of suggesting deletion of the whole data directory.
+- Failed lifecycle commands show the tool, exit code and cause without flooding
+  the summary with QEMU arguments; verbose and JSON retain the full diagnostic.
+- The installer detects an earlier Farrow entry in PATH even when its own
+  directory is already present, and prints a command for the installed binary.
+- SSH host-key trust follows the VM UUID across port reuse. Permanent SSH access
+  errors fail promptly, while readiness timeouts retain the last useful cause.
+  An owned empty `known_hosts` permits the first connection after `--no-wait`;
+  private keys, ownership, file modes, and link checks remain required.
+- Transient image failures retry with resume and bounded backoff. Official
+  repositories fail over to each other without bypassing digest checks; custom
+  repositories remain exclusive. Server cooldowns above the retry budget skip
+  that source. Resumed download speeds count only newly transferred bytes.
+- Verified cache permissions can be repaired; damaged unreferenced cache files
+  are preserved before replacement. Backing files referenced by nodes or pending
+  transactions are never moved automatically.
+- Starting from applied state can prepare the host without creating a new
+  inventory. Repeating interrupted starts preserves readiness facts and partial
+  results instead of discarding successful nodes.
+
 ## [0.6.0] - 2026-09-05
 
 ### Changed

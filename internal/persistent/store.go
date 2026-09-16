@@ -127,15 +127,17 @@ func validateCanonicalWithin(root, target string) error {
 	return nil
 }
 
-// ValidateSource proves that a node-local disk is a single-link, mode-0600,
-// current-user file whose fully resolved path remains inside the deployment.
+// ValidateSource also accepts read-only group/other bits left by older
+// qemu-img creation under umask 022/027. Preserve narrows them before publishing
+// into the retained store, whose disk and marker modes remain exactly 0600.
 func ValidateSource(root, source string) error {
 	inside, err := fsutil.IsWithin(root, source)
 	if err != nil || !inside {
 		return errors.New("persistent source disk escapes the deployment root")
 	}
-	if err := validateFile(source, 0); err != nil {
-		return err
+	info, err := os.Lstat(source)
+	if err != nil || !(owned(info, 0o600, false) || owned(info, 0o640, false) || owned(info, 0o644, false)) {
+		return fmt.Errorf("persistent source disk is missing or unsafe: %s", source)
 	}
 	return validateCanonicalWithin(root, source)
 }
@@ -367,6 +369,9 @@ func Preserve(root string, identity Identity, source string) (Record, error) {
 			cleanupEmptyParents(root, directory)
 		}
 	}()
+	if err := os.Chmod(target, 0o600); err != nil {
+		return Record{}, fmt.Errorf("normalize retained disk permissions: %w", err)
+	}
 	if err := fsutil.SyncDir(filepath.Dir(source)); err != nil {
 		return Record{}, err
 	}

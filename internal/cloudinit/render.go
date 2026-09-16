@@ -25,6 +25,7 @@ type Host struct {
 }
 
 type Disk struct {
+	Fresh      bool
 	Serial     string
 	Mount      string
 	Filesystem string
@@ -244,72 +245,144 @@ func indent(content string, spaces int) string {
 
 func renderDiskScript(disks []Disk) string {
 	var out strings.Builder
-	out.WriteString("#!/bin/bash\nset -euo pipefail\n\n")
-	out.WriteString(`init_disk() {
-  local serial="$1" mountpoint="$2" requested="$3" dev="/dev/disk/by-id/virtio-$1"
-  for _ in $(seq 1 60); do
-    [[ -b "${dev}" ]] && break
-    sleep 1
-  done
-  [[ -b "${dev}" ]] || { echo "missing Farrow disk ${dev}" >&2; return 1; }
-  if ! blkid "${dev}" >/dev/null 2>&1; then
-    case "${requested}" in
-      xfs)
-        command -v mkfs.xfs >/dev/null 2>&1 || { echo "xfs requested but mkfs.xfs is unavailable" >&2; return 1; }
-        mkfs.xfs -f "${dev}"
-        ;;
-      ext4)
-        command -v mkfs.ext4 >/dev/null 2>&1 || { echo "ext4 requested but mkfs.ext4 is unavailable" >&2; return 1; }
-        mkfs.ext4 -F "${dev}"
-        ;;
-      auto)
-        if command -v mkfs.xfs >/dev/null 2>&1; then
-          mkfs.xfs -f "${dev}"
-        elif command -v mkfs.ext4 >/dev/null 2>&1; then
-          mkfs.ext4 -F "${dev}"
-        else
-          echo "no supported filesystem formatter is available" >&2
-          return 1
-        fi
-        ;;
-      *)
-        echo "unsupported filesystem ${requested}" >&2
-        return 1
-        ;;
+	out.WriteString(`#!/bin/bash
+set -euo pipefail
+check_only=false
+[[ "${1:-}" != --check ]] || check_only=true
+probe_disk() {
+  local attempt status
+  for attempt in 1 2 3; do
+    status=0
+    metadata=$(blkid -p -o export "${dev}" 2>"${probe_error}") || status=$?
+    case "${status}" in
+      0) uuid=$(printf '%s\n' "${metadata}" | sed -n 's/^UUID=//p'); fstype=$(printf '%s\n' "${metadata}" | sed -n 's/^TYPE=//p'); return 0 ;;
+      2) ;; # No recognizable signature. Retry before treating it as unusable.
+      *) cat "${probe_error}" >&2; echo "filesystem probe failed (${status}); disk not reset" >&2; return 1 ;;
     esac
+    [[ "${attempt}" == 3 ]] || sleep 1
+  done
+  uuid= fstype=
+}
+reset_disk() {
+  local format="${requested}" status=0
+  if [[ "${format}" == auto ]]; then
+    if command -v mkfs.xfs >/dev/null 2>&1; then format=xfs; else format=ext4; fi
   fi
-  local uuid fstype
-	  uuid=$(blkid -s UUID -o value "${dev}")
-	  fstype=$(blkid -s TYPE -o value "${dev}")
-	  [[ -n "${uuid}" && -n "${fstype}" ]] || { echo "disk metadata missing for ${dev}" >&2; return 1; }
-	  mkdir -p "${mountpoint}"
-	  local already_mounted=false
-	  if mountpoint -q "${mountpoint}"; then
-	    already_mounted=true
-	    local mounted_source mounted_uuid
-	    mounted_source=$(findmnt -n -o SOURCE --target "${mountpoint}")
-	    mounted_uuid=$(blkid -s UUID -o value "${mounted_source}")
-	    [[ "${mounted_uuid}" == "${uuid}" ]] || { echo "wrong filesystem mounted at ${mountpoint}: ${mounted_source}" >&2; return 1; }
-	  fi
-	  local fstab_tmp
-	  fstab_tmp=$(mktemp /etc/fstab.farrow.XXXXXX)
-	  awk -v mountpoint="${mountpoint}" 'NF < 2 || $2 != mountpoint { print }' /etc/fstab > "${fstab_tmp}"
-	  printf 'UUID=%s %s %s defaults,nofail 0 2\n' "${uuid}" "${mountpoint}" "${fstype}" >> "${fstab_tmp}"
-	  install -o root -g root -m 0644 "${fstab_tmp}" /etc/fstab
-	  rm -f -- "${fstab_tmp}"
-	  if [[ "${already_mounted}" == false ]]; then
-	    mount "${mountpoint}"
-	  fi
-  if [[ "${fstype}" == "xfs" ]] && command -v xfs_growfs >/dev/null 2>&1; then
-    xfs_growfs "${mountpoint}"
-  elif [[ "${fstype}" == "ext4" ]] && command -v resize2fs >/dev/null 2>&1; then
-    resize2fs "${dev}"
+  command -v "mkfs.${format}" >/dev/null 2>&1 || { echo "${format} requested but mkfs.${format} is unavailable" >&2; return 1; }
+  # Only the configured whole data device may be reset, and never while any
+  # filesystem on it is mounted. An I/O or read-only backend is not fixed by mkfs.
+  [[ "$(lsblk -dn -o TYPE "${dev}")" == disk ]] || { echo 'data device is not a whole disk' >&2; return 1; }
+  [[ -z "$(lsblk -nr -o MOUNTPOINT "${dev}" | sed '/^[[:space:]]*$/d')" ]] || { echo 'data disk is still in use; stop its users and run farrow up again' >&2; return 1; }
+  [[ "$(blockdev --getro "${dev}")" == 0 ]] || { echo 'data device is read-only; disk not reset' >&2; return 1; }
+  dd if="${dev}" of=/dev/null bs=4096 count=1 status=none || { echo 'data device cannot be read; disk not reset' >&2; return 1; }
+  printf 'Farrow: initializing %s on %s (%s)\n' "${mountpoint}" "${dev}" "${format}"
+  if [[ "${format}" == xfs ]]; then
+    timeout --kill-after=5s 60s mkfs.xfs -f "${dev}" || status=$?
+  else
+    timeout --kill-after=5s 60s mkfs.ext4 -F "${dev}" || status=$?
   fi
+  if (( status != 0 )); then
+    echo 'data disk reset failed; previous contents may have been discarded' >&2
+    return 1
+  fi
+  if [[ "${fresh}" != true || -e "/var/lib/farrow/disk-${serial}.initialized" ]]; then
+    /usr/local/libexec/farrow-warning disk-reset "${mountpoint}: reset to an empty ${format} filesystem; previous data discarded"
+  fi
+  touch "/var/lib/farrow/disk-${serial}.initialized"
+  probe_disk
+  [[ -n "${uuid}" && -n "${fstype}" ]]
+}
+filesystem_unusable() {
+  local status=0
+  case "${fstype}" in
+    ext4)
+      command -v e2fsck >/dev/null 2>&1 || return 1
+      LC_ALL=C timeout --kill-after=2s 15s e2fsck -fn "${dev}" >"${probe_error}" 2>&1 || status=$?
+      # Severe metadata damage (for example an invalid root inode) also sets
+      # the abort bit: 4 + 8. Exclude operational read failures before resetting.
+      if grep -Eqi 'I/O error|Input/output error|cannot read|could not read|Permission denied|allocat.*memory|out of memory' "${probe_error}"; then return 1; fi
+      [[ "${status}" == 4 || "${status}" == 12 ]]
+      ;;
+    xfs)
+      command -v xfs_repair >/dev/null 2>&1 || return 1
+      LC_ALL=C timeout --kill-after=2s 15s xfs_repair -n "${dev}" >"${probe_error}" 2>&1 || status=$?
+      # Operational read failures are not evidence that mkfs would help.
+      if grep -Eqi 'I/O error|Input/output error|cannot read|could not read|Permission denied' "${probe_error}"; then return 1; fi
+      [[ "${status}" == 1 ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+init_disk() {
+  local serial="$1" mountpoint="$2" requested="$3" fresh="$4" dev="/dev/disk/by-id/$5"
+  local uuid= fstype= metadata= mounted_id= expected_id= attempt probe_error
+  probe_error=$(mktemp /var/lib/farrow/probe.err.XXXXXX)
+  trap "rm -f -- '${probe_error}'" EXIT
+  if [[ "${check_only}" == false ]]; then
+    for attempt in $(seq 1 10); do
+      [[ -b "${dev}" ]] && break
+      sleep 1
+    done
+  fi
+  [[ -b "${dev}" ]] || { echo "missing data device ${dev}; run farrow up after it returns" >&2; return 1; }
+  expected_id=$(lsblk -dn -o MAJ:MIN "${dev}")
+  [[ -n "${expected_id}" ]] || return 1
+  if mountpoint -q "${mountpoint}"; then
+    mounted_id=$(findmnt -n -o MAJ:MIN --mountpoint "${mountpoint}")
+    [[ "${mounted_id}" == "${expected_id}" ]] || { echo "another filesystem occupies ${mountpoint}; disk not reset" >&2; return 1; }
+    # A directory read and the mount flags are a cheap check, not a full scrub.
+    if [[ ",$(findmnt -n -o OPTIONS --mountpoint "${mountpoint}")," != *,ro,* ]] && ls -U "${mountpoint}" >/dev/null; then
+      return 0
+    fi
+    [[ "${check_only}" == false ]] || return 1
+    umount "${mountpoint}" || { echo 'data disk is busy; stop its users and run farrow up again' >&2; return 1; }
+  fi
+  [[ "${check_only}" == false ]] || return 1
+  probe_disk
+  mkdir -p "${mountpoint}"
+  [[ ! -L "${mountpoint}" ]] || { echo 'data mountpoint is a symlink' >&2; return 1; }
+  if [[ -z "${fstype}" || -z "${uuid}" ]]; then
+    reset_disk
+  fi
+  case "${fstype}" in ext4|xfs) ;; *) echo "unsupported existing filesystem ${fstype}; disk not reset" >&2; return 1 ;; esac
+  local mounted=false
+  for attempt in 1 2; do
+    if mount -t "${fstype}" -o defaults "${dev}" "${mountpoint}"; then mounted=true; break; fi
+    [[ "${attempt}" == 2 ]] || sleep 1
+  done
+  if [[ "${mounted}" == false ]]; then
+    if filesystem_unusable; then
+      reset_disk
+      mount -t "${fstype}" -o defaults "${dev}" "${mountpoint}"
+    else
+      echo 'data disk mount failed without confirmed filesystem damage; disk not reset' >&2
+      return 1
+    fi
+  fi
+  local fstab_tmp
+  fstab_tmp=$(mktemp /etc/fstab.farrow.XXXXXX)
+  awk -v mountpoint="${mountpoint}" 'NF < 2 || $2 != mountpoint { print }' /etc/fstab >"${fstab_tmp}"
+  printf 'UUID=%s %s %s defaults,nofail 0 2\n' "${uuid}" "${mountpoint}" "${fstype}" >>"${fstab_tmp}"
+  chmod 0644 "${fstab_tmp}"
+  mv -f -- "${fstab_tmp}" /etc/fstab
+  touch "/var/lib/farrow/disk-${serial}.initialized"
 }
 
 `)
 	for _, disk := range disks {
-		fmt.Fprintf(&out, "init_disk %s %s %s\n", disk.Serial, disk.Mount, disk.Filesystem)
+		fmt.Fprintf(&out, `disk_err=$(mktemp /var/lib/farrow/disk.err.XXXXXX)
+set +e
+( set -euo pipefail; init_disk %s %s %s %t virtio-%s ) 2>"${disk_err}"
+disk_status=$?
+set -e
+if (( disk_status != 0 )); then
+  if [[ "${check_only}" == true ]]; then rm -f -- "${disk_err}"; exit 1; fi
+  detail=$(tail -n 1 "${disk_err}")
+  /usr/local/libexec/farrow-warning data-disks "%s: ${detail:-disk setup unavailable}"
+fi
+cat "${disk_err}" >&2
+rm -f -- "${disk_err}"
+`, disk.Serial, disk.Mount, disk.Filesystem, disk.Fresh, disk.Serial, disk.Mount)
 	}
 	return out.String()
 }
@@ -321,7 +394,7 @@ func renderShareScript(user string, shares []Share) string {
 	const (
 		beginMarker = "# BEGIN FARROW SHARES"
 		endMarker   = "# END FARROW SHARES"
-		baseOptions = "version=9p2000.L,trans=virtio,cache=none,msize=262144,access=any,nofail,nodev,nosuid"
+		baseOptions = "version=9p2000.L,trans=virtio,cache=none,msize=262144,access=client,nofail,nodev,nosuid"
 	)
 	var out strings.Builder
 	out.WriteString("#!/bin/bash\nset -Eeuo pipefail\n\n")
@@ -399,7 +472,8 @@ if (( begin_count == 1 )); then
       echo 'unsafe entry in Farrow share block' >&2
       exit 1
     fi
-    if [[ "${options}" != "version=9p2000.L,trans=virtio,cache=none,msize=262144,access=any,nofail,nodev,nosuid,rw" && "${options}" != "version=9p2000.L,trans=virtio,cache=none,msize=262144,access=any,nofail,nodev,nosuid,ro" ]]; then
+    normalized_options=${options/access=any/access=client}
+    if [[ "${normalized_options}" != "version=9p2000.L,trans=virtio,cache=none,msize=262144,access=client,nofail,nodev,nosuid,rw" && "${normalized_options}" != "version=9p2000.L,trans=virtio,cache=none,msize=262144,access=client,nofail,nodev,nosuid,ro" ]]; then
       echo 'unexpected options in Farrow share block' >&2
       exit 1
     fi
@@ -477,6 +551,8 @@ verify_mount() {
 
 probe_share() {
   local mountpoint="$1" readonly="$2"
+  runuser -u "${share_user}" -- test -r "${mountpoint}" || return 1
+  runuser -u "${share_user}" -- test -x "${mountpoint}" || return 1
   if [[ "${readonly}" == true ]]; then
     if active_probe=$(runuser -u "${share_user}" -- mktemp "${mountpoint}/.farrow-write-probe.XXXXXX" 2>/dev/null); then
       if ! rm -f -- "${active_probe}" || [[ -e "${active_probe}" || -L "${active_probe}" ]]; then
@@ -491,11 +567,46 @@ probe_share() {
     return 0
   fi
 
-  active_probe=$(runuser -u "${share_user}" -- mktemp "${mountpoint}/.farrow-write-probe.XXXXXX")
-  runuser -u "${share_user}" -- /bin/sh -c 'printf "%s\n" farrow-share-probe > "$1"' farrow-probe "${active_probe}"
-  runuser -u "${share_user}" -- rm -f -- "${active_probe}"
-  [[ ! -e "${active_probe}" && ! -L "${active_probe}" ]]
+  active_probe=$(runuser -u "${share_user}" -- mktemp "${mountpoint}/.farrow-write-probe.XXXXXX") || return 1
+  runuser -u "${share_user}" -- /bin/sh -c 'printf "%s\n" farrow-share-probe > "$1"' farrow-probe "${active_probe}" || return 1
+  runuser -u "${share_user}" -- rm -f -- "${active_probe}" || return 1
+  [[ ! -e "${active_probe}" && ! -L "${active_probe}" ]] || return 1
   active_probe=
+}
+
+check_share_access() {
+  local tag="$1" mountpoint="$2" readonly="$3"
+  if probe_share "${mountpoint}" "${readonly}"; then
+    return 0
+  fi
+  if [[ -n "${active_probe}" ]]; then
+    rm -f -- "${active_probe}"
+    active_probe=
+  fi
+  if [[ "${readonly}" == false ]]; then
+    mount -o remount,ro "${mountpoint}"
+    verify_mount "${tag}" "${mountpoint}" true
+    # Keep the actual fallback across reboots. A subsequent finalize rewrites
+    # the desired options and retries writable access.
+    fstab_tmp=$(mktemp /etc/.fstab.farrow-shares.XXXXXX)
+    awk -v tag="${tag}" -v target="${mountpoint}" -v begin="${begin_marker}" -v end="${end_marker}" '
+      $0 == begin { inside=1 }
+      $0 == end { inside=0 }
+      inside && $1 == tag && $2 == target && $3 == "9p" { sub(/,rw$/, ",ro", $4) }
+      { print }
+    ' "${fstab}" >"${fstab_tmp}"
+    chown root:root "${fstab_tmp}"
+    chmod 0644 "${fstab_tmp}"
+    sync -f "${fstab_tmp}"
+    mv -f -- "${fstab_tmp}" "${fstab}"
+    fstab_tmp=
+    if runuser -u "${share_user}" -- test -r "${mountpoint}" && runuser -u "${share_user}" -- test -x "${mountpoint}"; then
+      echo "${mountpoint}: read-only; ${share_user} cannot write with the host directory's permissions" >&2
+      return 1
+    fi
+  fi
+  echo "${mountpoint}: unavailable to ${share_user}; check host directory permissions" >&2
+  return 1
 }
 
 init_share() {
@@ -508,8 +619,21 @@ init_share() {
   fi
   [[ "$(readlink -f -- "${mountpoint}")" == "${mountpoint}" ]]
   if mountpoint -q "${mountpoint}"; then
+    # A previous boot may have downgraded this mount. Retry the requested
+    # access after the user fixes permissions, without changing host metadata.
+    mounted_source=$(findmnt -n -o SOURCE --target "${mountpoint}")
+    mounted_type=$(findmnt -n -o FSTYPE --target "${mountpoint}")
+    [[ "${mounted_source}" == "${tag}" && "${mounted_type}" == 9p ]]
+    mounted_options=$(findmnt -n -o OPTIONS --target "${mountpoint}")
+    if ! has_mount_option "${mounted_options}" access=client; then
+      umount "${mountpoint}"
+      mount "${mountpoint}"
+    fi
+    if [[ "${readonly}" == false ]]; then
+      mount -o remount,rw "${mountpoint}"
+    fi
     verify_mount "${tag}" "${mountpoint}" "${readonly}"
-    probe_share "${mountpoint}" "${readonly}"
+    check_share_access "${tag}" "${mountpoint}" "${readonly}"
     return 0
   fi
   if find "${mountpoint}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
@@ -518,12 +642,25 @@ init_share() {
   fi
   mount "${mountpoint}"
   verify_mount "${tag}" "${mountpoint}" "${readonly}"
-  probe_share "${mountpoint}" "${readonly}"
+  check_share_access "${tag}" "${mountpoint}" "${readonly}"
 }
 
 `)
 	for _, share := range shares {
-		fmt.Fprintf(&out, "init_share %q %q %t\n", share.Tag, share.Guest, share.Readonly)
+		// Run each mount in an independent strict subshell. Putting a shell
+		// function in an if/|| condition would disable errexit inside it.
+		fmt.Fprintf(&out, `share_err=$(mktemp /var/lib/farrow/share.err.XXXXXX)
+set +e
+( set -Eeuo pipefail; init_share %q %q %t ) 2>"${share_err}"
+share_status=$?
+set -e
+if (( share_status != 0 )); then
+  detail=$(tail -n 1 "${share_err}")
+  /usr/local/libexec/farrow-warning shares "${detail:-%s: mount unavailable}"
+fi
+cat "${share_err}" >&2
+rm -f -- "${share_err}"
+`, share.Tag, share.Guest, share.Readonly, share.Guest)
 	}
 	return out.String()
 }
@@ -588,8 +725,12 @@ for candidate in /sys/class/net/*; do
 done
 [[ -n "${interface}" ]] || { echo "private interface with MAC ${expected_mac} was not found" >&2; exit 1; }
 ip link show dev "${interface}" >/dev/null
-ip link show dev "${interface}" | grep -Eq '<[^>]*UP[^>]*>'
-ip -4 -o address show dev "${interface}" scope global | awk '{print $4}' | grep -Fxq "${expected}"
+if ! ip link show dev "${interface}" | grep -Eq '<[^>]*UP[^>]*>'; then
+  ip link set dev "${interface}" up
+fi
+if ! ip -4 -o address show dev "${interface}" scope global | awk '{print $4}' | grep -Fxq "${expected}"; then
+  ip address add "${expected}" dev "${interface}"
+fi
 if ip -4 route show default dev "${interface}" | grep -q .; then
   echo "private interface ${interface} owns a default route" >&2
   exit 1
@@ -628,6 +769,14 @@ IFS=: read -r _ _ uid gid _ home _ <<<"${entry}"
 ssh_dir="${home}/.ssh"
 if [[ -e "${ssh_dir}" || -L "${ssh_dir}" ]]; then
   [[ -d "${ssh_dir}" && ! -L "${ssh_dir}" ]]
+fi
+if [[ ! -e %[2]s && ! -e %[3]s ]]; then
+  # The first successful installation consumes the staged secret. A later
+  # repair must validate the installed files instead of requiring it again.
+  [[ ! -L "${ssh_dir}/id_ed25519" && ! -L "${ssh_dir}/config" ]]
+  [[ "$(stat -c '%%u:%%g:%%a' "${ssh_dir}/id_ed25519")" == "${uid}:${gid}:600" ]]
+  [[ "$(stat -c '%%u:%%g:%%a' "${ssh_dir}/config")" == "${uid}:${gid}:600" ]]
+  exit 0
 fi
 [[ "$(stat -c '%%u:%%g:%%a' %[2]s)" == "0:0:600" && ! -L %[2]s ]]
 [[ "$(stat -c '%%u:%%g:%%a' %[3]s)" == "0:0:600" && ! -L %[3]s ]]
@@ -670,6 +819,11 @@ func renderFinalizeScript(controlSSH, privateNetwork, shares bool) string {
 	out.WriteString(`#!/bin/bash
 set -euo pipefail
 install -d -o root -g root -m 0755 /var/lib/farrow
+exec 9>/var/lib/farrow/finalize.lock
+flock -n 9 || { echo 'guest setup is already running' >&2; exit 1; }
+# Empty selection runs initial setup; up passes only stages needing a retry.
+selected=" $* "
+previous_warnings=$(cat /var/lib/farrow/warnings.jsonl 2>/dev/null || true)
 stage=identity
 stage_err=/var/lib/farrow/stage.err
 finalize_exit() {
@@ -691,9 +845,8 @@ finalize_exit() {
   fi
   rm -f -- "${stage_err}" || true
 `)
-	if controlSSH {
-		out.WriteString("  rm -f -- /var/lib/farrow/control-id_ed25519 /var/lib/farrow/control-ssh-config || true\n")
-	}
+	// The installer consumes its root-only staged key on success. Retain it
+	// after a failed optional install so an in-place repair can finish later.
 	out.WriteString(`  exit "${status}"
 }
 # run_stage records the stage name and keeps its stderr so the error marker
@@ -707,21 +860,39 @@ run_stage() {
   cat "${stage_err}" >&2
   return "${rc}"
 }
+run_optional() {
+  local name=$1 budget=$2 detail
+  shift 2
+  if [[ "${selected}" != '  ' && "${selected}" != *" ${name} "* ]]; then
+    # Retain unselected limitations, but reset notices describe only one run.
+    printf '%s\n' "${previous_warnings}" | grep -F "\"stage\":\"${name}\"" >>/var/lib/farrow/warnings.jsonl || true
+    return 0
+  fi
+  if run_stage "${name}" timeout --kill-after=5s "${budget}" "$@"; then
+    return 0
+  fi
+  detail=$(tail -n 1 "${stage_err}")
+  /usr/local/libexec/farrow-warning "${name}" "${detail:-setup unavailable or timed out}"
+}
 trap finalize_exit EXIT
 rm -f -- /var/lib/farrow/ready.json /var/lib/farrow/error.json
+: >/var/lib/farrow/warnings.jsonl
+chmod 0644 /var/lib/farrow/warnings.jsonl
 run_stage identity /usr/local/libexec/farrow-identity-contract
-run_stage hosts /usr/local/libexec/farrow-hosts
-run_stage management-network /usr/local/libexec/farrow-network-check
-run_stage data-disks /usr/local/libexec/farrow-init-disks
+run_optional hosts 30s /usr/local/libexec/farrow-hosts
+# Internet access is diagnostic only: an offline lab must still initialize its
+# disks, shares and private network. farrow-network-check remains available for
+# an explicit guest connectivity check.
+run_optional data-disks 90s /usr/local/libexec/farrow-init-disks
 `)
 	if shares {
-		out.WriteString("run_stage shares /usr/local/libexec/farrow-init-shares\n")
+		out.WriteString("run_optional shares 30s /usr/local/libexec/farrow-init-shares\n")
 	}
 	if controlSSH {
-		out.WriteString("run_stage control-ssh /usr/local/libexec/farrow-install-control-ssh\n")
+		out.WriteString("run_optional control-ssh 30s /usr/local/libexec/farrow-install-control-ssh\n")
 	}
 	if privateNetwork {
-		out.WriteString("run_stage private-network /usr/local/libexec/farrow-private-contract\n")
+		out.WriteString("run_optional private-network 30s /usr/local/libexec/farrow-private-contract\n")
 	}
 	out.WriteString("run_stage ready /usr/local/libexec/farrow-ready\n")
 	return out.String()
@@ -729,15 +900,36 @@ run_stage data-disks /usr/local/libexec/farrow-init-disks
 
 func renderReadyScript(input Input) (string, error) {
 	ready := struct {
-		Node       string `json:"node"`
-		Generation uint64 `json:"generation"`
-		SpecHash   string `json:"spec_hash"`
-	}{input.Node, input.Generation, input.SpecHash}
+		Node         string `json:"node"`
+		Generation   uint64 `json:"generation"`
+		SpecHash     string `json:"spec_hash"`
+		SetupVersion string `json:"setup_version"`
+	}{input.Node, input.Generation, input.SpecHash, SetupVersion}
 	data, err := json.Marshal(ready)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("#!/bin/bash\nset -euo pipefail\ninstall -d -m 0755 /var/lib/farrow\nprintf '%%s\\n' %s > /var/lib/farrow/ready.json.tmp\nchmod 0644 /var/lib/farrow/ready.json.tmp\nmv /var/lib/farrow/ready.json.tmp /var/lib/farrow/ready.json\n", yamlQuote(string(data))), nil
+	return fmt.Sprintf(`#!/bin/bash
+set -euo pipefail
+install -d -m 0755 /var/lib/farrow
+warnings=
+if [[ -f /var/lib/farrow/warnings.jsonl ]]; then
+  warnings=$(paste -sd, /var/lib/farrow/warnings.jsonl)
+fi
+printf '%%s,"warnings":[%%s]}\n' %s "${warnings}" > /var/lib/farrow/ready.json.tmp
+chmod 0644 /var/lib/farrow/ready.json.tmp
+mv /var/lib/farrow/ready.json.tmp /var/lib/farrow/ready.json
+`, yamlQuote(strings.TrimSuffix(string(data), "}"))), nil
+}
+
+func renderWarningScript() string {
+	return `#!/bin/bash
+set -euo pipefail
+json_string() {
+  printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' ' ' | cut -c1-400 | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+printf '{"stage":"%s","detail":"%s"}\n' "$(json_string "$1")" "$(json_string "$2")" >>/var/lib/farrow/warnings.jsonl
+`
 }
 
 func renderMetaData(input Input) []byte {
@@ -790,6 +982,7 @@ func renderUserData(input Input) ([]byte, error) {
 		out.WriteString(indent(content, 6))
 	}
 	writeFile("/usr/local/libexec/farrow-init-disks", "root:root", "0755", renderDiskScript(input.Disks))
+	writeFile("/usr/local/libexec/farrow-warning", "root:root", "0755", renderWarningScript())
 	if len(input.Shares) != 0 {
 		writeFile("/usr/local/libexec/farrow-init-shares", "root:root", "0755", renderShareScript(input.SSHUser, input.Shares))
 	}

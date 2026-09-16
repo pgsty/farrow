@@ -141,7 +141,7 @@ func (m Manager) ConnectionsLocked(ctx context.Context, deploymentValue Deployme
 		connections = append(connections, Connection{
 			Node: definition.Name, User: deploymentState.Resolved.SSHUser,
 			Host: "127.0.0.1", Port: node.SSHPort,
-			PrivateKey: privateKey, KnownHosts: knownHosts,
+			PrivateKey: privateKey, KnownHosts: knownHosts, HostKeyAlias: vm.HostKeyAlias(node.VMUUID),
 		})
 	}
 	return connections, nil
@@ -171,14 +171,15 @@ func (m Manager) InstallSSHConfig(ctx context.Context, name, home string) (sshco
 		}
 		aliases = append(aliases, definition.Aliases...)
 		entries = append(entries, sshconfig.Entry{
-			Name:       name,
-			Node:       definition.Name,
-			Aliases:    aliases,
-			User:       deploymentState.Resolved.SSHUser,
-			Host:       "127.0.0.1",
-			Port:       nodes[index].SSHPort,
-			Identity:   identityFile,
-			KnownHosts: knownHosts,
+			Name:         name,
+			Node:         definition.Name,
+			Aliases:      aliases,
+			User:         deploymentState.Resolved.SSHUser,
+			Host:         "127.0.0.1",
+			Port:         nodes[index].SSHPort,
+			Identity:     identityFile,
+			KnownHosts:   knownHosts,
+			HostKeyAlias: vm.HostKeyAlias(nodes[index].VMUUID),
 		})
 	}
 	return sshconfig.InstallMany(home, entries)

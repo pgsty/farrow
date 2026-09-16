@@ -257,6 +257,8 @@ func TestResolveDataRootRejectsPreSimplificationLayout(t *testing.T) {
 	}
 	if _, err := ResolveDataRoot(); err == nil || !strings.Contains(err.Error(), "pre-simplification") {
 		t.Fatalf("pre-simplification layout was accepted: %v", err)
+	} else if strings.Contains(err.Error(), "rm -rf") || !strings.Contains(err.Error(), "preserve this directory") {
+		t.Fatalf("legacy guidance risks deleting VM disks: %v", err)
 	}
 	t.Setenv("FARROW_HOME", "relative/path")
 	if _, err := ResolveDataRoot(); err == nil {

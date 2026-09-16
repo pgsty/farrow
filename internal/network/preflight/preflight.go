@@ -102,6 +102,27 @@ type Report struct {
 	ExitCode     int          `json:"exit_code"`
 }
 
+// Repair is limited to an intact installation of this exact network. Conflicts
+// and uncertain ownership still require the caller to resolve the finding.
+func (report Report) CanRepair() bool {
+	if (report.Installation.Status != "exact" && report.Installation.Status != "protected") || report.Installation.CIDR != report.CIDR {
+		return false
+	}
+	repair := false
+	for _, finding := range report.Findings {
+		if finding.Severity != Error {
+			continue
+		}
+		switch finding.Code {
+		case "installation.not_ready", "installation.route_missing":
+			repair = true
+		default:
+			return false
+		}
+	}
+	return repair
+}
+
 func overlap(left, right netip.Prefix) bool {
 	return left.IsValid() && right.IsValid() && (left.Contains(right.Addr()) || right.Contains(left.Addr()))
 }

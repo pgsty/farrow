@@ -81,10 +81,10 @@ func TestValidateSSHArtifactsAcceptsGeneratedMaterial(t *testing.T) {
 	t.Parallel()
 	root := keyRoot(t)
 	privateKey, knownHosts, _ := ensured(t, root)
-	// known_hosts is created empty, but validation requires real content, so a
-	// deployment that has never recorded a host key is correctly rejected.
-	if _, _, err := ValidateSSHArtifacts(root); err == nil {
-		t.Fatal("empty known_hosts was accepted as valid trust material")
+	// An initial no-wait start has not recorded a host key yet. OpenSSH must
+	// be allowed to establish trust with accept-new on the first connection.
+	if _, _, err := ValidateSSHArtifacts(root); err != nil {
+		t.Fatalf("initial known_hosts blocked the first connection: %v", err)
 	}
 	if err := os.WriteFile(knownHosts, []byte("[127.0.0.1]:2222 ssh-ed25519 AAAA\n"), 0o600); err != nil {
 		t.Fatal(err)

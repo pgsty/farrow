@@ -3,6 +3,7 @@ package vm
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,12 +19,15 @@ import (
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/qmp"
+	"github.com/pgsty/farrow/internal/state"
 )
 
 type Lifecycle struct {
-	Runner  execx.Runner
-	QMP     QMPClient
-	SSHUser string
+	Runner            execx.Runner
+	QMP               QMPClient
+	SSHUser           string
+	HostKeyAlias      string
+	GuestSetupVersion string
 
 	// The hooks below keep process signalling tests deterministic. Production
 	// callers leave them nil and use the conservative process package plus the
@@ -81,6 +85,24 @@ type bootstrapErrorMarker struct {
 	ExitStatus int    `json:"exit_status"`
 	Stage      string `json:"stage"`
 	Detail     string `json:"detail,omitempty"`
+}
+
+// BootstrapError means SSH succeeded but guest initialization stopped. Waiting
+// for SSH again cannot rerun cloud-init or repair the failed initialization.
+type BootstrapError struct {
+	Stage      string
+	Detail     string
+	ExitStatus int
+}
+
+func (e *BootstrapError) Error() string {
+	if e.Stage == "" {
+		return fmt.Sprintf("guest bootstrap failed (exit status %d)", e.ExitStatus)
+	}
+	if detail := strings.TrimSpace(e.Detail); detail != "" {
+		return fmt.Sprintf("guest bootstrap failed during %s: %s", e.Stage, detail)
+	}
+	return fmt.Sprintf("guest bootstrap failed during %s (exit status %d)", e.Stage, e.ExitStatus)
 }
 
 func (l Lifecycle) validate() error {
@@ -497,6 +519,18 @@ func (Lifecycle) duration(configured, fallback time.Duration) time.Duration {
 }
 
 func SSHArgsForUser(user, key, knownHosts string, port uint16, command ...string) []string {
+	return SSHArgsForInstance(user, key, knownHosts, "", port, command...)
+}
+
+// The forwarding port is reusable; trust belongs to the VM instance instead.
+func HostKeyAlias(uuid string) string {
+	if uuid == "" {
+		return ""
+	}
+	return fmt.Sprintf("farrow-%x", sha256.Sum256([]byte(strings.ToLower(uuid))))
+}
+
+func SSHArgsForInstance(user, key, knownHosts, alias string, port uint16, command ...string) []string {
 	if !sshUserPattern.MatchString(user) {
 		return nil
 	}
@@ -508,11 +542,19 @@ func SSHArgsForUser(user, key, knownHosts string, port uint16, command ...string
 		"-F", "/dev/null", "-i", key,
 		"-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
 		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "LogLevel=ERROR",
 		"-o", "UserKnownHostsFile=" + knownHostsOption,
 		"-o", "ConnectTimeout=5", "-p", strconv.Itoa(int(port)), user + "@127.0.0.1",
 	}
 	if len(command) > 0 {
 		args = append(args, QuoteRemote(command))
+	}
+	if alias != "" {
+		quoted, err := openssh.QuoteConfigValue(alias)
+		if err != nil {
+			return nil
+		}
+		args = append([]string{"-o", "HostKeyAlias=" + quoted}, args...)
 	}
 	return args
 }
@@ -528,19 +570,31 @@ func QuoteRemote(command []string) string {
 	return strings.Join(quoted, " ")
 }
 
-func (l Lifecycle) WaitReady(ctx context.Context, sshPath, key, knownHosts string, port uint16, expected ReadyMarker, timeout time.Duration) error {
+func (l Lifecycle) WaitReady(parent context.Context, sshPath, key, knownHosts string, port uint16, expected ReadyMarker, timeout time.Duration) ([]state.GuestWarning, error) {
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		args := SSHArgsForUser(l.sshUser(), key, knownHosts, port, "cat", "/var/lib/farrow/ready.json")
+		args := SSHArgsForInstance(l.sshUser(), key, knownHosts, l.HostKeyAlias, port, "cat", "/var/lib/farrow/ready.json")
 		if args == nil {
-			return fmt.Errorf("invalid SSH user %q", l.sshUser())
+			return nil, fmt.Errorf("invalid SSH user %q", l.sshUser())
 		}
 		result, err := l.Runner.Run(ctx, sshPath, args...)
 		if err == nil {
-			var marker ReadyMarker
-			if decodeErr := json.Unmarshal(result.Stdout, &marker); decodeErr == nil && marker == expected {
-				return nil
+			var marker struct {
+				ReadyMarker
+				Warnings     []state.GuestWarning `json:"warnings,omitempty"`
+				SetupVersion string               `json:"setup_version"`
+			}
+			if decodeErr := json.Unmarshal(result.Stdout, &marker); decodeErr == nil && marker.ReadyMarker == expected {
+				if l.GuestSetupVersion != "" && marker.SetupVersion != l.GuestSetupVersion {
+					marker.Warnings = append(marker.Warnings, state.GuestWarning{Stage: "setup-update", Detail: "guest setup helpers need an update"})
+				}
+				return marker.Warnings, nil
 			} else if decodeErr != nil {
 				lastErr = decodeErr
 			} else {
@@ -548,29 +602,39 @@ func (l Lifecycle) WaitReady(ctx context.Context, sshPath, key, knownHosts strin
 			}
 		} else {
 			lastErr = err
+			if permanentSSHError(result.Stderr) {
+				return nil, fmt.Errorf("SSH access refused: %s", readinessDetail(err))
+			}
 		}
-		errorArgs := SSHArgsForUser(l.sshUser(), key, knownHosts, port, "cat", "/var/lib/farrow/error.json")
+		errorArgs := SSHArgsForInstance(l.sshUser(), key, knownHosts, l.HostKeyAlias, port, "cat", "/var/lib/farrow/error.json")
 		errorResult, errorErr := l.Runner.Run(ctx, sshPath, errorArgs...)
 		if errorErr == nil {
 			var marker bootstrapErrorMarker
 			if decodeErr := json.Unmarshal(errorResult.Stdout, &marker); decodeErr != nil || marker.ExitStatus <= 0 || len(marker.Stage) > 64 {
-				return errors.New("guest bootstrap failed and left an unreadable error marker")
+				return nil, errors.New("guest bootstrap failed and left an unreadable error marker")
 			}
-			if marker.Stage == "" {
-				return fmt.Errorf("guest bootstrap failed (exit status %d)", marker.ExitStatus)
-			}
-			if detail := strings.TrimSpace(marker.Detail); detail != "" {
-				return fmt.Errorf("guest bootstrap failed during %s: %s", marker.Stage, detail)
-			}
-			return fmt.Errorf("guest bootstrap failed during %s (exit status %d)", marker.Stage, marker.ExitStatus)
+			return nil, &BootstrapError{Stage: marker.Stage, Detail: marker.Detail, ExitStatus: marker.ExitStatus}
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			if parent.Err() != nil {
+				return nil, parent.Err()
+			}
+			return nil, fmt.Errorf("guest did not become ready within %s: %s", timeout, readinessDetail(lastErr))
 		case <-time.After(time.Second):
 		}
 	}
-	return fmt.Errorf("guest did not become ready within %s: %s", timeout, readinessDetail(lastErr))
+	return nil, fmt.Errorf("guest did not become ready within %s: %s", timeout, readinessDetail(lastErr))
+}
+
+func permanentSSHError(stderr []byte) bool {
+	message := strings.ToLower(string(stderr))
+	for _, marker := range []string{"host key verification failed", "remote host identification has changed", "permission denied (", "bad configuration option", "bad permissions", "unprotected private key file", "no matching host key type"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // readinessDetail keeps the part of the last probe error a user can act on:

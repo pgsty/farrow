@@ -77,13 +77,10 @@ func openDirectory(share spec.Share) (*os.File, error) {
 		return nil, fmt.Errorf("host share %q is owned by uid %d, expected %d", share.Host, stat.Uid, os.Geteuid())
 	}
 	permissions := mode & 0o777
-	if permissions&0o022 != 0 {
-		return nil, fmt.Errorf("host share %q is group/world writable (%#o)", share.Host, permissions)
-	}
+	// Project directories often allow group writes. The user chose this
+	// directory explicitly; its mode is not a reason to reject the whole lab.
+	// Guest initialization checks actual access and can fall back to read-only.
 	required := uint32(0o500)
-	if !share.Readonly {
-		required = 0o700
-	}
 	if permissions&required != required {
 		return nil, fmt.Errorf("host share %q owner permissions %#o do not provide required %#o", share.Host, permissions, required)
 	}

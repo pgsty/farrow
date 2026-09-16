@@ -186,6 +186,7 @@ func (e *NetworkPreflightError) Error() string {
 }
 
 type Manager struct {
+	retryGuestSetup     bool
 	FarrowVersion       string
 	OperationID         string
 	Runner              execx.Runner
@@ -213,19 +214,23 @@ func (m Manager) report(phase, message string) {
 }
 
 type NodeStatus struct {
-	Error     string      `json:"error,omitempty"`
-	Image     string      `json:"image,omitempty"`
-	CPUs      int         `json:"cpus,omitempty"`
-	Memory    int64       `json:"memory_bytes,omitempty"`
-	Name      string      `json:"name"`
-	Address   string      `json:"address"`
-	State     state.Phase `json:"state"`
-	Runtime   string      `json:"runtime"`
-	GuestArch string      `json:"guest_arch,omitempty"`
-	Accel     string      `json:"accelerator,omitempty"`
-	SSHHost   string      `json:"ssh_host"`
-	SSHPort   uint16      `json:"ssh_port"`
-	ProcessID int         `json:"pid,omitempty"`
+	Warnings     []state.GuestWarning `json:"warnings,omitempty"`
+	Repairs      []string             `json:"repairs,omitempty"`
+	hostKeyAlias string               // carries the identity checked in this snapshot into direct SSH
+	Ready        bool                 `json:"ready,omitempty"`
+	Error        string               `json:"error,omitempty"`
+	Image        string               `json:"image,omitempty"`
+	CPUs         int                  `json:"cpus,omitempty"`
+	Memory       int64                `json:"memory_bytes,omitempty"`
+	Name         string               `json:"name"`
+	Address      string               `json:"address"`
+	State        state.Phase          `json:"state"`
+	Runtime      string               `json:"runtime"`
+	GuestArch    string               `json:"guest_arch,omitempty"`
+	Accel        string               `json:"accelerator,omitempty"`
+	SSHHost      string               `json:"ssh_host"`
+	SSHPort      uint16               `json:"ssh_port"`
+	ProcessID    int                  `json:"pid,omitempty"`
 }
 
 func invocationOption(arguments []string, name string) string {
@@ -275,12 +280,13 @@ func appendStatusMessage(current, addition string) string {
 }
 
 type Connection struct {
-	Node       string `json:"node"`
-	User       string `json:"user"`
-	Host       string `json:"host"`
-	Port       uint16 `json:"port"`
-	PrivateKey string `json:"private_key"`
-	KnownHosts string `json:"known_hosts"`
+	Node         string `json:"node"`
+	User         string `json:"user"`
+	Host         string `json:"host"`
+	Port         uint16 `json:"port"`
+	PrivateKey   string `json:"private_key"`
+	KnownHosts   string `json:"known_hosts"`
+	HostKeyAlias string `json:"host_key_alias,omitempty"`
 }
 
 type LifecyclePlan struct {
@@ -1066,7 +1072,9 @@ func (m Manager) statusForLocked(ctx context.Context, deploymentValue Deployment
 			failures = append(failures, NodeFailure{Node: node.Node, Stage: "status", Error: message})
 		}
 		result.Nodes = append(result.Nodes, NodeStatus{
-			Name: node.Node, Address: definition.Address, State: node.Phase, Runtime: runtimeState, Error: message,
+			Warnings:     node.GuestWarnings,
+			hostKeyAlias: vm.HostKeyAlias(node.VMUUID),
+			Name:         node.Node, Address: definition.Address, State: node.Phase, Runtime: runtimeState, Error: message,
 			Image: node.Image.Alias + "@" + node.Image.Release, CPUs: definition.CPUs, Memory: definition.Memory,
 			GuestArch: invocationGuestArch(node.Invocation.Binary, node.Invocation.Args), Accel: invocationOption(node.Invocation.Args, "-accel"),
 			SSHHost: "127.0.0.1", SSHPort: node.SSHPort, ProcessID: node.Process.PID,
@@ -1151,12 +1159,14 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 		return Connection{}, err
 	}
 	port := uint16(0)
+	hostKeyAlias := ""
 	for _, node := range status.Nodes {
 		if node.Name == requestedNode {
 			if node.State != state.Running || node.Runtime != "running" {
 				return Connection{}, fmt.Errorf("node %s is not running", requestedNode)
 			}
 			port = node.SSHPort
+			hostKeyAlias = node.hostKeyAlias
 		}
 	}
 	privateKey, knownHosts, err := validateSSHArtifacts(deploymentValue)
@@ -1169,7 +1179,7 @@ func (m Manager) Connection(ctx context.Context, requestedNode string) (Connecti
 			return Connection{}, fmt.Errorf("SSH artifact is unsafe: %s", path)
 		}
 	}
-	return Connection{Node: requestedNode, User: deploymentState.Resolved.SSHUser, Host: "127.0.0.1", Port: port, PrivateKey: privateKey, KnownHosts: knownHosts}, nil
+	return Connection{Node: requestedNode, User: deploymentState.Resolved.SSHUser, Host: "127.0.0.1", Port: port, PrivateKey: privateKey, KnownHosts: knownHosts, HostKeyAlias: hostKeyAlias}, nil
 }
 
 func (m Manager) LogPath(nodeName, source string) (string, error) {
@@ -1246,7 +1256,7 @@ func (m Manager) SSHConfig(ctx context.Context) (string, error) {
 			hostPatterns = append(hostPatterns, definition.Address)
 		}
 		hostPatterns = append(hostPatterns, definition.Aliases...)
-		fmt.Fprintf(&output, "Host %s\n  HostName 127.0.0.1\n  User %s\n  Port %d\n  IdentityFile %s\n  UserKnownHostsFile %s\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n\n", strings.Join(hostPatterns, " "), deploymentState.Resolved.SSHUser, node.SSHPort, quotedIdentity, quotedKnownHosts)
+		fmt.Fprintf(&output, "Host %s\n  HostName 127.0.0.1\n  User %s\n  Port %d\n  IdentityFile %s\n  UserKnownHostsFile %s\n  HostKeyAlias %s\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n\n", strings.Join(hostPatterns, " "), deploymentState.Resolved.SSHUser, node.SSHPort, quotedIdentity, quotedKnownHosts, vm.HostKeyAlias(node.VMUUID))
 	}
 	return output.String(), nil
 }
@@ -1440,6 +1450,7 @@ func (m Manager) Reload(ctx context.Context, requested spec.Resolved) (Status, e
 }
 
 func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, returnErr error) {
+	m.retryGuestSetup = true
 	m.report("preflight", "Checking the fixed-IP network and QEMU capabilities")
 	var err error
 	if err := validateResolved(requested); err != nil {
@@ -1496,8 +1507,17 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 				if err != nil {
 					return Status{}, err
 				}
-				if node.Phase != state.Running {
-					startExistingAfterCreate = true
+				startExistingAfterCreate = true
+				if node.Phase != state.Running && node.Phase != state.Stopped && node.Phase != state.Prepared {
+					recovering := m
+					recovering.Nodes = []string{node.Node}
+					if _, err := recovering.statusFor(ctx, existing, ""); err != nil {
+						return Status{}, err
+					}
+					node, err = store.ReadNode(definition.Name)
+					if err != nil {
+						return Status{}, err
+					}
 				}
 				allRunning = allRunning && node.Phase == state.Running
 				allRunnable = allRunnable && (node.Phase == state.Running || node.Phase == state.Stopped || node.Phase == state.Prepared)
@@ -1623,7 +1643,8 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 	for _, node := range resolved.Nodes {
 		generations[node.Name] = 1
 	}
-	seeds, err := RenderSeeds(resolved, plan, SeedInput{PublicKey: publicKey, PrivateKey: string(privateKey), SpecHashes: nodeHashes, Generation: generations})
+	seedInput := SeedInput{PublicKey: publicKey, PrivateKey: string(privateKey), SpecHashes: nodeHashes, Generation: generations}
+	seeds, err := RenderSeeds(resolved, plan, seedInput)
 	if err != nil {
 		return Status{}, err
 	}
@@ -1632,11 +1653,11 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 		return Status{}, err
 	}
 	prepare := PrepareConfig{
-		DeploymentRoot: deploymentValue.Root, Resolved: resolved, SpecHash: specHash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds, Bases: bases, SSHPorts: sshPorts,
+		DeploymentRoot: deploymentValue.Root, Resolved: resolved, SpecHash: specHash, NodeHashes: nodeHashes, Plan: plan, Seeds: seeds, SeedInput: &seedInput, Bases: bases, SSHPorts: sshPorts,
 		Profile: runtime.Profile, QEMUBinary: qemuPath, Firmware: firmware, UseUEFI: boot == "uefi", Backend: backend,
 		Disks: disk.Manager{QEMUImg: qemuImg, Runner: m.runner()},
 	}
-	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: resolved.SSHUser}, Deployment: deploymentValue, Shares: shareSourcesByNode(resolved), SSHPath: sshPath, PrivateKey: privateKeyPath, KnownHosts: knownHosts, DarwinSocket: backend.DarwinSocket}
+	lifecycle := NativeLifecycle{RetryGuestSetup: m.retryGuestSetup, Resolved: resolved, VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: resolved.SSHUser}, Deployment: deploymentValue, Shares: shareSourcesByNode(resolved), SSHPath: sshPath, PrivateKey: privateKeyPath, KnownHosts: knownHosts, DarwinSocket: backend.DarwinSocket}
 	readyTimeout, err := m.readyTimeout(resolved)
 	if err != nil {
 		return Status{}, err
@@ -1651,7 +1672,8 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 		if m.RollbackFailed {
 			err = rollbackCreateFailure(deploymentValue, createResult, err)
 		}
-		return Status{}, err
+		status, statusErr := m.statusFor(ctx, deploymentValue, "")
+		return statusWithReadiness(status, createResult.Start), errors.Join(err, statusErr)
 	}
 	if len(createNodes) != 0 {
 		deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
@@ -1661,14 +1683,16 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 		if startExistingAfterCreate {
 			status, err := m.startExisting(ctx, deploymentValue, deploymentState, hostProfile, backend)
 			if err != nil {
-				return Status{}, err
+				return status, err
 			}
 			status.Message = fmt.Sprintf("converged the deployment: created %d node(s) and started selected existing nodes", len(createNodes))
 			return status, nil
 		}
-		return m.statusFor(ctx, deploymentValue, fmt.Sprintf("created and started %d node(s)", len(createNodes)))
+		status, err := m.statusFor(ctx, deploymentValue, fmt.Sprintf("created and started %d node(s)", len(createNodes)))
+		return statusWithReadiness(status, createResult.Start), err
 	}
-	return m.statusFor(ctx, deploymentValue, "created and started the deployment")
+	status, err := m.statusFor(ctx, deploymentValue, "created and started the deployment")
+	return statusWithReadiness(status, createResult.Start), err
 }
 
 func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, deploymentState state.DeploymentState, profile platform.Profile, backend Backend) (_ Status, returnErr error) {
@@ -1727,7 +1751,7 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 		return Status{}, err
 	}
 	keysDir := filepath.Join(deploymentValue.Root, "keys")
-	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}, Deployment: deploymentValue, Shares: shareSourcesByNode(deploymentState.Resolved), SSHPath: sshPath, PrivateKey: filepath.Join(keysDir, "id_ed25519"), KnownHosts: filepath.Join(keysDir, "known_hosts"), DarwinSocket: backend.DarwinSocket}
+	lifecycle := NativeLifecycle{RetryGuestSetup: m.retryGuestSetup, Resolved: deploymentState.Resolved, VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}, Deployment: deploymentValue, Shares: shareSourcesByNode(deploymentState.Resolved), SSHPath: sshPath, PrivateKey: filepath.Join(keysDir, "id_ed25519"), KnownHosts: filepath.Join(keysDir, "known_hosts"), DarwinSocket: backend.DarwinSocket}
 	names := make([]string, 0, len(deploymentState.Resolved.Nodes))
 	starting := 0
 	for _, definition := range deploymentState.Resolved.Nodes {
@@ -1768,12 +1792,13 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 	default:
 		m.report("guest-ready", fmt.Sprintf("Starting %d node(s) and waiting up to %s for guest readiness", starting, readyTimeout))
 	}
-	outcomes, err := StartPrepared(ctx, StartConfig{Deployment: deploymentValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait})
+	outcomes, err := StartPrepared(ctx, StartConfig{Deployment: deploymentValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names)), ReadyTimeout: readyTimeout, NoWait: m.NoWait, Progress: m.Progress})
 	if err != nil {
 		return Status{}, err
 	}
 	if failures := startFailures(outcomes); len(failures) > 0 {
-		return Status{}, newPartialError(failures, len(outcomes))
+		status, statusErr := m.statusForLocked(ctx, deploymentValue, "")
+		return statusWithReadiness(status, outcomes), errors.Join(newPartialError(failures, len(outcomes)), statusErr)
 	}
 	readyMessage := fmt.Sprintf("All %d node(s) are ready", len(outcomes))
 	if m.NoWait {
@@ -1781,9 +1806,11 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 	}
 	m.Progress.Report(activity.Event{Phase: "guest-ready", Message: readyMessage, Done: true})
 	if starting == 0 {
-		return m.statusForLocked(ctx, deploymentValue, "already running")
+		status, err := m.statusForLocked(ctx, deploymentValue, "already running")
+		return statusWithReadiness(status, outcomes), err
 	}
-	return m.statusForLocked(ctx, deploymentValue, "started the deployment")
+	status, err := m.statusForLocked(ctx, deploymentValue, "started the deployment")
+	return statusWithReadiness(status, outcomes), err
 }
 
 func (m Manager) Start(ctx context.Context) (Status, error) {
@@ -1829,7 +1856,7 @@ func (m Manager) stopLocked(ctx context.Context, deploymentValue Deployment) (St
 	if err != nil {
 		return Status{}, err
 	}
-	lifecycle := NativeLifecycle{VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}}
+	lifecycle := NativeLifecycle{RetryGuestSetup: m.retryGuestSetup, VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}}
 	outcomes, err := StopRunning(ctx, StopConfig{Deployment: deploymentValue, Lifecycle: lifecycle, Nodes: names, Concurrency: boundedConcurrency(len(names))})
 	if err != nil {
 		return Status{}, err

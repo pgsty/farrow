@@ -92,6 +92,7 @@ func displayActivitySource(source string) string {
 }
 
 func copyWithProgress(destination io.Writer, source io.Reader, limit int64, reporter activity.Reporter, event activity.Event) (int64, error) {
+	event.StartBytes = event.CurrentBytes
 	if event.StartedAt.IsZero() {
 		event.StartedAt = time.Now()
 	}
@@ -279,7 +280,7 @@ func (s Store) ValidateCached(ctx context.Context, entry Entry) (string, Metadat
 		return "", Metadata{}, fmt.Errorf("local image digest mismatch: got %s want %s: %w", actual, entry.SHA256, err)
 	}
 	if actual != entry.SHA256 {
-		return "", Metadata{}, fmt.Errorf("local image digest mismatch: got %s want %s", actual, entry.SHA256)
+		return "", Metadata{}, fmt.Errorf("%w: local image digest mismatch: got %s want %s", ErrIntegrity, actual, entry.SHA256)
 	}
 	if entry.ArtifactSize > 0 && size != entry.ArtifactSize {
 		return "", Metadata{}, fmt.Errorf("local image size mismatch: got %d want %d", size, entry.ArtifactSize)
@@ -555,7 +556,7 @@ func (s Store) stageHTTP(ctx context.Context, source, directory string, entry En
 	case http.StatusNotFound, http.StatusGone:
 		return "", resumeFrom, fmt.Errorf("%w: %s", errSourceGone, response.Status)
 	default:
-		return "", resumeFrom, fmt.Errorf("download returned %s", response.Status)
+		return "", resumeFrom, &sourceHTTPError{Status: response.StatusCode, After: response.Header.Get("Retry-After")}
 	}
 	if response.Request != nil && response.Request.URL != nil {
 		displaySource = displayActivitySource(response.Request.URL.String())
@@ -664,12 +665,25 @@ func (s Store) Pull(ctx context.Context, entry Entry) (_ string, _ Metadata, ret
 	if err != nil {
 		return "", Metadata{}, err
 	}
+	if err := s.repairCachePermissions(ctx, entry); err != nil {
+		if !errors.Is(err, ErrIntegrity) {
+			return "", Metadata{}, err
+		}
+		if quarantineErr := s.quarantineCache(ctx, entry); quarantineErr != nil {
+			return "", Metadata{}, errors.Join(err, quarantineErr)
+		}
+	}
 	if target, metadata, err := s.ValidateCached(ctx, entry); err == nil {
 		s.Progress.Report(activity.Event{
 			Phase: "image-ready", Message: fmt.Sprintf("Using cached image %s %s (%s)", entry.Alias, entry.Release, entry.Arch), Done: true,
 		})
 		return target, metadata, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, ErrIntegrity) {
+			if quarantineErr := s.quarantineCache(ctx, entry); quarantineErr != nil {
+				return "", Metadata{}, errors.Join(err, quarantineErr)
+			}
+		}
 		if target, pathErr := s.Path(entry); pathErr == nil {
 			if _, statErr := os.Lstat(target); statErr == nil {
 				return "", Metadata{}, fmt.Errorf("%w; remove the conflicting cache file %s or run farrow image prune --yes", err, target)
@@ -687,16 +701,23 @@ func (s Store) Pull(ctx context.Context, entry Entry) (_ string, _ Metadata, ret
 			return "", Metadata{}, sourceErr
 		}
 		candidates = append(candidates, candidate{kind: "repository", source: source})
+		if fallback := officialFallback(s.Repository); fallback != "" {
+			mirrorSource, sourceErr := RepositoryArtifactSource(fallback, entry.File)
+			if sourceErr != nil {
+				return "", Metadata{}, sourceErr
+			}
+			candidates = append(candidates, candidate{kind: "mirror", source: mirrorSource})
+		}
 	} else if entry.Upstream != "" {
 		// Upstream remains a provenance field and a compatibility source for a
 		// Store deliberately constructed without a repository. Normal command
-		// paths always resolve a repository and use it as the sole artifact source.
+		// paths resolve a repository; official repositories can fail over to their mirror.
 		candidates = append(candidates, candidate{kind: "upstream", source: entry.Upstream})
 	}
 	failures := make([]string, 0, len(candidates))
 	gone := len(candidates) > 0
 	for index, candidate := range candidates {
-		tempPath, copied, stageErr := s.stageSource(ctx, candidate.source, directory, entry)
+		tempPath, copied, stageErr := s.stageWithRetry(ctx, candidate.source, directory, entry)
 		if stageErr != nil {
 			if err := ctx.Err(); err != nil {
 				return "", Metadata{}, err
@@ -731,7 +752,7 @@ func (s Store) Pull(ctx context.Context, entry Entry) (_ string, _ Metadata, ret
 	}
 	message := fmt.Errorf("all image sources failed: %s", strings.Join(failures, "; "))
 	if gone {
-		if len(candidates) == 1 && candidates[0].kind == "repository" {
+		if candidates[0].kind == "repository" {
 			return "", Metadata{}, fmt.Errorf("%w\n\nThe catalog artifact is not present in the selected repository. Run `farrow update`, select another official repository with --mirror/--repo, or `farrow image import` a local copy", message)
 		}
 		// A Store without a repository is a compatibility-only upstream path.

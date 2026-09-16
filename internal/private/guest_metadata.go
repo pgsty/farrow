@@ -67,7 +67,7 @@ func (m Manager) RefreshGuestMetadata(ctx context.Context) (returnErr error) {
 		connections, err := selected.ConnectionsLocked(ctx, deployment, held)
 		if err == nil {
 			connection := connections[0]
-			args := vm.SSHArgsForUser(connection.User, connection.PrivateKey, connection.KnownHosts, connection.Port)
+			args := vm.SSHArgsForInstance(connection.User, connection.PrivateKey, connection.KnownHosts, connection.HostKeyAlias, connection.Port)
 			args = append(args, guestMetadataCommand(current.Resolved, definition.Control))
 			_, err = m.runner().Run(ctx, sshPath, args...)
 		}

@@ -383,24 +383,13 @@ func TestIntegrationInterruptedDownloadResumesWithRange(t *testing.T) {
 	store.HTTPClient = server.Client()
 	entry := artifact.entry(server.URL + "/image.qcow2")
 
-	if _, _, err := store.Pull(context.Background(), entry); err == nil {
-		t.Fatal("interrupted download unexpectedly succeeded")
-	}
 	staged := resumePartialPath(filepath.Join(store.DataRoot, "images", entry.Alias), entry)
-	info, err := os.Stat(staged)
-	if err != nil {
-		t.Fatalf("interrupted download did not leave a resume point: %v", err)
-	}
-	if info.Size() == 0 || info.Size() >= entry.ArtifactSize {
-		t.Fatalf("resume point size = %d, want a partial prefix of %d", info.Size(), entry.ArtifactSize)
-	}
-
 	path, _, err := store.Pull(context.Background(), entry)
 	if err != nil {
 		t.Fatalf("resumed download failed: %v", err)
 	}
-	if !sawRange.Load() {
-		t.Fatal("second attempt did not ask the source to resume")
+	if !sawRange.Load() || attempts.Load() != 2 {
+		t.Fatalf("automatic retry attempts=%d range=%t", attempts.Load(), sawRange.Load())
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal(err)

@@ -351,24 +351,27 @@ func (host inventoryHost) lookupSize(key string, unitMultiplier int64) (int64, b
 	if err != nil || !found {
 		return 0, found, err
 	}
+	sizeError := func(err error) error {
+		return fmt.Errorf("line %d: host %s variable %q = %q: %w; use an integer or a size such as 4GiB", node.Line, host.address, key, node.Value, err)
+	}
 	if node.Tag == "!!int" {
 		var integer int64
 		if err := node.Decode(&integer); err != nil {
-			return 0, true, fmt.Errorf("host %s variable %q is too large", host.address, key)
+			return 0, true, sizeError(errors.New("value is too large"))
 		}
 		value, err := scaleSize(integer, unitMultiplier)
 		if err != nil {
-			return 0, true, fmt.Errorf("host %s variable %q: %w", host.address, key, err)
+			return 0, true, sizeError(err)
 		}
 		return value, true, nil
 	}
 	var text string
 	if decodeErr := node.Decode(&text); node.Tag != "!!str" || decodeErr != nil {
-		return 0, true, fmt.Errorf("host %s variable %q from %s must be an integer or a size string", host.address, key, origin)
+		return 0, true, sizeError(fmt.Errorf("value from %s must be an integer or a size string", origin))
 	}
 	value, parseErr := ParseSize(text)
 	if parseErr != nil {
-		return 0, true, fmt.Errorf("host %s variable %q: %w", host.address, key, parseErr)
+		return 0, true, sizeError(parseErr)
 	}
 	return value, true, nil
 }

@@ -31,7 +31,7 @@ func (e *PartialError) Error() string {
 	unready := make([]string, 0)
 	for _, failure := range e.Failures {
 		details = append(details, fmt.Sprintf("%s (%s: %s)", failure.Node, failure.Stage, strings.Join(strings.Fields(failure.Error), " ")))
-		if failure.Stage == "readiness" {
+		if failure.Stage == "readiness" || failure.Stage == "bootstrap" {
 			unready = append(unready, failure.Node)
 		}
 	}
@@ -87,6 +87,12 @@ func startFailures(outcomes []StartOutcome) []NodeFailure {
 		stage := "start"
 		if outcome.Running {
 			stage = "readiness"
+		}
+		if outcome.BootstrapFailed {
+			stage = "bootstrap"
+		}
+		if outcome.SetupFailed {
+			stage = "guest-setup"
 		}
 		message := outcome.Error
 		if message == "" {
@@ -184,7 +190,7 @@ func (controller Controller) CreateAndStart(ctx context.Context) (_ CreateResult
 		result.Start, err = StartPrepared(ctx, StartConfig{
 			Deployment: controller.Deployment, Lifecycle: controller.Lifecycle,
 			Nodes: startNames, Concurrency: controller.Concurrency, ReadyTimeout: controller.ReadyTimeout, NoWait: controller.NoWait,
-			SetupRuntime: controller.SetupRuntime,
+			SetupRuntime: controller.SetupRuntime, Progress: controller.Progress,
 		})
 		if err != nil {
 			return result, err

@@ -176,11 +176,13 @@ func TestSSHRunnerStreamsSnapshotAndCapturesExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), sshRunnerTestTimeout)
 	defer cancel()
 	script := fixtureScript()
-	result := (SSHRunner{SSHPath: fakeSSH}).Run(ctx, fixtureTarget("meta"), script, true)
+	target := fixtureTarget("meta")
+	target.HostKeyAlias = vm.HostKeyAlias("provisioned-instance")
+	result := (SSHRunner{SSHPath: fakeSSH}).Run(ctx, target, script, true)
 	if result.Success || result.ExitCode != 17 || result.DurationMS < 0 {
 		t.Fatalf("result = %#v", result)
 	}
-	if !strings.Contains(result.Stdout, "'sudo' '-n' '--' '/bin/bash' '-se'") || !strings.Contains(result.Stdout, "stdin=echo ok") {
+	if !strings.Contains(result.Stdout, "'sudo' '-n' '--' '/bin/bash' '-se'") || !strings.Contains(result.Stdout, "stdin=echo ok") || !strings.Contains(result.Stdout, "HostKeyAlias=\""+target.HostKeyAlias+"\"") {
 		t.Fatalf("stdout = %q", result.Stdout)
 	}
 	if result.Stderr != "fixture stderr\n" || !strings.Contains(result.Error, "exit status 17") {

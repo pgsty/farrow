@@ -114,3 +114,50 @@ func TestPreserveRejectsForeignHardLinkedSource(t *testing.T) {
 		t.Fatal("hard-linked source was accepted")
 	}
 }
+
+func TestPreserveNormalizesOlderQEMUImgModesWithoutChangingData(t *testing.T) {
+	for _, mode := range []os.FileMode{0o600, 0o640, 0o644} {
+		root, identity, source := persistentFixture(t)
+		if err := os.Chmod(source, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateSource(root, source); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(source)
+		if err != nil || before.Mode().Perm() != mode {
+			t.Fatal("read-only source validation changed mode")
+		}
+		record, err := Preserve(root, identity, source)
+		if err != nil {
+			t.Fatalf("mode %o cannot be retained: %v", mode, err)
+		}
+		after, err := os.Stat(record.Path)
+		if err != nil || !os.SameFile(before, after) || after.Mode().Perm() != 0o600 {
+			t.Fatalf("mode %o lost identity/permissions: %v %v", mode, after, err)
+		}
+		data, err := os.ReadFile(record.Path)
+		if err != nil || string(data) != "retained-data" {
+			t.Fatalf("disk data changed: %q %v", data, err)
+		}
+	}
+}
+
+func TestSourcePermissionCompatibilityRejectsWritableOrLinkedDisks(t *testing.T) {
+	root, _, source := persistentFixture(t)
+	if err := os.Chmod(source, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSource(root, source); err == nil {
+		t.Fatal("world-writable disk accepted")
+	}
+	if err := os.Chmod(source, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(source, source+".link"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSource(root, source); err == nil {
+		t.Fatal("hardlinked disk accepted")
+	}
+}

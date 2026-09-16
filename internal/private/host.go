@@ -24,9 +24,13 @@ import (
 	"github.com/pgsty/farrow/internal/spec"
 )
 
-type CapabilityError struct{ Reason string }
+type CapabilityError struct {
+	Reason string
+	Cause  error
+}
 
 func (e *CapabilityError) Error() string { return e.Reason }
+func (e *CapabilityError) Unwrap() error { return e.Cause }
 
 func rootOwned(path string, mode os.FileMode, kind string) (os.FileInfo, error) {
 	info, err := os.Lstat(path)
@@ -371,7 +375,7 @@ func PreflightHost(ctx context.Context, profile platform.Profile, expected *spec
 	}
 	qemuPath, qemuVersion, err := qemuVersionPreflight(ctx, profile, runner)
 	if err != nil {
-		return Backend{}, &CapabilityError{Reason: err.Error()}
+		return Backend{}, &CapabilityError{Reason: err.Error(), Cause: err}
 	}
 	var backend Backend
 	switch profile.OS {

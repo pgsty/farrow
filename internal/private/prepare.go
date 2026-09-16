@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pgsty/farrow/internal/cloudinit"
@@ -55,6 +56,7 @@ type PrepareConfig struct {
 	NodeHashes      map[string]string
 	Plan            Plan
 	Seeds           map[string]cloudinit.Files
+	SeedInput       *SeedInput
 	Bases           map[string]BaseImage
 	SSHPorts        map[string]uint16
 	Profile         platform.Profile
@@ -263,7 +265,38 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 	}
 	nodeDir := filepath.Join(nodesDir, name)
 	if err := os.Mkdir(nodeDir, 0o700); err != nil {
-		return NodeArtifacts{}, fmt.Errorf("create new private node directory: %w", err)
+		if !errors.Is(err, os.ErrExist) {
+			return NodeArtifacts{}, fmt.Errorf("create new private node directory: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return NodeArtifacts{}, err
+		}
+		info, err := os.Lstat(nodeDir)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			return NodeArtifacts{}, fmt.Errorf("preserved unsafe unfinished node directory %s", nodeDir)
+		}
+		metadata, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || metadata.Uid != uint32(os.Geteuid()) {
+			return NodeArtifacts{}, fmt.Errorf("preserved unfinished node directory %s owned by another user", nodeDir)
+		}
+		// An offline prepare may leave a journal after a disk/tool failure.
+		// Reuse the existing rollback boundary before preparing again: it refuses
+		// committed state, runtime artifacts and any unrecognized files.
+		journal, err := ReadPrepareJournal(filepath.Join(nodeDir, "private-prepare.json"))
+		if err != nil || journal.Node != name || journal.SpecHash != config.NodeHashes[name] {
+			return NodeArtifacts{}, fmt.Errorf("unfinished node directory %s cannot be recovered automatically; preserve it and inspect its prepare journal", nodeDir)
+		}
+		for _, path := range []string{nodePlan.Runtime.QMP, nodePlan.Runtime.PIDFile} {
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				return NodeArtifacts{}, fmt.Errorf("unfinished node %s has runtime artifacts; run farrow status before retrying", name)
+			}
+		}
+		if _, err := RollbackPrepared(privatePrepareDeployment(config), name, true); err != nil {
+			return NodeArtifacts{}, fmt.Errorf("preserved unfinished node %s: %w", name, err)
+		}
+		if err := os.Mkdir(nodeDir, 0o700); err != nil {
+			return NodeArtifacts{}, fmt.Errorf("create recovered private node directory: %w", err)
+		}
 	}
 	now := config.now()
 	journalPath := filepath.Join(nodeDir, "private-prepare.json")
@@ -283,6 +316,7 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 		return artifacts, err
 	}
 	qemuData := make([]qemu.Disk, 0, len(definition.Disks))
+	freshDisks := make(map[string]bool)
 	for _, diskSpec := range definition.Disks {
 		serial, err := identity.DiskSerial(name, diskSpec.Name)
 		if err != nil {
@@ -294,11 +328,21 @@ func PrepareNode(ctx context.Context, config PrepareConfig, name string) (NodeAr
 		}
 		artifacts.Data = append(artifacts.Data, DataArtifact{Name: diskSpec.Name, Path: path, Serial: serial, Size: diskSpec.Size, Mount: diskSpec.Mount})
 		qemuData = append(qemuData, qemu.Disk{Path: path, Serial: serial})
+		freshDisks[serial] = created
 		if created {
 			if err := appendCompleted(journalPath, &journal, OwnedArtifact{Kind: "data-disk", Path: path}, config.now()); err != nil {
 				return artifacts, err
 			}
 		}
+	}
+	if config.SeedInput != nil {
+		input := *config.SeedInput
+		input.FreshDisks = map[string]map[string]bool{name: freshDisks}
+		seeds, err := RenderSeeds(config.Resolved, config.Plan, input)
+		if err != nil {
+			return artifacts, err
+		}
+		seedFiles = seeds[name]
 	}
 	if err := cloudinit.BuildISO(artifacts.Seed, seedFiles); err != nil {
 		return artifacts, err

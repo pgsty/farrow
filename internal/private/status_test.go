@@ -17,6 +17,7 @@ import (
 	"github.com/pgsty/farrow/internal/process"
 	"github.com/pgsty/farrow/internal/qemu"
 	"github.com/pgsty/farrow/internal/state"
+	"github.com/pgsty/farrow/internal/vm"
 )
 
 func statusFixture(t *testing.T) (StartConfig, state.Store) {
@@ -199,6 +200,17 @@ func TestStatusAdoptsQMPBoundInterruptedStart(t *testing.T) {
 	adopted, err := store.ReadNode("meta")
 	if err != nil || adopted.Phase != state.Running || adopted.Process.PID != command.Process.Pid || process.IsLegacyStart(adopted.Process.Started) {
 		t.Fatalf("adopted state = %#v, %v", adopted, err)
+	}
+	manager := Manager{FarrowVersion: "test"}
+	if _, _, _, err := manager.ensureKeys(context.Background(), Deployment{Root: store.Root}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Root, "keys", "known_hosts"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := manager.Connection(context.Background(), "meta")
+	if err != nil || connection.HostKeyAlias != vm.HostKeyAlias(node.VMUUID) {
+		t.Fatalf("direct SSH lost verified instance identity: %+v %v", connection, err)
 	}
 }
 

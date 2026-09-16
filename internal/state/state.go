@@ -87,7 +87,16 @@ type ProcessIdentity struct {
 	ArgvHash   string `json:"argv_hash"`
 }
 
+// GuestWarning records a limited guest feature while management SSH remains
+// usable. It is refreshed by a successful readiness check, including clearing
+// old warnings after repair.
+type GuestWarning struct {
+	Stage  string `json:"stage"`
+	Detail string `json:"detail"`
+}
+
 type NodeState struct {
+	GuestWarnings []GuestWarning  `json:"-"`
 	Schema        int             `json:"schema"`
 	FarrowVersion string          `json:"farrow_version"`
 	Node          string          `json:"node"`
@@ -326,6 +335,7 @@ func (s Store) ReadNode(name string) (NodeState, error) {
 	if err := validateNode(value, name); err != nil {
 		return NodeState{}, err
 	}
+	value.GuestWarnings = s.readGuestWarnings(value)
 	return value, nil
 }
 

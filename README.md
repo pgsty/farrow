@@ -8,10 +8,13 @@ to keep in sync.
 Authoritative documentation: <https://farrow.pgsty.com/>
 
 ```bash
-farrow init          # write ./farrow.yml
-farrow up            # prepare the host on first use, then create, boot, and wire SSH for every node
-farrow ssh meta      # you are in
+farrow up            # prepare the host and start your first VM
+farrow ssh           # connect
 ```
+
+On first use in a terminal, `up` creates a one-node `farrow.yml` if no inventory
+or applied deployment exists. To customize it first, run `farrow init` and edit
+the file; use `farrow init full` for the four-node template.
 
 ## What it is
 
@@ -30,9 +33,9 @@ farrow ssh meta      # you are in
   qcow2, and virtual-size verification on every fetch. The selected
   repository supplies the final image bytes; immutable upstream URLs remain
   build-provenance markers.
-- **Fail-closed lifecycle.** QMP identity plus full process identity, atomic
-  state writes, and transaction journals mean an interrupted operation is
-  recoverable rather than ambiguous.
+- **Recoverable lifecycle.** Repeating `up` continues unfinished work and keeps
+  successful nodes available. QMP/process identity, image digests, and disk
+  ownership are still verified before changing resources.
 
 Farrow is a local development-lab runtime. It is not a cluster manager, not a
 cloud provisioner, and not a container runtime.
@@ -42,6 +45,76 @@ It shows exact images, resources, and disk effects; `up` checks host capabilitie
 before applying changes. Starting commands also refresh the Farrow-managed
 hosts and SSH entries inside running guests. `--no-wait` skips readiness and
 that guest refresh; a later `up` completes them.
+
+Fast checks stay quiet. Longer operations share one live progress area with
+elapsed time, download bytes/speed/ETA, and individual node readiness. A
+successful start ends with a short result and a connection command. Partial
+starts list usable and pending nodes, group repeated errors, and give a retry
+command that retains the inventory path. `status` keeps the detailed table;
+`--verbose` exposes diagnostic detail and time spent in each foreground stage,
+including waits and prompts. Redirected output uses occasional plain
+progress lines on stderr, and `--json`/`--yaml` keep stdout machine-readable.
+Bare `farrow` shows the next few actions; `farrow --help` is the full reference.
+
+`up` can install missing host tools and restore an inactive, verified Farrow
+network during an interactive session. The hosts-file helper is installed only
+when `farrow hosts install` needs it. A fresh, untouched default template can use
+an available subnet; its original is saved as `farrow.yml.before-network-change`.
+Explicit `-f` files, edited templates, and existing deployments keep their subnet.
+For unattended first setup, run `farrow setup --yes` explicitly.
+
+Interrupted image downloads retry and resume automatically. Official image
+repositories can fail over to their counterpart; custom repositories stay
+exclusive. Writable cache files are made read-only only after verification.
+Damaged, unreferenced cache files are preserved as `.corrupt-<timestamp>` before
+replacement; referenced backing files stay in place. Ctrl-C preserves completed
+work and resumable downloads, so the same command can continue later.
+An offline node-prepare failure can also be retried with `up`: recognized
+uncommitted artifacts are cleaned first, while committed nodes and unexpected
+files are preserved.
+
+Guest readiness requires working management SSH and the expected login identity.
+Data disks, shared directories, guest hostnames, node-to-node SSH, and private
+network checks run independently with bounded waits. Unavailable features produce
+`ready · with limitations` and exit 0, while other features remain usable. Each
+failed disk or share is named; an unavailable data disk is never reported as
+mounted. Internet access is optional, so offline labs can finish setup.
+
+Repeating `farrow up [node...]` retries unfinished guest setup and updates old
+guest helpers in place. Running VMs keep their process and root disk; healthy
+setup stages are skipped. `--no-wait` skips these guest checks as well as waiting
+for readiness. No separate repair command is needed.
+
+Data disks are disposable test storage. Working filesystems are reused. If a
+configured data disk has no recognizable filesystem, or cannot mount and a
+filesystem check confirms damage, `up` resets it to an empty filesystem and
+reports that previous data was discarded. **This can erase a persistent data
+disk too:** `persistent` retains it across destroy/recreate, not after filesystem
+failure. A missing device, failed probe, busy mount, or underlying I/O error is
+reported without formatting; other guest features remain available. Root disks
+and host shared directories are never reset by this recovery.
+
+Writable shares use the guest user's identity for newly created files. If the
+host directory does not permit guest writes, Farrow mounts it read-only and
+reports the limitation. It does not recursively change host project ownership.
+After fixing access, repeat `farrow up` to retry the writable mount.
+
+If another process takes an automatically allocated management SSH port while
+a VM is stopped, the next start chooses another free port and updates VM state
+and SSH aliases together. Explicit application forwards keep their assigned
+ports. Running VMs keep their port and process.
+
+SSH trust is keyed by VM instance UUID, allowing a recreated VM to reuse an SSH
+port without inheriting its predecessor's host key. Changed keys for the same
+instance still fail verification. Existing labs adopt this namespace on their
+first connection with the new binary; legacy port entries remain until destroy.
+SSH aliases, guest hostname refresh, and diagnostic event writes are optional
+after a successful lifecycle operation: their failures produce warnings with a
+retry command, while the VM result remains successful. Explicit commands such
+as `ssh-config --install` still report their own failures. Lifecycle integration
+waits have separate budgets: 2 seconds for the SSH configuration snapshot,
+5 seconds for guest metadata, and 1 second for diagnostic events. A timeout
+preserves the VM result and gives a warning; a later `up` retries the refresh.
 
 ## Requirements
 
@@ -119,6 +192,11 @@ farrow purge                 # no-confirmation disposal; images/network remain
 Every command accepts `--json` or `--yaml` for stable machine-readable output.
 Presentation flags never change an exit status.
 
+`farrow exec meta -- command arg...` preserves argument boundaries, including
+quoted spaces and empty values. Use `sh -c 'script'` for shell expressions.
+The single-string shorthand (`farrow exec meta -- 'uptime; id'`) and ordinary
+`farrow ssh` shell semantics remain available.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -128,7 +206,7 @@ Presentation flags never change an exit status.
 | 2 | usage error |
 | 3 | missing host capability |
 | 4 | state conflict (no deployment, wrong phase) |
-| 5 | partial completion across nodes or post-lifecycle integration |
+| 5 | partial completion across nodes |
 | 6 | resource conflict (address or port in use) |
 | 7 | integrity failure (digest, signature, or state mismatch) |
 | 130 | cancelled: interrupted by `SIGINT`/`SIGTERM`, or a confirmation was declined |
@@ -153,6 +231,18 @@ it implicitly. `farrow update` fetches the configured repository's catalog;
 active local catalog. The default repository is `https://repo.pigsty.io/farrow`;
 `--mirror` selects `https://repo.pigsty.cc/farrow`, while an explicit `--repo`
 overrides `--mirror`, `FARROW_REPO`, and the default.
+
+Optional integration warnings appear in structured lifecycle results as
+`warnings` with `code`, `message`, `detail`, and an optional `next` command.
+Per-node `ready: true` records a successful guest readiness check in that startup
+operation; ordinary `status` reports runtime state without claiming SSH readiness.
+Per-node `warnings` contain `{stage, detail}` for limited guest features; these
+survive CLI invocations and are refreshed on the next readiness check. Per-node
+limitations use a disposable cache separate from core VM state, so diagnostic
+metadata does not prevent rolling back to 0.6.0. Per-node
+`repairs` describe automatic actions taken in that operation, such as a changed
+SSH port or a reset data disk. Automation that requires every configured guest feature should check
+`nodes[].warnings` as well as the exit code.
 
 ## Development
 

@@ -253,13 +253,16 @@ make the node/command boundary explicit.`,
 		"exec [node] -- <command> [args...]",
 		"Run a command in a guest",
 		`Run a remote command over the deployment SSH connection and pass its exit
-status through. Arguments after -- are joined and parsed by the remote shell,
-like plain ssh. Everything before -- must be nothing or one known node.
+status through. Multiple arguments after -- keep their argument boundaries,
+including spaces, quotes and empty values. A single command string keeps the
+shell shorthand; use sh -c for explicit shell expressions.
+Everything before -- must be nothing or one known node.
 For convenience, -- may be omitted: a known first argument selects the node;
 otherwise the command runs on the default node, with a warning.`,
 		`  farrow exec -- hostname
   farrow exec meta -- systemctl is-active postgresql
   farrow exec meta -- 'uptime; id'
+  farrow exec meta -- sh -c 'exit 17'
   farrow --json exec meta -- uname -a`,
 		stdout, stderr, func(ctx context.Context, arguments []string, stdout, stderr io.Writer) (commandOutcome, error) {
 			return runSSH(ctx, "exec", arguments, stdout, stderr)

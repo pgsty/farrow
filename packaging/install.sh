@@ -412,7 +412,14 @@ if [[ ${current_release} != "${release_root}" ]]; then
 fi
 prune_retained_releases "${releases}" "${current_release}" "${install_keep}"
 printf 'Installed Farrow %s in %s\n' "${version}" "${install_directory}"
-case :${PATH}: in
-  *:"${install_directory}":*) ;;
-  *) printf "For this shell, run: export PATH=%q:\"\$PATH\"\n" "${install_directory}" ;;
-esac
+# Being present in PATH does not mean this installation is the one selected.
+# Compare file identity as paths such as ~/.local/bin may have equivalent aliases.
+# Do not execute a shadowing binary just to ask it for its version.
+selected_farrow=$(type -P farrow || true)
+if [[ -z ${selected_farrow} || ! ${selected_farrow} -ef ${install_directory}/farrow ]]; then
+  if [[ -n ${selected_farrow} ]]; then
+    printf 'Your PATH currently selects: %s\n' "${selected_farrow}"
+  fi
+  printf "For this shell, run: export PATH=%q:\"\$PATH\"\n" "${install_directory}"
+fi
+printf 'Start your lab: %q up\n' "${install_directory}/farrow"

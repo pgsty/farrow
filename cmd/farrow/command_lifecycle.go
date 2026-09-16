@@ -22,19 +22,23 @@ It uses -f first, then local discovery, then the last applied inventory.`,
 	},
 	"up": {
 		long: `Create missing nodes, start stopped ones, and refresh the SSH client
-configuration so plain ssh reaches every node. Running nodes are left alone.
+configuration so plain ssh reaches every node. Running nodes keep their process; unfinished guest setup is retried.
+
+On first use in a terminal, up prepares the host and writes a one-node
+farrow.yml if no inventory or applied deployment exists. Use init to customize
+the inventory first. For unattended preparation, run setup --yes before up.
 
 Changed node definitions and nodes removed from the inventory are reported,
 never applied: use recreate or destroy for those.`,
-		example: `  farrow up                      # converge the discovered or last applied inventory
+		example: `  farrow up                      # start your first VM, or continue the current lab
   farrow up meta                 # converge only the meta node
   farrow up --mirror             # use the China official repository for downloads
   farrow up -f pigsty.yml --rollback  # remove safe artifacts from failed prepares`,
 	},
 	"start": {
 		long: `Start stopped nodes from the applied deployment state and wait for each
-guest to become ready. Start does not read an inventory, create nodes, or
-refresh the SSH client configuration.`,
+guest to become ready and refresh SSH connection details. Start does not read
+an inventory or create nodes. Run up to retry unfinished guest setup.`,
 		example: `  farrow start                   # start every stopped node
   farrow start meta --no-wait    # return once QEMU is running`,
 	},

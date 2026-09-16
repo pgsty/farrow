@@ -13,9 +13,12 @@ type Event struct {
 	Message      string
 	Source       string
 	CurrentBytes int64
+	StartBytes   int64
 	TotalBytes   int64
 	StartedAt    time.Time
 	Done         bool
+	Node         string
+	State        string
 }
 
 // Reporter receives best-effort presentation updates. Reporters must not

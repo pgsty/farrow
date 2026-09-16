@@ -12,6 +12,7 @@ import (
 )
 
 type SeedInput struct {
+	FreshDisks map[string]map[string]bool
 	PublicKey  string
 	PrivateKey string
 	SpecHashes map[string]string
@@ -87,6 +88,9 @@ func RenderSeeds(resolved spec.Resolved, plan Plan, input SeedInput) (map[string
 		disks, err := cloudDisks(nodeSpec)
 		if err != nil {
 			return nil, err
+		}
+		for index := range disks {
+			disks[index].Fresh = input.FreshDisks[nodeSpec.Name][disks[index].Serial]
 		}
 		privateKey := ""
 		// Seed the deployment key into the control node from its first boot.

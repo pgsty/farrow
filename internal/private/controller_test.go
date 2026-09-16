@@ -105,7 +105,7 @@ func TestControllerPartialReadinessKeepsDetailsAndDoesNotReportAllReady(t *testi
 	controller := controllerFixture(t, &fakePrivateDisks{}, lifecycle)
 	events := make([]activity.Event, 0)
 	controller.Progress = func(event activity.Event) { events = append(events, event) }
-	_, err := controller.CreateAndStart(context.Background())
+	result, err := controller.CreateAndStart(context.Background())
 	var partial *PartialError
 	if !errors.As(err, &partial) || len(partial.Failures) != 1 {
 		t.Fatalf("partial readiness error=%v details=%#v", err, partial)
@@ -118,6 +118,19 @@ func TestControllerPartialReadinessKeepsDetailsAndDoesNotReportAllReady(t *testi
 		if event.Done && strings.Contains(event.Message, "All 2 node(s) are ready") {
 			t.Fatalf("partial readiness reported full success: %#v", events)
 		}
+	}
+	status := statusWithReadiness(Status{Nodes: []NodeStatus{{Name: "meta", State: state.Running}, {Name: "node-1", State: state.Running}}}, result.Start)
+	if !status.Nodes[0].Ready || status.Nodes[1].Ready || !strings.Contains(status.Nodes[1].Error, "injected readiness failure") {
+		t.Fatalf("partial readiness facts lost: %+v", status)
+	}
+	nodeStates := map[string]string{}
+	for _, event := range events {
+		if event.Node != "" {
+			nodeStates[event.Node] = event.State
+		}
+	}
+	if nodeStates["meta"] != "ready" || nodeStates["node-1"] != "SSH pending" {
+		t.Fatalf("node progress lost: %v", nodeStates)
 	}
 }
 

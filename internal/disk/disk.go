@@ -270,6 +270,10 @@ func (m Manager) CreateBlank(ctx context.Context, targetPath string, size int64)
 	if err != nil {
 		return Info{}, fmt.Errorf("open blank disk for sync: %w", err)
 	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return Info{}, fmt.Errorf("set blank disk permissions: %w", err)
+	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
 		return Info{}, fmt.Errorf("sync blank disk: %w", err)
@@ -381,6 +385,10 @@ func (m Manager) CreateOverlay(ctx context.Context, basePath, targetPath string,
 	tempFile, err := os.OpenFile(tempPath, os.O_RDWR, 0)
 	if err != nil {
 		return Info{}, fmt.Errorf("open verified overlay for sync: %w", err)
+	}
+	if err := tempFile.Chmod(0o600); err != nil {
+		_ = tempFile.Close()
+		return Info{}, fmt.Errorf("set overlay permissions: %w", err)
 	}
 	if err := tempFile.Sync(); err != nil {
 		_ = tempFile.Close()

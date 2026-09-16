@@ -416,3 +416,16 @@ func TestSetupPlanShowsProxyNamesWithoutValues(t *testing.T) {
 		t.Fatalf("user-level Homebrew install was described as sudo work: %q", got)
 	}
 }
+
+func TestSetupPlanNamesLinuxBridgeWithoutVmnet(t *testing.T) {
+	selection, err := resolveSetupSelection("meta", "", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	report := netpreflight.Report{OS: "linux", CIDR: "10.10.10.0/24", Ready: true, Installation: netpreflight.Installation{Status: "protected", Mode: "bridge", Healthy: true}}
+	printSetupPlan(&out, setuphost.DependencyPlan{}, selection, &report, true)
+	if !strings.Contains(out.String(), "(bridge mode)") || strings.Contains(out.String(), "vmnet") {
+		t.Fatalf("misleading Linux network plan: %s", out.String())
+	}
+}

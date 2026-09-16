@@ -410,7 +410,7 @@ func TestLifecycleSSHConfigReconciliationPolicy(t *testing.T) {
 		deploymentHasNodes bool
 		action             string
 	}{
-		{command: "start", deploymentHasNodes: true},
+		{command: "start", deploymentHasNodes: true, action: "install"},
 		{command: "up", deploymentHasNodes: true, action: "install"},
 		{command: "reload", deploymentHasNodes: true, action: "install"},
 		{command: "recreate", deploymentHasNodes: true, action: "install"},
@@ -564,37 +564,23 @@ func TestLifecycleSSHConfigFailurePreservesThePartialResult(t *testing.T) {
 	}
 }
 
-func TestLifecycleSSHConfigFailureEmitsOneStructuredPartialResult(t *testing.T) {
+func TestLifecycleIntegrationWarningKeepsSuccessfulExitAndStructuredDetails(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_, preparedStdout, preparedStderr, err := prepareOutput([]string{"--json"}, &stdout, &stderr)
+	_, out, errOut, err := prepareOutput([]string{"--json"}, &stdout, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	failure := &lifecycleSSHConfigFailure{
-		Command: "recreate",
-		Result:  sshconfig.Result{Action: "install", Fragment: "/tmp/farrow_config", Changed: true},
-		Err:     errors.New("unsafe SSH directory"),
+	result := lifecycleResult{Status: privatevm.Status{Message: "created and started"}, Warnings: []lifecycleWarning{sshIntegrationWarning("install", errors.New("unsafe SSH directory"))}}
+	outcome := commandOutcome{payload: result}
+	if code := renderCommandOutcome(&outcome, out, errOut); code != exitOK {
+		t.Fatalf("optional integration failed the operation: %d", code)
 	}
-	failure.Status.SpecHash = "spec-1"
-	typed, ok := classifyLifecycleSSHConfigFailure(failure).(typedCommandError)
-	if !ok {
-		t.Fatal("lifecycle failure was not typed")
+	var decoded lifecycleResult
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil || len(decoded.Warnings) != 1 || decoded.Warnings[0].Detail != "unsafe SSH directory" || stderr.Len() != 0 {
+		t.Fatalf("warning lost or JSON polluted: %s %s %v", stdout.String(), stderr.String(), err)
 	}
-	if code := renderTypedCommandError(typed, preparedStdout, preparedStderr); code != exitPartial {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	var payload struct {
-		Error     string           `json:"error"`
-		Command   string           `json:"command"`
-		Partial   bool             `json:"partial"`
-		Status    map[string]any   `json:"status"`
-		SSHConfig sshconfig.Result `json:"ssh_config"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
-		t.Fatalf("decode partial result: %v\n%s", err, stdout.String())
-	}
-	if payload.Error != "ssh_config" || payload.Command != "recreate" || !payload.Partial || payload.Status["spec_hash"] != "spec-1" || payload.SSHConfig.Action != "install" || !strings.Contains(stderr.String(), "recreate completed its VM lifecycle step") {
-		t.Fatalf("payload=%#v stderr=%q", payload, stderr.String())
+	if warning := sshIntegrationWarning("remove", errors.New("fixture")); warning.Next != "farrow ssh-config --remove" {
+		t.Fatalf("wrong purge recovery: %+v", warning)
 	}
 }
 
@@ -638,7 +624,7 @@ func TestImageListJSON(t *testing.T) {
 func TestUsageErrors(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	if code := run(nil, &stdout, &stderr); code != exitUsage || !strings.Contains(stdout.String(), "Usage:") {
+	if code := run(nil, &stdout, &stderr); code != exitUsage || !strings.Contains(stdout.String(), "farrow --help") {
 		t.Fatalf("empty invocation code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	for _, args := range [][]string{{"unknown"}, {"version", "extra"}} {

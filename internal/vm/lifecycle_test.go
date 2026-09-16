@@ -115,15 +115,33 @@ func TestWaitReadyAcceptsMatchingMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	lifecycle := Lifecycle{Runner: readinessRunner{ready: data}, SSHUser: "dba"}
-	if err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, expected, time.Second); err != nil {
+	if _, err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, expected, time.Second); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWaitReadyReturnsLimitationsWithoutFailure(t *testing.T) {
+	expected := ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}
+	data, err := json.Marshal(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data[:len(data)-1], []byte(`,"warnings":[{"stage":"shares","detail":"/shared: read-only"}]}`)...)
+	lifecycle := Lifecycle{Runner: readinessRunner{ready: data}, SSHUser: "dba"}
+	warnings, err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, expected, time.Second)
+	if err != nil || len(warnings) != 1 || warnings[0].Stage != "shares" {
+		t.Fatalf("warnings=%+v err=%v", warnings, err)
+	}
+	expected.Generation++
+	if _, err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, expected, time.Millisecond); err == nil {
+		t.Fatal("accepted stale degraded readiness")
 	}
 }
 
 func TestWaitReadyReturnsGuestBootstrapFailure(t *testing.T) {
 	t.Parallel()
 	lifecycle := Lifecycle{Runner: readinessRunner{error: []byte(`{"exit_status":1,"line":27,"stage":"data-disks"}`)}, SSHUser: "dba"}
-	err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}, time.Second)
+	_, err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "guest bootstrap failed during data-disks (exit status 1)") {
 		t.Fatalf("bootstrap failure = %v", err)
 	}
@@ -132,7 +150,11 @@ func TestWaitReadyReturnsGuestBootstrapFailure(t *testing.T) {
 func TestWaitReadyReportsGuestBootstrapDetail(t *testing.T) {
 	t.Parallel()
 	lifecycle := Lifecycle{Runner: readinessRunner{error: []byte(`{"exit_status":2,"stage":"data-disks","detail":"xfs requested but mkfs.xfs is unavailable"}`)}, SSHUser: "dba"}
-	err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}, time.Second)
+	_, err := lifecycle.WaitReady(context.Background(), "/ssh", "/key", "/known", 2222, ReadyMarker{Node: "meta", Generation: 1, SpecHash: strings.Repeat("a", 64)}, time.Second)
+	var bootstrap *BootstrapError
+	if !errors.As(err, &bootstrap) || bootstrap.Stage != "data-disks" || bootstrap.ExitStatus != 2 {
+		t.Fatalf("bootstrap error lost its classification: %v", err)
+	}
 	if err == nil || err.Error() != "guest bootstrap failed during data-disks: xfs requested but mkfs.xfs is unavailable" {
 		t.Fatalf("bootstrap detail = %v", err)
 	}
