@@ -99,6 +99,20 @@ host directory does not permit guest writes, Farrow mounts it read-only and
 reports the limitation. It does not recursively change host project ownership.
 After fixing access, repeat `farrow up` to retry the writable mount.
 
+Host-side share failures are different from a guest mount limitation: QEMU must
+open each configured source before that node can start. `up` and `start` keep
+independent nodes progressing if one source is missing. Restore the original
+directory or its mount and retry the affected node; Farrow does not create an
+empty source. Restart/reload/recreate check the selected sources before stopping
+or deleting existing VMs.
+
+**Known macOS limitation:** QEMU's 9p backend cannot reopen the directory
+descriptor used by Farrow on the tested macOS/QEMU 11.1.1 host. Such nodes cannot
+start; the CLI now diagnoses the limitation without bypassing path identity
+checks. Omit `vm_shares` for new macOS labs. Changing an existing node's shares
+requires explicit recreation and replaces its root disk, so preserve needed
+data first. Linux sharing and macOS support have separate acceptance gates.
+
 If another process takes an automatically allocated management SSH port while
 a VM is stopped, the next start chooses another free port and updates VM state
 and SSH aliases together. Explicit application forwards keep their assigned
@@ -139,6 +153,10 @@ access only when a host transaction genuinely needs it.
 
 Farrow is pre-1.0. A successful build from source is not evidence of a tagged
 release, a published package, or a supported guest image.
+
+The `v0.8.0` candidate is being built and validated locally; its application
+assets are not published yet. See the [0.8.0 notes](.github/releases/0.8.0.md).
+The public installation commands below still select 0.7.0.
 
 Download `install.sh`, `farrow.rb`, or the native package from the
 [Farrow 0.7.0 release](https://github.com/pgsty/farrow/releases/tag/v0.7.0).
@@ -244,6 +262,13 @@ metadata does not prevent rolling back to 0.6.0. Per-node
 `repairs` describe automatic actions taken in that operation, such as a changed
 SSH port or a reset data disk. Automation that requires every configured guest feature should check
 `nodes[].warnings` as well as the exit code.
+
+Setup and lifecycle retries reuse one `operation_id`. After a failed first setup,
+`farrow logs --source events --json` works even without deployment state. Event
+files are bounded; setup traces contain phase/category summaries, while the
+command output retains the actual cause. Missing deployment public keys are
+derived from the original private key during startup. If that private key is
+lost, restore it from backup; an existing VM is never silently given a new key.
 
 ## Development
 

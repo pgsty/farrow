@@ -1,6 +1,8 @@
 # Farrow UX delivery plan
 
-Updated 2026-09-15. This plan separates working-tree changes from future work.
+Updated 2026-09-20. The current evidence and delivery table are in
+[UX-AUDIT-0.8.md](UX-AUDIT-0.8.md); dated observations below remain historical.
+This plan separates working-tree changes from future work.
 Source checks, native VM checks, clean-host installation, and publication are
 separate acceptance results. A stage is complete only for its stated scope.
 
@@ -204,3 +206,32 @@ implemented guest degradation and management-port recovery.
 2026-09-16 policy: no separate repair command. Reuse working test data disks;
 reset unusable filesystems and disclose data loss, including persistent disks.
 Do not mistake transient device/probe/backend failures for corrupt filesystems.
+
+
+**2026-09-20 audit and working-tree delivery.**
+
+[UX-AUDIT-0.8.md](UX-AUDIT-0.8.md) supersedes the open-item status above with
+19 evidence-tagged tasks. Nine groups of bounded fixes/diagnostic improvements
+are implemented and tested: node-scoped share failures, existing public-key
+recovery, mixed partial startup, final cleanup summaries, retained-disk cleanup,
+operation tracing before deployment, contextual retries/SSH aliases, control-key
+limitation checks, and safe macOS share capability diagnosis.
+
+Native macOS tests covered a 0.7-created VM, management and lateral SSH, actual
+Ansible ping, missing shares/public/control keys, an occupied automatic port,
+SIGINT/retry with unchanged instance identity, and final disk/key/state cleanup.
+Twenty final healthy `up` runs measured p50 0.498 s and p95 0.560 s, including the
+new control-key check. The old snapd cold-boot observation is not reproduced by
+a 573 ms later-boot sample; no speculative image optimization was made.
+
+`make check` and the bilingual documentation check passed. Test VMs and their
+isolated data/SSH directories were removed, while the user's four VM processes
+and network service remained running. Installed Homebrew remains 0.7.0.
+
+Full macOS sharing is still blocked by QEMU's directory-descriptor access;
+accurate preflight is not a sharing fix. Guest private-key reinjection, scoped
+DNS fallback, full UID mapping, script preparation from applied state, and the
+remaining global image-preparation coupling are separate follow-ups. Native
+Linux amd64, clean-host install, and host reboot require dedicated environments.
+No release, commit, push, installed-binary replacement, or website deployment was
+performed. The mini pc comparison awaits its official link.

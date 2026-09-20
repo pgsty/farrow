@@ -6,6 +6,59 @@ Notable user-visible changes. This project follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-21
+
+### Changed
+
+- Embed Catalog `2026092001` with September 2026 Debian 12/13 and Ubuntu
+  22.04/24.04/26.04 images (37 artifacts, including all 27 previous artifacts). Debian retains the offline XFS and
+  `en_US.UTF-8` adjustments with `C.UTF-8` as its default; Ubuntu retains the
+  upstream cloud-image bytes. Existing pinned versions are retained.
+
+### Fixed
+
+- Include the previously published Debian locale adjustment in the checked-in
+  image recipe and verify both locale postconditions before accepting a build.
+- A missing host share fails only the affected node during `up` and `start`;
+  independent nodes continue, including stopped peers when a new node cannot
+  prepare. The error names the source, guest path, and required restoration;
+  Farrow never creates an empty replacement directory.
+- macOS directory sharing now detects the unsupported directory-descriptor
+  reopen before QEMU launch, and before destructive restart/reload/recreate.
+  This improves diagnosis; macOS 9p sharing support is still unresolved. Source
+  paths are not substituted in ways that bypass directory identity checks.
+- Existing deployments recover a missing public key from their original private
+  key during startup. Missing private keys never create a new VM login identity.
+- `up` rechecks the installed control-node SSH key instead of trusting an old
+  ready marker. A missing guest key reports a node-to-node SSH limitation while
+  management access remains usable; restoring the original key clears it.
+- Partial `start` and `restart` results still update SSH aliases for successful
+  peers, including repaired management ports. Scoped retry instructions preserve
+  the inventory, repository and applicable flags; `start` retries remain `start`.
+- Setup and lifecycle retries share one operation ID. Bounded event logs remain
+  readable before deployment state exists, including after failed first setup.
+  Setup traces record phases and error categories without persisting arguments
+  or authentication data; `setup --dry-run` does not create a trace.
+- Successful persistent-disk deletion and purge report their final resource
+  retention accurately, without contradictory intermediate preservation claims.
+- Destroying the remaining deployment now preserves owned disks left by a
+  previously removed node. Those disks no longer block later destroy/purge;
+  unknown artifacts and incompatible identities are still rejected.
+- Interactive `start`, `restart`, and `reload` now prepare missing host tools
+  and repair an intact Farrow network through the same setup flow as `up`.
+- A missing or restrictive root-owned macOS vmnet log directory is recoverable
+  without losing network ownership evidence. Diagnosis reports its actual mode
+  and an exact repair command instead of false interface and route conflicts.
+- `image info` can describe an uncached image without QEMU. Unknown aliases and
+  unsupported architectures retain their catalog errors; registered local image
+  failures retain their actual cause, including the integrity exit code.
+- A missing deployment SSH public key is restored from the existing private key.
+  A lost private key with a surviving public key now gives backup recovery
+  guidance instead of generating a replacement identity.
+- Setup retries temporary socket_vmnet download failures up to three attempts
+  per source, cleans incomplete files, and honors cancellation and server
+  cooldowns. Archive verification failures remain errors.
+
 ## [0.7.0] - 2026-09-16
 
 ### Changed
