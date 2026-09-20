@@ -42,6 +42,12 @@ func (err *commandBoundaryError) commandFailure() commandFailure {
 func (err *commandBoundaryError) exitCode() int       { return err.code }
 func (err *commandBoundaryError) commandPayload() any { return err.payload }
 
+func (err *commandBoundaryError) setOperationID(id string) {
+	if err.failure.OperationID == "" {
+		err.failure.OperationID = id
+	}
+}
+
 type usageError struct{ *commandBoundaryError }
 type conflictError struct{ *commandBoundaryError }
 

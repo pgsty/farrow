@@ -2,6 +2,7 @@ package private
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/pgsty/farrow/internal/cloudinit"
@@ -34,6 +35,9 @@ func openPrivateNodeShares(value Deployment, sharesByNode map[string][]spec.Shar
 	}
 	if err := bundle.ValidateInvocation(node.Invocation, prefixFiles); err != nil {
 		return nil, fmt.Errorf("validate host-share invocation for private node %s: %w", node.Node, err)
+	}
+	if err := bundle.ValidateQEMUAccess(); err != nil {
+		return nil, fmt.Errorf("validate host-share access for private node %s: %w", node.Node, err)
 	}
 	closeOnError = false
 	return bundle, nil
@@ -80,6 +84,21 @@ func selectedShareSources(value Deployment, resolved spec.Resolved, names []stri
 		}
 		if err := hostshare.Validate(value.Root, node.Shares); err != nil {
 			return fmt.Errorf("validate host shares for private node %s: %w", node.Name, err)
+		}
+	}
+	return nil
+}
+
+// Destructive lifecycle actions must prove that the replacement can reopen
+// its sources before stopping or deleting the current VM.
+func selectedShareAccess(value Deployment, resolved spec.Resolved, names []string) error {
+	for _, node := range resolvedNodeSelection(resolved, names).Nodes {
+		bundle, err := hostshare.Open(value.Root, node.Shares)
+		if err != nil {
+			return err
+		}
+		if err := errors.Join(bundle.ValidateQEMUAccess(), bundle.Close()); err != nil {
+			return fmt.Errorf("validate host-share access for private node %s: %w", node.Name, err)
 		}
 	}
 	return nil

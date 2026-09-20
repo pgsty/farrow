@@ -29,7 +29,7 @@ func finishLifecycleIntegrations(ctx context.Context, command string, deployment
 	var sshResult *sshconfig.Result
 	var warnings []lifecycleWarning
 	var partial *privatevm.PartialError
-	reconcileSSH := operationErr == nil || (command == "up" || command == "reload" || command == "recreate") && errors.As(operationErr, &partial)
+	reconcileSSH := operationErr == nil || startupCommand(command) && errors.As(operationErr, &partial)
 	if action := lifecycleSSHConfigAction(command, deploymentHasNodes); reconcileSSH && action != "" && ctx.Err() == nil {
 		report.Report(activity.Event{Phase: "ssh-config", Message: "Updating the SSH client configuration"})
 		err := runOptionalIntegration(ctx, lifecycleSSHTimeout, func(step context.Context) error {

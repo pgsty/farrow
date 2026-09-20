@@ -1112,8 +1112,9 @@ func classifyPrivateLifecycleError(err error, operationID string) error {
 }
 
 type lifecycleResult struct {
-	Source string `json:"source,omitempty"`
-	Error  string `json:"error,omitempty"`
+	retryOptions lifecycleRetryOptions
+	Source       string `json:"source,omitempty"`
+	Error        string `json:"error,omitempty"`
 	privatevm.Status
 	SSHConfig  *sshconfig.Result       `json:"ssh_config,omitempty"`
 	Warnings   []lifecycleWarning      `json:"warnings,omitempty"`
@@ -1122,10 +1123,16 @@ type lifecycleResult struct {
 }
 
 func runPrivateCommand(parent context.Context, command string, resolved spec.Resolved, nodes []string, repository, source string, force, deletePersistent, purge, noWait, rollback bool, stderr io.Writer) (commandOutcome, error) {
+	retryOptions := lifecycleRetryOptions{Repository: repository, NoWait: noWait, Rollback: rollback}
+	if command == "start" || command == "restart" {
+		// Resume an interrupted start without changing its guest-convergence
+		// semantics, or stopping successful peers for a second time.
+		retryOptions.Action = "start"
+	}
 	operationID := ""
 	if command != "status" && command != "plan" {
 		var err error
-		operationID, err = identity.NewUUID()
+		parent, operationID, err = operationContext(parent)
 		if err != nil {
 			return commandOutcome{}, newRuntimeError(err)
 		}
@@ -1257,7 +1264,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			if err != nil {
 				return status, &persistentDeleteError{err: err}
 			}
-			status.Message = fmt.Sprintf("%s; explicitly deleted %d persistent data disk(s)", status.Message, len(deleted))
+			status.Message = fmt.Sprintf("destroyed node artifacts; explicitly deleted %d persistent data disk(s); image cache and keys preserved", len(deleted))
 			return status, nil
 		}
 	default:
@@ -1281,7 +1288,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 	if errors.Is(parent.Err(), context.Canceled) {
 		progressItem.Stop(ErrCancelled)
 		if startupCommand(command) {
-			textField(stderr, 10, "resume", lifecycleRetryCommand(source, nodes))
+			textField(stderr, 10, "resume", lifecycleRetryCommand(source, nodes, retryOptions))
 		}
 		if command != "status" {
 			recordCancelledLifecycle(parent, manager, command, status, err, stderr)
@@ -1294,7 +1301,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		status.Message = strings.TrimSpace(status.Message + "; guest readiness and metadata refresh skipped (--no-wait)")
 	}
 	reconciledSSHConfig, warnings := finishLifecycleIntegrations(ctx, command, deploymentHasNodes, noWait,
-		lifecycleRetryCommand(source, nodes), status, err, fullDeploymentSSHManager(manager), deferredProgressReporter(&progressItem))
+		lifecycleRetryCommand(source, nodes, retryOptions), status, err, fullDeploymentSSHManager(manager), deferredProgressReporter(&progressItem))
 	if lifecycleSucceeded && (command == "purge" || command == "destroy" && purge) {
 		if purgeErr := purgeDeployment(ctx); purgeErr != nil {
 			if err == nil {
@@ -1303,13 +1310,13 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 				err = fmt.Errorf("%v; deployment purge also failed: %w", err, purgeErr)
 			}
 		} else {
-			status.Message = strings.TrimSpace(status.Message + "; purged deployment keys and state; images remain cached")
+			status.Message = "destroyed node artifacts and persistent data disks; purged deployment keys and state; images remain cached"
 		}
 	}
 	if errors.Is(parent.Err(), context.Canceled) {
 		progressItem.Stop(ErrCancelled)
 		if startupCommand(command) {
-			textField(stderr, 10, "resume", lifecycleRetryCommand(source, nodes))
+			textField(stderr, 10, "resume", lifecycleRetryCommand(source, nodes, retryOptions))
 		}
 		if command != "status" {
 			recordCancelledLifecycle(parent, manager, command, status, err, stderr)
@@ -1321,7 +1328,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 		var partial *privatevm.PartialError
 		isPartial := errors.As(err, &partial)
 		if isPartial || len(status.Nodes) != 0 && command == "status" {
-			result := lifecycleResult{Source: source, Error: "partial", Status: status, SSHConfig: reconciledSSHConfig, Warnings: warnings}
+			result := lifecycleResult{retryOptions: retryOptions, Source: source, Error: "partial", Status: status, SSHConfig: reconciledSSHConfig, Warnings: warnings}
 			result.Message = err.Error()
 			if isPartial {
 				result.Failures = partial.Failures
@@ -1360,7 +1367,7 @@ func runPrivateCommand(parent context.Context, command string, resolved spec.Res
 			}
 		}
 	}
-	result := lifecycleResult{Source: source, Status: status, SSHConfig: reconciledSSHConfig, Warnings: warnings}
+	result := lifecycleResult{retryOptions: retryOptions, Source: source, Status: status, SSHConfig: reconciledSSHConfig, Warnings: warnings}
 	return commandOutcome{payload: result, text: func(stdout, _ io.Writer) error {
 		printLifecycleResult(stdout, command, result, noWait)
 		return nil
@@ -1454,6 +1461,21 @@ func runPurgeCommand(parent context.Context, stderr io.Writer) (commandOutcome, 
 
 func runLifecycleCommand(ctx context.Context, command string, options lifecycleOptions, nodes []string, stderr io.Writer) (_ commandOutcome, returnErr error) {
 	if command != "status" && command != "plan" {
+		var id string
+		var err error
+		ctx, id, err = operationContext(ctx)
+		if err != nil {
+			return commandOutcome{}, newRuntimeError(err)
+		}
+		recordOperationPhase(ctx, id, command, "begin", nil, stderr)
+		defer func() {
+			if failure, ok := returnErr.(interface{ setOperationID(string) }); ok {
+				failure.setOperationID(id)
+			}
+			if returnErr != nil || !(command == "purge" || command == "destroy" && options.Purge) {
+				recordOperationPhase(ctx, id, command, "complete", returnErr, stderr)
+			}
+		}()
 		progressItem := startProgress(ctx, stderr, lifecycleMessage(command))
 		defer func() { progressItem.Stop(returnErr) }()
 	}
@@ -1526,16 +1548,15 @@ func runLifecycleCommand(ctx context.Context, command string, options lifecycleO
 	}
 	printWarnings(stderr, configurationWarnings(resolvedFile))
 	outcome, err := runPrivateCommand(ctx, command, resolvedFile, nodes, repository, source, options.Force, options.DeletePersistent, options.Purge, options.NoWait, options.Rollback, stderr)
-	canPrepareHost := needsHostSetup(err)
+	canPrepareHost := needsHostSetup(command, err)
 	var networkFailure *privatevm.NetworkPreflightError
 	if !canPrepareHost && command == "up" && errors.As(err, &networkFailure) && errors.Is(persistedErr, os.ErrNotExist) && options.ConfigPath == "" {
 		candidate := recognizeDefaultSetupTemplate(setupSelection{ConfigPath: source})
 		canPrepareHost = candidate.Generated
 	}
-	if command == "up" && canPrepareHost && interactiveTextSession(stderr) {
-		// First use on this host: run the one-time setup here instead of asking
-		// for a second command. Setup shows its plan and asks before any
-		// privileged step; up continues once the network exists.
+	if canPrepareHost && interactiveTextSession(stderr) {
+		// Supply missing host dependencies or repair the owned network, then
+		// retry the original operation with the same inventory and selectors.
 		bestEffortf(stderr, "%s Preparing the host before starting nodes\n", styled(stderr, ansiCyan, "→"))
 		setupOptions := implicitSetupOptions(options, repository)
 		if source == "applied deployment state" {
@@ -1560,7 +1581,13 @@ func implicitSetupOptions(options lifecycleOptions, repository string) setupCLIO
 }
 
 // Setup can supply missing executables or restore an intact Farrow network.
-func needsHostSetup(err error) bool {
+// Destructive commands keep their explicit confirmation and are never replayed.
+func needsHostSetup(command string, err error) bool {
+	switch command {
+	case "up", "start", "restart", "reload":
+	default:
+		return false
+	}
 	if errors.Is(err, exec.ErrNotFound) {
 		return true
 	}
@@ -1827,10 +1854,10 @@ func runLogs(parent context.Context, options logOptions, requestedNode string, s
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	resolved, resolveErr := currentDeploymentResolved()
-	if resolveErr != nil {
+	if resolveErr != nil && (options.Source != "events" || !errors.Is(resolveErr, os.ErrNotExist)) {
 		return commandOutcome{}, newConflictError(errors.New("no deployment state found; run `farrow up` first"))
 	}
-	if resolved.Network != "private" {
+	if resolveErr == nil && resolved.Network != "private" {
 		return commandOutcome{}, newConflictError(errors.New(legacyDeploymentMessage))
 	}
 	node := requestedNode
@@ -2147,6 +2174,9 @@ func runImage(parent context.Context, options imageOptions, stderr io.Writer) (c
 			return commandOutcome{}, ErrCancelled
 		}
 		if err != nil {
+			if errors.Is(err, image.ErrIntegrity) {
+				return commandOutcome{}, newDetailedCommandError("integrity", exitIntegrity, err, "", nil)
+			}
 			return commandOutcome{}, newRuntimeError(err)
 		}
 		printImageStatusWarning(stderr, info.Entry)

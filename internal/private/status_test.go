@@ -202,6 +202,7 @@ func TestStatusAdoptsQMPBoundInterruptedStart(t *testing.T) {
 		t.Fatalf("adopted state = %#v, %v", adopted, err)
 	}
 	manager := Manager{FarrowVersion: "test"}
+	writeRecoveryKeys(t, store.Root)
 	if _, _, _, err := manager.ensureKeys(context.Background(), Deployment{Root: store.Root}); err != nil {
 		t.Fatal(err)
 	}

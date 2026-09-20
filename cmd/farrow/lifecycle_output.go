@@ -19,6 +19,11 @@ type lifecycleWarning struct {
 	Next    string `json:"next,omitempty"`
 }
 
+type lifecycleRetryOptions struct {
+	Action, Repository string
+	NoWait, Rollback   bool
+}
+
 func sshIntegrationWarning(action string, err error) lifecycleWarning {
 	message := "SSH aliases could not be updated; use farrow ssh to connect"
 	if action == "remove" {
@@ -131,9 +136,9 @@ func printLifecycleResult(out io.Writer, command string, result lifecycleResult,
 		}
 	}
 	if len(result.Failures) > 0 {
-		printNodeFailures(out, result.Source, result.Failures)
+		printNodeFailures(out, result.Source, result.Failures, result.retryOptions)
 	}
-	printGuestLimitations(out, result.Status)
+	printGuestLimitations(out, result.Status, result.Source, result.retryOptions)
 	for _, warning := range result.Warnings {
 		bestEffortf(out, "  %s  %s\n", styled(out, ansiYellow, "!"), warning.Message)
 		if verboseOutput(out) && warning.Detail != "" {
@@ -153,7 +158,7 @@ func printLifecycleResult(out io.Writer, command string, result lifecycleResult,
 	}
 }
 
-func printGuestLimitations(out io.Writer, status privatevm.Status) {
+func printGuestLimitations(out io.Writer, status privatevm.Status, source string, options lifecycleRetryOptions) {
 	groups := make(map[string][]string)
 	var repairNode string
 	for _, node := range status.Nodes {
@@ -171,7 +176,8 @@ func printGuestLimitations(out io.Writer, status privatevm.Status) {
 			}
 			message := label + ": " + detail
 			groups[message] = append(groups[message], node.Name)
-			if repairNode == "" && warning.Stage != "warning-state" {
+			needsKeyRestore := warning.Stage == "control-ssh" && strings.Contains(warning.Detail, "restore the original deployment private key")
+			if repairNode == "" && warning.Stage != "warning-state" && !needsKeyRestore {
 				repairNode = node.Name
 			}
 		}
@@ -191,16 +197,23 @@ func printGuestLimitations(out io.Writer, status privatevm.Status) {
 		bestEffortf(out, "  !  %s: %s\n", strings.Join(names, ", "), message)
 	}
 	if repairNode != "" {
-		textField(out, 10, "retry", "farrow up "+repairNode)
+		options.NoWait = false // Retrying guest setup requires a readiness check.
+		textField(out, 10, "retry", lifecycleNodeCommand("up", source, []string{repairNode}, options))
 	}
 }
 
-func printNodeFailures(out io.Writer, source string, failures []privatevm.NodeFailure) {
+func printNodeFailures(out io.Writer, source string, failures []privatevm.NodeFailure, options ...lifecycleRetryOptions) {
 	groups := make(map[string][]string)
 	var retry, bootstrap, repair []string
 	for _, failure := range failures {
 		message := strings.Join(strings.Fields(failure.Error), " ")
 		groups[message] = append(groups[message], failure.Node)
+		if strings.Contains(failure.Error, "cannot be safely opened by QEMU on macOS") {
+			// This host capability needs a configuration/host change. Repeating
+			// up cannot recover it, and recreating a healthy root disk is not a
+			// routine retry. Keep the explicit limitation, without either hint.
+			continue
+		}
 		if failure.Stage == "bootstrap" {
 			bootstrap = append(bootstrap, failure.Node)
 		} else if failure.Stage == "guest-setup" {
@@ -226,18 +239,23 @@ func printNodeFailures(out io.Writer, source string, failures []privatevm.NodeFa
 	sort.Strings(retry)
 	if len(repair) > 0 {
 		sort.Strings(repair)
-		textField(out, 10, "retry", lifecycleNodeCommand("up", source, repair))
+		repairOptions := lifecycleRetryOptions{}
+		if len(options) > 0 {
+			repairOptions = options[0]
+		}
+		repairOptions.NoWait = false
+		textField(out, 10, "retry", lifecycleNodeCommand("up", source, repair, repairOptions))
 		textField(out, 10, "logs", "farrow logs "+repair[0])
 	}
 	if len(retry) > 0 {
-		textField(out, 10, "retry", lifecycleRetryCommand(source, retry))
+		textField(out, 10, "retry", lifecycleRetryCommand(source, retry, options...))
 		textField(out, 10, "logs", "farrow logs "+retry[0])
 	}
 	if len(bootstrap) > 0 {
 		sort.Strings(bootstrap)
 		textField(out, 10, "logs", "farrow logs "+bootstrap[0])
 		textField(out, 10, "inspect", "farrow ssh "+bootstrap[0])
-		textField(out, 10, "rebuild", lifecycleNodeCommand("recreate", source, bootstrap))
+		textField(out, 10, "rebuild", lifecycleNodeCommand("recreate", source, bootstrap, options...))
 		bestEffortln(out, "           rebuild replaces root and non-persistent disks; inspect first")
 	}
 }
@@ -271,14 +289,31 @@ func compactCommandFailure(message string) string {
 	return message[:start] + filepath.Base(binary) + " " + rest
 }
 
-func lifecycleRetryCommand(source string, nodes []string) string {
-	return lifecycleNodeCommand("up", source, nodes)
+func lifecycleRetryCommand(source string, nodes []string, options ...lifecycleRetryOptions) string {
+	action := "up"
+	if len(options) != 0 && options[0].Action != "" {
+		action = options[0].Action
+	}
+	return lifecycleNodeCommand(action, source, nodes, options...)
 }
 
-func lifecycleNodeCommand(action, source string, nodes []string) string {
+func lifecycleNodeCommand(action, source string, nodes []string, options ...lifecycleRetryOptions) string {
 	command := "farrow " + action
-	if source != "" && source != "applied deployment state" {
+	readsConfig := lifecycleReadsConfig(action)
+	if readsConfig && source != "" && source != "applied deployment state" {
 		command += " -f " + shellQuote(source)
+	}
+	if len(options) != 0 {
+		option := options[0]
+		if readsConfig && option.Repository != "" {
+			command += " --repo " + shellQuote(option.Repository)
+		}
+		if startupCommand(action) && option.NoWait {
+			command += " --no-wait"
+		}
+		if (action == "up" || action == "reload") && option.Rollback {
+			command += " --rollback"
+		}
 	}
 	for _, node := range nodes {
 		command += " " + shellQuote(node)

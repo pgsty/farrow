@@ -906,6 +906,18 @@ func (m Manager) ensureKeys(ctx context.Context, deploymentValue Deployment) (_ 
 	defer func() {
 		returnErr = lock.JoinRelease(returnErr, deploymentLock, "deployment key initialization lock")
 	}()
+	store := state.Store{Root: deploymentValue.Root}
+	if deploymentState, err := store.ReadDeployment(); err == nil {
+		for _, definition := range deploymentState.Resolved.Nodes {
+			if _, err := store.ReadNode(definition.Name); err == nil {
+				return sshkeys.EnsureExistingKeys(ctx, m.runner(), deploymentValue.Root)
+			} else if !missingPath(err) {
+				return "", "", "", err
+			}
+		}
+	} else if !missingPath(err) {
+		return "", "", "", err
+	}
 	return sshkeys.EnsureKeys(ctx, m.runner(), deploymentValue.Root)
 }
 
@@ -1187,10 +1199,6 @@ func (m Manager) LogPath(nodeName, source string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
-	if err != nil || deploymentState.Resolved.Network != "private" {
-		return "", errors.New("the deployment has no valid state")
-	}
 	if source == "events" {
 		path := filepath.Join(deploymentValue.Root, "events.jsonl")
 		info, err := os.Lstat(path)
@@ -1198,6 +1206,10 @@ func (m Manager) LogPath(nodeName, source string) (string, error) {
 			return "", fmt.Errorf("event log is missing or unsafe: %s", path)
 		}
 		return path, nil
+	}
+	deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
+	if err != nil || deploymentState.Resolved.Network != "private" {
+		return "", errors.New("the deployment has no valid state")
 	}
 	if source != "serial" && source != "qemu" {
 		return "", fmt.Errorf("unsupported private log source %q", source)
@@ -1426,6 +1438,9 @@ func (m Manager) Reload(ctx context.Context, requested spec.Resolved) (Status, e
 	if err := validatePrivateShareDeviceHelp(ctx, m.runner(), shareBinaries); err != nil {
 		return Status{}, err
 	}
+	if err := selectedShareAccess(deploymentValue, requested, selected); err != nil {
+		return Status{}, err
+	}
 	if err := validatePrivatePersistentDesired(deploymentValue, requested); err != nil {
 		return Status{}, err
 	}
@@ -1593,9 +1608,6 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 			return Status{}, err
 		}
 	}
-	if err := selectedShareSources(deploymentValue, requested, selected); err != nil {
-		return Status{}, err
-	}
 	if err := validatePrivatePersistentDesired(deploymentValue, requested); err != nil {
 		return Status{}, err
 	}
@@ -1668,26 +1680,57 @@ func (m Manager) Up(ctx context.Context, requested spec.Resolved) (_ Status, ret
 	}
 	controller := Controller{Deployment: deploymentValue, Prepare: prepare, Lifecycle: lifecycle, Concurrency: boundedConcurrency(len(resolved.Nodes)), ReadyTimeout: readyTimeout, NoWait: m.NoWait, CreateNodes: createNodes, StartNodes: startNodes, Version: m.FarrowVersion, Progress: m.Progress}
 	createResult, err := controller.CreateAndStart(ctx)
-	if err != nil {
-		if m.RollbackFailed {
-			err = rollbackCreateFailure(deploymentValue, createResult, err)
+	if err != nil && m.RollbackFailed {
+		err = rollbackCreateFailure(deploymentValue, createResult, err)
+	}
+	// A node-scoped prepare/start failure does not invalidate committed peers.
+	// Only continue after the controller released its lock cleanly, and never
+	// replay newly started nodes or continue through cancellation/global errors.
+	partial, partialCreate := err.(*PartialError)
+	if startExistingAfterCreate && ctx.Err() == nil && (err == nil || partialCreate) {
+		deploymentState, readErr := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
+		if readErr != nil {
+			return Status{}, errors.Join(err, readErr)
 		}
+		peers := m
+		peers.Nodes = nil
+		creating := nodeNameSet(createNodes)
+		for _, name := range selected {
+			if _, isNew := creating[name]; !isNew {
+				peers.Nodes = append(peers.Nodes, name)
+			}
+		}
+		peerStatus, peerErr := peers.startExisting(ctx, deploymentValue, deploymentState, hostProfile, backend)
+		if partialCreate {
+			if peerPartial := isolatedPartialError(peerErr); peerPartial != nil {
+				combined := newPartialError(append(append([]NodeFailure(nil), partial.Failures...), peerPartial.Failures...), len(selected))
+				combined.RolledBack = partial.RolledBack
+				err = combined
+			} else if peerErr == nil {
+				combined := newPartialError(partial.Failures, len(selected))
+				combined.RolledBack = partial.RolledBack
+				err = combined
+			} else {
+				err = errors.Join(err, peerErr)
+			}
+		} else {
+			err = peerErr
+		}
+		status, statusErr := m.statusFor(ctx, deploymentValue, "")
+		outcomes := append([]StartOutcome(nil), createResult.Start...)
+		for _, node := range peerStatus.Nodes {
+			outcomes = append(outcomes, StartOutcome{Node: node.Name, Ready: node.Ready, Error: node.Error, Warnings: node.Warnings, Repairs: node.Repairs})
+		}
+		if err == nil && statusErr == nil {
+			status.Message = fmt.Sprintf("converged the deployment: created %d node(s) and started selected existing nodes", len(createResult.Commit.Nodes))
+		}
+		return statusWithReadiness(status, outcomes), errors.Join(err, statusErr)
+	}
+	if err != nil {
 		status, statusErr := m.statusFor(ctx, deploymentValue, "")
 		return statusWithReadiness(status, createResult.Start), errors.Join(err, statusErr)
 	}
 	if len(createNodes) != 0 {
-		deploymentState, err := (state.Store{Root: deploymentValue.Root}).ReadDeployment()
-		if err != nil {
-			return Status{}, err
-		}
-		if startExistingAfterCreate {
-			status, err := m.startExisting(ctx, deploymentValue, deploymentState, hostProfile, backend)
-			if err != nil {
-				return status, err
-			}
-			status.Message = fmt.Sprintf("converged the deployment: created %d node(s) and started selected existing nodes", len(createNodes))
-			return status, nil
-		}
 		status, err := m.statusFor(ctx, deploymentValue, fmt.Sprintf("created and started %d node(s)", len(createNodes)))
 		return statusWithReadiness(status, createResult.Start), err
 	}
@@ -1707,9 +1750,6 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 		return Status{}, selectionErr
 	}
 	backend = verifiedBackend
-	if err := selectedShareSources(deploymentValue, deploymentState.Resolved, selected); err != nil {
-		return Status{}, err
-	}
 	shareBinaries, err := selectedShareInvocationBinaries(preStartStore, deploymentState.Resolved, selected)
 	if err != nil {
 		return Status{}, err
@@ -1750,8 +1790,11 @@ func (m Manager) startExisting(ctx context.Context, deploymentValue Deployment, 
 	if err != nil {
 		return Status{}, err
 	}
-	keysDir := filepath.Join(deploymentValue.Root, "keys")
-	lifecycle := NativeLifecycle{RetryGuestSetup: m.retryGuestSetup, Resolved: deploymentState.Resolved, VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}, Deployment: deploymentValue, Shares: shareSourcesByNode(deploymentState.Resolved), SSHPath: sshPath, PrivateKey: filepath.Join(keysDir, "id_ed25519"), KnownHosts: filepath.Join(keysDir, "known_hosts"), DarwinSocket: backend.DarwinSocket}
+	privateKey, knownHosts, _, err := sshkeys.EnsureExistingKeys(ctx, m.runner(), deploymentValue.Root)
+	if err != nil {
+		return Status{}, err
+	}
+	lifecycle := NativeLifecycle{RetryGuestSetup: m.retryGuestSetup, Resolved: deploymentState.Resolved, VM: vm.Lifecycle{Runner: m.runner(), QMP: &qmp.Client{Timeout: 5 * time.Second}, SSHUser: deploymentState.Resolved.SSHUser}, Deployment: deploymentValue, Shares: shareSourcesByNode(deploymentState.Resolved), SSHPath: sshPath, PrivateKey: privateKey, KnownHosts: knownHosts, DarwinSocket: backend.DarwinSocket}
 	names := make([]string, 0, len(deploymentState.Resolved.Nodes))
 	starting := 0
 	for _, definition := range deploymentState.Resolved.Nodes {
@@ -1905,6 +1948,9 @@ func (m Manager) Restart(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	if err := validatePrivateShareDeviceHelp(ctx, m.runner(), shareBinaries); err != nil {
+		return Status{}, err
+	}
+	if err := selectedShareAccess(deploymentValue, deploymentState.Resolved, selected); err != nil {
 		return Status{}, err
 	}
 	if _, err := m.Stop(ctx); err != nil {

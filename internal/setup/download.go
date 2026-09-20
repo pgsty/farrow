@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -199,7 +201,8 @@ func downloadSocketVMNetRelease(ctx context.Context, release darwinnet.Release, 
 			}
 			// The mirror simply not carrying the file is a fall-through; a
 			// digest mismatch on a present file is not.
-			if strings.Contains(fetchErr.Error(), "does not match the pinned") {
+			var invalid *archiveVerificationError
+			if errors.As(fetchErr, &invalid) {
 				return result, fetchErr
 			}
 		}
@@ -257,13 +260,77 @@ func (body *progressBody) Read(data []byte) (int, error) {
 }
 
 func fetchBoundedArchive(ctx context.Context, client HTTPDoer, fetchURL string, release darwinnet.Release, cacheDirectory, target, arch string, progress activity.Reporter, verify func(string, string) error) (DownloadResult, error) {
+	if client == nil {
+		client = defaultHTTPClient()
+	}
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return DownloadResult{}, err
+		}
+		result, err := fetchBoundedArchiveAttempt(ctx, client, fetchURL, release, cacheDirectory, target, arch, progress, verify)
+		if err == nil || attempt == 3 || !retryArchiveDownload(err) {
+			return result, err
+		}
+		delay := time.Duration(attempt) * 500 * time.Millisecond
+		var response *archiveHTTPError
+		if errors.As(err, &response) {
+			if seconds, parseErr := strconv.Atoi(response.After); parseErr == nil && seconds >= 0 {
+				delay = max(delay, time.Duration(min(seconds, 31))*time.Second)
+			} else if date, parseErr := http.ParseTime(response.After); parseErr == nil {
+				delay = max(delay, time.Until(date))
+			}
+		}
+		if delay > 30*time.Second {
+			return result, err // Let the caller try its next pinned source.
+		}
+		progress.Report(activity.Event{Phase: "download-retry", Message: fmt.Sprintf("Retrying socket_vmnet download (%d/3): %v", attempt+1, err)})
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+type archiveHTTPError struct {
+	Host   string
+	Status int
+	After  string
+}
+
+func (err *archiveHTTPError) Error() string {
+	return fmt.Sprintf("download socket_vmnet from %s: HTTP %d %s", err.Host, err.Status, http.StatusText(err.Status))
+}
+
+type archiveVerificationError struct{ error }
+
+func (err *archiveVerificationError) Unwrap() error { return err.error }
+
+func retryArchiveDownload(err error) bool {
+	var invalid *archiveVerificationError
+	if errors.As(err, &invalid) {
+		return false
+	}
+	var response *archiveHTTPError
+	if errors.As(err, &response) {
+		switch response.Status {
+		case 408, 429, 500, 502, 503, 504:
+			return true
+		}
+		return false
+	}
+	var connection *net.OpError
+	var temporary net.Error
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || errors.As(err, &connection) || errors.As(err, &temporary) && temporary.Timeout()
+}
+
+func fetchBoundedArchiveAttempt(ctx context.Context, client HTTPDoer, fetchURL string, release darwinnet.Release, cacheDirectory, target, arch string, progress activity.Reporter, verify func(string, string) error) (DownloadResult, error) {
 	result := DownloadResult{Path: target, URL: fetchURL, SHA256: release.SHA256}
 	parsed, err := url.Parse(fetchURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return result, fmt.Errorf("socket_vmnet source URL must be HTTPS: %s", fetchURL)
-	}
-	if client == nil {
-		client = defaultHTTPClient()
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
@@ -282,8 +349,11 @@ func fetchBoundedArchive(ctx context.Context, client HTTPDoer, fetchURL string, 
 	if response.Request != nil && response.Request.URL != nil && response.Request.URL.Scheme != "https" {
 		return result, errors.New("socket_vmnet response URL is not HTTPS")
 	}
-	if response.StatusCode != http.StatusOK || response.ContentLength > maxSocketVMNetArchive {
-		return result, fmt.Errorf("download socket_vmnet from %s: %s", parsed.Host, response.Status)
+	if response.StatusCode != http.StatusOK {
+		return result, &archiveHTTPError{Host: parsed.Host, Status: response.StatusCode, After: response.Header.Get("Retry-After")}
+	}
+	if response.ContentLength > maxSocketVMNetArchive {
+		return result, fmt.Errorf("socket_vmnet download exceeds the %d-byte limit", maxSocketVMNetArchive)
 	}
 	temporary, err := os.CreateTemp(cacheDirectory, ".socket-vmnet-*.partial")
 	if err != nil {
@@ -312,8 +382,11 @@ func fetchBoundedArchive(ctx context.Context, client HTTPDoer, fetchURL string, 
 	if err != nil {
 		return result, fmt.Errorf("download socket_vmnet from %s: %w", parsed.Host, err)
 	}
-	if written > maxSocketVMNetArchive || (response.ContentLength >= 0 && written != response.ContentLength) {
-		return result, errors.New("socket_vmnet download size differs from the bounded response")
+	if written > maxSocketVMNetArchive {
+		return result, fmt.Errorf("socket_vmnet download exceeds the %d-byte limit", maxSocketVMNetArchive)
+	}
+	if response.ContentLength >= 0 && written != response.ContentLength {
+		return result, fmt.Errorf("socket_vmnet download from %s ended after %d of %d bytes: %w", parsed.Host, written, response.ContentLength, io.ErrUnexpectedEOF)
 	}
 	if err := temporary.Sync(); err != nil {
 		return result, err
@@ -322,7 +395,7 @@ func fetchBoundedArchive(ctx context.Context, client HTTPDoer, fetchURL string, 
 		return result, err
 	}
 	if err := verify(temporaryPath, arch); err != nil {
-		return result, fmt.Errorf("downloaded copy from %s does not match the pinned socket_vmnet v%s archive: %w", parsed.Host, release.Version, err)
+		return result, &archiveVerificationError{fmt.Errorf("downloaded copy from %s does not match the pinned socket_vmnet v%s archive: %w", parsed.Host, release.Version, err)}
 	}
 	if err := os.Rename(temporaryPath, target); err != nil {
 		return result, err

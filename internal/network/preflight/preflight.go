@@ -77,6 +77,7 @@ type Snapshot struct {
 	Addresses    map[string]string
 	SharingBusy  string
 	Problems     []string
+	Findings     []Finding
 }
 
 type Request struct {
@@ -114,7 +115,7 @@ func (report Report) CanRepair() bool {
 			continue
 		}
 		switch finding.Code {
-		case "installation.not_ready", "installation.route_missing":
+		case "installation.not_ready", "installation.route_missing", "installation.log_directory":
 			repair = true
 		default:
 			return false
@@ -147,6 +148,7 @@ func Evaluate(request Request, snapshot Snapshot) Report {
 		Installation: snapshot.Installation,
 		Findings:     make([]Finding, 0),
 	}
+	report.Findings = append(report.Findings, snapshot.Findings...)
 	if warning := request.Layout.Warning(); warning != "" {
 		add(&report, Finding{Code: "network.non_default", Severity: Warning, Evidence: warning, Fix: "keep the installed network and every node on this /24"})
 	}

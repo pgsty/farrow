@@ -42,11 +42,12 @@ func TestGuestSetupErrorRetainsCauseWithoutEncodedPayload(t *testing.T) {
 }
 
 type setupRetryRunner struct {
-	node     state.NodeState
-	warnings []state.GuestWarning
-	old      bool
-	scripts  []string
-	calls    int
+	node              state.NodeState
+	warnings          []state.GuestWarning
+	old               bool
+	scripts           []string
+	calls             int
+	controlKeyMissing bool
 }
 
 func (r *setupRetryRunner) Run(_ context.Context, _ string, args ...string) (execx.Result, error) {
@@ -55,8 +56,14 @@ func (r *setupRetryRunner) Run(_ context.Context, _ string, args ...string) (exe
 	if strings.Contains(command, "base64 -d") {
 		r.scripts = append(r.scripts, command)
 		r.warnings = nil
+		if r.controlKeyMissing {
+			r.warnings = []state.GuestWarning{{Stage: "control-ssh", Detail: "installed control key is missing"}}
+		}
 		r.old = false
 		return execx.Result{}, nil
+	}
+	if r.controlKeyMissing && strings.Contains(command, "/usr/local/libexec/farrow-install-control-ssh") {
+		return execx.Result{}, errors.New("installed control key is missing")
 	}
 	version := cloudinit.SetupVersion
 	if r.old {
@@ -64,6 +71,24 @@ func (r *setupRetryRunner) Run(_ context.Context, _ string, args ...string) (exe
 	}
 	data, err := json.Marshal(map[string]any{"node": r.node.Node, "generation": r.node.Generation, "spec_hash": r.node.SpecHash, "setup_version": version, "warnings": r.warnings})
 	return execx.Result{Stdout: data}, err
+}
+
+func TestUpReportsDisappearedControlKeyWithoutFailingManagementSSH(t *testing.T) {
+	public, _ := testSSHKeyPair(t)
+	key := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(key+".pub", []byte(public), 0600); err != nil {
+		t.Fatal(err)
+	}
+	node := state.NodeState{Node: "meta", VMUUID: "fixture", Generation: 1, SpecHash: strings.Repeat("a", 64), SSHPort: 2222}
+	runner := &setupRetryRunner{node: node, controlKeyMissing: true}
+	lifecycle := NativeLifecycle{RetryGuestSetup: true, Resolved: privateResolved(), VM: vm.Lifecycle{Runner: runner, SSHUser: "dba"}, PrivateKey: key, KnownHosts: key + ".known", SSHPath: "ssh"}
+	warnings, err := lifecycle.WaitReady(context.Background(), node, time.Second)
+	if err != nil || len(warnings) != 1 || warnings[0].Stage != "control-ssh" {
+		t.Fatalf("missing control key was hidden or blocked management SSH: %+v %v", warnings, err)
+	}
+	if len(runner.scripts) != 1 || !strings.Contains(runner.scripts[0], "farrow-finalize control-ssh ready") {
+		t.Fatalf("retry was not limited to the affected stage: %+v", runner.scripts)
+	}
 }
 
 func TestUpRetriesOnlyIncompleteGuestSetup(t *testing.T) {
@@ -85,7 +110,11 @@ func TestUpRetriesOnlyIncompleteGuestSetup(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "healthy" || scenario == "start" {
-				if runner.calls != 1 || len(runner.scripts) != 0 {
+				wantCalls := 1
+				if scenario == "healthy" {
+					wantCalls++ // Validate the installed control key, without rerunning setup.
+				}
+				if runner.calls != wantCalls || len(runner.scripts) != 0 {
 					t.Fatalf("healthy/start reran setup: %+v", runner)
 				}
 			} else {

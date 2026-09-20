@@ -4,15 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pgsty/farrow/internal/network/subnet"
 )
 
 // Repair reuses the verified installed binaries and interface identity. It
 // never downloads or replaces the host-global installation to restart it.
-func (e Executor) Repair(ctx context.Context, mode, cidr string) error {
+func (e Executor) Repair(ctx context.Context, mode, cidr string, restart bool) error {
 	if err := e.validate(); err != nil {
 		return err
 	}
@@ -23,6 +25,9 @@ func (e Executor) Repair(ctx context.Context, mode, cidr string) error {
 	if !installed || plan.State.Mode != mode || plan.State.CIDR != cidr {
 		return errors.New("network repair requires the matching installed mode and subnet")
 	}
+	if _, err := e.repairLogDirectory(ctx); err != nil {
+		return err
+	}
 	layout, err := subnet.Parse(cidr)
 	if err != nil {
 		return err
@@ -30,6 +35,17 @@ func (e Executor) Repair(ctx context.Context, mode, cidr string) error {
 	before, err := e.snapshotExactHostInterfaces(ctx, layout)
 	if err != nil {
 		return err
+	}
+	if _, observed := before[plan.Interface.BSDName]; !restart && observed {
+		// Permission repair alone must not disconnect running VMs. Only reuse
+		// a socket with the expected ownership that actually accepts clients.
+		if e.rootStat(ctx, SocketPath, "root", "staff", "770", "Socket") == nil {
+			connection, dialErr := net.DialTimeout("unix", SocketPath, time.Second)
+			if dialErr == nil {
+				_ = connection.Close()
+				return nil
+			}
+		}
 	}
 	delete(before, plan.Interface.BSDName)
 	if err := e.restartService(ctx); err != nil {

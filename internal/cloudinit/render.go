@@ -773,6 +773,10 @@ fi
 if [[ ! -e %[2]s && ! -e %[3]s ]]; then
   # The first successful installation consumes the staged secret. A later
   # repair must validate the installed files instead of requiring it again.
+  if [[ ! -f "${ssh_dir}/id_ed25519" || -L "${ssh_dir}/id_ed25519" ]]; then
+    echo "node-to-node SSH key is missing or unsafe; restore the original deployment private key to ${ssh_dir}/id_ed25519 (owner ${uid}:${gid}, mode 0600); management SSH remains available" >&2
+    exit 1
+  fi
   [[ ! -L "${ssh_dir}/id_ed25519" && ! -L "${ssh_dir}/config" ]]
   [[ "$(stat -c '%%u:%%g:%%a' "${ssh_dir}/id_ed25519")" == "${uid}:${gid}:600" ]]
   [[ "$(stat -c '%%u:%%g:%%a' "${ssh_dir}/config")" == "${uid}:${gid}:600" ]]

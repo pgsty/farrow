@@ -26,6 +26,20 @@ type PartialError struct {
 	RolledBack []string
 }
 
+// errors.Join can wrap a single failure after a successful state audit. Do
+// not discard a second (global) error while combining independent node results.
+func isolatedPartialError(err error) *PartialError {
+	if partial, ok := err.(*PartialError); ok {
+		return partial
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		if causes := joined.Unwrap(); len(causes) == 1 {
+			return isolatedPartialError(causes[0])
+		}
+	}
+	return nil
+}
+
 func (e *PartialError) Error() string {
 	details := make([]string, 0, len(e.Failures))
 	unready := make([]string, 0)

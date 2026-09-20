@@ -29,7 +29,8 @@ farrow.yml if no inventory or applied deployment exists. Use init to customize
 the inventory first. For unattended preparation, run setup --yes before up.
 
 Changed node definitions and nodes removed from the inventory are reported,
-never applied: use recreate or destroy for those.`,
+never applied: use recreate or destroy for those. A missing host share fails
+only its node; restore the original directory or mount before retrying it.`,
 		example: `  farrow up                      # start your first VM, or continue the current lab
   farrow up meta                 # converge only the meta node
   farrow up --mirror             # use the China official repository for downloads
@@ -38,7 +39,8 @@ never applied: use recreate or destroy for those.`,
 	"start": {
 		long: `Start stopped nodes from the applied deployment state and wait for each
 guest to become ready and refresh SSH connection details. Start does not read
-an inventory or create nodes. Run up to retry unfinished guest setup.`,
+an inventory or create nodes. Run up to retry unfinished guest setup.
+Independent nodes continue if one node's host share is unavailable.`,
 		example: `  farrow start                   # start every stopped node
   farrow start meta --no-wait    # return once QEMU is running`,
 	},

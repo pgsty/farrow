@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/pgsty/farrow/internal/qemu"
@@ -104,7 +105,10 @@ func Open(root string, shares []spec.Share) (*Bundle, error) {
 		file, err := openDirectory(share)
 		if err != nil {
 			_ = bundle.Close()
-			return nil, err
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("host share %q -> %q is unavailable: %w; restore the original host directory or its mount, then retry; Farrow will not create an empty replacement", share.Host, share.Guest, err)
+			}
+			return nil, fmt.Errorf("host share %q -> %q: %w", share.Host, share.Guest, err)
 		}
 		bundle.files = append(bundle.files, file)
 	}
@@ -117,6 +121,27 @@ func Validate(root string, shares []spec.Share) error {
 		return err
 	}
 	return bundle.Close()
+}
+
+// ValidateQEMUAccess checks the directory reopen used by QEMU's local 9p
+// backend. Darwin's /dev/fd supports stat but not open(O_DIRECTORY). Do not
+// substitute a pathname: that would lose the descriptor's identity guarantee.
+func (b *Bundle) ValidateQEMUAccess() error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	for index, file := range b.files {
+		path := fmt.Sprintf("/dev/fd/%d", file.Fd())
+		reopened, err := os.OpenFile(path, os.O_RDONLY|unix.O_DIRECTORY, 0)
+		if err != nil {
+			share := b.shares[index]
+			return fmt.Errorf("host share %q -> %q cannot be safely opened by QEMU on macOS: %w; omit vm_shares when creating a new node, or use a Linux host; changing shares on an existing node requires explicit recreate and replaces its root disk, so preserve needed data first; Farrow will not bypass directory identity checks", share.Host, share.Guest, err)
+		}
+		if err := reopened.Close(); err != nil {
+			return fmt.Errorf("close host-share capability probe: %w", err)
+		}
+	}
+	return nil
 }
 
 func (b *Bundle) Files() []*os.File {

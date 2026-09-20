@@ -90,6 +90,8 @@ func TestLifecycleIntegrationPolicyKeepsPartialAndNoWaitSemantics(t *testing.T) 
 		err                         error
 	}{
 		{name: "partial", command: "up", hasNodes: true, err: partial, calls: "ssh,event", level: "error"},
+		{name: "partial start", command: "start", hasNodes: true, err: partial, calls: "ssh,event", level: "error"},
+		{name: "partial restart", command: "restart", hasNodes: true, err: partial, calls: "ssh,event", level: "error"},
 		{name: "no wait", command: "up", hasNodes: true, noWait: true, calls: "ssh,event", level: "info"},
 		{name: "start", command: "start", hasNodes: true, calls: "ssh,guests,event", level: "info"},
 		{name: "remove peer", command: "destroy", hasNodes: true, calls: "ssh,guests,event", level: "info"},

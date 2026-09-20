@@ -428,6 +428,9 @@ func (m Manager) RecreateResolved(ctx context.Context, requested spec.Resolved) 
 	if err := validatePrivateShareDeviceHelp(ctx, m.runner(), shareBinaries); err != nil {
 		return Status{}, err
 	}
+	if err := selectedShareAccess(deploymentValue, requested, requestedSelection); err != nil {
+		return Status{}, err
+	}
 	if len(selected) != len(deploymentState.Resolved.Nodes) {
 		destroyManager.allowPartialDestroy = true
 	}

@@ -100,7 +100,8 @@ func newLogsCommand(stdout, stderr io.Writer) *cobra.Command {
 		Long: `Read the selected node's serial or QEMU log, or the deployment-wide Farrow
 event log (--source events takes no node). With --follow, text mode streams
 bytes and structured modes emit a record stream (NDJSON for JSON) so stdout
-remains machine-readable.`,
+remains machine-readable. Events include setup and its lifecycle retry under
+one operation ID, and can be read before deployment state exists.`,
 		Example: `  farrow logs meta                   # read the serial log
   farrow logs meta --source qemu     # read QEMU diagnostics
   farrow logs --source events -f     # follow the deployment event log

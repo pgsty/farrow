@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/pgsty/farrow/internal/execx"
 	"github.com/pgsty/farrow/internal/fsutil"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/sys/unix"
 )
 
 // PurgeAction records one planned or applied key-file removal.
@@ -56,6 +59,18 @@ func ensureModeDirectory(path string) error {
 	return os.Chmod(path, 0o700)
 }
 
+// Existing guests trust the original identity, even when both local key files
+// have been lost. Generating another pair would make recovery harder.
+func EnsureExistingKeys(ctx context.Context, runner execx.Runner, root string) (string, string, string, error) {
+	privateKey := filepath.Join(root, "keys", "id_ed25519")
+	if _, err := os.Lstat(privateKey); errors.Is(err, os.ErrNotExist) {
+		return "", "", "", fmt.Errorf("deployment private SSH key is missing; restore %s from backup to preserve access to existing guests", privateKey)
+	} else if err != nil {
+		return "", "", "", err
+	}
+	return EnsureKeys(ctx, runner, root)
+}
+
 // EnsureKeys creates <root>/keys with an Ed25519 pair and known_hosts when
 // absent, normalizes modes, and returns the private key path, known_hosts
 // path, and public key text.
@@ -68,6 +83,9 @@ func EnsureKeys(ctx context.Context, runner execx.Runner, root string) (string, 
 	publicKey := privateKey + ".pub"
 	knownHosts := filepath.Join(directory, "known_hosts")
 	if _, err := os.Lstat(privateKey); errors.Is(err, os.ErrNotExist) {
+		if _, publicErr := os.Lstat(publicKey); !errors.Is(publicErr, os.ErrNotExist) {
+			return "", "", "", fmt.Errorf("deployment private SSH key is missing; restore %s from backup to preserve access to existing guests", privateKey)
+		}
 		sshKeygen, lookErr := exec.LookPath("ssh-keygen")
 		if lookErr != nil {
 			return "", "", "", lookErr
@@ -85,6 +103,9 @@ func EnsureKeys(ctx context.Context, runner execx.Runner, root string) (string, 
 	} else if err != nil {
 		return "", "", "", err
 	}
+	if err := restorePublicKey(privateKey, publicKey); err != nil {
+		return "", "", "", err
+	}
 	for path, mode := range map[string]os.FileMode{privateKey: 0o600, publicKey: 0o644, knownHosts: 0o600} {
 		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() {
@@ -99,6 +120,43 @@ func EnsureKeys(ctx context.Context, runner execx.Runner, root string) (string, 
 		return "", "", "", err
 	}
 	return privateKey, knownHosts, strings.TrimSpace(string(publicBytes)), nil
+}
+
+// The public half is derived data. Recover it without invoking ssh-keygen or
+// replacing the private identity already trusted by running guests.
+func restorePublicKey(privateKey, publicKey string) error {
+	if _, err := os.Lstat(publicKey); !errors.Is(err, os.ErrNotExist) {
+		return err // Existing files are checked by EnsureKeys below.
+	}
+	info, err := os.Lstat(privateKey)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return fmt.Errorf("cannot restore public SSH key: private key is unsafe: %s", privateKey)
+	}
+	if err := validateSSHOwner(info, true); err != nil {
+		return fmt.Errorf("cannot restore public SSH key: %w", err)
+	}
+	handle, err := os.OpenFile(privateKey, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = handle.Close() }() // Read-only identity source.
+	opened, err := handle.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return fmt.Errorf("private SSH key changed while opening: %s", privateKey)
+	}
+	data, err := io.ReadAll(io.LimitReader(handle, 1<<20))
+	if err != nil {
+		return err
+	}
+	signer, err := ssh.ParsePrivateKey(data)
+	if err != nil {
+		return fmt.Errorf("cannot restore public SSH key from %s: %w; restore the original valid private key from backup", privateKey, err)
+	}
+	public := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))) + " farrow\n"
+	if err := fsutil.AtomicCreate(publicKey, []byte(public), 0o644); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("restore public SSH key: %w", err)
+	}
+	return nil
 }
 
 var purgeAllowlist = map[string]struct{}{

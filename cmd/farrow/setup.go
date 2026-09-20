@@ -38,6 +38,7 @@ type setupStep struct {
 }
 
 type setupResult struct {
+	OperationID       string                   `json:"operation_id,omitempty"`
 	Schema            int                      `json:"schema"`
 	OS                string                   `json:"os"`
 	Arch              string                   `json:"arch"`
@@ -558,6 +559,15 @@ func setupNeedsNetworkInstall(report netpreflight.Report) bool {
 	return report.Installation.Status == "" || report.Installation.Status == "absent" || report.CanRepair()
 }
 
+func networkRepairNeedsRestart(report netpreflight.Report) bool {
+	for _, finding := range report.Findings {
+		if finding.Severity == netpreflight.Error && finding.Code != "installation.log_directory" {
+			return true
+		}
+	}
+	return false
+}
+
 func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflight.Report, base execx.Runner, sudo *sudoSession, stderr io.Writer) (setupStep, bool, error) {
 	if !setupNeedsNetworkInstall(report) {
 		tickf(stderr, "Network %s is already installed", report.CIDR)
@@ -567,7 +577,7 @@ func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflig
 	// can legitimately outlive sudo's timestamp window.
 	networkReason := "install the host-global " + report.CIDR + " network (root-owned socket_vmnet service)"
 	if report.CanRepair() {
-		networkReason = "restore the installed " + report.CIDR + " Farrow network service"
+		networkReason = "restore the installed " + report.CIDR + " Farrow network"
 	}
 	if runtime.GOOS != "darwin" {
 		networkReason = "install the host-global " + report.CIDR + " network (root-owned farrow0 bridge)"
@@ -580,7 +590,7 @@ func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflig
 			progressItem := startProgress(ctx, stderr, "Restoring the private network")
 			defer progressItem.Stop(nil)
 			executor := darwinnet.Executor{User: base, Root: setupRootRunner(base)}
-			if err := executor.Repair(ctx, mode, report.CIDR); err != nil {
+			if err := executor.Repair(ctx, mode, report.CIDR, networkRepairNeedsRestart(report)); err != nil {
 				return setupStep{}, true, err
 			}
 			return setupStep{Name: "network", Status: "repaired", Detail: report.CIDR, Changed: true}, false, nil
@@ -1016,7 +1026,7 @@ func failSetup(result *setupResult, code int, failure error) (commandOutcome, er
 		result.Next = "fix the error, then rerun farrow setup"
 		result.NextArgv = nil
 	}
-	return commandOutcome{}, newDetailedCommandError(exitCategory(code), code, failure, "", *result)
+	return commandOutcome{}, newDetailedCommandError(exitCategory(code), code, failure, result.OperationID, *result)
 }
 
 // failSetupRendered is for blockers the stderr plan has already described: the
@@ -1091,10 +1101,19 @@ func formatSetupCommand(arguments []string) (string, []string) {
 }
 
 func runSetupCommand(parent context.Context, profileName string, options setupCLIOptions, format outputFormat, verbose bool, stderr io.Writer) (_ commandOutcome, returnErr error) {
+	parent, operationID, operationErr := operationContext(parent)
+	if operationErr != nil {
+		return commandOutcome{}, newRuntimeError(operationErr)
+	}
+	if !options.DryRun {
+		recordOperationPhase(parent, operationID, "setup", "begin", nil, stderr)
+		defer func() { recordOperationPhase(parent, operationID, "setup", "complete", returnErr, stderr) }()
+	}
 	progressItem := startProgress(parent, stderr, "Preparing host")
 	defer func() { progressItem.Stop(returnErr) }()
 	result := setupResult{
-		Schema: 1, OS: runtime.GOOS, Arch: runtime.GOARCH,
+		OperationID: operationID,
+		Schema:      1, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Steps: make([]setupStep, 0, 6), NextArgv: nil,
 	}
 	if profileName != "" {

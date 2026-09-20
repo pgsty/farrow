@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/pgsty/farrow/internal/activity"
 )
@@ -62,7 +63,8 @@ func (l located) info(manifest ManifestState) Info {
 }
 
 // locate answers from the catalog first and falls back to a registered local
-// alias. A miss reports the catalog error, which names the alias the user typed.
+// alias. A miss reports the catalog error; a registered local image retains
+// its own validation error instead of looking like an unknown alias.
 func (session *CatalogSession) locate(ctx context.Context, alias, arch string) (located, error) {
 	if err := validateCatalogArch(arch); err != nil {
 		return located{}, err
@@ -71,13 +73,28 @@ func (session *CatalogSession) locate(ctx context.Context, alias, arch string) (
 	if entryErr == nil {
 		return located{Entry: entry}, nil
 	}
+	name := strings.ToLower(strings.TrimSpace(alias))
+	if !strings.HasPrefix(name, localAliasPrefix) {
+		return located{}, entryErr
+	}
+	registry, err := (Store{DataRoot: session.service.DataRoot}).readLocalAliases()
+	if err != nil {
+		return located{}, fmt.Errorf("read local image registry: %w", err)
+	}
+	registered, ok := registry.Aliases[name]
+	if !ok {
+		return located{}, entryErr
+	}
+	if registered.Arch != arch {
+		return located{}, fmt.Errorf("local image %q is for %s, requested %s", name, registered.Arch, arch)
+	}
 	store, err := session.store()
 	if err != nil {
 		return located{}, err
 	}
 	localEntry, path, metadata, localErr := store.ResolveLocalAlias(ctx, alias, arch)
 	if localErr != nil {
-		return located{}, entryErr
+		return located{}, fmt.Errorf("local image %q: %w", name, localErr)
 	}
 	return located{Entry: localEntry, Local: true, Path: path, Metadata: metadata}, nil
 }
@@ -96,6 +113,17 @@ func (session *CatalogSession) InfoArch(ctx context.Context, alias, arch string)
 	}
 	if found.Local {
 		return found.info(session.manifest), nil
+	}
+	// An absent cache is a metadata-only lookup. QEMU is needed only when
+	// there are image bytes to inspect; do not install tools just to browse.
+	cachePath, err := (Store{DataRoot: session.service.DataRoot}).Path(found.Entry)
+	if err != nil {
+		return Info{}, err
+	}
+	if _, err := os.Lstat(cachePath); errors.Is(err, os.ErrNotExist) {
+		return Info{Entry: found.Entry, Manifest: session.manifest}, nil
+	} else if err != nil {
+		return Info{}, err
 	}
 	store, err := session.store()
 	if err != nil {

@@ -61,7 +61,26 @@ func validatePrivatePersistentState(deploymentValue Deployment, deploymentState 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := persistent.ValidateDesired(deploymentValue.Root, desired); err != nil {
+	// Explicit node removal leaves owned persistent disks behind after dropping
+	// that node from the spec. Destroy must preserve those disks, not demand
+	// that the removed node be recreated before the rest can be cleaned up.
+	// Inventory still rejects unknown ownership, symlinks and extra artifacts;
+	// disks belonging to a node still in the spec retain exact identity checks.
+	retained, err := persistent.Inventory(deploymentValue.Root)
+	if err != nil {
+		return nil, err
+	}
+	declared := make(map[string]bool, len(deploymentState.Resolved.Nodes))
+	for _, node := range deploymentState.Resolved.Nodes {
+		declared[node.Name] = true
+	}
+	validated := append([]persistent.Identity(nil), desired...)
+	for _, record := range retained {
+		if !declared[record.Node] {
+			validated = append(validated, persistent.Identity{Node: record.Node, Name: record.Name, Serial: record.Serial, Size: record.Size, Mount: record.Mount, Filesystem: record.Filesystem})
+		}
+	}
+	if _, err := persistent.ValidateDesired(deploymentValue.Root, validated); err != nil {
 		return nil, err
 	}
 	desiredDisks := make(map[string]persistent.Identity, len(desired))

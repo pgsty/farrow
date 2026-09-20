@@ -265,7 +265,11 @@ func (p Probe) darwinSharingConflict(ctx context.Context, request Request, insta
 	hostResult, hostErr := p.Runner.Run(ctx, "/usr/bin/plutil", "-extract", "Host_Net_Address", "raw", "-o", "-", vmnetPlist)
 	maskResult, maskErr := p.Runner.Run(ctx, "/usr/bin/plutil", "-extract", "Host_Net_Mask", "raw", "-o", "-", vmnetPlist)
 	if hostErr != nil || maskErr != nil {
-		return "", "com.apple.NetworkSharing is active but its vmnet host/mask could not be read; subnet ownership is unknown"
+		readErr := hostErr
+		if readErr == nil {
+			readErr = maskErr
+		}
+		return "", fmt.Sprintf("com.apple.NetworkSharing is active but its vmnet host/mask could not be read; subnet ownership is unknown: %v", readErr)
 	}
 	if strings.TrimSpace(string(maskResult.Stdout)) != "255.255.255.0" {
 		return "", "com.apple.NetworkSharing is active but its vmnet mask is not a parseable /24; subnet ownership is unknown"
@@ -334,7 +338,6 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 		{darwinnet.StateDir, 0o700, "directory", 0, false},
 		{darwinnet.InterfaceMarkerDir, 0o755, "directory", 0, false},
 		{darwinnet.InterfaceMarkerPath, 0o644, "file", 0, false},
-		{darwinnet.LogDir, 0o755, "directory", 0, false},
 	}
 	present := 0
 	for _, target := range required {
@@ -353,6 +356,14 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 	if present != 0 && present != len(required) && snapshot.Installation.Status != "invalid" {
 		snapshot.Installation.Status = "partial"
 		snapshot.Installation.Problem = fmt.Sprintf("only %d of %d installed network files are present", present, len(required))
+	}
+	if present == 0 && snapshot.Installation.Status == "absent" {
+		if _, err := p.lstat(darwinnet.LogDir); err == nil {
+			snapshot.Installation.Status = "partial"
+			snapshot.Installation.Problem = darwinnet.LogDir + " exists but the Farrow network is not installed"
+		} else if !errors.Is(err, os.ErrNotExist) {
+			invalidate(&snapshot.Installation, darwinnet.LogDir+": "+err.Error())
+		}
 	}
 	socketExists, socketMetadataOK := false, false
 	socketProblem := ""
@@ -490,6 +501,13 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 			}
 		}
 	}
+	// Logs are runtime support, not evidence of network ownership. A directory
+	// recreated by launchd with mode 0744 must not hide a verified Farrow bridge.
+	if snapshot.Installation.Status == "exact" || snapshot.Installation.Status == "protected" {
+		if finding := p.darwinLogDirectoryFinding(); finding != nil {
+			snapshot.Findings = append(snapshot.Findings, *finding)
+		}
+	}
 	routes, routeErr := p.Runner.Run(ctx, "/usr/sbin/netstat", "-rn", "-f", "inet")
 	if routeErr != nil {
 		snapshot.Problems = append(snapshot.Problems, "netstat IPv4 route table: "+routeErr.Error())
@@ -499,9 +517,45 @@ func (p Probe) collectDarwin(ctx context.Context, request Request) Snapshot {
 	sharingBusy, sharingProblem := p.darwinSharingConflict(ctx, request, snapshot.Installation)
 	snapshot.SharingBusy = sharingBusy
 	if sharingProblem != "" {
-		snapshot.Problems = append(snapshot.Problems, sharingProblem)
+		snapshot.Findings = append(snapshot.Findings, Finding{
+			Code: "vmnet.sharing_probe", Severity: Error, Class: Capability,
+			Evidence: sharingProblem,
+			Fix:      "inspect the vmnet configuration with: sudo plutil -p /Library/Preferences/SystemConfiguration/com.apple.vmnet.plist",
+		})
 	}
 	return snapshot
+}
+
+func (p Probe) darwinLogDirectoryFinding() *Finding {
+	info, err := p.lstat(darwinnet.LogDir)
+	if errors.Is(err, os.ErrNotExist) {
+		info, err = nil, nil
+	}
+	needsRepair := false
+	if err == nil {
+		needsRepair, err = darwinnet.LogDirectoryNeedsRepair(info)
+	}
+	if err != nil {
+		return &Finding{
+			Code: "installation.log_directory_unsafe", Severity: Error, Class: Integrity,
+			Subject: darwinnet.LogDir, Evidence: err.Error(),
+			Fix: "inspect with ls -ld " + darwinnet.LogDir + "; restore a real root:wheel directory with mode 0755, then retry",
+		}
+	}
+	if !needsRepair {
+		return nil
+	}
+	evidence := darwinnet.LogDir + " is missing; expected a root:wheel directory with mode 0755"
+	command := "sudo install -d -o root -g wheel -m 0755 " + darwinnet.LogDir
+	if info != nil {
+		evidence = fmt.Sprintf("%s has mode %04o; expected 0755 (owner root:wheel is correct)", darwinnet.LogDir, info.Mode().Perm())
+		command = "sudo chmod 0755 " + darwinnet.LogDir
+	}
+	return &Finding{
+		Code: "installation.log_directory", Severity: Error, Class: Capability,
+		Subject: darwinnet.LogDir, Evidence: evidence,
+		Fix: "run farrow up to repair it (sudo may ask for a password), or run: " + command,
+	}
 }
 
 func parseLinuxInterfaces(output string) []InterfaceAddress {

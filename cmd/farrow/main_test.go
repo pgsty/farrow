@@ -684,7 +684,7 @@ func TestCompletions(t *testing.T) {
 		{args: []string{"__complete", "setup", ""}, want: []string{"meta", "dual", "trio", "full"}},
 		{args: []string{"__complete", "setup", "--mode", ""}, want: []string{"host", "shared"}},
 		{args: []string{"__complete", "image", ""}, want: []string{"list", "pull", "sync"}},
-		{args: []string{"__complete", "image", "pull", "u"}, want: []string{"u24", "u24:stable", "u24@20260801.0.0"}},
+		{args: []string{"__complete", "image", "pull", "u"}, want: []string{"u24", "u24:stable", "u24@20260911.0.0", "u24@20260801.0.0"}},
 		{args: []string{"__complete", "up", "--file", "../../tests/fixtures/private-two.yaml", ""}, want: []string{"meta", "node-1"}},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -820,6 +820,9 @@ func TestPurgeDisposesAppliedDeploymentWithoutConfirmation(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(stderr.String()), "confirm") {
 		t.Fatalf("purge asked for confirmation: %q", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "keys, and persistent data disks preserved") || strings.Contains(stdout.String(), "keys preserved") {
+		t.Fatalf("purge reports resources as both preserved and deleted: %s", stdout.String())
 	}
 	for _, removed := range []string{filepath.Join(root, "state.json"), keys} {
 		if _, err := os.Lstat(removed); !errors.Is(err, os.ErrNotExist) {

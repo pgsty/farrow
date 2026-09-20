@@ -203,7 +203,7 @@ func TestSetupConfirmationTreatsEndOfInputAsCancellation(t *testing.T) {
 }
 
 func TestRunSetupEmitsStructuredEarlyFailure(t *testing.T) {
-	t.Parallel()
+	t.Setenv("FARROW_HOME", filepath.Join(t.TempDir(), "state"))
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	outputState := &outputContext{format: outputJSON}

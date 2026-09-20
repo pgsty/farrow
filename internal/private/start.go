@@ -162,6 +162,26 @@ func (l NativeLifecycle) WaitReady(ctx context.Context, node state.NodeState, ti
 			stages = append(stages, "data-disks")
 		}
 	}
+	control := false
+	for _, definition := range l.Resolved.Nodes {
+		if definition.Name == node.Node {
+			control = definition.Control
+			break
+		}
+	}
+	if control && !updateAll && !slices.Contains(stages, "control-ssh") {
+		checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		args := vm.SSHArgsForInstance(l.VM.SSHUser, l.PrivateKey, l.KnownHosts, l.VM.HostKeyAlias, node.SSHPort,
+			"sudo", "-n", "/usr/local/libexec/farrow-install-control-ssh")
+		_, checkErr := l.VM.Runner.Run(checkCtx, l.SSHPath, args...)
+		cancel()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if checkErr != nil {
+			stages = append(stages, "control-ssh")
+		}
+	}
 	if !updateAll && len(stages) == 0 && len(warnings) == 0 {
 		return warnings, nil
 	}
