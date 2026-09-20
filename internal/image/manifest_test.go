@@ -63,44 +63,44 @@ func TestEmbeddedFormalGuestMatrixExact(t *testing.T) {
 			sha256: "457c8375e19496f43a25c4a6169fa11237536c53cef6f85a20ea3c5a751aa0f5", artifactSize: 469368832, virtualSize: 10737418240, sourceUser: "rocky",
 		},
 		"d12/amd64": {
-			release: "20260806.2562.1", url: "",
-			sha256: "5e25ae70d8b95a1f1258c9243c8130e746dae602185a97c186ddbe62f5c563a1", artifactSize: 766050304, virtualSize: 3221225472, sourceUser: "dba",
+			release: "20260909.2596.1", url: "",
+			sha256: "ad255513c30684f7bc833ba8aaa55745764d957c2ea587ef28adf78548dfcfbf", artifactSize: 767492096, virtualSize: 3221225472, sourceUser: "dba",
 		},
 		"d12/arm64": {
-			release: "20260806.2562.1", url: "",
-			sha256: "a8898040189bf0e0d7dca6cf8db965957fbfb172c726e6ba264fe18303f48607", artifactSize: 711196672, virtualSize: 3221225472, sourceUser: "dba",
+			release: "20260909.2596.1", url: "",
+			sha256: "b4095d161fd3b551df4cc47db9019cb98b96c45ad3320a00c6ef9ca3425ca676", artifactSize: 750583808, virtualSize: 3221225472, sourceUser: "dba",
 		},
 		"d13/amd64": {
-			release: "20260810.2566.1", url: "",
-			sha256: "1abcb1ee7081ae5f577d25f573376d140e2a15df8bfe135418f7d9999ce4bab5", artifactSize: 533135360, virtualSize: 3221225472, sourceUser: "dba",
+			release: "20260914.2601.1", url: "",
+			sha256: "3ec9fc9ca0adca84dbdcf9297687e1f0b893138ed4205d6584b47ecda4f76464", artifactSize: 532873216, virtualSize: 3221225472, sourceUser: "dba",
 		},
 		"d13/arm64": {
-			release: "20260810.2566.1", url: "",
-			sha256: "a195ba0b47a932c07934eda13500581962f419dc4ce78b22027281efe9ec3385", artifactSize: 575537152, virtualSize: 3221225472, sourceUser: "dba",
+			release: "20260914.2601.1", url: "",
+			sha256: "9fe2f0a4fe6a43ff04f741d41962f1107b840c14b80f23b7c967a731e0fe1e6e", artifactSize: 582090752, virtualSize: 3221225472, sourceUser: "dba",
 		},
 		"u22/amd64": {
-			release: "20260810.0.0", url: "https://cloud-images.ubuntu.com/jammy/20260810/jammy-server-cloudimg-amd64.img",
-			sha256: "6de0c42a98dc9a749917dfef34bf54e3595441bf67d39f103a61341560b3da8e", artifactSize: 734344192, virtualSize: 2361393152, sourceUser: "ubuntu",
+			release: "20260913.0.0", url: "https://cloud-images.ubuntu.com/releases/jammy/release-20260913/ubuntu-22.04-server-cloudimg-amd64.img",
+			sha256: "9144540e8af7637d258b50dbabe82ce1aa6752c9574fedfb048270da0e087899", artifactSize: 735388672, virtualSize: 2361393152, sourceUser: "ubuntu",
 		},
 		"u22/arm64": {
-			release: "20260810.0.0", url: "https://cloud-images.ubuntu.com/jammy/20260810/jammy-server-cloudimg-arm64.img",
-			sha256: "b57a88a8d3b9f33d48f1b3d70a1aac7ae79760c9b507699d2601989eadac02b1", artifactSize: 703484928, virtualSize: 2361393152, sourceUser: "ubuntu",
+			release: "20260913.0.0", url: "https://cloud-images.ubuntu.com/releases/jammy/release-20260913/ubuntu-22.04-server-cloudimg-arm64.img",
+			sha256: "ab5fcc80611a98bf999018045119d87b3a0e7c78f3b43b254b93d5c22bae3ff6", artifactSize: 704972800, virtualSize: 2361393152, sourceUser: "ubuntu",
 		},
 		"u24/amd64": {
-			release: "20260801.0.0", url: "https://cloud-images.ubuntu.com/noble/20260801/noble-server-cloudimg-amd64.img",
-			sha256: "0533b0655c32e68b31d792ecd6ccfca95abdbc536c4446874fe0513bd4140ffe", artifactSize: 624239616, virtualSize: 3758096384, sourceUser: "ubuntu",
+			release: "20260911.0.0", url: "https://cloud-images.ubuntu.com/releases/noble/release-20260911/ubuntu-24.04-server-cloudimg-amd64.img",
+			sha256: "612b2c0cc1bc413a6cb8c38fd611794caf0f2b436c50013d8b3794db12ad7354", artifactSize: 625256960, virtualSize: 3758096384, sourceUser: "ubuntu",
 		},
 		"u24/arm64": {
-			release: "20260801.0.0", url: "https://cloud-images.ubuntu.com/noble/20260801/noble-server-cloudimg-arm64.img",
-			sha256: "aa6da05756e85ea6dde4836b841fecb10cfd1ba3bcea320189d9af945db70476", artifactSize: 618417664, virtualSize: 3758096384, sourceUser: "ubuntu",
+			release: "20260911.0.0", url: "https://cloud-images.ubuntu.com/releases/noble/release-20260911/ubuntu-24.04-server-cloudimg-arm64.img",
+			sha256: "7b682958a67ff5de068e36de6af8b75fa645d296af5a70d6500527f6a33781db", artifactSize: 619621888, virtualSize: 3758096384, sourceUser: "ubuntu",
 		},
 		"u26/amd64": {
-			release: "20260731.0.0", url: "https://cloud-images.ubuntu.com/resolute/20260731/resolute-server-cloudimg-amd64.img",
-			sha256: "9dc7c5363c0146a08ba0c9aa834d82c2c6dfbb1c471ad9a2f0aba1189e21be05", artifactSize: 860447744, virtualSize: 3758096384, sourceUser: "ubuntu",
+			release: "20260918.0.0", url: "https://cloud-images.ubuntu.com/releases/resolute/release-20260918/ubuntu-26.04-server-cloudimg-amd64.img",
+			sha256: "4908fb59ccd4e87ae4e8e973b7ef56f535448eacb24a87fd787270c0048987bc", artifactSize: 864411136, virtualSize: 3758096384, sourceUser: "ubuntu",
 		},
 		"u26/arm64": {
-			release: "20260731.0.0", url: "https://cloud-images.ubuntu.com/resolute/20260731/resolute-server-cloudimg-arm64.img",
-			sha256: "3e113fdd41f39e13729375173bb2ae793f87dc6db4294e5251ff2476971788ba", artifactSize: 940920832, virtualSize: 3758096384, sourceUser: "ubuntu",
+			release: "20260918.0.0", url: "https://cloud-images.ubuntu.com/releases/resolute/release-20260918/ubuntu-26.04-server-cloudimg-arm64.img",
+			sha256: "8dc812bc6356d0abf825d8029f25f1b71f02cb103e1d0cc5c17fbb2572322972", artifactSize: 944823296, virtualSize: 3758096384, sourceUser: "ubuntu",
 		},
 	}
 

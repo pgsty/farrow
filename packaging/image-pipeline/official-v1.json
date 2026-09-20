@@ -1,8 +1,8 @@
 {
   "artifact_base_url": "https://repo.pigsty.cc/farrow",
-  "manifest_version": 2026090301,
+  "manifest_version": 2026092001,
   "schema": 1,
-  "source_date_epoch": 1788393600,
+  "source_date_epoch": 1789862400,
   "targets": [
     {
       "arch": "amd64",
@@ -44,11 +44,11 @@
         "schema": 1
       },
       "profile": "d12",
-      "release": "20260806.2562.1",
-      "source_filename": "d12-20260806.2562.0-amd64.qcow2",
-      "source_sha256": "dd3dbd23a3965318cc9aae32592dcfde4abcb8f90a50ca760a9ca9e8f3ba6255",
-      "source_sha512": "0b04eda1c80b255d6234ae6fe63c43a6cb0de4afc5c37873acbc82d5b1feba7a619d2402d2341af1cf9e0898fa7d5225be343fef47349b18fe28b838001bd8eb",
-      "source_uri": "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-amd64-20260806-2562.qcow2"
+      "release": "20260909.2596.1",
+      "source_filename": "d12-20260909.2596.1-amd64.source.qcow2",
+      "source_sha256": "5b842b549629637613f1770ad749b868b08c6e16c437a5940f21178816f3d7e9",
+      "source_sha512": "84946d6e2f55b1e8dcc114efc059f13882bd2ccdf36852126a13a0aa4a4ce0efee945406b78280e5942096639edc2a3ced20b70c12d9c7c7366ce364ba47a0ff",
+      "source_uri": "https://cloud.debian.org/images/cloud/bookworm/20260909-2596/debian-12-generic-amd64-20260909-2596.qcow2"
     },
     {
       "arch": "arm64",
@@ -90,11 +90,11 @@
         "schema": 1
       },
       "profile": "d12",
-      "release": "20260806.2562.1",
-      "source_filename": "d12-20260806.2562.0-arm64.qcow2",
-      "source_sha256": "8c6b8f81e571d530f6561c707538a4e807de8188c9a3f41af7b52b4e5ed010be",
-      "source_sha512": "8f872616a25ac6ca7c0d1b169b062931db51cd03fda4c8cbc74f228d045b186edd1c7d105933a7149c3377372cd0196d7659f07574d7bf6425b82b01df323026",
-      "source_uri": "https://cloud.debian.org/images/cloud/bookworm/20260806-2562/debian-12-generic-arm64-20260806-2562.qcow2"
+      "release": "20260909.2596.1",
+      "source_filename": "d12-20260909.2596.1-arm64.source.qcow2",
+      "source_sha256": "38190f378a1564c8bf5cf6a44898999bfcb5972876dc3e4a9b5413b6398a1efa",
+      "source_sha512": "791a822d93afa20360af4497ea2d2c0c0867b9663b8fc4e8b864364334855585a9f053d8fc82c72fe703d66ff76387c6dfc7be8534f0c85c47f0448f6dd28dd4",
+      "source_uri": "https://cloud.debian.org/images/cloud/bookworm/20260909-2596/debian-12-generic-arm64-20260909-2596.qcow2"
     },
     {
       "arch": "amd64",
@@ -125,22 +125,22 @@
           },
           {
             "arch": "amd64",
-            "filename": "xfsprogs_6.13.0-2+b1_amd64.deb",
+            "filename": "xfsprogs_6.13.0-2+deb13u1_amd64.deb",
             "name": "xfsprogs",
-            "sha256": "570e900e2e0fa1e3d56ca654d4739e43e16ee5f2d6050fb5955c141cf2cbacf1",
-            "url": "https://deb.debian.org/debian/pool/main/x/xfsprogs/xfsprogs_6.13.0-2+b1_amd64.deb",
-            "version": "6.13.0-2+b1"
+            "sha256": "79e00160bfc45d25a46d2709edd364afb41723d9b96713de8f6c80b6a17f2d74",
+            "url": "https://deb.debian.org/debian/pool/main/x/xfsprogs/xfsprogs_6.13.0-2%2bdeb13u1_amd64.deb",
+            "version": "6.13.0-2+deb13u1"
           }
         ],
         "profile": "d13",
         "schema": 1
       },
       "profile": "d13",
-      "release": "20260810.2566.1",
-      "source_filename": "d13-20260810.2566.0-amd64.qcow2",
-      "source_sha256": "d4e6f5d1e9f571c198a65b45ab1adae6c5734607614e72f9661d84ce5881e5fc",
-      "source_sha512": "f6978100d8031c266d55d7815ceea7fcdeacf28e1e5834fdb9c94ac96880a054a6e6f8681c2d3b0584e0057eaf3ef7353856b85212d04134744faa9b3bb1f24f",
-      "source_uri": "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-amd64-20260810-2566.qcow2"
+      "release": "20260914.2601.1",
+      "source_filename": "d13-20260914.2601.1-amd64.source.qcow2",
+      "source_sha256": "b6e3a4dac69b38d55a763b1752e8fd7bb12e3948672a79fee4ef13fa53839d2f",
+      "source_sha512": "a733e7d49442a03e70d03e4eb5aaf3967f3efc69ef70952f9bb10fc1ee2c4876eb95956b5ad2d31350e5fada768feb651352535fb8cd1233f61998a5a7d2e93c",
+      "source_uri": "https://cloud.debian.org/images/cloud/trixie/20260914-2601/debian-13-generic-amd64-20260914-2601.qcow2"
     },
     {
       "arch": "arm64",
@@ -171,22 +171,22 @@
           },
           {
             "arch": "arm64",
-            "filename": "xfsprogs_6.13.0-2+b1_arm64.deb",
+            "filename": "xfsprogs_6.13.0-2+deb13u1_arm64.deb",
             "name": "xfsprogs",
-            "sha256": "a559c8cf77d815157093be352df0c00ef4f88fe92911228fccba4f59aa84f8b1",
-            "url": "https://deb.debian.org/debian/pool/main/x/xfsprogs/xfsprogs_6.13.0-2+b1_arm64.deb",
-            "version": "6.13.0-2+b1"
+            "sha256": "4e5b910bd626cee9f91ce4948c6b60d8349cfe3ea0af3774045fbf35cf956e08",
+            "url": "https://deb.debian.org/debian/pool/main/x/xfsprogs/xfsprogs_6.13.0-2%2bdeb13u1_arm64.deb",
+            "version": "6.13.0-2+deb13u1"
           }
         ],
         "profile": "d13",
         "schema": 1
       },
       "profile": "d13",
-      "release": "20260810.2566.1",
-      "source_filename": "d13-20260810.2566.0-arm64.qcow2",
-      "source_sha256": "2c546c79ec199983a88e384f6e5d013ab7876353943f7aa614403e3028bbea99",
-      "source_sha512": "60a2cc628f0dd114c25d70ce8388631c3f165f25c8932bc9f147987467680bcc39bda38c471c31d35056ae3eb089d22ab295583a7cbff323f21caabb467b0656",
-      "source_uri": "https://cloud.debian.org/images/cloud/trixie/20260810-2566/debian-13-generic-arm64-20260810-2566.qcow2"
+      "release": "20260914.2601.1",
+      "source_filename": "d13-20260914.2601.1-arm64.source.qcow2",
+      "source_sha256": "3fa2da19de8343bc144517d15bab29a90352482640d326939c9756af4f553f7b",
+      "source_sha512": "bef60fa5c4f5511cf83fe1ade0279edd5318dccbbb44f14eb0aa7f3b467e038d7a7c0b6f837be0ad1c3b2e06c5ed8e27adfdf0fd111a201b8f4c9347cd414863",
+      "source_uri": "https://cloud.debian.org/images/cloud/trixie/20260914-2601/debian-13-generic-arm64-20260914-2601.qcow2"
     },
     {
       "arch": "amd64",

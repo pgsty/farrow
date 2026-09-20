@@ -112,14 +112,20 @@ python3_status=not-requested
 xfsprogs_status=not-requested
 legacy_network_status=not-requested
 sshd_include_status=upstream
+locale_default_status=not-requested
+locale_en_us_status=not-requested
 [[ ${profile} == el8 ]] && python3_status=verified
 [[ ${profile} == d12 || ${profile} == d13 ]] && xfsprogs_status=verified
+if [[ ${profile} == d12 || ${profile} == d13 ]]; then
+  locale_default_status=C.UTF-8
+  locale_en_us_status=verified
+fi
 [[ ${profile} == el8 || ${profile} == el9 ]] && legacy_network_status=removed
 [[ ${profile} == el8 ]] && sshd_include_status=verified
 case ${guest_path} in
   /var/lib/farrow-image/normalization.json)
-    printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","profile":"%s","source_user":"ubuntu","source_date_epoch":1787486400,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied","python3":"%s","xfsprogs":"%s","legacy_network":"%s","sshd_include":"%s"}\n' \
-      "${profile}" "${python3_status}" "${xfsprogs_status}" "${legacy_network_status}" "${sshd_include_status}"
+    printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","profile":"%s","source_user":"ubuntu","source_date_epoch":1787486400,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied","python3":"%s","xfsprogs":"%s","legacy_network":"%s","sshd_include":"%s","locale_default":"%s","locale_en_us":"%s"}\n' \
+      "${profile}" "${python3_status}" "${xfsprogs_status}" "${legacy_network_status}" "${sshd_include_status}" "${locale_default_status}" "${locale_en_us_status}"
     ;;
   /etc/passwd) printf 'root:x:0:0:root:/root:/bin/bash\ndba:x:88:88::/home/dba:/bin/bash\n' ;;
   /etc/group) printf 'root:x:0:\nadmin:x:88:dba\n' ;;
@@ -250,6 +256,57 @@ manifest = json.loads((root / "manifest-candidate.json").read_text())
 entry = manifest["images"]["u24"]["releases"]["20260801.0.0"]["amd64"]
 assert entry["source_user"] == "dba"
 assert not entry["provenance"].startswith("UNPUBLISHABLE")
+PY
+
+# Previously the published Debian locale adjustment was absent from the
+# checked-in recipe, and an image without either locale postcondition passed.
+python3 - "${repo}/packaging/image-pipeline/pipeline.py" <<'PY'
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location("farrow_pipeline", sys.argv[1])
+pipeline_module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = pipeline_module
+spec.loader.exec_module(pipeline_module)
+for profile in ("d12", "d13"):
+    valid = {
+        "schema": 1, "recipe": "farrow-official-image-normalization-v1",
+        "profile": profile, "source_user": "debian", "source_date_epoch": 1787486400,
+        "dba_uid": 88, "admin_gid": 88, "credential_hygiene": "applied",
+        "python3": "not-requested", "xfsprogs": "verified",
+        "legacy_network": "not-requested", "sshd_include": "upstream",
+        "locale_default": "C.UTF-8", "locale_en_us": "verified",
+    }
+    cases = [(valid, True)]
+    missing = copy.deepcopy(valid)
+    del missing["locale_default"], missing["locale_en_us"]
+    cases.append((missing, False))
+    for field, value in (("locale_default", "en_US.UTF-8"), ("locale_en_us", "not-requested")):
+        invalid = {**valid, field: value}
+        cases.append((invalid, False))
+    for marker, accepted in cases:
+        def fake_tool(arguments, *unused):
+            if arguments[-1] == "/var/lib/farrow-image/normalization.json":
+                return json.dumps(marker).encode()
+            if arguments[-1] == "/etc/passwd":
+                return b"dba:x:88:88::/home/dba:/bin/bash\n"
+            if arguments[-1] == "/etc/group":
+                return b"admin:x:88:dba\n"
+            return b""
+        pipeline_module.run_tool = fake_tool
+        try:
+            pipeline_module.normalize_offline(
+                Path("customize"), Path("cat"), Path("image"), Path("script"),
+                "debian", profile, [], 1787486400,
+                {"virt_customize": 1, "virt_cat": 1}, {},
+            )
+        except pipeline_module.PipelineError as error:
+            assert not accepted and "normalization marker mismatch" in str(error)
+        else:
+            assert accepted, f"{profile}: accepted absent or incorrect locale evidence"
 PY
 
 package_cache=${temporary}/package-cache
@@ -397,8 +454,8 @@ fi
 [[ $(wc -l <"${temporary}/official-matrix.txt" | tr -d ' ') == 8 ]]
 grep -Fxq $'el8/amd64\t8.10.20240528.1\tel8\tpackages=2' "${temporary}/official-matrix.txt"
 grep -Fxq $'el9/arm64\t9.8.20260525.1\tel9\tpackages=0' "${temporary}/official-matrix.txt"
-grep -Fxq $'d12/arm64\t20260806.2562.1\td12\tpackages=3' "${temporary}/official-matrix.txt"
-grep -Fxq $'d13/amd64\t20260810.2566.1\td13\tpackages=3' "${temporary}/official-matrix.txt"
+grep -Fxq $'d12/arm64\t20260909.2596.1\td12\tpackages=3' "${temporary}/official-matrix.txt"
+grep -Fxq $'d13/amd64\t20260914.2601.1\td13\tpackages=3' "${temporary}/official-matrix.txt"
 python3 - "${repo}/packaging/image-pipeline/official-v1.json" <<'PY'
 import json
 import pathlib

@@ -327,6 +327,8 @@ def verify_bundle(
     locked_records = target["package_lock"]["packages"] if target["package_lock"] else []
     expected_marker = {
         "legacy_network": "removed" if target["profile"] in ("el8", "el9") else "not-requested",
+        "locale_default": "C.UTF-8" if target["profile"] in ("d12", "d13") else "not-requested",
+        "locale_en_us": "verified" if target["profile"] in ("d12", "d13") else "not-requested",
         "profile": target["profile"],
         "python3": "verified" if target["profile"] == "el8" else "not-requested",
         "sshd_include": "verified" if target["profile"] == "el8" else "upstream",

@@ -16,7 +16,7 @@ import (
 
 const (
 	ManifestSchema          = 3
-	EmbeddedManifestVersion = 2026090501
+	EmbeddedManifestVersion = 2026092001
 	MaxManifestSize         = 4 << 20
 )
 

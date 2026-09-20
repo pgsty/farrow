@@ -59,6 +59,11 @@
     "remove_ssh_host_keys": true,
     "clear_machine_id": true,
     "clear_cloud_init_cache": true,
+    "locale_policy": {
+      "available": ["C.UTF-8", "en_US.UTF-8"],
+      "default": "C.UTF-8",
+      "profiles": ["d12", "d13"]
+    },
     "profiles": {
       "base": {
         "locked_packages": [],

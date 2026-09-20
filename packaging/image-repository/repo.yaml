@@ -1,5 +1,5 @@
 schema: 1
-revision: 2026090501
+revision: 2026092001
 defaults:
   image: "u24"
   channel: "stable"
@@ -10,8 +10,17 @@ images:
     aliases: ["debian12", "bookworm"]
     boot: "uefi"
     channels:
-      stable: "20260806.2562.1"
+      stable: "20260909.2596.1"
     versions:
+      "20260909.2596.1":
+        status: "supported"
+        variants:
+          amd64:
+            source_user: "dba"
+            provenance: "Farrow official-image recipe v1 from https://cloud.debian.org/images/cloud/bookworm/20260909-2596/debian-12-generic-amd64-20260909-2596.qcow2 sha256:5b842b549629637613f1770ad749b868b08c6e16c437a5940f21178816f3d7e9; package-lock sha256:89414b5485ddb76c65fae879b98989b5bfdcbbdd9d1c02ff4e0af0ab55f5b347; xfsprogs 6.1.0-1 installed offline; en_US.UTF-8 generated with C.UTF-8 retained as the default; native KVM dual-NIC SSH, default-locale, en_US locale, and XFS data-disk smoke passed 2026-09-20; upstream is build provenance only"
+          arm64:
+            source_user: "dba"
+            provenance: "Farrow official-image recipe v1 from https://cloud.debian.org/images/cloud/bookworm/20260909-2596/debian-12-generic-arm64-20260909-2596.qcow2 sha256:38190f378a1564c8bf5cf6a44898999bfcb5972876dc3e4a9b5413b6398a1efa; package-lock sha256:f604b11aec09c227f774a998f9bb3e0068b97cf4ff069da19f5679c3b4021240; xfsprogs 6.1.0-1 installed offline; en_US.UTF-8 generated with C.UTF-8 retained as the default; native HVF dual-NIC SSH, default-locale, en_US locale, and XFS data-disk smoke passed 2026-09-20; upstream is build provenance only"
       "20260806.2562.1":
         status: "supported"
         variants:
@@ -25,8 +34,17 @@ images:
     aliases: ["debian13", "debian", "trixie"]
     boot: "uefi"
     channels:
-      stable: "20260810.2566.1"
+      stable: "20260914.2601.1"
     versions:
+      "20260914.2601.1":
+        status: "supported"
+        variants:
+          amd64:
+            source_user: "dba"
+            provenance: "Farrow official-image recipe v1 from https://cloud.debian.org/images/cloud/trixie/20260914-2601/debian-13-generic-amd64-20260914-2601.qcow2 sha256:b6e3a4dac69b38d55a763b1752e8fd7bb12e3948672a79fee4ef13fa53839d2f; package-lock sha256:a8c2c57ec24d33b44e933bd8d8a3ddab427fcbbfb3c56a6788c4bc35b10a973c; xfsprogs 6.13.0-2+deb13u1 installed offline; en_US.UTF-8 generated with C.UTF-8 retained as the default; native KVM dual-NIC SSH, default-locale, en_US locale, and XFS data-disk smoke passed 2026-09-20; upstream is build provenance only"
+          arm64:
+            source_user: "dba"
+            provenance: "Farrow official-image recipe v1 from https://cloud.debian.org/images/cloud/trixie/20260914-2601/debian-13-generic-arm64-20260914-2601.qcow2 sha256:3fa2da19de8343bc144517d15bab29a90352482640d326939c9756af4f553f7b; package-lock sha256:227b4ac5c8f04fd4b53f661be63ef6cea711c9dfa117976c2ff888ad65ddbaee; xfsprogs 6.13.0-2+deb13u1 installed offline; en_US.UTF-8 generated with C.UTF-8 retained as the default; native HVF dual-NIC SSH, default-locale, en_US locale, and XFS data-disk smoke passed 2026-09-20; upstream is build provenance only"
       "20260810.2566.1":
         status: "supported"
         variants:
@@ -155,8 +173,19 @@ images:
     aliases: ["ubuntu22", "ubuntu2204", "jammy"]
     boot: "uefi"
     channels:
-      stable: "20260810.0.0"
+      stable: "20260913.0.0"
     versions:
+      "20260913.0.0":
+        status: "supported"
+        variants:
+          amd64:
+            upstream: "https://cloud-images.ubuntu.com/releases/jammy/release-20260913/ubuntu-22.04-server-cloudimg-amd64.img"
+            source_user: "ubuntu"
+            provenance: "Canonical Ubuntu Server 22.04 release cloud image 20260913; unmodified distribution-owned dated artifact; upstream SHA-256, qcow2 structure, native KVM UEFI dual-NIC SSH, dba UID/GID 88, and Python smoke passed 2026-09-20"
+          arm64:
+            upstream: "https://cloud-images.ubuntu.com/releases/jammy/release-20260913/ubuntu-22.04-server-cloudimg-arm64.img"
+            source_user: "ubuntu"
+            provenance: "Canonical Ubuntu Server 22.04 release cloud image 20260913; unmodified distribution-owned dated artifact; upstream SHA-256, qcow2 structure, native HVF UEFI dual-NIC SSH, dba UID/GID 88, and Python smoke passed 2026-09-20"
       "20260810.0.0":
         status: "supported"
         variants:
@@ -172,8 +201,19 @@ images:
     aliases: ["ubuntu", "ubuntu24", "ubuntu2404", "noble"]
     boot: "uefi"
     channels:
-      stable: "20260801.0.0"
+      stable: "20260911.0.0"
     versions:
+      "20260911.0.0":
+        status: "supported"
+        variants:
+          amd64:
+            upstream: "https://cloud-images.ubuntu.com/releases/noble/release-20260911/ubuntu-24.04-server-cloudimg-amd64.img"
+            source_user: "ubuntu"
+            provenance: "Canonical Ubuntu Server 24.04 release cloud image 20260911; unmodified distribution-owned dated artifact; upstream SHA-256, qcow2 structure, native KVM UEFI dual-NIC SSH, dba UID/GID 88, and Python smoke passed 2026-09-20"
+          arm64:
+            upstream: "https://cloud-images.ubuntu.com/releases/noble/release-20260911/ubuntu-24.04-server-cloudimg-arm64.img"
+            source_user: "ubuntu"
+            provenance: "Canonical Ubuntu Server 24.04 release cloud image 20260911; unmodified distribution-owned dated artifact; upstream SHA-256, qcow2 structure, native HVF UEFI dual-NIC SSH, dba UID/GID 88, and Python smoke passed 2026-09-20"
       "20260801.0.0":
         status: "supported"
         variants:
@@ -189,8 +229,19 @@ images:
     aliases: ["ubuntu26", "ubuntu2604", "resolute"]
     boot: "uefi"
     channels:
-      stable: "20260731.0.0"
+      stable: "20260918.0.0"
     versions:
+      "20260918.0.0":
+        status: "supported"
+        variants:
+          amd64:
+            upstream: "https://cloud-images.ubuntu.com/releases/resolute/release-20260918/ubuntu-26.04-server-cloudimg-amd64.img"
+            source_user: "ubuntu"
+            provenance: "Canonical Ubuntu Server 26.04 release cloud image 20260918; unmodified distribution-owned dated artifact; upstream SHA-256, qcow2 structure, native KVM UEFI dual-NIC SSH, dba UID/GID 88, and Python smoke passed 2026-09-20"
+          arm64:
+            upstream: "https://cloud-images.ubuntu.com/releases/resolute/release-20260918/ubuntu-26.04-server-cloudimg-arm64.img"
+            source_user: "ubuntu"
+            provenance: "Canonical Ubuntu Server 26.04 release cloud image 20260918; unmodified distribution-owned dated artifact; upstream SHA-256, qcow2 structure, native HVF UEFI dual-NIC SSH, dba UID/GID 88, and Python smoke passed 2026-09-20"
       "20260731.0.0":
         status: "supported"
         variants:

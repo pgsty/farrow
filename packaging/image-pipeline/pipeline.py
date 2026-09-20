@@ -141,6 +141,12 @@ def load_config() -> Tuple[Dict[str, Any], bytes, Path, bytes]:
     normalization = config.get("normalization")
     if not isinstance(normalization, dict) or normalization.get("network") is not False:
         raise PipelineError("pipeline recipe must disable guest customization networking")
+    if normalization.get("locale_policy") != {
+        "available": ["C.UTF-8", "en_US.UTF-8"],
+        "default": "C.UTF-8",
+        "profiles": ["d12", "d13"],
+    }:
+        raise PipelineError("pipeline recipe has an invalid locale policy")
     profiles = normalization.get("profiles")
     if not isinstance(profiles, dict) or set(profiles) != {"base", "el8", "el9", "d12", "d13"}:
         raise PipelineError("pipeline recipe has invalid customization profiles")
@@ -563,6 +569,8 @@ def normalize_offline(
         "credential_hygiene": "applied",
         "dba_uid": 88,
         "legacy_network": "removed" if profile in ("el8", "el9") else "not-requested",
+        "locale_default": "C.UTF-8" if profile in ("d12", "d13") else "not-requested",
+        "locale_en_us": "verified" if profile in ("d12", "d13") else "not-requested",
         "profile": profile,
         "python3": "verified" if profile == "el8" else "not-requested",
         "recipe": "farrow-official-image-normalization-v1",
@@ -630,10 +638,16 @@ def build_manifest(
 ) -> Dict[str, Any]:
     if mode == "offline":
         source_user = "dba"
+        locale_note = (
+            " en_US.UTF-8 generated while C.UTF-8 remains the default;"
+            if args.profile in ("d12", "d13")
+            else ""
+        )
         provenance = (
             f"Farrow offline normalization recipe v1 profile {args.profile} from {args.source_uri} "
             f"sha256:{args.expected_sha256}; digest-locked offline package inputs applied where required; "
-            "credential hygiene and dba UID/GID 88 applied; candidate requires owner hosting, signing, and native smoke"
+            f"credential hygiene and dba UID/GID 88 applied;{locale_note} "
+            "candidate requires owner hosting, signing, and native smoke"
         )
     else:
         source_user = args.source_user

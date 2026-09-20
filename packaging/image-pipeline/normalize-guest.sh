@@ -86,6 +86,28 @@ install_locked_packages() {
   fi
 }
 
+configure_debian_locales() {
+  local default_locale
+  for command in locale locale-gen; do
+    command -v "${command}" >/dev/null || { printf 'required locale command missing: %s\n' "${command}" >&2; exit 3; }
+  done
+  [[ -f /etc/locale.gen ]] || { printf 'Debian locale.gen is missing\n' >&2; exit 3; }
+  sed -i -E 's/^#[[:space:]]*(en_US\.UTF-8[[:space:]]+UTF-8)[[:space:]]*$/\1/' /etc/locale.gen
+  grep -Eq '^en_US\.UTF-8[[:space:]]+UTF-8[[:space:]]*$' /etc/locale.gen || {
+    printf 'failed to enable en_US.UTF-8 in locale.gen\n' >&2
+    exit 5
+  }
+  locale-gen en_US.UTF-8
+  install -d -o root -g root -m 0755 /etc/default
+  printf 'LANG=C.UTF-8\n' >/etc/default/locale
+  chmod 0644 /etc/default/locale
+  locale -a | grep -Fqx 'en_US.utf8' || { printf 'en_US.UTF-8 locale was not generated\n' >&2; exit 5; }
+  [[ $(LC_ALL=en_US.UTF-8 locale charmap) == UTF-8 ]] || { printf 'en_US.UTF-8 charmap is invalid\n' >&2; exit 5; }
+  [[ $(LC_ALL=C.UTF-8 locale charmap) == UTF-8 ]] || { printf 'C.UTF-8 charmap is invalid\n' >&2; exit 5; }
+  default_locale=$(sed -n 's/^LANG=//p' /etc/default/locale)
+  [[ ${default_locale} == C.UTF-8 ]] || { printf 'default locale changed from C.UTF-8\n' >&2; exit 5; }
+}
+
 strip_boot_argument() {
   local file=$1 argument=$2
   [[ -f ${file} ]] || return 0
@@ -199,6 +221,7 @@ case ${profile} in
   d12|d13)
     command -v mkfs.xfs >/dev/null || { printf 'mkfs.xfs executable is missing\n' >&2; exit 5; }
     mkfs.xfs -V >/dev/null 2>&1
+    configure_debian_locales
     ;;
 esac
 
@@ -314,13 +337,20 @@ python3_status=not-requested
 xfsprogs_status=not-requested
 legacy_network_status=not-requested
 sshd_include_status=upstream
+locale_default_status=not-requested
+locale_en_us_status=not-requested
 [[ ${profile} == el8 ]] && python3_status=verified
-[[ ${profile} == d12 || ${profile} == d13 ]] && xfsprogs_status=verified
+if [[ ${profile} == d12 || ${profile} == d13 ]]; then
+  xfsprogs_status=verified
+  locale_default_status=C.UTF-8
+  locale_en_us_status=verified
+fi
 [[ ${profile} == el8 || ${profile} == el9 ]] && legacy_network_status=removed
 [[ ${profile} == el8 ]] && sshd_include_status=verified
-printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","profile":"%s","source_user":"%s","source_date_epoch":%s,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied","python3":"%s","xfsprogs":"%s","legacy_network":"%s","sshd_include":"%s"}\n' \
+printf '{"schema":1,"recipe":"farrow-official-image-normalization-v1","profile":"%s","source_user":"%s","source_date_epoch":%s,"dba_uid":88,"admin_gid":88,"credential_hygiene":"applied","python3":"%s","xfsprogs":"%s","locale_default":"%s","locale_en_us":"%s","legacy_network":"%s","sshd_include":"%s"}\n' \
   "${profile}" "${source_user}" "${source_date_epoch}" "${python3_status}" "${xfsprogs_status}" \
-  "${legacy_network_status}" "${sshd_include_status}" >/var/lib/farrow-image/normalization.json
+  "${locale_default_status}" "${locale_en_us_status}" "${legacy_network_status}" "${sshd_include_status}" \
+  >/var/lib/farrow-image/normalization.json
 chmod 0644 /var/lib/farrow-image/normalization.json
 
 # Normalize the metadata of files created by this recipe. Filesystem journals
@@ -332,6 +362,10 @@ touch -d "@${source_date_epoch}" \
   /etc/sudoers.d/90-farrow-dba \
   /etc/ssh/sshd_config.d/99-farrow-image.conf \
   /var/lib/farrow-image /var/lib/farrow-image/normalization.json
+if [[ ${profile} == d12 || ${profile} == d13 ]]; then
+  touch -d "@${source_date_epoch}" /etc/locale.gen /etc/default/locale
+  [[ ! -e /usr/lib/locale/locale-archive ]] || touch -d "@${source_date_epoch}" /usr/lib/locale/locale-archive
+fi
 
 # EL guests enforce SELinux labels. A blanket virt-customize
 # --selinux-relabel is not valid for the Debian/Ubuntu inputs, so relabel only
