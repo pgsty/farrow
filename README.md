@@ -154,18 +154,18 @@ access only when a host transaction genuinely needs it.
 Farrow is pre-1.0. A successful build from source is not evidence of a tagged
 release, a published package, or a supported guest image.
 
-The `v0.8.0` candidate is being built and validated locally; its application
-assets are not published yet. See the [0.8.0 notes](.github/releases/0.8.0.md).
-The public installation commands below still select 0.7.0.
+Version 0.8.0 improves startup recovery and refreshes the operating-system
+catalog. See the [0.8.0 notes](.github/releases/0.8.0.md) for the verified paths
+and remaining limitations.
 
 Download `install.sh`, `farrow.rb`, or the native package from the
-[Farrow 0.7.0 release](https://github.com/pgsty/farrow/releases/tag/v0.7.0).
+[Farrow 0.8.0 release](https://github.com/pgsty/farrow/releases/tag/v0.8.0).
 
 ```bash
 # From a release: user-scoped, no sudo, checksum-verified
-curl -fLO https://github.com/pgsty/farrow/releases/download/v0.7.0/install.sh
+curl -fLO https://github.com/pgsty/farrow/releases/download/v0.8.0/install.sh
 chmod +x install.sh
-FARROW_VERSION=0.7.0 ./install.sh
+FARROW_VERSION=0.8.0 ./install.sh
 
 # Homebrew formula (shipped as a release asset)
 brew install --formula ./farrow.rb
@@ -183,8 +183,8 @@ the GitHub release workflow.
 When upgrading an existing Debian lab whose inventory omits `vm_image`, set
 `vm_image: d13` in `all.vars` to keep that choice. Upgrading Farrow does not
 replace healthy VM disks; `farrow plan` shows configuration changes before you
-apply them. In 0.7.0, `up` can reset damaged data filesystems, including persistent
-disks, as described above. See the [0.7.0 release notes](.github/releases/0.7.0.md).
+apply them. Since 0.7.0, `up` can reset damaged data filesystems, including
+persistent disks, as described above. The policy is unchanged in 0.8.0.
 
 From source:
 
