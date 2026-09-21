@@ -17,6 +17,9 @@ Notable user-visible changes. This project follows
 
 ### Fixed
 
+- macOS setup prepares the socket_vmnet source before requesting administrator
+  authentication, so Homebrew cannot invalidate the credential needed for the
+  ensuing network installation. Failed or cancelled downloads do not prompt.
 - Include the previously published Debian locale adjustment in the checked-in
   image recipe and verify both locale postconditions before accepting a build.
 - A missing host share fails only the affected node during `up` and `start`;

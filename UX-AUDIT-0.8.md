@@ -11,6 +11,7 @@
 
 | ID / 优先级 / 交付状态 | 用户场景 | 证据状态与复现方法 | 根因 | 资源归属 | 最小改动 | 用户可见行为 | 验收方法 | 规模 / 必要依赖 |
 |---|---|---|---|---|---|---|---|---|
+| U16 / P1 / 已完成源码修复 | macOS 首次 setup 安装 Homebrew socket_vmnet 后，已输入密码仍报需要认证 | 当前已复现：回归模拟 Homebrew 清除 sudo timestamp，旧顺序在特权安装时报需要密码；源码顺序与本机 Homebrew 行为吻合，修复后回归通过 | 在 Homebrew 发现/安装之前认证，后续 brew 普通路径主动使凭据失效 | Homebrew 用户态来源与既有 root-owned Farrow 网络计划；不改 sudoers | 用户态发现/安装/下载结束后才认证，紧接原网络安装；repair/Linux 保留原顺序 | 一次认证可用于实际安装；下载失败或取消先返回根因，不申请无用认证 | 新 formula/慢 prefix 清凭据回归、已有 formula、坏归档/回退/取消、认证失败、repair/healthy 边界；补丁原生安装另验 | S；真实交互认证由专用 Mac 验收，不在回归中执行 sudo/brew |
 | U10 / P1 / 诊断已完成，macOS 共享支持待设计 | 源目录恢复后 macOS 节点仍无法启动 | 当前已复现：QEMU 11.1.1 对 `/dev/fd/3` 的 open(O_DIRECTORY) 返回 ENOTDIR；实际路径和权限正常 | 现有 FD 安全绑定与 Darwin 目录重开语义不兼容，device-help 探测未覆盖 | 用户宿主项目树；不得降级路径身份校验 | 已补逐节点启动前诊断及 restart/reload/recreate 的停止前检查；完整修复需可验证的 QEMU FD 接口 | 明确源/挂载点与平台能力缺口，保留其他节点和现有磁盘；不输出无效的盲重试或自动 recreate | 原生错误前后对比、Darwin 回归、停止前状态不变；完整共享仍是发布范围决策/验收缺口 | S 诊断已做 / M-L 完整支持；QEMU 平台接口与 Linux 对照 |
 | U01 / P1 / 已完成节点隔离 | 一个宿主共享目录缺失，其他节点也无法 up/start | 当前已复现：0.7.0 原生双节点时整批退出 1；修复后退出 5，无共享的运行节点仍 ready；start 案例也通过 | 节点前置检查被提升为全局依赖 | 宿主目录属于用户；QEMU 文件描述符和节点状态属于 Farrow | 将创建前校验移到单节点 prepare；已有节点使用逐节点 start preflight；保留 restart/reload/recreate 在停止前的保护 | 可用节点继续；受影响节点列出源路径、挂载点和恢复动作；不创建空目录 | 双节点部分成功、恢复目录后重试、运行节点不重启、未知/不安全路径仍拒绝；真实 VM | S；挂载级省略 QEMU share 另见 U08 |
 | U04 / P1 / 已完成限定分支 | 一台新节点准备失败，选中的已有停止节点未启动 | 当前已复现：原生已有停止节点 + 新节点缺共享；修复后已有节点就绪，新节点单独失败；仅覆盖 controller 的 prepare/start 局部失败，见 U14 | 新建分支与已有节点启动串行耦合 | 已提交节点身份与磁盘已知 | 仅部分节点失败时继续独立已有节点；合并结果和失败 | 成功节点保持成功，未验证运行节点不报 ready | 混合新建/已有节点故障、取消与完整性错误边界 | M；复用现有 partial 结果 |
@@ -49,6 +50,7 @@
 
 | 改动 | 代码入口 | 回归 / 执行证据 |
 |---|---|---|
+| U16 macOS 来源准备后认证 | `cmd/farrow/setup.go:installSetupDarwinNetwork` | `setup_auth_test.go`；`/Users/vonng/pgsty/repo/data/build/farrow-0.8.0-20260921/setup-auth-before.log` 失败 → `setup-auth-after.log` 通过；使用真实来源选择、fake Homebrew/root runner，不作为真实 VM 或新版安装证据 |
 | U01 共享源逐节点隔离 | `internal/private/prepare.go:PrepareNode`、`manager.go:Up/startExisting`、`internal/hostshare/hostshare.go:Open` | `share_recovery_test.go`；`native-070-missing-share` 与 `native-source-missing-share`、`native-source-start-missing-share` |
 | U02 既有 VM 公钥恢复 | `internal/sshkeys/keys.go:EnsureExistingKeys`、`internal/private/manager.go:ensureKeys/startExisting` | `key_recovery_test.go`、`sshkeys/recovery_test.go`；`native-source-public-recovery`，SHA/UUID/inode 断言 |
 | U15 保留盘不阻断后续清理 | `internal/private/persistent.go:validatePrivatePersistentState` | `retained_cleanup_test.go`，`retained-cleanup-before.log` 失败 → `retained-cleanup-after.log`；`native-final-destroy` |
@@ -99,7 +101,8 @@
 
 ### 0.8 建议范围与后续设计
 
-首批只纳入 U01/U02/U03/U04/U06/U11/U13/U15、U10 的准确诊断和已存在的五项恢复修复。
+首批只纳入 U01/U02/U03/U04/U06/U11/U13/U15、U10 的准确诊断和已存在的五项恢复修复；
+2026-09-21 新增 U16 的首次安装认证顺序修复。
 共享仍按节点隔离；完整 UID 映射、多挂载部分省略、新网络模式不进入本轮。
 必须明确 macOS 目录共享的当前限制，不能把 U10 的诊断当作支持已经修好。
 

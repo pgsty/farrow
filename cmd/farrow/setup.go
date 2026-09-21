@@ -573,8 +573,6 @@ func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflig
 		tickf(stderr, "Network %s is already installed", report.CIDR)
 		return setupStep{Name: "network", Status: "ready", Detail: report.CIDR}, false, nil
 	}
-	// Refresh immediately before the network transaction. Package installation
-	// can legitimately outlive sudo's timestamp window.
 	networkReason := "install the host-global " + report.CIDR + " network (root-owned socket_vmnet service)"
 	if report.CanRepair() {
 		networkReason = "restore the installed " + report.CIDR + " Farrow network"
@@ -582,8 +580,10 @@ func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflig
 	if runtime.GOOS != "darwin" {
 		networkReason = "install the host-global " + report.CIDR + " network (root-owned farrow0 bridge)"
 	}
-	if err := sudo.ensure(ctx, networkReason); err != nil {
-		return setupStep{}, false, err
+	if runtime.GOOS != "darwin" || report.CanRepair() {
+		if err := sudo.ensure(ctx, networkReason); err != nil {
+			return setupStep{}, false, err
+		}
 	}
 	if runtime.GOOS == "darwin" {
 		if report.CanRepair() {
@@ -595,42 +595,9 @@ func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflig
 			}
 			return setupStep{Name: "network", Status: "repaired", Detail: report.CIDR, Changed: true}, false, nil
 		}
-		interfaceID, err := identity.NewUUID()
-		if err != nil {
-			return setupStep{}, false, err
-		}
 		executor := darwinnet.Executor{User: base, Root: setupRootRunner(base)}
-		sources := setuphost.SourcesFromEnvironment(repo)
-		// Prefer the version-matched Homebrew formula when no pinned archive
-		// is already local: brew honors the user's mirror and proxy
-		// configuration, so nothing has to reach github.com.
-		if sources.Archive == "" && !setuphost.SocketVMNetCached(runtime.GOARCH) {
-			if binaries, ok := setupHomebrewSocketVMNet(ctx, base, stderr); ok {
-				progressItem := startProgress(ctx, stderr, "Installing the fixed-IP network (socket_vmnet from Homebrew, root-owned copy)")
-				installReport, err := executor.InstallFromHomebrew(ctx, binaries, interfaceID, runtime.GOARCH, mode, report.CIDR, true)
-				progressItem.Stop(err)
-				if err != nil {
-					return setupStep{}, true, err
-				}
-				return setupStep{Name: "network", Status: "installed", Detail: installReport.Plan.State.CIDR, Changed: installReport.Applied}, false, nil
-			}
-		}
-		var downloadProgress *progress
-		sources.Progress = deferredProgressReporter(&downloadProgress)
-		downloadProgress = startProgress(ctx, stderr, "Fetching socket_vmnet "+darwinnet.ReleaseVersion+" (digest-pinned; sources: cache, FARROW_VMNET_ARCHIVE, selected repository, github.com)")
-		download, err := setuphost.DownloadPinnedSocketVMNet(ctx, runtime.GOARCH, "", nil, sources)
-		downloadProgress.Stop(err)
-		if err != nil {
-			return setupStep{}, false, err
-		}
-		debugf(stderr, "socket_vmnet source=%s downloaded=%t", progressSource(download.URL), download.Downloaded)
-		progressItem := startProgress(ctx, stderr, "Installing the fixed-IP network")
-		installReport, err := executor.InstallModeNetwork(ctx, download.Path, interfaceID, runtime.GOARCH, mode, report.CIDR, true)
-		progressItem.Stop(err)
-		if err != nil {
-			return setupStep{}, true, err
-		}
-		return setupStep{Name: "network", Status: "installed", Detail: installReport.Plan.State.CIDR, Changed: installReport.Applied}, false, nil
+		authorize := func() error { return sudo.ensure(ctx, networkReason) }
+		return installSetupDarwinNetwork(ctx, mode, repo, report.CIDR, base, authorize, stderr, executor)
 	}
 	linuxConfig, err := linuxnet.ConfigForCIDR(report.CIDR)
 	if err != nil {
@@ -644,6 +611,57 @@ func applySetupNetwork(ctx context.Context, mode, repo string, report netpreflig
 		return setupStep{}, !errors.Is(err, linuxnet.ErrInstallRolledBack), err
 	}
 	return setupStep{Name: "network", Status: "installed", Detail: report.CIDR, Changed: installReport.Applied}, false, nil
+}
+
+type setupDarwinNetworkInstaller interface {
+	InstallFromHomebrew(context.Context, darwinnet.LocalBinaries, string, string, string, string, bool) (darwinnet.InstallReport, error)
+	InstallModeNetwork(context.Context, string, string, string, string, string, bool) (darwinnet.InstallReport, error)
+}
+
+func installSetupDarwinNetwork(ctx context.Context, mode, repo, cidr string, base execx.Runner, authorize func() error, stderr io.Writer, executor setupDarwinNetworkInstaller) (setupStep, bool, error) {
+	interfaceID, err := identity.NewUUID()
+	if err != nil {
+		return setupStep{}, false, err
+	}
+	sources := setuphost.SourcesFromEnvironment(repo)
+	// Prefer the version-matched Homebrew formula when no pinned archive
+	// is already local: brew honors the user's mirror and proxy
+	// configuration, so nothing has to reach github.com.
+	if sources.Archive == "" && !setuphost.SocketVMNetCached(runtime.GOARCH) {
+		if binaries, ok := setupHomebrewSocketVMNet(ctx, base, stderr); ok {
+			// Homebrew can reset sudo's timestamp. Authenticate only after
+			// discovery and formula installation have finished.
+			if err := authorize(); err != nil {
+				return setupStep{}, false, err
+			}
+			progressItem := startProgress(ctx, stderr, "Installing the fixed-IP network (socket_vmnet from Homebrew, root-owned copy)")
+			installReport, err := executor.InstallFromHomebrew(ctx, binaries, interfaceID, runtime.GOARCH, mode, cidr, true)
+			progressItem.Stop(err)
+			if err != nil {
+				return setupStep{}, true, err
+			}
+			return setupStep{Name: "network", Status: "installed", Detail: installReport.Plan.State.CIDR, Changed: installReport.Applied}, false, nil
+		}
+	}
+	var downloadProgress *progress
+	sources.Progress = deferredProgressReporter(&downloadProgress)
+	downloadProgress = startProgress(ctx, stderr, "Fetching socket_vmnet "+darwinnet.ReleaseVersion+" (digest-pinned; sources: cache, FARROW_VMNET_ARCHIVE, selected repository, github.com)")
+	download, err := setuphost.DownloadPinnedSocketVMNet(ctx, runtime.GOARCH, "", nil, sources)
+	downloadProgress.Stop(err)
+	if err != nil {
+		return setupStep{}, false, err
+	}
+	debugf(stderr, "socket_vmnet source=%s downloaded=%t", progressSource(download.URL), download.Downloaded)
+	if err := authorize(); err != nil {
+		return setupStep{}, false, err
+	}
+	progressItem := startProgress(ctx, stderr, "Installing the fixed-IP network")
+	installReport, err := executor.InstallModeNetwork(ctx, download.Path, interfaceID, runtime.GOARCH, mode, cidr, true)
+	progressItem.Stop(err)
+	if err != nil {
+		return setupStep{}, true, err
+	}
+	return setupStep{Name: "network", Status: "installed", Detail: installReport.Plan.State.CIDR, Changed: installReport.Applied}, false, nil
 }
 
 // setupHomebrewSocketVMNet resolves version-matched socket_vmnet binaries via
